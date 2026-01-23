@@ -1,0 +1,14 @@
+[project]
+name = "scoring-tools"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "logging>=0.4.9.6",
+    "pandas>=3.0.0",
+    "scipy>=1.17.0",
+    "pytest>=7.0.0",
+    "tqdm>=4.0.0",
+    "ipython>=8.0.0",
+]

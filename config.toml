@@ -1,0 +1,24 @@
+[preprocessing]
+keep_vars = [
+    "mis_date", "status_name", "risk_score_rf", "se_decision_id", 
+    "reject_reason", "score_rf", "segment_cut_off", "early_bad"
+]
+indicators = [
+    "acct_booked_h0", "oa_amt", "todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"
+]
+segment_filter = "personal_loans,_fusion_and_tj_direct-no_premium-a-b"
+octroi_bins = [-inf, 364.0, 370.0, 379.0, 382.0, 389.0, 397.0, 404.0, 416.0, 431.0, inf]
+efx_bins = [-inf, 2.0, 7.0, 11.0, 16.0, 22.0, 27.0, 33.0, 38.0, 43.0, 47.0, 51.0, 56.0, 62.0, 68.0, 73.0, 83.0, 89.0, 94.0, inf]
+date_ini_book_obs = "2024-07-01"
+date_fin_book_obs = "2025-06-01"
+score_measures = [
+    "m_ct_direct_sc_nov23",
+    "m_ct_direct_sc_jan23",
+    "m_ct_direct_sc_conso25",
+    "m_ct_direct_sc_precon25",
+    "m_ct_direct_sc_fintonic25",
+    "m_ct_direct_sc_direct25_total"
+]
+log_level = "INFO"
+data_path = "data/demanda_direct_out.sas7bdat"
+n_months = 24
