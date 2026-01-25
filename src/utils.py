@@ -3,16 +3,19 @@ import numpy as np
 from typing import List
 from tqdm import tqdm
 import gc
-from IPython.display import clear_output
+from loguru import logger
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from . import styles
 
 def get_data_information(df):
     """
     Display DataFrame information and return a DataFrame with variable details.
     """
     # Display DataFrame information
-    print(f"Number of rows/records: {df.shape[0]}")
-    print(f"Number of columns/variables: {df.shape[1]}")
-    print("-" * 50)
+    logger.info(f"Number of rows/records: {df.shape[0]}")
+    logger.info(f"Number of columns/variables: {df.shape[1]}")
+    logger.info("-" * 50)
 
     # Create a DataFrame with variable information
     variables_df = pd.DataFrame({
@@ -70,18 +73,17 @@ def _get_fact_sol(values_var0, values_var1, inv_var1=False):
             else:
                 df_v = df_v[df_v[i_anterior] <= df_v[i]]
         i_anterior = i
-        clear_output(wait=True)
-        print('--Obteniendo soluciones factibles')
-        print('Bins:', str(n+1)+'/'+str(len(values_var0)))
-        print('Número de soluciones factibles: ',
-              "{:,.0f}".format(df_v.shape[0]))
+        
+        logger.info('--Obteniendo soluciones factibles')
+        logger.info(f'Bins: {n+1}/{len(values_var0)}')
+        logger.info(f'Número de soluciones factibles: {df_v.shape[0]:,.0f}')
     df_v = df_v.drop(columns=['on'])
     df_v = df_v.reset_index(drop=True).reset_index().rename(
         columns={'index': 'sol_fac'})
     return(df_v)
 
 def _kpi_of_fact_sol(df_v, values_var0, data_sumary_desagregado, variables, indicadores, inv_var1=False):
-    print('--Calculando KPI de las soluciones factibles')
+    logger.info('--Calculando KPI de las soluciones factibles')
 
     df_v_melt = df_v.melt(id_vars=['sol_fac'], value_vars=values_var0,
                           var_name=variables[0], value_name=variables[1]+'_lim')
@@ -124,7 +126,7 @@ def _kpi_of_fact_sol(df_v, values_var0, data_sumary_desagregado, variables, indi
 
 
 def _get_optimal_sol(df_v, data_sumary):
-    print('--Obteniendo soluciones optimas')
+    logger.info('--Obteniendo soluciones optimas')
     data_sumary = data_sumary.sort_values(by=["b2_ever_h6", 'oa_amt_h0'])
     data_sumary = data_sumary.drop_duplicates(
         subset=["b2_ever_h6"], keep='last')
@@ -141,8 +143,7 @@ def _get_optimal_sol(df_v, data_sumary):
     data_sumary = data_sumary[list_]
     data_sumary = df_v.merge(data_sumary.reset_index(
     ), how='inner', on='sol_fac').sort_values(by=["b2_ever_h6", 'oa_amt_h0'])
-    print('Número de soluciones óptimas: ',
-          "{:,.0f}".format(data_sumary.shape[0]))
+    logger.info(f'Número de soluciones óptimas: {data_sumary.shape[0]:,.0f}')
     return(data_sumary)
 
 def get_fact_sol(
@@ -162,7 +163,7 @@ def get_fact_sol(
        
         df_v = pd.DataFrame({'on': [0]})
         i_anterior = None
-        print('--Getting feasible solutions')
+        logger.info('--Getting feasible solutions')
         # Process each value with memory management
         for n, i in tqdm(enumerate(values_var0), desc="Processing Bins"):
             # Memory-efficient merge
@@ -188,8 +189,8 @@ def get_fact_sol(
             gc.collect()
            
             # Progress update
-            print(f'Bins: {n+1}/{len(values_var0)}')
-            print(f'Number of feasible solutions: {df_v.shape[0]:,}')
+            logger.info(f'Bins: {n+1}/{len(values_var0)}')
+            logger.info(f'Number of feasible solutions: {df_v.shape[0]:,}')
        
         # Prepare final output efficiently
         df_v = df_v.drop(columns=['on'])
@@ -202,7 +203,7 @@ def get_fact_sol(
         return df_v
        
     except Exception as e:
-        print(f"Error in get_fact_sol: {str(e)}")
+        logger.error(f"Error in get_fact_sol: {str(e)}")
         raise
 
 def process_kpi_chunk(
@@ -269,7 +270,7 @@ def process_kpi_chunk(
 
 def kpi_of_fact_sol(df_v, values_var0, data_sumary_desagregado, variables, indicadores, inv_var1=False, chunk_size=1000):
     try:
-        print('--Calculating KPIs for feasible solutions')
+        logger.info('--Calculating KPIs for feasible solutions')
         
         # Process in chunks
         chunks_results = []
@@ -379,7 +380,7 @@ def kpi_of_fact_sol(df_v, values_var0, data_sumary_desagregado, variables, indic
         return final_result.sort_values(['b2_ever_h6', 'oa_amt_h0'])
         
     except Exception as e:
-        print(f"Error in kpi_of_fact_sol: {str(e)}")
+        logger.error(f"Error in kpi_of_fact_sol: {str(e)}")
         raise
 
 def get_optimal_solutions(
@@ -389,7 +390,7 @@ def get_optimal_solutions(
 ) -> pd.DataFrame:
     """Memory-optimized version of get_optimal_solutions"""
     try:
-        print('--Getting optimal solutions')
+        logger.info('--Getting optimal solutions')
        
         # Sort and deduplicate efficiently
         data_sumary = data_sumary.sort_values(
@@ -439,11 +440,11 @@ def get_optimal_solutions(
         # Optimize final datatypes
         final_result = optimize_dtypes(final_result)
        
-        print(f'Number of optimal solutions: {len(final_result):,}')
+        logger.info(f'Number of optimal solutions: {len(final_result):,}')
         return final_result.sort_values(by=["b2_ever_h6", 'oa_amt_h0'])
        
     except Exception as e:
-        print(f"Error in get_optimal_solutions: {str(e)}")
+        logger.error(f"Error in get_optimal_solutions: {str(e)}")
         raise
 
 def calculate_stress_factor(df: pd.DataFrame, 
@@ -459,7 +460,7 @@ def calculate_stress_factor(df: pd.DataFrame,
     df_target = df[df[status_col] == target_status].copy()
     
     if df_target.empty:
-        print(f"Warning: No records found with {status_col} = {target_status}")
+        logger.warning(f"No records found with {status_col} = {target_status}")
         return 0.0
         
     # Calculate overall bad rate
@@ -475,8 +476,8 @@ def calculate_stress_factor(df: pd.DataFrame,
     # Assuming lower score is worse (ascending=True)
     df_worst = df_target[df_target[score_col] <= cutoff_score]
     
-    print(f"debug: Score cutoff (frac={frac}): {cutoff_score}")
-    print(f"debug: Selected {len(df_worst)}/{len(df_target)} records ({len(df_worst)/len(df_target):.2%}) as worst population")
+    logger.debug(f"Score cutoff (frac={frac}): {cutoff_score}")
+    logger.debug(f"Selected {len(df_worst)}/{len(df_target)} records ({len(df_worst)/len(df_target):.2%}) as worst population")
 
     # Calculate bad rate for worst fraction
     worst_num = df_worst[num_col].sum()
@@ -492,66 +493,158 @@ def calculate_stress_factor(df: pd.DataFrame,
         
     return float(stress_factor)
 
-def calculate_transformation_rate(data, date_col, amount_col='oa_amt', n_months=None):
+def calculate_and_plot_transformation_rate(
+    data: pd.DataFrame, 
+    date_col: str, 
+    amount_col: str = 'oa_amt', 
+    n_months: int = None,
+    plot_width: int = 1200,
+    plot_height: int = 500
+):
     """
-    Calculate finance rate for the last n months based on amount.
-    Finance rate = sum(oa_amt where status_name=='booked') / sum(oa_amt where se_decision_id in ('ok','rv'))
+    Calculates transformation rate and generates a dual-axis plot.
     
-    Parameters:
-    -----------
-    data : pd.DataFrame
-        Input dataframe
-    date_col : str
-        Name of the date column
-    amount_col : str
-        Name of the amount column (default: 'oa_amt')
-    n_months : int, optional
-        Number of last months to consider. If None, uses all data.
+    Transformation Rate = Booked Amount / Eligible Amount (Decision in OK/RV)
     
     Returns:
     --------
-    dict with overall rate and monthly breakdown
+    dict containing:
+      - 'stats': Dictionary of overall stats
+      - 'monthly_data': DataFrame of monthly breakdown
+      - 'figure': Plotly go.Figure object
     """
-    import pandas as pd
     
-    # Ensure date column is datetime
+    # 1. Data Preparation
+    # ---------------------------------------------------------
     df = data.copy()
-    df[date_col] = pd.to_datetime(df[date_col])
+    # Ensure date is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
+        df[date_col] = pd.to_datetime(df[date_col])
     
-    # Filter for last n months if specified
+    # Filter for last n months
     if n_months is not None:
         max_date = df[date_col].max()
         cutoff_date = max_date - pd.DateOffset(months=n_months)
         df = df[df[date_col] >= cutoff_date]
     
-    # Filter for eligible decisions (denominator)
-    eligible = df[df['se_decision_id'].isin(['ok', 'rv'])]
+    # Filter eligible (Denominator: Decision OK or RV)
+    eligible_mask = df['se_decision_id'].isin(['ok', 'rv'])
+    df_eligible = df[eligible_mask].copy()
     
-    # Filter booked (numerator)
-    booked = eligible[eligible['status_name'] == 'booked']
+    # Identify booked (Numerator: Status Booked AND Eligible)
+    # Note: We rely on the row being in the eligible set first
+    df_eligible['is_booked'] = df_eligible['status_name'] == 'booked'
     
-    # Calculate overall rate by amount
-    total_booked_amt = booked[amount_col].sum()
-    total_eligible_amt = eligible[amount_col].sum()
-    overall_rate = total_booked_amt / total_eligible_amt if total_eligible_amt > 0 else 0
+    # 2. Calculation
+    # ---------------------------------------------------------
+    # Overall Stats
+    total_eligible = df_eligible[amount_col].sum()
+    total_booked = df_eligible.loc[df_eligible['is_booked'], amount_col].sum()
+    overall_rate = (total_booked / total_eligible) if total_eligible > 0 else 0
     
-    # Calculate by month
-    eligible['year_month'] = eligible[date_col].dt.to_period('M')
-    booked['year_month'] = booked[date_col].dt.to_period('M')
+    # Monthly Aggregation
+    # We use to_period('M') for grouping, but convert back to timestamp for plotting
+    df_eligible['period'] = df_eligible[date_col].dt.to_period('M')
     
-    monthly_eligible = eligible.groupby('year_month')[amount_col].sum()
-    monthly_booked = booked.groupby('year_month')[amount_col].sum()
+    monthly = df_eligible.groupby('period').agg(
+        eligible_amt=(amount_col, 'sum'),
+        booked_amt=(amount_col, lambda x: x[df_eligible.loc[x.index, 'is_booked']].sum())
+    ).reset_index()
     
-    monthly_rate = (monthly_booked / monthly_eligible).fillna(0)
+    monthly['rate'] = monthly['booked_amt'] / monthly['eligible_amt']
+    monthly['rate'] = monthly['rate'].fillna(0)
     
+    # Convert period back to timestamp for Plotly (uses start of month)
+    monthly['plot_date'] = monthly['period'].dt.to_timestamp()
+
+    # 3. Plotting
+    # ---------------------------------------------------------
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    # Trace 1: Volume (Bars) - Plotted on Secondary Y (Right)
+    # We plot this first so it stays in the background
+    fig.add_trace(
+        go.Bar(
+            x=monthly['plot_date'],
+            y=monthly['eligible_amt'],
+            name='Eligible Volume (€)',
+            opacity=0.3,
+            marker_color=styles.COLOR_SECONDARY,
+            hovertemplate='Volume: %{y:,.0f} €<extra></extra>'
+        ),
+        secondary_y=True
+    )
+
+    # Trace 2: Transformation Rate (Line) - Plotted on Primary Y (Left)
+    fig.add_trace(
+        go.Scatter(
+            x=monthly['plot_date'],
+            y=monthly['rate'],
+            name='Transformation Rate',
+            mode='lines+markers',
+            line=dict(color=styles.COLOR_ACCENT, width=3),
+            marker=dict(size=8),
+            hovertemplate='Rate: %{y:.1%}<extra></extra>'
+        ),
+        secondary_y=False
+    )
+    
+    # Add Overall Average Line
+    fig.add_hline(
+        y=overall_rate, 
+        line_dash="dot", 
+        line_color=styles.COLOR_RISK, 
+        annotation_text=f"Avg: {overall_rate:.1%}", 
+        annotation_position="top left",
+        secondary_y=False
+    )
+
+    # 4. Layout Improvements
+    # ---------------------------------------------------------
+    styles.apply_plotly_style(fig, width=plot_width, height=plot_height)
+    fig.update_layout(
+        title='<b>Monthly Transformation Rate</b><br><sup>(Booked / [OK + RV]) by Amount</sup>',
+        plot_bgcolor='white',
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        
+        # Left Axis (Rate)
+        yaxis=dict(
+            title="Transformation Rate",
+            tickformat=".0%", # Displays 0.5 as 50%
+            range=[0, max(monthly['rate'].max() * 1.1, overall_rate * 1.1)],
+            showgrid=True,
+            gridcolor='lightgrey'
+        ),
+        
+        # Right Axis (Volume)
+        yaxis2=dict(
+            title="Eligible Volume (€)",
+            showgrid=False,
+            zeroline=False
+        ),
+        
+        xaxis=dict(
+            title="Month",
+            showgrid=False
+        )
+    )
+
     return {
         'overall_rate': overall_rate,
-        'overall_booked_amt': total_booked_amt,
-        'overall_eligible_amt': total_eligible_amt,
-        'monthly_rate': monthly_rate,
-        'monthly_amounts': pd.DataFrame({
-            'booked_amt': monthly_booked,
-            'eligible_amt': monthly_eligible,
-            'rate': monthly_rate
-        })
+        'overall_booked_amt': total_booked,
+        'overall_eligible_amt': total_eligible,
+        'monthly_amounts': monthly.drop(columns=['plot_date']), # Return clean DF
+        'figure': fig
     }
+
+def calculate_annual_coef(date_ini_book_obs: pd.Timestamp, date_fin_book_obs: pd.Timestamp) -> float:
+    """
+    Calculate annual coefficient based on the time range.
+    """
+    n_month = (
+        (date_fin_book_obs.year  - date_ini_book_obs.year)  * 12 +
+        (date_fin_book_obs.month - date_ini_book_obs.month) + 1
+    )
+    annual_coef = 12/n_month
+    return annual_coef

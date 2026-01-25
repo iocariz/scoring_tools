@@ -22,3 +22,11 @@ score_measures = [
 log_level = "INFO"
 data_path = "data/demanda_direct_out.sas7bdat"
 n_months = 24
+variables = ['sc_octroi_new_clus', 'new_efx_clus']
+
+
+[preprocessing.cz_config]
+2022 = 4.5
+2023 = 4.2
+2024 = 3.8
+2025 = 3.5  # You can now easily add future years

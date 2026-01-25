@@ -11,10 +11,9 @@ from scipy.stats import zscore
 from typing import List, Dict, Tuple, Union, Optional
 from dataclasses import dataclass
 from enum import Enum
-import logging
 import time
 import sys
-from pathlib import Path
+from loguru import logger
 
 
 class StatusName(Enum):
@@ -40,7 +39,7 @@ class PreprocessingConfig:
     date_ini_book_obs: Optional[str] = None
     date_fin_book_obs: Optional[str] = None
     score_measures: Optional[List[str]] = None
-    log_level: int = logging.INFO
+    log_level: str = "INFO"
     log_file: Optional[str] = None
     
     def validate(self) -> None:
@@ -53,55 +52,6 @@ class PreprocessingConfig:
             raise ValueError("octroi_bins must have at least 2 values")
         if self.efx_bins and len(self.efx_bins) < 2:
             raise ValueError("efx_bins must have at least 2 values")
-
-
-def setup_logging(log_level: int = logging.INFO, 
-                  log_file: Optional[str] = None) -> logging.Logger:
-    """
-    Configure logging for the preprocessing module.
-    
-    Parameters
-    ----------
-    log_level : int, optional
-        Logging level (default=logging.INFO)
-    log_file : str, optional
-        Path to log file. If None, logs to console only.
-        
-    Returns
-    -------
-    logging.Logger
-        Configured logger instance
-    """
-    logger = logging.getLogger('preprocessing')
-    logger.setLevel(log_level)
-    logger.handlers = []  # Clear existing handlers to avoid duplicates
-    
-    # Create formatter
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    
-    # Create console handler
-    console_handler = logging.StreamHandler(stream=sys.stdout)
-    console_handler.setLevel(log_level)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-    
-    # Create file handler if log_file is specified
-    if log_file:
-        log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(log_level)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    
-    return logger
-
-
-# Create logger instance
-logger = setup_logging()
 
 
 def log_dataframe_stats(df: pd.DataFrame, name: str) -> None:
@@ -593,9 +543,11 @@ def complete_preprocessing_pipeline(
     # Validate configuration
     config.validate()
     
-    # Set up logging
-    global logger
-    logger = setup_logging(log_level=config.log_level, log_file=config.log_file)
+    # Configure logging based on parameters
+    logger.remove() # Remove default handler
+    logger.add(sys.stdout, level=config.log_level)
+    if config.log_file:
+        logger.add(config.log_file, level=config.log_level, rotation="10 MB")
     
     total_start_time = time.time()
     logger.info("=" * 80)
@@ -699,7 +651,7 @@ def complete_preprocessing_pipeline_legacy(
     date_ini_book_obs: str,
     date_fin_book_obs: str,
     score_measures: List[str] = None,
-    log_level: int = logging.INFO,
+    log_level: str = "INFO",
     log_file: str = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """

@@ -4,12 +4,14 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import ipywidgets as widgets
-from IPython.display import display
-from ipywidgets import interact
-from colorama import Fore
+# import ipywidgets as widgets  <-- Removed
+# from IPython.display import display <-- Removed
+# from ipywidgets import interact <-- Removed
+# from colorama import Fore <-- Removed
 from sklearn.metrics import roc_curve, auc
 from .metrics import ks_statistic, compute_metrics
+from typing import List, Dict, Optional
+from . import styles
 
 # Keep track of previous KS annotation y-coordinates
 previous_ks_y_positions = []
@@ -29,8 +31,8 @@ def plot_roc_curve(ax, y_true, scores, name, color):
                 arrowprops=dict(arrowstyle="->"))
 
 def visualize_metrics(y_true, scores_dict, ax):
-    sns.set_style('whitegrid')
-    palette = sns.color_palette("deep", len(scores_dict))
+    styles.apply_matplotlib_style()
+    palette = sns.color_palette("viridis", len(scores_dict))
 
     for (name, scores), color in zip(scores_dict.items(), palette):
         current_ax_roc = ax[0] if 'combined' not in name.lower() else ax[1]
@@ -93,8 +95,8 @@ def plot_gini_confidence_intervals(ax, df):
                 y_range,
                 xerr=[df["Gini Score"] - lower_bounds, upper_bounds - df["Gini Score"]],
                 fmt='o',
-                color='blue',
-                ecolor='gray',
+                color=styles.COLOR_ACCENT,
+                ecolor=styles.COLOR_SECONDARY,
                 elinewidth=3,
                 capsize=5,
                 markersize=8)
@@ -122,7 +124,7 @@ def plot_group_statistics(data_frame, group_col, binary_outcome):
 
     fig, ax1 = plt.subplots(figsize=(10, 6))
 
-    color = 'tab:blue'
+    color = styles.COLOR_ACCENT
     ax1.set_xlabel('Groups')
     ax1.set_ylabel('Frequency', color=color)
     ax1.bar(grouped.index.astype(str), grouped["Target_count"], color=color)
@@ -131,148 +133,13 @@ def plot_group_statistics(data_frame, group_col, binary_outcome):
     ax1.set_xticklabels(grouped.index, rotation=45)
 
     ax2 = ax1.twinx()
-    color = 'tab:red'
+    color = styles.COLOR_RISK
     ax2.set_ylabel('Risk Rate', color=color)
     ax2.plot(grouped.index.astype(str).to_numpy(), grouped["Target_mean"].to_numpy(), color=color)
     ax2.tick_params(axis='y', labelcolor=color)
 
     fig.tight_layout()
-    plt.show()
-
-def plot_risk_vs_production(
-    data: pd.DataFrame,
-    indicadores: List[str],
-    cz2022: float,
-    cz2023: float,
-    cz2024: float,
-    data_booked: pd.DataFrame,
-    rolling_window: int = 6,
-    plot_width: int = 1500,
-    plot_height: int = 500
-) -> go.Figure:
-    """
-    Creates an interactive plot comparing risk metrics against production data over time.
-    """
-    # Extract and aggregate booked data
-    df_plot = (data[data['status_name'] == 'booked']
-               .groupby(['mis_date'], as_index=False)
-               .agg({col: 'sum' for col in indicadores}))
-   
-    # Calculate rolling sums
-    risk_cols = ['todu_30ever_h6', 'todu_amt_pile_h6']
-    df_plot_MA = df_plot[risk_cols].rolling(rolling_window).sum()
-    df_plot_MA.columns = [f"{col}_MA{rolling_window}" for col in df_plot_MA.columns]
-    df_plot = pd.concat([df_plot, df_plot_MA], axis=1)
-   
-    # Calculate risk percentages
-    df_plot['b2_ever_h6'] = np.round(
-        100 * 7 * df_plot['todu_30ever_h6'] / df_plot['todu_amt_pile_h6'], 2)
-    df_plot['b2_ever_h6_MA'] = np.round(
-        100 * 7 * df_plot[f'todu_30ever_h6_MA{rolling_window}'] /
-        df_plot[f'todu_amt_pile_h6_MA{rolling_window}'], 2)
-   
-    # Create figure with secondary y-axis
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-   
-    # Add production area plot
-    fig.add_trace(
-        go.Scatter(
-            x=df_plot['mis_date'],
-            y=df_plot['oa_amt_h0'],
-            mode="lines",
-            line=dict(width=1.5, color='rgba(116,196,118,1)'),
-            opacity=0.1,
-            name='Production Amount',
-            fill='tozeroy',
-            fillcolor='rgba(116,196,118,0.2)'
-        ),
-        secondary_y=False
-    )
-   
-    # Add risk line plots
-    fig.add_trace(
-        go.Scatter(
-            x=df_plot['mis_date'],
-            y=df_plot['b2_ever_h6'],
-            mode="lines",
-            line=dict(width=1.5, color='black'),
-            name='Risk Percentage'
-        ),
-        secondary_y=True
-    )
-   
-    # Add moving average line (excluding NaN values)
-    mask = ~df_plot['b2_ever_h6'].isna()
-    fig.add_trace(
-        go.Scatter(
-            x=df_plot.loc[mask, 'mis_date'],
-            y=df_plot.loc[mask, 'b2_ever_h6_MA'],
-            mode="lines",
-            line=dict(width=1.5, color='black', dash='dot'),
-            name=f'Risk Percentage (MA-{rolling_window})'
-        ),
-        secondary_y=True
-    )
-   
-    # Add CZ lines
-    for year, cz_value in {2022: cz2022, 2023: cz2023, 2024: cz2024}.items():
-        year_mask = df_plot['mis_date'].dt.year == year
-        if year_mask.any():
-            fig.add_trace(
-                go.Scatter(
-                    x=df_plot.loc[year_mask, 'mis_date'],
-                    y=[cz_value] * year_mask.sum(),
-                    mode="lines",
-                    line=dict(width=2, color='rgba(165,15,21,1)'),
-                    name=f'CZ {year}'
-                ),
-                secondary_y=True
-            )
-   
-    # Add selected period highlight
-    fig.add_vrect(
-        x0=data_booked['mis_date'].min() - pd.Timedelta(days=15),
-        x1=data_booked['mis_date'].max() + pd.Timedelta(days=15),
-        fillcolor="blue",
-        opacity=0.1,
-        line_width=0,
-        annotation_text="Selected period (Booked)",
-        annotation_position="bottom left"
-    )
-   
-    # Update layout
-    fig.update_layout(
-        width=plot_width,
-        height=plot_height,
-        title='Risk vs Production Analysis',
-        plot_bgcolor='white',
-        xaxis=dict(
-            title="Date",
-            gridcolor='lightgrey',
-            showgrid=True
-        ),
-        yaxis=dict(
-            title="Production (€)",
-            side="right",
-            range=[0, df_plot['oa_amt_h0'].max() * 1.1],
-            showgrid=False
-        ),
-        yaxis2=dict(
-            title="Risk (%€)",
-            side="left",
-            gridcolor='lightgrey',
-            range=[0, df_plot['b2_ever_h6'].max() * 1.1],
-            showgrid=True
-        ),
-        showlegend=True,
-        legend=dict(
-            yanchor="top",
-            y=0.99,
-            xanchor="left",
-            x=0.01
-        )
-    )
-   
+    fig.tight_layout()
     return fig
 
 def plot_3d_graph(data_train, data_surf, variables, var_target):
@@ -312,10 +179,13 @@ def plot_3d_graph(data_train, data_surf, variables, var_target):
         showlegend=True,
         opacity=0.7
     ))
-    fig.update_layout(
+    styles.apply_plotly_style(
+        fig, 
         title="Regression Plot",
         width=1200,
-        height=900,
+        height=900
+    )
+    fig.update_layout(
         scene=dict(
             xaxis=dict(title=variables[0], gridcolor='white'),
             yaxis=dict(title=variables[1], gridcolor='white'),
@@ -323,7 +193,8 @@ def plot_3d_graph(data_train, data_surf, variables, var_target):
             aspectratio=dict(x=1, y=1, z=1)
         ),
         legend=dict(y=1, x=0.8))
-    fig.show()
+
+    return fig
 
 class RiskProductionVisualizer:
     def __init__(self, data_summary, data_summary_disaggregated, data_summary_sample_no_opt,
@@ -349,6 +220,11 @@ class RiskProductionVisualizer:
         # Calculate B2_0
         tudu_30_ever = self.data_summary_disaggregated['todu_30ever_h6_boo'].sum()
         tudu_amt_pile = self.data_summary_disaggregated['todu_amt_pile_h6_boo'].sum()
+        
+        # Store raw actuals
+        self.actual_todu_30 = tudu_30_ever
+        self.actual_todu_amt = tudu_amt_pile
+        
         self.B2_0 = np.round(100 * 7 * tudu_30_ever / tudu_amt_pile, 2)
        
         # Calculate OA_0
@@ -468,9 +344,8 @@ class RiskProductionVisualizer:
    
     def _update_layout(self):
         """Update the figure layout"""
+        styles.apply_plotly_style(self.fig, width=1700, height=600)
         self.fig.update_layout(
-            width=1700,
-            height=600,
             legend=dict(y=.1, x=0.33)
         )
        
@@ -495,27 +370,19 @@ class RiskProductionVisualizer:
             dtick=1,
             row=1, col=2
         )
-   
-    def create_slider(self):
-        """Create the risk level slider"""
-        self.slider = widgets.FloatSlider(
-            value=self.cz2024,
-            min=self.lim_inf_B2,
-            max=self.lim_sup_B2,
-            step=0.01,
-            description='Risk level',
-            disabled=False,
-            continuous_update=False,
-            orientation='horizontal',
-            readout=True,
-            readout_format='',
-            layout=widgets.Layout(width='45%')
-        )
-   
-    def update(self, x):
-        """Update the visualization based on slider value"""
+
+        # Apply the update logic statically here
+        self._apply_static_update()
+
+    def _apply_static_update(self):
+        """Update the visualization based on cz2024 value"""
         # Filter data based on risk level
-        data_filtered = self.data_summary[self.data_summary['b2_ever_h6'] <= x].tail(1)
+        data_filtered = self.data_summary[self.data_summary['b2_ever_h6'] <= self.cz2024]
+        if data_filtered.empty:
+             data_filtered = self.data_summary.sort_values('b2_ever_h6').head(1)
+        else:
+             data_filtered = data_filtered.tail(1)
+             
         metrics = data_filtered[['b2_ever_h6', 'oa_amt_h0', 'b2_ever_h6_cut',
                                'oa_amt_h0_cut', 'b2_ever_h6_rep', 'oa_amt_h0_rep']].values[0, :]
         B2, OA, B2_CUT, OA_CUT, B2_REP, OA_REP = metrics
@@ -525,28 +392,311 @@ class RiskProductionVisualizer:
         z_mask = (self.yy <= CUT_OFF) * 1
        
         # Update visualization
+        # In original code: self.fig.data[5].z = z_mask (Trace 5 is the mask heatmap)
+        # self.fig.data[3].update(x=[OA], y=[B2]) (Trace 3 is Optimum selected point)
+        
+        # We need to rely on the order of traces added in create_figure
+        # _add_scatter_traces adds 4 traces (0, 1, 2, 3)
+        # _add_heatmap_traces adds 2 traces (4, 5)
+        # So trace 5 is indeed the mask trace.
+        
         self.fig.data[5].z = z_mask
         self.fig.data[3].update(x=[OA], y=[B2])
-       
-        # Print metrics
-        self._print_metrics(B2, OA, B2_CUT, OA_CUT, B2_REP, OA_REP)
-       
-        return CUT_OFF
+
+    def create_slider(self):
+        """No longer used"""
+        pass
    
-    def _print_metrics(self, B2, OA, B2_CUT, OA_CUT, B2_REP, OA_REP):
-        """Print the performance metrics"""
-        print('   financing rate (fin/app):', self.tasa_fin)
-        print(Fore.BLACK + f'   Actual -------------- Risk: {max(self.B2_0/100, 0.000001):.2%}   ,  Production: {self.OA_0:,.0f}€ ({self.OA_0/self.OA_0:.2%})')
-        print(Fore.GREEN + f'   Swap-in ------------- Risk: {max(B2_REP/100, 0.000001):.2%}   ,  Production: {OA_REP:,.0f}€ ({OA_REP/self.OA_0:.2%})')
-        print(Fore.RED + f'   Swap-out ------------ Risk: {max(B2_CUT/100, 0.000001):.2%}   ,  Production: {OA_CUT:,.0f}€ ({OA_CUT/self.OA_0:.2%})')
-        print(Fore.BLUE + f'   Optimum selected ---- Risk: {max(B2/100, 0.000001):.2%}   ,  Production: {OA:,.0f}€ ({OA/self.OA_0:.2%})')
-        print(Fore.BLACK + '   ----------------------------------------------------------------------------')
-        print(Fore.BLACK + f'   Summary ------------- Risk: {("+" if B2 > self.B2_0 else "")}{B2-self.B2_0:.2}p.p.',
-              f',  Production: {("+" if OA > self.OA_0 else "")}{OA-self.OA_0:,.0f}€',
-              f'({("+" if OA > self.OA_0 else "")}{(OA-self.OA_0)/self.OA_0:.2%})')
+    def update(self, x):
+        """No longer used"""
+        pass
+   
+    def create_slider(self):
+        """No longer used"""
+        pass
+   
+    def update(self, x):
+        """No longer used"""
+        pass
    
     def display(self):
-        """Display the visualization and enable interaction"""
-        display(self.fig)
-        interact(self.update, x=self.slider)
+        """Display the visualization"""
+        self.fig.show()
 
+    def save_html(self, path: str):
+        """Save the figure to an HTML file"""
+        self.fig.write_html(path)
+
+    def get_summary_table(self):
+        """Return a DataFrame with the performance metrics"""
+        # Filter data based on risk level
+        # Find the closest value to cz2024 that is <= cz2024 (or just take the last one <=)
+        # Assuming data_summary is potentially sorted or we want the optimal solution below threshold
+        
+        # We need to replicate the logic from the 'update' method but statically
+        # "metrics = data_filtered[['b2_ever_h6', 'oa_amt_h0', 'b2_ever_h6_cut', 'oa_amt_h0_cut', 'b2_ever_h6_rep', 'oa_amt_h0_rep']].values[0, :]"
+        
+        # Filter data based on risk level
+        # We find the solution with highest production (or closest to curve) that satisfies risk constraint
+        # The original code did: data_filtered = self.data_summary[self.data_summary['b2_ever_h6'] <= x].tail(1)
+        # We will do the same with self.cz2024
+        
+        data_filtered = self.data_summary[self.data_summary['b2_ever_h6'] <= self.cz2024]
+        if data_filtered.empty:
+             # If no solution satisfies the condition, maybe take the lowest risk one? 
+             # Or return empty/zeros. For now let's assume valid range or take min
+             data_filtered = self.data_summary.sort_values('b2_ever_h6').head(1)
+        else:
+             data_filtered = data_filtered.tail(1)
+
+        metrics = data_filtered[['b2_ever_h6', 'oa_amt_h0', 'b2_ever_h6_cut',
+                               'oa_amt_h0_cut', 'b2_ever_h6_rep', 'oa_amt_h0_rep']].values[0, :]
+        B2, OA, B2_CUT, OA_CUT, B2_REP, OA_REP = metrics
+        
+        # Extract raw risk components
+        raw_metrics = data_filtered[[
+            'todu_30ever_h6', 'todu_amt_pile_h6',
+            'todu_30ever_h6_cut', 'todu_amt_pile_h6_cut', 
+            'todu_30ever_h6_rep', 'todu_amt_pile_h6_rep'
+        ]].values[0, :]
+        
+        TODU30, TODU_AMT, TODU30_CUT, TODU_AMT_CUT, TODU30_REP, TODU_AMT_REP = raw_metrics
+
+        # Construct DataFrame
+        summary_data = {
+            'Metric': ['Actual', 'Swap-in', 'Swap-out', 'Optimum selected', 'Summary'],
+            'Risk (%)': [
+                max(self.B2_0/100, 0.000001), 
+                max(B2_REP/100, 0.000001), 
+                max(B2_CUT/100, 0.000001), 
+                max(B2/100, 0.000001), 
+                (B2 - self.B2_0)/100 
+            ],
+            'Production (€)': [
+                self.OA_0, 
+                OA_REP, 
+                OA_CUT, 
+                OA, 
+                OA - self.OA_0
+            ],
+            'Production (%)': [
+                 self.OA_0/self.OA_0,
+                 OA_REP/self.OA_0,
+                 OA_CUT/self.OA_0,
+                 OA/self.OA_0,
+                 (OA - self.OA_0)/self.OA_0
+            ],
+            'todu_30ever_h6': [
+                self.actual_todu_30,
+                TODU30_REP,
+                TODU30_CUT,
+                TODU30,
+                TODU30 - self.actual_todu_30
+            ],
+            'todu_amt_pile_h6': [
+                self.actual_todu_amt,
+                TODU_AMT_REP,
+                TODU_AMT_CUT,
+                TODU_AMT,
+                TODU_AMT - self.actual_todu_amt
+            ]
+        }
+        
+        df_summary = pd.DataFrame(summary_data)
+        
+        # Add a formatted column for display if needed or just return raw values
+        # Let's keep it raw for programmatic use, but maybe add string formatting for print equivalent?
+        # The user asked for "output table with relevant information". A DataFrame is best.
+        
+        return df_summary
+
+def plot_risk_vs_production(
+    data: pd.DataFrame,
+    indicadores: List[str],
+    comfort_zones: Dict[int, float],  # CHANGED: Pass a dict {2022: 4.5, 2023: 4.0}
+    data_booked: pd.DataFrame,
+    rolling_window: int = 6,
+    plot_width: int = 1500,
+    plot_height: int = 500
+) -> go.Figure:
+    """
+    Creates an interactive plot comparing risk metrics against production data over time
+    with dynamic Comfort Zone (CZ) thresholds.
+    
+    Args:
+        comfort_zones: Dict mapping year (int) to CZ limit (float). 
+                       Example: {2022: 4.50, 2023: 4.25, 2024: 4.00}
+    """
+    
+    # 1. Data Preparation
+    # ---------------------------------------------------------
+    # Ensure dates are datetime objects
+    if not pd.api.types.is_datetime64_any_dtype(data['mis_date']):
+        data['mis_date'] = pd.to_datetime(data['mis_date'])
+        
+    df_plot = (data[data['status_name'] == 'booked']
+               .groupby(['mis_date'], as_index=False)
+               .agg({col: 'sum' for col in indicadores}))
+   
+    # Calculate rolling sums (handling potential missing cols gracefully)
+    risk_cols = ['todu_30ever_h6', 'todu_amt_pile_h6']
+    if not all(col in df_plot.columns for col in risk_cols):
+        raise ValueError(f"Data is missing required columns: {risk_cols}")
+
+    # Create rolling columns
+    for col in risk_cols:
+        df_plot[f"{col}_MA{rolling_window}"] = df_plot[col].rolling(rolling_window).sum()
+   
+    # Calculate risk percentages
+    # Use numpy to avoid division by zero errors (returns inf/nan)
+    df_plot['b2_ever_h6'] = np.round(
+        100 * 7 * df_plot['todu_30ever_h6'] / df_plot['todu_amt_pile_h6'].replace(0, np.nan), 2
+    )
+    
+    df_plot['b2_ever_h6_MA'] = np.round(
+        100 * 7 * df_plot[f'todu_30ever_h6_MA{rolling_window}'] /
+        df_plot[f'todu_amt_pile_h6_MA{rolling_window}'].replace(0, np.nan), 2
+    )
+    
+    # 2. Dynamic Comfort Zone Logic
+    # ---------------------------------------------------------
+    # Map the year of the date to the value in the dictionary
+    df_plot['year'] = df_plot['mis_date'].dt.year
+    df_plot['cz_target'] = df_plot['year'].map(comfort_zones)
+    
+    # 3. Plotting
+    # ---------------------------------------------------------
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+   
+    # -- Trace 1: Production (Area) --
+    fig.add_trace(
+        go.Scatter(
+            x=df_plot['mis_date'],
+            y=df_plot['oa_amt_h0'],
+            mode="lines",
+            line=dict(width=1, color=styles.COLOR_PRODUCTION),
+            name='Production Amt',
+            fill='tozeroy',
+            fillcolor='rgba(46, 204, 113, 0.2)', # Production green with opacity
+            hovertemplate='%{y:,.0f} €<extra></extra>' # Cleaner tooltip
+        ),
+        secondary_y=False
+    )
+   
+    # -- Trace 2: Risk Percentage (Line) --
+    fig.add_trace(
+        go.Scatter(
+            x=df_plot['mis_date'],
+            y=df_plot['b2_ever_h6'],
+            mode="lines",
+            line=dict(width=2, color=styles.COLOR_RISK),
+            name='Risk %',
+            hovertemplate='%{y:.2f}%<extra></extra>'
+        ),
+        secondary_y=True
+    )
+   
+    # -- Trace 3: Moving Average (Dashed) --
+    # Filter NaNs for cleaner line connection
+    mask_ma = ~df_plot['b2_ever_h6_MA'].isna()
+    fig.add_trace(
+        go.Scatter(
+            x=df_plot.loc[mask_ma, 'mis_date'],
+            y=df_plot.loc[mask_ma, 'b2_ever_h6_MA'],
+            mode="lines",
+            line=dict(width=1.5, color='#555555', dash='dot'),
+            name=f'Risk % (MA-{rolling_window})',
+            hovertemplate='%{y:.2f}% (Avg)<extra></extra>'
+        ),
+        secondary_y=True
+    )
+   
+    # -- Trace 4: Comfort Zone (Dynamic) --
+    # We plot this only where we have defined values
+    mask_cz = ~df_plot['cz_target'].isna()
+    if mask_cz.any():
+        fig.add_trace(
+            go.Scatter(
+                x=df_plot.loc[mask_cz, 'mis_date'],
+                y=df_plot.loc[mask_cz, 'cz_target'],
+                mode="lines",
+                # 'hv' shape creates a step function (changes exactly at year start)
+                # Remove 'shape' if you prefer a slope transition between years
+                line=dict(width=2, color=styles.COLOR_ACCENT, shape='hv'), 
+                name='Comfort Zone (Limit)',
+                hovertemplate='Limit: %{y:.2f}%<extra></extra>'
+            ),
+            secondary_y=True
+        )
+   
+    # 4. Highlight Selected Period
+    # ---------------------------------------------------------
+    if not data_booked.empty:
+        # Check if dates are datetime, convert if not
+        dates_bk = data_booked['mis_date']
+        if not pd.api.types.is_datetime64_any_dtype(dates_bk):
+            dates_bk = pd.to_datetime(dates_bk)
+            
+        fig.add_vrect(
+            x0=dates_bk.min() - pd.Timedelta(days=15),
+            x1=dates_bk.max() + pd.Timedelta(days=15),
+            fillcolor="rgba(0, 0, 255, 0.05)", # Very light blue
+            line_width=0,
+            annotation_text="Booked Period",
+            annotation_position="top left"
+        )
+   
+    # 5. Layout Update
+    # ---------------------------------------------------------
+    # Calculate max ranges for dynamic axis scaling
+    max_risk = max(
+        df_plot['b2_ever_h6'].max(), 
+        df_plot['cz_target'].max() if 'cz_target' in df_plot else 0
+    )
+    
+    styles.apply_plotly_style(fig, width=plot_width, height=plot_height)
+    
+    fig.update_layout(
+        title=dict(text='<b>Risk vs Production Analysis</b>', x=0.01),
+        plot_bgcolor='rgba(255,255,255,1)',
+        hovermode="x unified", # Shows all values for a specific date at once
+        
+        xaxis=dict(
+            title="Date",
+            gridcolor='#f0f0f0',
+            showgrid=True,
+            zeroline=False
+        ),
+        
+        # Left Y-Axis (Usually Primary in specs, but you requested specific sides)
+        # Note: In make_subplots(secondary_y=True), 
+        # yaxis = Left, yaxis2 = Right by default.
+        # Below we map them to visually match your request.
+        
+        yaxis=dict(
+            title="Production (€)",
+            side="right", # Production on Right
+            showgrid=False,
+            zeroline=False
+        ),
+        
+        yaxis2=dict(
+            title="Risk Metric (%€)",
+            side="left", # Risk on Left
+            gridcolor='#f0f0f0',
+            range=[0, max_risk * 1.15], # Add 15% headroom
+            showgrid=True,
+            zeroline=True,
+            zerolinecolor='#dcdcdc'
+        ),
+        
+        legend=dict(
+            orientation="h", # Horizontal legend saves vertical space
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0
+        )
+    )
+   
+    return fig

@@ -7,6 +7,7 @@ from sklearn.cluster import KMeans
 from sklearn import tree as sktree
 import matplotlib.pyplot as plt
 from typing import List
+from loguru import logger
 
 def train_logistic_regression(X, y):
     """Train logistic regression on standardized data."""
@@ -52,7 +53,7 @@ def optimal_splits_using_clusters(data_frame, numeric_variable, binary_outcome, 
     """
     Cluster the numeric_variable using KMeans clustering.
     """
-    print(data_frame[[numeric_variable]].shape)
+    logger.debug(f"Data shape for clustering: {data_frame[[numeric_variable]].shape}")
 
     X = data_frame[[numeric_variable]]
     
@@ -107,12 +108,12 @@ def calculate_financing_rates(data, date_ini_demand, lm=6):
 
     # Calculate and display results with consistent rounding
     mean_financing_rate = np.round(financing_rate_by_month.tail(lm).mean() * 100, 1)
-    print(f"\nFinancing Rate (Mean of last {lm} months): {mean_financing_rate:.1f}%")
-    print(f"Financing Rate (Weighted for last {lm} months): {np.round(financing_rate_UM * 100, 1):.1f}%")
+    logger.info(f"Financing Rate (Mean of last {lm} months): {mean_financing_rate:.1f}%")
+    logger.info(f"Financing Rate (Weighted for last {lm} months): {np.round(financing_rate_UM * 100, 1):.1f}%")
 
     # Indicate selected rate more clearly
-    print("\n--------------------------------")
-    print(f"Selected Financing Rate: {mean_financing_rate:.1f}%")
+    logger.info("--------------------------------")
+    logger.info(f"Selected Financing Rate: {mean_financing_rate:.1f}%")
 
     return mean_financing_rate/100
 

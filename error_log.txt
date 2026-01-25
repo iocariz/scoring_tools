@@ -1,0 +1,550 @@
+2026-01-24 13:58:35.853 | INFO     | __main__:main:24 - Loading configuration...
+2026-01-24 13:58:35.853 | INFO     | __main__:main:27 - Configuration loaded successfully.
+2026-01-24 13:58:35.853 | INFO     | __main__:main:37 - Loading data...
+2026-01-24 13:58:42.050 | INFO     | __main__:main:41 - Data loaded successfully: 1,017,641 rows × 35 columns
+2026-01-24 13:58:42.050 | INFO     | __main__:main:50 - Standardizing column names...
+2026-01-24 13:58:42.051 | DEBUG    | __main__:main:52 - Column names standardized
+2026-01-24 13:58:42.051 | INFO     | __main__:main:55 - Standardizing categorical values...
+2026-01-24 13:58:42.780 | DEBUG    | __main__:main:62 - Categorical values standardized
+2026-01-24 13:58:42.780 | INFO     | __main__:main:65 - DATA SUMMARY
+2026-01-24 13:58:42.780 | INFO     | __main__:main:66 - Shape: 1,017,641 rows × 35 columns
+2026-01-24 13:58:42.780 | INFO     | __main__:main:68 - Preprocessing data...
+2026-01-24 13:58:42.782 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:553 - ================================================================================
+2026-01-24 13:58:42.782 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:554 - Starting complete preprocessing pipeline
+2026-01-24 13:58:42.782 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:555 - ================================================================================
+2026-01-24 13:58:42.782 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:556 - Input data shape: (1017641, 35)
+2026-01-24 13:58:42.782 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:557 - Observation period: 2024-07-01 to 2025-06-01
+2026-01-24 13:58:42.782 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:561 - 
+================================================================================
+2026-01-24 13:58:42.782 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:562 - Step 1: Basic filtering
+2026-01-24 13:58:42.782 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:563 - ================================================================================
+2026-01-24 13:58:42.782 | INFO     | src.preprocess_improved:preprocess_data:144 - Starting data preprocessing with 1,017,641 records
+2026-01-24 13:58:42.782 | INFO     | src.preprocess_improved:preprocess_data:155 - Found 7 measure columns starting with 'm_ct_direct'
+2026-01-24 13:58:42.782 | INFO     | src.preprocess_improved:preprocess_data:163 - Applying filters: fuera_norma='n', fraud_flag='n', nature_holder!='legal', segment_cut_off='personal_loans,_fusion_and_tj_direct-no_premium-a-b'
+2026-01-24 13:58:42.799 | INFO     | src.preprocess_improved:preprocess_data:177 - Filter applied in 0.02s. Removed 959,773 records (94.3%)
+2026-01-24 13:58:42.799 | INFO     | src.preprocess_improved:preprocess_data:179 - 57,868 records remaining
+2026-01-24 13:58:42.799 | INFO     | src.preprocess_improved:preprocess_data:185 - Selecting 20 columns
+2026-01-24 13:58:42.800 | INFO     | src.preprocess_improved:preprocess_data:190 - Preprocessing completed in 0.02 seconds
+2026-01-24 13:58:42.800 | INFO     | src.preprocess_improved:log_dataframe_stats:68 - Preprocessed data shape: (57868, 20)
+2026-01-24 13:58:42.800 | INFO     | src.preprocess_improved:log_dataframe_stats:69 - Preprocessed data columns: ['mis_date', 'status_name', 'risk_score_rf', 'se_decision_id', 'reject_reason', 'score_rf', 'segment_cut_off', 'early_bad', 'acct_booked_h0', 'oa_amt', 'todu_30ever_h6', 'todu_amt_pile_h6', 'oa_amt_h0', 'm_ct_direct_sc_nov23', 'm_ct_direct_sc_jan23', 'm_ct_direct_pacing_nov23', 'm_ct_direct_sc_conso25', 'm_ct_direct_sc_precon25', 'm_ct_direct_sc_fintonic25', 'm_ct_direct_sc_direct25_total']
+2026-01-24 13:58:42.801 | INFO     | src.preprocess_improved:log_dataframe_stats:72 - Preprocessed data missing values: 617258
+2026-01-24 13:58:42.802 | WARNING  | src.preprocess_improved:log_dataframe_stats:77 - Preprocessed data columns with missing values:
+reject_reason                    34577
+early_bad                          154
+acct_booked_h0                   44415
+todu_30ever_h6                   44415
+todu_amt_pile_h6                 44415
+oa_amt_h0                        44415
+m_ct_direct_sc_nov23             57868
+m_ct_direct_sc_jan23             57868
+m_ct_direct_pacing_nov23         57868
+m_ct_direct_sc_conso25           57868
+m_ct_direct_sc_precon25          57866
+m_ct_direct_sc_fintonic25        57868
+m_ct_direct_sc_direct25_total    57661
+dtype: int64
+2026-01-24 13:58:42.802 | INFO     | src.preprocess_improved:log_dataframe_stats:81 - Preprocessed data memory usage: 5.02 MB
+2026-01-24 13:58:42.807 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:569 - 
+================================================================================
+2026-01-24 13:58:42.807 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:570 - Step 2: Binning transformations
+2026-01-24 13:58:42.807 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:571 - ================================================================================
+2026-01-24 13:58:42.807 | INFO     | src.preprocess_improved:apply_binning_transformations:222 - Starting binning transformations
+2026-01-24 13:58:42.808 | INFO     | src.preprocess_improved:apply_binning_transformations:223 - Octroi bins: [-inf, 364.0, 370.0, 379.0, 382.0, 389.0, 397.0, 404.0, 416.0, 431.0, inf]
+2026-01-24 13:58:42.808 | INFO     | src.preprocess_improved:apply_binning_transformations:224 - Efx bins: [-inf, 2.0, 7.0, 11.0, 16.0, 22.0, 27.0, 33.0, 38.0, 43.0, 47.0, 51.0, 56.0, 62.0, 68.0, 73.0, 83.0, 89.0, 94.0, inf]
+2026-01-24 13:58:42.808 | INFO     | src.preprocess_improved:apply_binning_transformations:239 - Applying octroi binning to 'score_rf'
+2026-01-24 13:58:42.809 | INFO     | src.preprocess_improved:apply_binning_transformations:265 - Applying efx binning to 'risk_score_rf'
+2026-01-24 13:58:42.810 | INFO     | src.preprocess_improved:apply_binning_transformations:293 - sc_octroi_new_clus distribution:
+sc_octroi_new_clus
+1       738
+2       404
+3      4229
+4      2713
+5      1019
+6      8482
+7      5373
+8     10509
+9      7708
+10    16693
+Name: count, dtype: int64
+2026-01-24 13:58:42.811 | INFO     | src.preprocess_improved:apply_binning_transformations:295 - new_efx_clus distribution:
+new_efx_clus
+1     3816
+2     3914
+3     4684
+4     7545
+5     3645
+6     4491
+7     4317
+8     3197
+9     2654
+10    2601
+11    3077
+12    2735
+13    2804
+14    2107
+15    2149
+16    1459
+17     767
+18     982
+19     924
+Name: count, dtype: int64
+2026-01-24 13:58:42.811 | INFO     | src.preprocess_improved:apply_binning_transformations:300 - Binning transformations completed in 0.00 seconds
+2026-01-24 13:58:42.811 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:578 - 
+================================================================================
+2026-01-24 13:58:42.811 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:579 - Step 3: Update oa_amt_h0
+2026-01-24 13:58:42.811 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:580 - ================================================================================
+2026-01-24 13:58:42.811 | INFO     | src.preprocess_improved:update_oa_amt_h0:325 - Updating oa_amt_h0 values for non-booked records
+2026-01-24 13:58:42.811 | INFO     | src.preprocess_improved:update_oa_amt_h0:336 - Updating 44,261 records where status_name != 'booked' (76.5% of data)
+2026-01-24 13:58:42.812 | INFO     | src.preprocess_improved:update_oa_amt_h0:345 - Successfully updated 44,261 records
+2026-01-24 13:58:42.812 | INFO     | src.preprocess_improved:update_oa_amt_h0:349 - oa_amt_h0 update completed in 0.00 seconds
+2026-01-24 13:58:42.812 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:584 - 
+================================================================================
+2026-01-24 13:58:42.812 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:585 - Step 4: Update status and reject reasons
+2026-01-24 13:58:42.812 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:586 - ================================================================================
+2026-01-24 13:58:42.812 | INFO     | src.preprocess_improved:update_status_and_reject_reason:467 - Updating status_name and reject_reason
+2026-01-24 13:58:42.812 | INFO     | src.preprocess_improved:update_status_and_reject_reason:476 - Found 7 direct measure columns
+2026-01-24 13:58:42.813 | INFO     | src.preprocess_improved:update_status_and_reject_reason:485 - Found 209 records with 'y' in direct measure columns (0.4% of data)
+2026-01-24 13:58:42.813 | INFO     | src.preprocess_improved:update_status_and_reject_reason:494 - Updating reject_reason for score measures: ['m_ct_direct_sc_nov23', 'm_ct_direct_sc_jan23', 'm_ct_direct_sc_conso25', 'm_ct_direct_sc_precon25', 'm_ct_direct_sc_fintonic25', 'm_ct_direct_sc_direct25_total']
+2026-01-24 13:58:42.813 | INFO     | src.preprocess_improved:update_status_and_reject_reason:500 - Found 209 records with 'y' in score measure columns (0.4% of data)
+2026-01-24 13:58:42.814 | INFO     | src.preprocess_improved:update_status_and_reject_reason:506 - status_name distribution after update:
+status_name
+rejected    23546
+canceled    20924
+booked      13398
+Name: count, dtype: int64
+2026-01-24 13:58:42.814 | INFO     | src.preprocess_improved:update_status_and_reject_reason:510 - reject_reason distribution after update:
+reject_reason
+03-budget              10101
+09-score                4481
+01-customer_risk        3594
+08-other                2212
+02-bureaux              1619
+04-customer_profile     1387
+05-fraud                  54
+07-product                47
+06-compliance              4
+Name: count, dtype: int64
+2026-01-24 13:58:42.814 | INFO     | src.preprocess_improved:update_status_and_reject_reason:514 - Status and reject reason update completed in 0.00 seconds
+2026-01-24 13:58:42.814 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:590 - 
+================================================================================
+2026-01-24 13:58:42.814 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:591 - Step 5: Filter booked data by date
+2026-01-24 13:58:42.814 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:592 - ================================================================================
+2026-01-24 13:58:42.815 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:594 - Found 13,398 records with status_name='booked'
+2026-01-24 13:58:42.815 | INFO     | src.preprocess_improved:filter_by_date:383 - Filtering data by date range: 2024-07-01 to 2025-06-01
+2026-01-24 13:58:42.816 | INFO     | src.preprocess_improved:filter_by_date:418 - Date filter removed 7,042 records (52.6% of data)
+2026-01-24 13:58:42.816 | INFO     | src.preprocess_improved:filter_by_date:420 - Remaining records: 6,356
+2026-01-24 13:58:42.816 | INFO     | src.preprocess_improved:filter_by_date:426 - Date range in filtered data: 2024-07-01 to 2025-06-01
+2026-01-24 13:58:42.816 | INFO     | src.preprocess_improved:filter_by_date:433 - Monthly distribution:
+mis_date
+2024-07    543
+2024-08    476
+2024-09    562
+2024-10    599
+2024-11    514
+2024-12    436
+2025-01    527
+2025-02    569
+2025-03    549
+2025-04    476
+2025-05    559
+2025-06    546
+Freq: M, Name: count, dtype: int64
+2026-01-24 13:58:42.816 | INFO     | src.preprocess_improved:filter_by_date:439 - Date filtering completed in 0.00 seconds
+2026-01-24 13:58:42.816 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:607 - 
+================================================================================
+2026-01-24 13:58:42.816 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:608 - Step 6: Filter demand data by date
+2026-01-24 13:58:42.816 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:609 - ================================================================================
+2026-01-24 13:58:42.817 | INFO     | src.preprocess_improved:filter_by_date:383 - Filtering data by date range: 2024-07-01 to 2025-06-01
+2026-01-24 13:58:42.818 | INFO     | src.preprocess_improved:filter_by_date:418 - Date filter removed 29,567 records (51.1% of data)
+2026-01-24 13:58:42.818 | INFO     | src.preprocess_improved:filter_by_date:420 - Remaining records: 28,301
+2026-01-24 13:58:42.818 | INFO     | src.preprocess_improved:filter_by_date:426 - Date range in filtered data: 2024-07-01 to 2025-06-01
+2026-01-24 13:58:42.819 | INFO     | src.preprocess_improved:filter_by_date:433 - Monthly distribution:
+mis_date
+2024-07    2373
+2024-08    2247
+2024-09    2588
+2024-10    2678
+2024-11    2445
+2024-12    1970
+2025-01    2312
+2025-02    2513
+2025-03    2460
+2025-04    2198
+2025-05    2314
+2025-06    2203
+Freq: M, Name: count, dtype: int64
+2026-01-24 13:58:42.819 | INFO     | src.preprocess_improved:filter_by_date:439 - Date filtering completed in 0.00 seconds
+2026-01-24 13:58:42.819 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:623 - 
+================================================================================
+2026-01-24 13:58:42.819 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:624 - Preprocessing pipeline completed successfully
+2026-01-24 13:58:42.819 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:625 - ================================================================================
+2026-01-24 13:58:42.819 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:626 - Final data_clean shape: (57868, 22)
+2026-01-24 13:58:42.819 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:627 - Final data_booked shape: (6356, 22)
+2026-01-24 13:58:42.819 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:628 - Final data_demand shape: (28301, 22)
+2026-01-24 13:58:42.819 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:632 - Total preprocessing time: 0.04 seconds (0.00 minutes)
+2026-01-24 13:58:42.819 | INFO     | __main__:main:94 - Saving risk vs production plot...
+2026-01-24 13:58:43.086 | INFO     | __main__:main:97 - Risk vs production plot saved successfully into images folder
+2026-01-24 13:58:43.086 | INFO     | __main__:main:100 - Calculating stress factor...
+2026-01-24 13:58:43.087 | INFO     | __main__:main:102 - Stress factor: 3.876004811071095
+2026-01-24 13:58:43.087 | INFO     | __main__:main:105 - Calculating transformation rate...
+2026-01-24 13:58:43.138 | INFO     | __main__:main:108 - Finance Rate (last 24 months): 33.25%
+2026-01-24 13:58:43.138 | INFO     | __main__:main:111 - Calculating risk inference...
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_base.py", line 630, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by LinearRegression.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_ridge.py", line 1254, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by Ridge.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_ridge.py", line 1254, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by Ridge.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_ridge.py", line 1254, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by Ridge.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_ridge.py", line 1254, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by Ridge.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_coordinate_descent.py", line 1025, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by Lasso.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_coordinate_descent.py", line 1025, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by Lasso.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_coordinate_descent.py", line 1025, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by Lasso.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_coordinate_descent.py", line 1025, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by ElasticNet.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_coordinate_descent.py", line 1025, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by ElasticNet.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 113, in fit
+    self.classifier_.fit(X, y_binary, sample_weight=sample_weight)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_logistic.py", line 1191, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by LogisticRegression.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 113, in fit
+    self.classifier_.fit(X, y_binary, sample_weight=sample_weight)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_logistic.py", line 1191, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by LogisticRegression.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 113, in fit
+    self.classifier_.fit(X, y_binary, sample_weight=sample_weight)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_logistic.py", line 1191, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by LogisticRegression.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 113, in fit
+    self.classifier_.fit(X, y_binary, sample_weight=sample_weight)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_logistic.py", line 1191, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by LogisticRegression.
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 436, in evaluate_models_for_aggregated_data
+    model.fit(X_train, y_train, sample_weight=weights_train)
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 113, in fit
+    self.classifier_.fit(X, y_binary, sample_weight=sample_weight)
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/base.py", line 1336, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/linear_model/_logistic.py", line 1191, in fit
+    X, y = validate_data(
+           ^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 2919, in validate_data
+    X, y = check_X_y(X, y, **check_params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1314, in check_X_y
+    X = check_array(
+        ^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/sklearn/utils/validation.py", line 1097, in check_array
+    raise ValueError(
+ValueError: Found array with 0 sample(s) (shape=(0, 3)) while a minimum of 1 is required by LogisticRegression.
+================================================================================
+FULL MODELING PIPELINE
+================================================================================
+Target variable: todu_30ever_h6
+Test size: 40.0%
+Include Hurdle models: True
+================================================================================
+
+================================================================================
+STEP 1: DATA PREPARATION
+================================================================================
+Training set: 8,038 records
+Test set: 5,360 records
+
+✓ Training data shape: (0, 21)
+✓ Test data shape: (0, 21)
+✓ Features (var_reg): ['new_efx_clus', '9-sc_octroi_new_clus', '(9-sc_octroi_new_clus) x new_efx_clus']
+
+✓ Weights available for weighted regression
+  Train weights: [nan, nan]
+  Test weights: [nan, nan]
+
+================================================================================
+STEP 2: FEATURE EXTRACTION
+================================================================================
+✓ X_train shape: (0, 3)
+✓ X_test shape: (0, 3)
+✓ y_train shape: (0,)
+✓ y_test shape: (0,)
+
+Target variable statistics:
+  Train - Mean: nan, Std: nan
+  Train - Min: nan, Max: nan
+  Test  - Mean: nan, Std: nan
+  Test  - Min: nan, Max: nan
+
+Zero proportion:
+  Train: nan%
+  Test: nan%
+
+================================================================================
+STEP 3: MODEL EVALUATION
+================================================================================
+
+Data characteristics:
+  Zero proportion - Train: nan%, Test: nan%
+  ✓ Including Hurdle models for zero-inflated data
+
+Evaluating models...
+Using weighted regression with sample weights
+Weight range - Train: [nan, nan], Test: [nan, nan]
+--------------------------------------------------------------------------------
+⚠️  Failed to train Linear Regression:
+⚠️  Failed to train Ridge (α=0.3):
+⚠️  Failed to train Ridge (α=0.5):
+⚠️  Failed to train Ridge (α=0.8):
+⚠️  Failed to train Ridge (α=1.2):
+⚠️  Failed to train Lasso (α=0.01):
+⚠️  Failed to train Lasso (α=0.05):
+⚠️  Failed to train Lasso (α=0.1):
+⚠️  Failed to train ElasticNet (α=0.05, l1=0.5):
+⚠️  Failed to train ElasticNet (α=0.1, l1=0.5):
+⚠️  Failed to train Hurdle-Ridge (α=0.3):
+⚠️  Failed to train Hurdle-Ridge (α=0.5):
+⚠️  Failed to train Hurdle-Ridge (α=0.8):
+⚠️  Failed to train Hurdle-Lasso (α=0.01):
+⚠️  Failed to train Hurdle-Lasso (α=0.05):
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/main.py", line 124, in <module>
+    main()
+  File "/Users/inigo_ocariz/src/scoring_tools/main.py", line 112, in main
+    risk_inference = inference_pipeline(data=data_clean, bins=(config_data.get('octroi_bins'), config_data.get('efx_bins')), variables=['sc_octroi_new_clus', 'new_efx_clus'], indicators=config_data.get('indicators'), target_var='todu_30ever_h6', multiplier=7, test_size=0.4, include_hurdle=True, save_model=True, model_base_path='models', create_visualizations=True)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 965, in inference_pipeline
+    results_df, best_model_info = evaluate_models_for_aggregated_data(
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 474, in evaluate_models_for_aggregated_data
+    raise RuntimeError("All models failed to train. Check your data for NaNs, infinite values, or shape mismatches.")
+RuntimeError: All models failed to train. Check your data for NaNs, infinite values, or shape mismatches.
