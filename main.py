@@ -201,6 +201,11 @@ def main():
     summary_table.to_csv("data/risk_production_summary_table.csv", index=False)
     logger.info("Risk production summary table saved to data/risk_production_summary_table.csv")  
 
+    # Save optimal solution
+    optimal_solution_df = visualizer.get_selected_solution()
+    optimal_solution_df.to_csv("data/optimal_solution.csv", index=False)
+    logger.info("Optimal solution saved to data/optimal_solution.csv")
+    
     # Save data
     logger.info("Saving data...")
     data_clean.to_csv("data/data_clean.csv", index=False)

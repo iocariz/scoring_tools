@@ -1,0 +1,7 @@
+# Features for HurdleRegressor
+# Timestamp: 20260125_174627
+# Test R²: 0.1578
+
+1. new_efx_clus
+2. 9-sc_octroi_new_clus
+3. (9-sc_octroi_new_clus) x new_efx_clus

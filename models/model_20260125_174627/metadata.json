@@ -1,0 +1,41 @@
+{
+  "timestamp": "20260125_174627",
+  "model_type": "HurdleRegressor",
+  "model_params": {
+    "classifier": "LogisticRegression(max_iter=1000, random_state=42)",
+    "regressor": "Ridge(alpha=0.8, fit_intercept=False)",
+    "zero_threshold": 1e-10
+  },
+  "features": [
+    "new_efx_clus",
+    "9-sc_octroi_new_clus",
+    "(9-sc_octroi_new_clus) x new_efx_clus"
+  ],
+  "num_features": 3,
+  "aggregated_data": true,
+  "test_r2": 0.1578139606437461,
+  "train_r2": 0.25259808657398286,
+  "test_rmse": 0.034274602549309585,
+  "test_mae": 0.017720627692222775,
+  "train_samples": 148,
+  "test_samples": 134,
+  "target_variable": "todu_30ever_h6",
+  "multiplier": 7,
+  "weighted_regression": true,
+  "is_hurdle": true,
+  "zero_proportion_train": 0.6351351351351351,
+  "zero_proportion_test": 0.7164179104477612,
+  "weight_stats": {
+    "train_min": 1.0,
+    "train_max": 398.0,
+    "train_mean": 54.24324324324324,
+    "train_median": 30.0,
+    "test_min": 1.0,
+    "test_max": 287.0,
+    "test_mean": 39.940298507462686,
+    "test_median": 24.5
+  },
+  "hurdle_classifier": "LogisticRegression",
+  "hurdle_regressor": "Ridge",
+  "zero_threshold": 1e-10
+}

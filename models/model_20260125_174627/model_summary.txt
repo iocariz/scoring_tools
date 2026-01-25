@@ -1,0 +1,17 @@
+============================================================
+MODEL SUMMARY
+============================================================
+
+Model Type: HurdleRegressor
+Training Date: 20260125_174627
+Number of Features: 3
+Aggregated Data: Yes
+
+PERFORMANCE METRICS:
+------------------------------
+Train R2: 0.2526
+Test R2: 0.1578
+Test Rmse: 0.0343
+Test Mae: 0.0177
+Training Samples: 148
+Test Samples: 134

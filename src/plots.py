@@ -374,14 +374,19 @@ class RiskProductionVisualizer:
         # Apply the update logic statically here
         self._apply_static_update()
 
-    def _apply_static_update(self):
-        """Update the visualization based on cz2024 value"""
-        # Filter data based on risk level
+    def _get_selected_solution_row(self):
+        """Helper to find the selected optimal solution based on cz2024"""
         data_filtered = self.data_summary[self.data_summary['b2_ever_h6'] <= self.cz2024]
         if data_filtered.empty:
              data_filtered = self.data_summary.sort_values('b2_ever_h6').head(1)
         else:
              data_filtered = data_filtered.tail(1)
+        return data_filtered
+
+    def _apply_static_update(self):
+        """Update the visualization based on cz2024 value"""
+        # Filter data based on risk level
+        data_filtered = self._get_selected_solution_row()
              
         metrics = data_filtered[['b2_ever_h6', 'oa_amt_h0', 'b2_ever_h6_cut',
                                'oa_amt_h0_cut', 'b2_ever_h6_rep', 'oa_amt_h0_rep']].values[0, :]
@@ -411,14 +416,6 @@ class RiskProductionVisualizer:
         """No longer used"""
         pass
    
-    def create_slider(self):
-        """No longer used"""
-        pass
-   
-    def update(self, x):
-        """No longer used"""
-        pass
-   
     def display(self):
         """Display the visualization"""
         self.fig.show()
@@ -427,27 +424,14 @@ class RiskProductionVisualizer:
         """Save the figure to an HTML file"""
         self.fig.write_html(path)
 
+    def get_selected_solution(self):
+        """Return the selected optimal solution dataframe row"""
+        return self._get_selected_solution_row()
+
     def get_summary_table(self):
         """Return a DataFrame with the performance metrics"""
-        # Filter data based on risk level
-        # Find the closest value to cz2024 that is <= cz2024 (or just take the last one <=)
-        # Assuming data_summary is potentially sorted or we want the optimal solution below threshold
-        
-        # We need to replicate the logic from the 'update' method but statically
-        # "metrics = data_filtered[['b2_ever_h6', 'oa_amt_h0', 'b2_ever_h6_cut', 'oa_amt_h0_cut', 'b2_ever_h6_rep', 'oa_amt_h0_rep']].values[0, :]"
-        
-        # Filter data based on risk level
-        # We find the solution with highest production (or closest to curve) that satisfies risk constraint
-        # The original code did: data_filtered = self.data_summary[self.data_summary['b2_ever_h6'] <= x].tail(1)
-        # We will do the same with self.cz2024
-        
-        data_filtered = self.data_summary[self.data_summary['b2_ever_h6'] <= self.cz2024]
-        if data_filtered.empty:
-             # If no solution satisfies the condition, maybe take the lowest risk one? 
-             # Or return empty/zeros. For now let's assume valid range or take min
-             data_filtered = self.data_summary.sort_values('b2_ever_h6').head(1)
-        else:
-             data_filtered = data_filtered.tail(1)
+        # Get selected solution
+        data_filtered = self._get_selected_solution_row()
 
         metrics = data_filtered[['b2_ever_h6', 'oa_amt_h0', 'b2_ever_h6_cut',
                                'oa_amt_h0_cut', 'b2_ever_h6_rep', 'oa_amt_h0_rep']].values[0, :]
