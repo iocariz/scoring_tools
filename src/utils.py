@@ -1,14 +1,17 @@
 import pandas as pd
 import numpy as np
-from typing import List
+from typing import List, Dict, Any, Optional
+
 from tqdm import tqdm
 import gc
 from loguru import logger
+from joblib import Parallel, delayed
+
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from . import styles
 
-def get_data_information(df):
+def get_data_information(df: pd.DataFrame) -> pd.DataFrame:
     """
     Display DataFrame information and return a DataFrame with variable details.
     """
@@ -58,7 +61,7 @@ def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
    
     return df
 
-def _get_fact_sol(values_var0, values_var1, inv_var1=False):
+def _get_fact_sol(values_var0: List[float], values_var1: List[float], inv_var1: bool = False) -> pd.DataFrame:
     v = [0]+values_var1
     v = pd.DataFrame([[0 for i in v], v]).T.astype(
         'int8').rename(columns={0: 'on'})
@@ -82,69 +85,88 @@ def _get_fact_sol(values_var0, values_var1, inv_var1=False):
         columns={'index': 'sol_fac'})
     return(df_v)
 
-def _kpi_of_fact_sol(df_v, values_var0, data_sumary_desagregado, variables, indicadores, inv_var1=False):
-    logger.info('--Calculando KPI de las soluciones factibles')
-
-    df_v_melt = df_v.melt(id_vars=['sol_fac'], value_vars=values_var0,
-                          var_name=variables[0], value_name=variables[1]+'_lim')
-    df_v_melt_distinct_combination = df_v_melt.drop_duplicates(
-        subset=[variables[0], variables[1]+'_lim']).reset_index()[[variables[0], variables[1]+'_lim']]
-    data_sumary = df_v_melt_distinct_combination.merge(
-        data_sumary_desagregado, how='left', on=variables[0])
-
-    # filtrar solo los optmos para cada valor de riesgo
-    if inv_var1 == True:
-        data_sumary = data_sumary[data_sumary[variables[1]]
-                                  > data_sumary[variables[1]+'_lim']]
+def process_kpi_chunk(
+    chunk_data: pd.DataFrame,
+    values_var0: List[float],
+    data_sumary_desagregado: pd.DataFrame,
+    variables: List[str],
+    inv_var1: bool = False
+) -> pd.DataFrame:
+    """Process a chunk of data for KPI calculation (picklable helper)"""
+    # Melt the chunk
+    chunk_melt = chunk_data.melt(
+        id_vars=['sol_fac'],
+        value_vars=values_var0,
+        var_name=variables[0],
+        value_name=f"{variables[1]}_lim"
+    )
+    
+    # Ensure numeric types
+    chunk_melt[variables[0]] = chunk_melt[variables[0]].astype(float)
+    
+    # Get distinct combinations
+    chunk_distinct = chunk_melt.drop_duplicates(
+        subset=[variables[0], f"{variables[1]}_lim"]
+    )[[variables[0], f"{variables[1]}_lim"]]
+    
+    # Merge with summary data
+    data_sumary = chunk_distinct.merge(
+        data_sumary_desagregado,
+        how='left',
+        on=variables[0]
+    )
+    
+    # Apply filters
+    if inv_var1:
+        data_sumary = data_sumary[
+            data_sumary[variables[1]] > data_sumary[f"{variables[1]}_lim"]
+        ]
     else:
-        data_sumary = data_sumary[data_sumary[variables[1]]
-                                  <= data_sumary[variables[1]+'_lim']]
+        data_sumary = data_sumary[
+            data_sumary[variables[1]] <= data_sumary[f"{variables[1]}_lim"]
+        ]
+    
+    # Identify numeric columns for aggregation
+    numeric_cols = data_sumary.select_dtypes(include=[np.number]).columns
+    agg_dict = {col: 'sum' for col in numeric_cols 
+               if col not in [variables[0], f"{variables[1]}_lim"]}
+    
+    # Group and aggregate
+    data_sumary = (
+        data_sumary.groupby([variables[0], f"{variables[1]}_lim"])
+        .agg(agg_dict)
+        .reset_index()
+    )
+    
+    # Merge back with chunk data and aggregate by solution
+    chunk_result = (
+        chunk_melt.merge(
+            data_sumary,
+            how='left',
+            on=[variables[0], f"{variables[1]}_lim"]
+        )
+        .fillna(0)
+        .groupby('sol_fac', observed=True)
+        .agg(agg_dict)
+        .reset_index()
+    )
+    
+    return chunk_result
 
-    data_sumary = data_sumary.groupby(
-        [variables[0], variables[1]+'_lim']).sum().reset_index().drop(columns=[variables[1]])
-    data_sumary = df_v_melt.merge(data_sumary, how='left', on=[
-                                  variables[0], variables[1]+'_lim']).fillna(0)
-    data_sumary = data_sumary.groupby('sol_fac').sum().drop(
-        columns=[variables[0], variables[1]+'_lim'])
-
-    for kpi in indicadores:
-        data_sumary[kpi+'_cut'] = (data_sumary_desagregado.sum()
-                                   [kpi+'_boo']-data_sumary[kpi+'_boo']).apply(lambda x: max(x, 0))
-
-    data_sumary['b2_ever_h6'] = np.round(
-        100*7*data_sumary['todu_30ever_h6']/data_sumary['todu_amt_pile_h6'], 2)
-    data_sumary['b2_ever_h6_cut'] = np.round(
-        100*7*data_sumary['todu_30ever_h6_cut']/data_sumary['todu_amt_pile_h6_cut'], 2)
-    data_sumary['b2_ever_h6_rep'] = np.round(
-        100*7*data_sumary['todu_30ever_h6_rep']/data_sumary['todu_amt_pile_h6_rep'], 2)
-    data_sumary['b2_ever_h6_boo'] = np.round(
-        100*7*data_sumary['todu_30ever_h6_boo']/data_sumary['todu_amt_pile_h6_boo'], 2)
-
-    data_sumary = data_sumary[sorted(data_sumary.columns)]
-    data_sumary = data_sumary.sort_values(by=["b2_ever_h6", 'oa_amt_h0'])
-    return(data_sumary)
-
-
-def _get_optimal_sol(df_v, data_sumary):
-    logger.info('--Obteniendo soluciones optimas')
-    data_sumary = data_sumary.sort_values(by=["b2_ever_h6", 'oa_amt_h0'])
-    data_sumary = data_sumary.drop_duplicates(
-        subset=["b2_ever_h6"], keep='last')
-    lim = 0
-    list_ = []
-    for n, i in enumerate(data_sumary.index):
-        value = data_sumary.loc[i, 'oa_amt_h0']
-        if (value > lim) | (n == 0):
-            lim = value
-            list_.append(True)
-        else:
-            list_.append(False)
-
-    data_sumary = data_sumary[list_]
-    data_sumary = df_v.merge(data_sumary.reset_index(
-    ), how='inner', on='sol_fac').sort_values(by=["b2_ever_h6", 'oa_amt_h0'])
-    logger.info(f'Número de soluciones óptimas: {data_sumary.shape[0]:,.0f}')
-    return(data_sumary)
+def process_optimal_chunk(
+    df_chunk: pd.DataFrame,
+    data_sumary: pd.DataFrame
+) -> Optional[pd.DataFrame]:
+    """Process a chunk for optimal solution finding"""
+    chunk_result = df_chunk.merge(
+        data_sumary,
+        how='inner',
+        on='sol_fac'
+    )
+    
+    if chunk_result.empty:
+        return None
+    return chunk_result
 
 def get_fact_sol(
     values_var0: List[float],
@@ -206,145 +228,20 @@ def get_fact_sol(
         logger.error(f"Error in get_fact_sol: {str(e)}")
         raise
 
-def process_kpi_chunk(
-    chunk_data: pd.DataFrame,
-    values_var0: List[float],
-    data_sumary_desagregado: pd.DataFrame,
-    variables: List[str],
-    indicadores: List[str],
-    inv_var1: bool = False
-) -> pd.DataFrame:
-    """Process a chunk of data for KPI calculation"""
-    # Melt the chunk
-    chunk_melt = chunk_data.melt(
-        id_vars=['sol_fac'],
-        value_vars=values_var0,
-        var_name=variables[0],
-        value_name=f"{variables[1]}_lim"
-    )
-   
-    # Get distinct combinations for this chunk
-    chunk_distinct = chunk_melt.drop_duplicates(
-        subset=[variables[0], f"{variables[1]}_lim"]
-    ).reset_index()[[variables[0], f"{variables[1]}_lim"]]
-   
-    # Merge with summary data
-    data_sumary = chunk_distinct.merge(
-        data_sumary_desagregado,
-        how='left',
-        on=variables[0]
-    )
-   
-    # Apply filters
-    if inv_var1:
-        data_sumary = data_sumary[
-            data_sumary[variables[1]] > data_sumary[f"{variables[1]}_lim"]
-        ]
-    else:
-        data_sumary = data_sumary[
-            data_sumary[variables[1]] <= data_sumary[f"{variables[1]}_lim"]
-        ]
-   
-    # Group and aggregate
-    data_sumary = (
-        data_sumary.groupby([variables[0], f"{variables[1]}_lim"])
-        .sum()
-        .reset_index()
-        .drop(columns=[variables[1]])
-    )
-   
-    # Merge back with chunk data
-    chunk_result = (
-        chunk_melt.merge(
-            data_sumary,
-            how='left',
-            on=[variables[0], f"{variables[1]}_lim"]
-        )
-        .fillna(0)
-        .groupby('sol_fac')
-        .sum()
-        .drop(columns=[variables[0], f"{variables[1]}_lim"])
-    )
-   
-    return chunk_result
-
 def kpi_of_fact_sol(df_v, values_var0, data_sumary_desagregado, variables, indicadores, inv_var1=False, chunk_size=1000):
     try:
         logger.info('--Calculating KPIs for feasible solutions')
         
-        # Process in chunks
-        chunks_results = []
-        total_chunks = len(df_v) // chunk_size + (1 if len(df_v) % chunk_size > 0 else 0)
+        # Prepare chunks
+        chunks = [df_v.iloc[i:i + chunk_size] for i in range(0, len(df_v), chunk_size)]
         
-        for chunk_idx in tqdm(range(total_chunks), desc="Processing chunks"):
-            start_idx = chunk_idx * chunk_size
-            end_idx = min((chunk_idx + 1) * chunk_size, len(df_v))
-            
-            # Process chunk
-            df_chunk = df_v.iloc[start_idx:end_idx].copy()
-            
-            # Melt the chunk
-            df_melt = df_chunk.melt(
-                id_vars=['sol_fac'],
-                value_vars=values_var0,
-                var_name=variables[0],
-                value_name=f"{variables[1]}_lim"
-            )
-            
-            # Ensure numeric types
-            df_melt[variables[0]] = df_melt[variables[0]].astype(float)
-            
-            # Get distinct combinations for this chunk
-            df_melt_distinct = df_melt.drop_duplicates(
-                subset=[variables[0], f"{variables[1]}_lim"]
-            )[[variables[0], f"{variables[1]}_lim"]]
-            
-            # Merge with summary data
-            data_sumary = df_melt_distinct.merge(
-                data_sumary_desagregado,
-                how='left',
-                on=variables[0]
-            )
-            
-            # Apply filters
-            if inv_var1:
-                data_sumary = data_sumary[
-                    data_sumary[variables[1]] > data_sumary[f"{variables[1]}_lim"]
-                ]
-            else:
-                data_sumary = data_sumary[
-                    data_sumary[variables[1]] <= data_sumary[f"{variables[1]}_lim"]
-                ]
-            
-            # Group and aggregate numeric columns only
-            numeric_cols = data_sumary.select_dtypes(include=[np.number]).columns
-            agg_dict = {col: 'sum' for col in numeric_cols 
-                       if col not in [variables[0], f"{variables[1]}_lim"]}
-            
-            data_sumary = (
-                data_sumary.groupby([variables[0], f"{variables[1]}_lim"])
-                .agg(agg_dict)
-                .reset_index()
-            )
-            
-            # Process chunk result
-            chunk_result = (
-                df_melt.merge(
-                    data_sumary,
-                    how='left',
-                    on=[variables[0], f"{variables[1]}_lim"]
-                )
-                .fillna(0)
-                .groupby('sol_fac', observed=True)
-                .agg(agg_dict)
-                .reset_index()
-            )
-            
-            chunks_results.append(chunk_result)
-            
-            # Clean up memory
-            del df_chunk, df_melt, df_melt_distinct, data_sumary
-            gc.collect()
+        # Parallel Processing
+        # n_jobs=-1 uses all available cores
+        chunks_results = Parallel(n_jobs=-1)(
+            delayed(process_kpi_chunk)(
+                chunk, values_var0, data_sumary_desagregado, variables, inv_var1
+            ) for chunk in tqdm(chunks, desc="Processing chunks (Parallel)")
+        )
         
         # Combine results from all chunks
         if not chunks_results:
@@ -388,7 +285,7 @@ def get_optimal_solutions(
     data_sumary: pd.DataFrame,
     chunk_size: int = 1000
 ) -> pd.DataFrame:
-    """Memory-optimized version of get_optimal_solutions"""
+    """Memory-optimized version of get_optimal_solutions with parallel processing"""
     try:
         logger.info('--Getting optimal solutions')
        
@@ -414,23 +311,16 @@ def get_optimal_solutions(
         data_sumary = data_sumary[data_sumary['optimal']].drop(columns=['optimal'])
        
         # Merge in chunks
-        chunks_results = []
-        total_chunks = len(df_v) // chunk_size + (1 if len(df_v) % chunk_size > 0 else 0)
-       
-        for chunk_idx in tqdm(range(total_chunks), desc="Processing chunks"):
-            start_idx = chunk_idx * chunk_size
-            end_idx = min((chunk_idx + 1) * chunk_size, len(df_v))
-           
-            chunk_result = df_v.iloc[start_idx:end_idx].merge(
-                data_sumary.reset_index(),
-                how='inner',
-                on='sol_fac'
-            )
-           
-            if not chunk_result.empty:
-                chunks_results.append(chunk_result)
-           
-            gc.collect()
+        chunks = [df_v.iloc[i:i + chunk_size] for i in range(0, len(df_v), chunk_size)]
+        
+        # Parallel Processing
+        chunks_results = Parallel(n_jobs=-1)(
+            delayed(process_optimal_chunk)(chunk, data_sumary.reset_index()) 
+            for chunk in tqdm(chunks, desc="Processing chunks (Parallel)")
+        )
+        
+        # Filter None results
+        chunks_results = [res for res in chunks_results if res is not None]
        
         # Combine results
         final_result = pd.concat(chunks_results, ignore_index=True)
@@ -497,10 +387,10 @@ def calculate_and_plot_transformation_rate(
     data: pd.DataFrame, 
     date_col: str, 
     amount_col: str = 'oa_amt', 
-    n_months: int = None,
+    n_months: Optional[int] = None,
     plot_width: int = 1200,
     plot_height: int = 500
-):
+) -> Dict[str, Any]:
     """
     Calculates transformation rate and generates a dual-axis plot.
     

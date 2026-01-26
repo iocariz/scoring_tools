@@ -198,7 +198,7 @@ def plot_3d_graph(data_train, data_surf, variables, var_target):
 
 class RiskProductionVisualizer:
     def __init__(self, data_summary, data_summary_disaggregated, data_summary_sample_no_opt,
-                 variables, values_var0, values_var1, cz2024, tasa_fin):
+                 variables, values_var0, values_var1, cz2024, tasa_fin, target_sol_fac=None):
         self.data_summary = data_summary
         self.data_summary_disaggregated = data_summary_disaggregated
         self.data_summary_sample_no_opt = data_summary_sample_no_opt
@@ -207,6 +207,7 @@ class RiskProductionVisualizer:
         self.values_var1 = values_var1
         self.cz2024 = cz2024
         self.tasa_fin = tasa_fin
+        self.target_sol_fac = target_sol_fac
        
         # Calculate initial metrics
         self.calculate_initial_metrics()
@@ -375,7 +376,17 @@ class RiskProductionVisualizer:
         self._apply_static_update()
 
     def _get_selected_solution_row(self):
-        """Helper to find the selected optimal solution based on cz2024"""
+        """Helper to find the selected optimal solution based on cz2024 or target_sol_fac"""
+        if self.target_sol_fac is not None:
+             # Find solution with sol_fac matching target_sol_fac
+             if 'sol_fac' in self.data_summary.columns:
+                 data_filtered = self.data_summary[self.data_summary['sol_fac'] == self.target_sol_fac]
+                 if not data_filtered.empty:
+                     return data_filtered
+             else:
+                 # Fallback if sol_fac is not index/column (it really should be there)
+                 pass
+
         data_filtered = self.data_summary[self.data_summary['b2_ever_h6'] <= self.cz2024]
         if data_filtered.empty:
              data_filtered = self.data_summary.sort_values('b2_ever_h6').head(1)

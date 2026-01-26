@@ -1,20 +1,27 @@
 import pandas as pd
 import numpy as np
+from typing import Dict, Any, Optional
+
 from loguru import logger
 import tomllib
 import plotly.graph_objects as go
-from src.preprocess_improved import PreprocessingConfig, complete_preprocessing_pipeline   
+from src.preprocess_improved import PreprocessingConfig, complete_preprocessing_pipeline, filter_by_date, StatusName   
 from src.utils import calculate_stress_factor, calculate_and_plot_transformation_rate, get_fact_sol, kpi_of_fact_sol, get_optimal_solutions
 from src.plots import plot_risk_vs_production, RiskProductionVisualizer
 from src.inference_optimized import inference_pipeline, todu_average_inference, run_optimization_pipeline
 from src.models import calculate_risk_values
+from src.inference_optimized import inference_pipeline, todu_average_inference, run_optimization_pipeline
+from src.models import calculate_risk_values
+from src.mr_pipeline import process_mr_period
+from src import styles
 
-def load_config(config_path="config.toml"):
+
+def load_config(config_path: str = "config.toml") -> Dict[str, Any]:
     with open(config_path, "rb") as f:
         config_data = tomllib.load(f)
     return config_data['preprocessing']
 
-def load_data(df_path: str):
+def load_data(df_path: str) -> pd.DataFrame:
     df = pd.read_sas(df_path, format="sas7bdat", encoding="utf-8")
     return df
 
@@ -116,7 +123,19 @@ def main():
 
     # Risk Inference
     logger.info("Calculating risk inference...")
-    risk_inference = inference_pipeline(data=data_clean, bins=(config_data.get('octroi_bins'), config_data.get('efx_bins')), variables=['sc_octroi_new_clus', 'new_efx_clus'], indicators=config_data.get('indicators'), target_var='todu_30ever_h6', multiplier=7, test_size=0.4, include_hurdle=True, save_model=True, model_base_path='models', create_visualizations=True)
+    risk_inference = inference_pipeline(
+        data=data_clean, 
+        bins=(config_data.get('octroi_bins'), config_data.get('efx_bins')), 
+        variables=config_data.get('variables'), 
+        indicators=config_data.get('indicators'), 
+        target_var='todu_30ever_h6', 
+        multiplier=config_data.get('multiplier', 7), 
+        test_size=0.4, 
+        include_hurdle=True, 
+        save_model=True, 
+        model_base_path='models', 
+        create_visualizations=True
+    )
     logger.info(f"Best model: {risk_inference['best_model_info']['name']}")
     logger.info(f"Test R²: {risk_inference['best_model_info']['test_r2']:.4f}")
 
@@ -127,7 +146,7 @@ def main():
         indicators=config_data.get('indicators'),
         feature_col='oa_amt',
         target_col='todu_amt_pile_h6',
-        z_threshold=3.0,
+        z_threshold=config_data.get('z_threshold', 3.0),
         plot_output_path="models/todu_avg_inference.html",
         model_output_path="models/todu_model.joblib"
     )   
@@ -214,6 +233,26 @@ def main():
     data_summary_desagregado.to_csv("data/data_summary_desagregado.csv", index=False)
     data_summary.to_csv("data/data_summary.csv", index=False)
     logger.info("Data saved successfully")
+
+    date_ini_mr = pd.to_datetime(config_data.get('date_ini_book_obs_mr'))
+    date_fin_mr = pd.to_datetime(config_data.get('date_fin_book_obs_mr'))
+    annual_coef_mr = calculate_annual_coef(date_ini_book_obs=date_ini_mr, date_fin_book_obs=date_fin_mr) 
+    logger.info(f"Annual Coef MR: {annual_coef_mr}")
+
+    # MR Period Processing
+    process_mr_period(
+        data_clean=data_clean,
+        data_booked=data_booked,
+        config_data=config_data,
+        risk_inference=risk_inference,
+        reg_todu_amt_pile=reg_todu_amt_pile,
+        stress_factor=stress_factor,
+        tasa_fin=result['overall_rate'],
+        annual_coef=annual_coef_mr,
+        optimal_solution_df=optimal_solution_df
+    )
+
+
 
     return data_clean, data_booked, data_demand, data_summary_desagregado, data_summary
 
