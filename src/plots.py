@@ -198,15 +198,16 @@ def plot_3d_graph(data_train, data_surf, variables, var_target):
 
 class RiskProductionVisualizer:
     def __init__(self, data_summary, data_summary_disaggregated, data_summary_sample_no_opt,
-                 variables, values_var0, values_var1, cz2024, tasa_fin, target_sol_fac=None):
+                 variables, values_var0, values_var1, optimum_risk, tasa_fin, target_sol_fac=None):
         self.data_summary = data_summary
         self.data_summary_disaggregated = data_summary_disaggregated
         self.data_summary_sample_no_opt = data_summary_sample_no_opt
         self.variables = variables
         self.values_var0 = values_var0
         self.values_var1 = values_var1
-        self.cz2024 = cz2024
+        self.optimum_risk = optimum_risk
         self.tasa_fin = tasa_fin
+
         self.target_sol_fac = target_sol_fac
        
         # Calculate initial metrics
@@ -387,7 +388,7 @@ class RiskProductionVisualizer:
                  # Fallback if sol_fac is not index/column (it really should be there)
                  pass
 
-        data_filtered = self.data_summary[self.data_summary['b2_ever_h6'] <= self.cz2024]
+        data_filtered = self.data_summary[self.data_summary['b2_ever_h6'] <= self.optimum_risk]
         if data_filtered.empty:
              data_filtered = self.data_summary.sort_values('b2_ever_h6').head(1)
         else:

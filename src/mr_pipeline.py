@@ -127,12 +127,13 @@ def process_mr_period(
     stress_factor: float,
     tasa_fin: float,
     annual_coef: float,
-    optimal_solution_df: Optional[pd.DataFrame] = None
+    optimal_solution_df: Optional[pd.DataFrame] = None,
+    file_suffix: str = ""
 ) -> None:
     """
     Process the MR period data: filtering, inference, aggregation, visualization, and summary table.
     """
-    logger.info("Processing MR period data...")
+    logger.info(f"Processing MR period data (suffix: '{file_suffix}')...")
     
     if not (config_data.get('date_ini_book_obs_mr') and config_data.get('date_fin_book_obs_mr')):
         logger.warning("MR dates not configured. Skipping MR period processing.")
@@ -229,8 +230,9 @@ def process_mr_period(
         )
         
         # Save MR summary
-        data_summary_desagregado_mr.to_csv("data/data_summary_desagregado_mr.csv", index=False)
-        logger.info("MR summary data saved to data/data_summary_desagregado_mr.csv")
+        summary_path = f"data/data_summary_desagregado_mr{file_suffix}.csv"
+        data_summary_desagregado_mr.to_csv(summary_path, index=False)
+        logger.info(f"MR summary data saved to {summary_path}")
 
         # --- Visualize b2_ever_h6 for MR ---
         logger.info("Generating b2_ever_h6 visualization for MR dataset...")
@@ -251,7 +253,7 @@ def process_mr_period(
         
         styles.apply_plotly_style(
             fig_mr,
-            title="B2 Ever H6 vs. Octroi and Risk Score (MR Period - Aggregated)",
+            title=f"B2 Ever H6 vs. Octroi and Risk Score (MR Period - Aggregated){file_suffix}",
             width=1500,
             height=700
         )
@@ -265,7 +267,7 @@ def process_mr_period(
             )
         )
         
-        output_plot_path_mr = "images/b2_ever_h6_vs_octroi_and_risk_score_mr.html"
+        output_plot_path_mr = f"images/b2_ever_h6_vs_octroi_and_risk_score_mr{file_suffix}.html"
         fig_mr.write_html(output_plot_path_mr)
         logger.info(f"MR Visualization saved to {output_plot_path_mr}")
 
@@ -285,7 +287,7 @@ def process_mr_period(
         )
         
         if mr_summary_table is not None:
-            mr_summary_path = "data/risk_production_summary_table_mr.csv"
+            mr_summary_path = f"data/risk_production_summary_table_mr{file_suffix}.csv"
             mr_summary_table.to_csv(mr_summary_path, index=False)
             logger.info(f"MR Risk Production Summary Table saved to {mr_summary_path}")
             logger.info(f"MR Table:\n{mr_summary_table.to_string()}")

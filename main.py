@@ -202,55 +202,84 @@ def main():
     data_summary_desagregado['text'] = data_summary_desagregado.apply(lambda x: str(
     "{:,.2f}M".format(x['oa_amt_h0']/1000000))+' '+str("{:.2%}".format(x['b2_ever_h6']/100)), axis=1)
 
-    visualizer = RiskProductionVisualizer(
-     data_summary=data_summary,
-     data_summary_disaggregated=data_summary_desagregado,
-     data_summary_sample_no_opt=data_summary_sample_no_opt,
-     variables=config_data.get('variables'),
-     values_var0=values_var0,
-     values_var1=values_var1,
-     cz2024=1.1,
-     tasa_fin=result['overall_rate']
-)
-
-    visualizer.save_html("images/risk_production_visualizer.html")
+    # Scenario Analysis
+    base_optimum_risk = 1.1
     
-    # Save summary table
-    summary_table = visualizer.get_summary_table()
-    summary_table.to_csv("data/risk_production_summary_table.csv", index=False)
-    logger.info("Risk production summary table saved to data/risk_production_summary_table.csv")  
-
-    # Save optimal solution
-    optimal_solution_df = visualizer.get_selected_solution()
-    optimal_solution_df.to_csv("data/optimal_solution.csv", index=False)
-    logger.info("Optimal solution saved to data/optimal_solution.csv")
-    
-    # Save data
-    logger.info("Saving data...")
-    data_clean.to_csv("data/data_clean.csv", index=False)
-    data_booked.to_csv("data/data_booked.csv", index=False)
-    data_demand.to_csv("data/data_demand.csv", index=False) 
-    data_summary_desagregado.to_csv("data/data_summary_desagregado.csv", index=False)
-    data_summary.to_csv("data/data_summary.csv", index=False)
-    logger.info("Data saved successfully")
-
+    # Calculate MR coefficients before loop
     date_ini_mr = pd.to_datetime(config_data.get('date_ini_book_obs_mr'))
     date_fin_mr = pd.to_datetime(config_data.get('date_fin_book_obs_mr'))
     annual_coef_mr = calculate_annual_coef(date_ini_book_obs=date_ini_mr, date_fin_book_obs=date_fin_mr) 
     logger.info(f"Annual Coef MR: {annual_coef_mr}")
 
-    # MR Period Processing
-    process_mr_period(
-        data_clean=data_clean,
-        data_booked=data_booked,
-        config_data=config_data,
-        risk_inference=risk_inference,
-        reg_todu_amt_pile=reg_todu_amt_pile,
-        stress_factor=stress_factor,
-        tasa_fin=result['overall_rate'],
-        annual_coef=annual_coef_mr,
-        optimal_solution_df=optimal_solution_df
-    )
+    scenarios = [base_optimum_risk - 0.1, base_optimum_risk, base_optimum_risk + 0.1]
+    
+    optimal_solution_df_base = None
+    
+    for scenario_risk in scenarios:
+        current_risk = float(round(scenario_risk, 1))
+        logger.info(f"Running scenario: optimum_risk = {current_risk}")
+        
+        visualizer = RiskProductionVisualizer(
+             data_summary=data_summary,
+             data_summary_disaggregated=data_summary_desagregado,
+             data_summary_sample_no_opt=data_summary_sample_no_opt,
+             variables=config_data.get('variables'),
+             values_var0=values_var0,
+             values_var1=values_var1,
+             optimum_risk=current_risk,
+             tasa_fin=result['overall_rate']
+        )
+    
+        suffix = f"_{current_risk:.1f}"
+        
+        # Save HTML
+        visualizer.save_html(f"images/risk_production_visualizer{suffix}.html")
+        
+        # Save summary table
+        summary_table = visualizer.get_summary_table()
+        summary_table.to_csv(f"data/risk_production_summary_table{suffix}.csv", index=False)
+        logger.info(f"Risk production summary table saved to data/risk_production_summary_table{suffix}.csv")  
+    
+        # Save optimal solution
+        opt_sol = visualizer.get_selected_solution()
+        opt_sol.to_csv(f"data/optimal_solution{suffix}.csv", index=False)
+        logger.info(f"Optimal solution saved to data/optimal_solution{suffix}.csv")
+        
+        if abs(current_risk - base_optimum_risk) < 0.001:
+            optimal_solution_df_base = opt_sol
+            # Also save as default filenames for backward compatibility
+            visualizer.save_html("images/risk_production_visualizer.html")
+            summary_table.to_csv("data/risk_production_summary_table.csv", index=False)
+            opt_sol.to_csv("data/optimal_solution.csv", index=False)
+            logger.info("Base scenario outputs saved to default filenames.")
+            
+            # Base Scenario MR Processing (Default filenames)
+            process_mr_period(
+                data_clean=data_clean,
+                data_booked=data_booked,
+                config_data=config_data,
+                risk_inference=risk_inference,
+                reg_todu_amt_pile=reg_todu_amt_pile,
+                stress_factor=stress_factor,
+                tasa_fin=result['overall_rate'],
+                annual_coef=annual_coef_mr,
+                optimal_solution_df=opt_sol,
+                file_suffix=""
+            )
+
+        # Scenario MR Processing
+        process_mr_period(
+            data_clean=data_clean,
+            data_booked=data_booked,
+            config_data=config_data,
+            risk_inference=risk_inference,
+            reg_todu_amt_pile=reg_todu_amt_pile,
+            stress_factor=stress_factor,
+            tasa_fin=result['overall_rate'],
+            annual_coef=annual_coef_mr,
+            optimal_solution_df=opt_sol,
+            file_suffix=suffix
+        )
 
 
 

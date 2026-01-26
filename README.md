@@ -4,7 +4,7 @@
 
 This project implements a risk scoring and optimization pipeline for credit portfolio management. It processes loan application data (`demand` and `booked`), calculates key risk indicators (e.g., `b2_ever_h6`), and determines optimal cutoffs to maximize production while minimizing risk.
 
-Recent work has focused on integrating a **Recent Monitoring (MR)** period to validate model performance and strategy stability over a newer time window.
+Recent work has focused on integrating a **Recent Monitoring (MR)** period to validate model performance and strategy stability over a newer time window, as well as implementing **Scenario Analysis** to test sensitivity to risk thresholds.
 
 ## Workflow & Steps Followed
 
@@ -24,22 +24,28 @@ Recent work has focused on integrating a **Recent Monitoring (MR)** period to va
 
 * **Aggregation**: Data is aggregated by clusters (e.g., `sc_octroi_new_clus`, `new_efx_clus`).
 * **Feasible Solutions**: The system iterates through all possible cutoff combinations across the cluster variables.
+* **Parallel Processing**: Computationally intensive steps (`kpi_of_fact_sol`, `get_optimal_solutions`) are parallelized using `joblib` to maximize performance.
 * **KPI Calculation**: For each solution, it calculates resulting Production (€), Risk (%), and Efficiency.
 * **Optimal Solution Selection**: Identifies the Pareto frontier of solutions that offer the best trade-off between risk and production.
 
-### 4. MR Period Implementation (Recent Monitoring)
+### 4. Scenario Analysis
 
-A specific pipeline was built to validate the strategy on the MR ("Mois Récent") dataset:
+To test the robustness of the strategy against varying risk appetites, the pipeline implements scenario analysis:
 
-* **Data Preparation**: Extracted MR data using specific date configurations.
-* **Inference Application**: Applied the *same* risk models trained on the main period to the MR inputs to ensure consistency.
-* **Full Pipeline Processing**: Instead of simple aggregation, the full `run_optimization_pipeline` was applied to MR data. This ensures:
-  * **Booked (`_boo`)**: Actual observed performance.
-  * **Rejected (`_rep`)**: Inferred performance for rejections.
-* **Metric Calculation**:
-  * `b2_ever_h6` was recalculated for the MR period using the aggregated components: `7 * sum(todu_30ever) / sum(todu_amt_pile)`.
+* **Variable**: `optimum_risk` (formerly `cz2024`).
+* **Scenarios**: Automatically runs for the base configuration value +/- 0.1 (e.g., 3.7, 3.8, 3.9).
+* **Outputs**: Generates distinct summary tables and optimal solution files for each scenario (e.g., `data/optimal_solution_3.7.csv`).
 
-### 5. Risk Production Summary Table (MR)
+### 5. MR Period Implementation (Recent Monitoring)
+
+A specific pipeline was built to validate the strategy on the MR ("Mois Récent") dataset. This pipeline is now integrated into the **Scenario Analysis** loop:
+
+* **Process**: For *each* scenario (e.g., 1.0, 1.1, 1.2), the MR analysis is executed using that scenario's specific optimal solution.
+* **Outputs**:
+  * `data/risk_production_summary_table_mr_{scenario}.csv`: Impact analysis for that specific risk scenario on recent data.
+  * `images/b2_ever_h6_vs_octroi_and_risk_score_mr_{scenario}.html`: Visualization of the risk surface.
+
+### 6. Risk Production Summary Table (MR)
 
 We generated a summary table to quantify the impact of the Main Period's optimal strategy on the MR data:
 
@@ -51,36 +57,27 @@ We generated a summary table to quantify the impact of the Main Period's optimal
     * **Swap-out**: Booked applicants in MR that *failed* the optimal cuts (risk avoidance).
     * **Optimum**: The theoretical portfolio (Actual - Swap-out + Swap-in).
 
-### 6. Code Refactoring (`src/mr_pipeline.py`)
-
-To improve maintainability, the MR logic was extracted from `main.py` into a dedicated module `src/mr_pipeline.py`. This encapsulates:
-
-* Data filtering and preparation.
-* Inference model application.
-* Aggregation and visualization logic.
-* Summary table generation.
-
 ## Key Artifacts
 
 | Artifact | Description |
 | :--- | :--- |
-| `data/optimal_solution.csv` | The selected optimal strategy (cutoffs) from the main period. |
-| `data/risk_production_summary_table.csv` | Impact analysis for the Main Period. |
-| `data/risk_production_summary_table_mr.csv` | **New**: Impact analysis applying the strategy to the MR Period. |
-| `images/risk_production_visualizer.html` | Interactive dashboard for exploring the efficient frontier. |
-| `images/b2_ever_h6_vs_octroi_and_risk_score_mr.html` | 3D surface plot of risk distribution in the MR period. |
+| `data/optimal_solution_{scenario}.csv` | The selected optimal strategy (cutoffs) for a specific risk scenario. |
+| `data/risk_production_summary_table_{scenario}.csv` | Impact analysis for the Main Period (per scenario). |
+| `data/risk_production_summary_table_mr_{scenario}.csv` | **New**: Impact analysis applying the strategy to the MR Period (per scenario). |
+| `images/risk_production_visualizer_{scenario}.html` | Interactive dashboard for exploring the efficient frontier. |
+| `data/optimal_solution.csv` | *Base Case* (Backward Compatible) file. |
 
 ## Suggested Improvements
 
 ### Technical Improvements
 
-1. **Unit Testing**: Add `pytest` for the new `src/mr_pipeline.py` and `src/utils.py`. The current validation relies on running the full pipeline; unit tests would allow faster iteration on specific logic (e.g., ensuring the Swap-in/Swap-out math is invariant).
-2. **Configuration Management**: Move hardcoded constants (like the multiplier `7`, Z-thresholds `3.0`, or column names like `sc_octroi_new_clus`) into `config.toml`. Currently, some variable names are effectively hardcoded in the script logic.
-3. **Type Hinting**: Expand Python type hints (MyPy) across all functions to prevent data type errors (e.g., ensuring `annual_coef` is always a float).
-4. **Parallel Processing**: The `get_fact_sol` and `kpi_of_fact_sol` steps can be computationally intensive. Using `joblib` or `multiprocessing` to parallelize the chunk processing could significantly speed up execution.
+1. **Unit Testing**: Continue expanding `pytest` coverage. While `src/mr_pipeline.py` has tests, adding tests for the parallelized `src/utils.py` functions (mocking `joblib`) would ensure stability.
+2. **CI/CD Integration**: Implement a GitHub Actions workflow to run tests and linters (ruff/mypy) on push.
+3. **Containerization**: Create a `Dockerfile` to standardize the execution environment (Python version, system dependencies for `sas7bdat`).
+4. **Error Handling**: Enhance exception handling in the parallel workers to ensure robust logging and graceful failure if a single chunk fails.
 
 ### Functional Improvements
 
 1. **Dynamic Variable Support**: The current logic heavily assumes a 2-variable grid (`sc_octroi_new_clus`, `new_efx_clus`). Generalizing this to N-dimensions would allow for more complex strategies.
 2. **Stability Metrics**: Add specific metrics to compare Main vs. MR distribution stability (PSI - Population Stability Index) automatically in the pipeline.
-3. **Scenario Analysis**: Allow the user to input a custom set of cuts (manual override) via config to test specific business hypotheses without running the full optimization search.
+3. **Interactive Reporting**: Consolidate the multiple HTML outputs into a single Streamlit or Dash app for easier navigation between scenarios.
