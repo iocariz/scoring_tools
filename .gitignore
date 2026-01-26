@@ -1,0 +1,20 @@
+# User requested exclusions
+data/
+images/
+models/
+
+# Python
+__pycache__/
+*.pyc
+
+# Mac
+.DS_Store
+
+# Virtual Env
+.venv/
+venv/
+env/
+
+# Logs and Caches
+error_log.txt
+.pytest_cache/
