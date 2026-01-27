@@ -33,6 +33,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from loguru import logger
 from tqdm import tqdm
 
+from src.consolidation import generate_consolidation_report
+
 
 def load_base_config(config_path: str = "config.toml") -> Dict[str, Any]:
     """Load the base configuration from config.toml."""
@@ -778,6 +780,16 @@ def main():
         action="store_true",
         help="Skip data quality checks (not recommended for production)"
     )
+    parser.add_argument(
+        "--no-consolidation",
+        action="store_true",
+        help="Skip generating consolidated report at the end"
+    )
+    parser.add_argument(
+        "--consolidate-only",
+        action="store_true",
+        help="Only generate consolidated report (skip running segments)"
+    )
 
     args = parser.parse_args()
 
@@ -847,6 +859,27 @@ def main():
 
         print()  # Blank line after clean output
 
+    # Handle consolidate-only mode
+    if args.consolidate_only:
+        print(f"\n{'='*60}")
+        print("Consolidate-Only Mode")
+        print(f"{'='*60}")
+        try:
+            consolidated_df, _ = generate_consolidation_report(
+                output_base=args.output,
+                segments=segments,
+                supersegments=all_supersegments,
+                output_path=args.output
+            )
+            print(f"\nConsolidated report saved to:")
+            print(f"  - {args.output}/consolidated_risk_production.csv")
+            print(f"  - {args.output}/consolidated_risk_production.html")
+            return 0
+        except Exception as e:
+            logger.error(f"Error generating consolidated report: {e}")
+            logger.exception("Full traceback:")
+            return 1
+
     print(f"\nProcessing {len(segments)} segment(s): {list(segments.keys())}")
     if used_supersegments:
         print(f"Supersegments to train: {list(used_supersegments)}")
@@ -876,6 +909,29 @@ def main():
 
     # Print summary
     print_summary(results)
+
+    # Generate consolidated report
+    if not args.no_consolidation:
+        successful_segments = {name: config for name, config in segments.items() if results.get(name, False)}
+        if successful_segments:
+            print(f"\n{'='*60}")
+            print("Generating Consolidated Report")
+            print(f"{'='*60}")
+            try:
+                consolidated_df, _ = generate_consolidation_report(
+                    output_base=args.output,
+                    segments=successful_segments,
+                    supersegments=all_supersegments,
+                    output_path=args.output
+                )
+                print(f"\nConsolidated report saved to:")
+                print(f"  - {args.output}/consolidated_risk_production.csv")
+                print(f"  - {args.output}/consolidated_risk_production.html")
+            except Exception as e:
+                logger.error(f"Error generating consolidated report: {e}")
+                logger.exception("Full traceback:")
+        else:
+            print("\nNo successful segments to consolidate.")
 
     # Return exit code based on results
     return 0 if all(results.values()) else 1

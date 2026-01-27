@@ -134,6 +134,79 @@ output/
 └── premium/                     # Individual model + optimization
 ```
 
+## Consolidated Reports
+
+After processing all segments, the pipeline automatically generates a **consolidated risk production report** that aggregates metrics across:
+
+- Individual segments
+- Supersegments (combined segments)
+- Total portfolio
+- Main and MR periods
+- All scenarios
+
+### Generated Files
+
+| File | Description |
+|------|-------------|
+| `output/consolidated_risk_production.csv` | Full data with all metrics |
+| `output/consolidated_risk_production.html` | Interactive dashboard |
+
+### Sample Console Output
+
+```
+================================================================================
+CONSOLIDATED RISK PRODUCTION SUMMARY
+================================================================================
+
+────────────────────────────────────────
+SCENARIO: 1.1
+────────────────────────────────────────
+
+  MAIN Period:
+    Actual Production:  €45,234,567
+    Optimum Production: €48,765,432
+    Delta:              €3,530,865 (+7.8%)
+    Risk:               1.12% → 1.08%
+
+  MR Period:
+    Actual Production:  €12,456,789
+    Optimum Production: €13,234,567
+    Delta:              €777,778 (+6.2%)
+    Risk:               1.15% → 1.10%
+
+  By Supersegment (Main Period):
+    no_premium: €32,123,456 → €34,567,890 (+7.6%)
+    premium:    €13,111,111 → €14,197,542 (+8.3%)
+
+================================================================================
+```
+
+### Usage
+
+```bash
+# Run segments and generate consolidated report (default)
+uv run python run_batch.py
+
+# Skip consolidation
+uv run python run_batch.py --no-consolidation
+
+# Only generate consolidated report (segments already processed)
+uv run python run_batch.py --consolidate-only
+```
+
+### Metrics Included
+
+| Metric | Description |
+|--------|-------------|
+| `actual_production` | Current portfolio production |
+| `actual_risk` | Current portfolio risk |
+| `optimum_production` | Production with optimal cutoffs |
+| `optimum_risk` | Risk with optimal cutoffs |
+| `production_delta` | Optimum - Actual production |
+| `production_delta_pct` | Percentage change |
+| `swap_in_*` | Rejected applications that pass optimal cuts |
+| `swap_out_*` | Booked applications that fail optimal cuts |
+
 ## Stability Metrics (PSI/CSI)
 
 The pipeline automatically calculates **Population Stability Index (PSI)** and **Characteristic Stability Index (CSI)** when comparing Main vs MR periods. This detects distribution drift that could indicate model degradation.
@@ -332,6 +405,8 @@ We generated a summary table to quantify the impact of the Main Period's optimal
 
 ## Key Artifacts
 
+### Per-Segment Outputs
+
 | Artifact | Description |
 | :--- | :--- |
 | `data/optimal_solution_{scenario}.csv` | The selected optimal strategy (cutoffs) for a specific risk scenario. |
@@ -340,7 +415,13 @@ We generated a summary table to quantify the impact of the Main Period's optimal
 | `data/stability_psi_{scenario}.csv` | PSI/CSI stability metrics comparing Main vs MR periods. |
 | `images/risk_production_visualizer_{scenario}.html` | Interactive dashboard for exploring the efficient frontier. |
 | `images/stability_report_{scenario}.html` | Interactive stability dashboard with PSI charts. |
-| `data/optimal_solution.csv` | *Base Case* (Backward Compatible) file. |
+
+### Consolidated Outputs (Portfolio-Level)
+
+| Artifact | Description |
+| :--- | :--- |
+| `output/consolidated_risk_production.csv` | Aggregated metrics by supersegment, segment, and total. |
+| `output/consolidated_risk_production.html` | Interactive consolidated dashboard. |
 
 ## CLI Reference
 
@@ -367,6 +448,8 @@ Options:
   --clean                         Remove output directories before running
   --clean-only                    Only clean output directories (don't run)
   --skip-dq-checks                Skip data quality checks (not recommended)
+  --no-consolidation              Skip generating consolidated report
+  --consolidate-only              Only generate consolidated report (skip segments)
 ```
 
 ## Suggested Improvements
