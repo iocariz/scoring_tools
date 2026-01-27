@@ -2,6 +2,7 @@
 data/
 images/
 models/
+output/
 
 # Python
 __pycache__/

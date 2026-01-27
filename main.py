@@ -214,15 +214,23 @@ def load_data(df_path: str) -> pd.DataFrame:
     df = pd.read_sas(df_path, format="sas7bdat", encoding="utf-8")
     return df
 
-def main():
-    """Load and preprocess SAS data using configuration."""
+def main(config_path: str = "config.toml"):
+    """
+    Load and preprocess SAS data using configuration.
+
+    Args:
+        config_path: Path to the configuration TOML file (default: config.toml)
+
+    Returns:
+        Tuple of processed DataFrames, or None if processing fails
+    """
 
     # =========================================================================
     # STEP 1: Load and validate configuration
     # =========================================================================
-    logger.info("Loading configuration...")
+    logger.info(f"Loading configuration from {config_path}...")
     try:
-        config_data = load_config()
+        config_data = load_config(config_path)
         logger.info("Configuration loaded successfully.")
 
         # Ensure cz_config keys are integers (TOML keys are always strings)
