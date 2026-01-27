@@ -1,16 +1,31 @@
+"""
+Visualization functions for credit risk model analysis and reporting.
+
+This module provides plotting functions for model evaluation and risk analysis:
+- ROC curves and Gini visualization
+- KS statistic plots
+- CAP curves and rejection analysis
+- 3D surface plots for risk landscapes
+- Interactive risk vs production visualizations
+- Group statistics and confidence interval plots
+
+Key components:
+- plot_roc_curve: Plot ROC curve with Gini and KS annotations
+- visualize_metrics: Create comprehensive model evaluation dashboard
+- plot_group_statistics: Visualize performance by risk groups
+- RiskProductionVisualizer: Interactive risk/production trade-off visualization
+- plot_risk_vs_production: Static risk vs production scatter plot
+"""
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-# import ipywidgets as widgets  <-- Removed
-# from IPython.display import display <-- Removed
-# from ipywidgets import interact <-- Removed
-# from colorama import Fore <-- Removed
 from sklearn.metrics import roc_curve, auc
 from .metrics import ks_statistic, compute_metrics
 from .utils import calculate_b2_ever_h6
+from .constants import Columns, StatusName
 from typing import List, Dict, Optional
 from . import styles
 
@@ -31,7 +46,23 @@ def plot_roc_curve(ax, y_true, scores, name, color):
                 xytext=(-80,-10), textcoords='offset points',
                 arrowprops=dict(arrowstyle="->"))
 
-def visualize_metrics(y_true, scores_dict, ax):
+def visualize_metrics(y_true: np.ndarray, scores_dict: Dict[str, np.ndarray], ax: List) -> None:
+    """
+    Create a comprehensive model evaluation dashboard with ROC and CAP curves.
+
+    Generates four subplots comparing multiple scoring models:
+    - Individual models ROC curves (ax[0])
+    - Combined models ROC curves (ax[1])
+    - Individual models CAP curves (ax[2])
+    - Combined models CAP curves (ax[3])
+
+    Models are classified as "combined" if their name contains "combined" (case-insensitive).
+
+    Args:
+        y_true: Binary array of true outcomes (1=bad, 0=good).
+        scores_dict: Dictionary mapping model names to score arrays.
+        ax: List of 4 matplotlib axes for the subplots.
+    """
     styles.apply_matplotlib_style()
     palette = sns.color_palette("viridis", len(scores_dict))
 
@@ -143,7 +174,30 @@ def plot_group_statistics(data_frame, group_col, binary_outcome):
     fig.tight_layout()
     return fig
 
-def plot_3d_graph(data_train, data_surf, variables, var_target):
+def plot_3d_graph(
+    data_train: pd.DataFrame,
+    data_surf: pd.DataFrame,
+    variables: List[str],
+    var_target: str
+) -> go.Figure:
+    """
+    Create a 3D visualization of regression predictions with actual data points.
+
+    Displays:
+    - Blue scatter points: Training data (actual values)
+    - Red scatter points: Outliers/test data
+    - Viridis surface: Regression model predictions
+
+    Args:
+        data_train: Training data with actual target values (filtered/clean).
+        data_surf: Full data including outliers and predicted values.
+            Must contain '{var_target}_pred' column with predictions.
+        variables: List of two variable names [var0, var1] for X and Y axes.
+        var_target: Name of the target variable for Z axis.
+
+    Returns:
+        Plotly Figure object with 3D surface and scatter plots.
+    """
     data_surf_pivot = data_surf.pivot(
         index=variables[1], columns=variables[0], values=f'{var_target}_pred')
 
@@ -198,8 +252,52 @@ def plot_3d_graph(data_train, data_surf, variables, var_target):
     return fig
 
 class RiskProductionVisualizer:
-    def __init__(self, data_summary, data_summary_disaggregated, data_summary_sample_no_opt,
-                 variables, values_var0, values_var1, optimum_risk, tasa_fin, target_sol_fac=None):
+    """
+    Interactive visualization for risk vs production trade-off analysis.
+
+    Creates a two-panel Plotly figure:
+    - Left panel: Scatter plot showing optimal frontier of risk vs production
+    - Right panel: Heatmap showing risk levels with optimal cut-off overlay
+
+    The visualization helps identify the optimal balance between portfolio
+    production (revenue) and risk levels based on feasible cut-off solutions.
+
+    Attributes:
+        data_summary: Summary DataFrame with optimal solutions.
+        data_summary_disaggregated: Disaggregated data by variable combinations.
+        optimum_risk: Target risk threshold for selecting optimal solution.
+        B2_0: Actual (current) B2 risk metric.
+        OA_0: Actual (current) production amount.
+    """
+
+    def __init__(
+        self,
+        data_summary: pd.DataFrame,
+        data_summary_disaggregated: pd.DataFrame,
+        data_summary_sample_no_opt: pd.DataFrame,
+        variables: List[str],
+        values_var0: np.ndarray,
+        values_var1: np.ndarray,
+        optimum_risk: float,
+        tasa_fin: float,
+        target_sol_fac: Optional[int] = None
+    ):
+        """
+        Initialize the RiskProductionVisualizer.
+
+        Args:
+            data_summary: DataFrame with optimal solutions containing columns:
+                b2_ever_h6, oa_amt_h0, and cut values for each bin.
+            data_summary_disaggregated: Disaggregated booked data with '_boo' suffixes.
+            data_summary_sample_no_opt: Sample of non-optimal solutions for context.
+            variables: List of two variable names [var0, var1].
+            values_var0: Array of bin values for first variable.
+            values_var1: Array of bin values for second variable.
+            optimum_risk: Target risk level (%) for automatic solution selection.
+            tasa_fin: Financing rate (used for repesca calculations).
+            target_sol_fac: Optional specific solution ID to select instead of
+                using optimum_risk threshold.
+        """
         self.data_summary = data_summary
         self.data_summary_disaggregated = data_summary_disaggregated
         self.data_summary_sample_no_opt = data_summary_sample_no_opt
@@ -528,15 +626,15 @@ def plot_risk_vs_production(
     # 1. Data Preparation
     # ---------------------------------------------------------
     # Ensure dates are datetime objects
-    if not pd.api.types.is_datetime64_any_dtype(data['mis_date']):
-        data['mis_date'] = pd.to_datetime(data['mis_date'])
-        
-    df_plot = (data[data['status_name'] == 'booked']
-               .groupby(['mis_date'], as_index=False)
+    if not pd.api.types.is_datetime64_any_dtype(data[Columns.MIS_DATE]):
+        data[Columns.MIS_DATE] = pd.to_datetime(data[Columns.MIS_DATE])
+
+    df_plot = (data[data[Columns.STATUS_NAME] == StatusName.BOOKED.value]
+               .groupby([Columns.MIS_DATE], as_index=False)
                .agg({col: 'sum' for col in indicadores}))
-   
+
     # Calculate rolling sums (handling potential missing cols gracefully)
-    risk_cols = ['todu_30ever_h6', 'todu_amt_pile_h6']
+    risk_cols = [Columns.TODU_30EVER_H6, Columns.TODU_AMT_PILE_H6]
     if not all(col in df_plot.columns for col in risk_cols):
         raise ValueError(f"Data is missing required columns: {risk_cols}")
 
@@ -545,22 +643,22 @@ def plot_risk_vs_production(
         df_plot[f"{col}_MA{rolling_window}"] = df_plot[col].rolling(rolling_window).sum()
    
     # Calculate risk percentages
-    df_plot['b2_ever_h6'] = calculate_b2_ever_h6(
-        df_plot['todu_30ever_h6'],
-        df_plot['todu_amt_pile_h6'],
+    df_plot[Columns.B2_EVER_H6] = calculate_b2_ever_h6(
+        df_plot[Columns.TODU_30EVER_H6],
+        df_plot[Columns.TODU_AMT_PILE_H6],
         as_percentage=True
     )
 
     df_plot['b2_ever_h6_MA'] = calculate_b2_ever_h6(
-        df_plot[f'todu_30ever_h6_MA{rolling_window}'],
-        df_plot[f'todu_amt_pile_h6_MA{rolling_window}'],
+        df_plot[f'{Columns.TODU_30EVER_H6}_MA{rolling_window}'],
+        df_plot[f'{Columns.TODU_AMT_PILE_H6}_MA{rolling_window}'],
         as_percentage=True
     )
-    
+
     # 2. Dynamic Comfort Zone Logic
     # ---------------------------------------------------------
     # Map the year of the date to the value in the dictionary
-    df_plot['year'] = df_plot['mis_date'].dt.year
+    df_plot['year'] = df_plot[Columns.MIS_DATE].dt.year
     df_plot['cz_target'] = df_plot['year'].map(comfort_zones)
     
     # 3. Plotting

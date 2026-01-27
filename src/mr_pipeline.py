@@ -1,3 +1,16 @@
+"""
+Marginal Risk (MR) pipeline for credit risk analysis and optimization.
+
+This module orchestrates the marginal risk analysis workflow:
+- Calculating risk metrics from optimal cut points
+- Processing MR periods with demand and production data
+- Generating risk production summary tables
+- Running optimization pipelines for portfolio management
+
+Key functions:
+- calculate_metrics_from_cuts: Apply optimal cuts to aggregated data
+- process_mr_period: Execute full MR analysis for a time period
+"""
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, List, Optional

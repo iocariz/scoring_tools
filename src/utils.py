@@ -1,3 +1,20 @@
+"""
+Utility functions for credit risk scoring and portfolio optimization.
+
+This module provides core utility functions used throughout the scoring tools:
+- Risk metric calculations (b2_ever_h6)
+- Data optimization and memory management
+- Feasible solution generation for portfolio optimization
+- KPI calculations and stress testing
+- Visualization helpers for transformation rates
+
+Key functions:
+- calculate_b2_ever_h6: Calculate the primary risk metric
+- get_fact_sol: Generate feasible solutions with monotonicity constraints
+- kpi_of_fact_sol: Calculate KPIs for feasible solutions
+- get_optimal_solutions: Find Pareto-optimal solutions
+- calculate_stress_factor: Compute stress factors from historical data
+"""
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Any, Optional, Union
@@ -10,9 +27,7 @@ from joblib import Parallel, delayed
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from . import styles
-
-# Default multiplier for b2_ever_h6 calculation
-DEFAULT_RISK_MULTIPLIER = 7
+from .constants import Columns, StatusName, DEFAULT_RISK_MULTIPLIER
 
 
 def calculate_b2_ever_h6(
@@ -102,28 +117,47 @@ def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def _get_fact_sol(values_var0: List[float], values_var1: List[float], inv_var1: bool = False) -> pd.DataFrame:
-    v = [0]+values_var1
-    v = pd.DataFrame([[0 for i in v], v]).T.astype(
-        'int8').rename(columns={0: 'on'})
-    df_v = pd.DataFrame([0], columns=['on'])
-    
-    i_anterior = None
-    for n, i in enumerate(values_var0):
-        df_v = df_v.merge(v.rename(columns={1: i}), on='on', how='outer')
-        if i > values_var0[0]:
-            if inv_var1 == True:
-                df_v = df_v[df_v[i_anterior] >= df_v[i]]
-            else:
-                df_v = df_v[df_v[i_anterior] <= df_v[i]]
-        i_anterior = i
-        
-        logger.info('--Obteniendo soluciones factibles')
-        logger.info(f'Bins: {n+1}/{len(values_var0)}')
-        logger.info(f'Número de soluciones factibles: {df_v.shape[0]:,.0f}')
-    df_v = df_v.drop(columns=['on'])
-    df_v = df_v.reset_index(drop=True).reset_index().rename(
-        columns={'index': 'sol_fac'})
-    return(df_v)
+    """
+    Generate all feasible solutions (cut combinations) with monotonicity constraint.
+
+    Uses itertools.combinations_with_replacement for O(C(n+k-1, k)) complexity
+    instead of O(n^k) from repeated merges.
+
+    Args:
+        values_var0: Bin indices (columns in output)
+        values_var1: Possible cut values for each bin
+        inv_var1: If True, cuts must be monotonically decreasing; otherwise increasing
+
+    Returns:
+        DataFrame with columns ['sol_fac'] + values_var0, where each row is a valid combination
+    """
+    from itertools import combinations_with_replacement
+
+    n_bins = len(values_var0)
+    # Include 0 as a possible cut, and deduplicate + sort
+    cut_values = sorted(set([0] + list(values_var1)))
+
+    logger.info('--Obteniendo soluciones factibles')
+    logger.info(f'Bins: {n_bins}, Cut values: {len(cut_values)}')
+
+    # Generate monotonically non-decreasing combinations directly
+    # combinations_with_replacement gives tuples where values are in sorted order
+    combinations = list(combinations_with_replacement(cut_values, n_bins))
+
+    logger.info(f'Número de soluciones factibles: {len(combinations):,}')
+
+    # If inv_var1, we need monotonically decreasing, so reverse each combination
+    if inv_var1:
+        combinations = [tuple(reversed(c)) for c in combinations]
+
+    # Create DataFrame with bin indices as column names
+    df_v = pd.DataFrame(combinations, columns=values_var0)
+    df_v = optimize_dtypes(df_v)
+
+    # Add solution index
+    df_v = df_v.reset_index().rename(columns={'index': 'sol_fac'})
+
+    return df_v
 
 def process_kpi_chunk(
     chunk_data: pd.DataFrame,
@@ -214,61 +248,95 @@ def get_fact_sol(
     inv_var1: bool = False,
     chunk_size: int = 10000
 ) -> pd.DataFrame:
-    """Memory-optimized version of get_fact_sol"""
+    """
+    Generate all feasible solutions (cut combinations) with monotonicity constraint.
+
+    Optimized using numpy-based combination generation for memory efficiency.
+
+    Args:
+        values_var0: Bin indices (columns in output)
+        values_var1: Possible cut values for each bin
+        inv_var1: If True, cuts must be monotonically decreasing; otherwise increasing
+        chunk_size: Unused, kept for backward compatibility
+
+    Returns:
+        DataFrame with columns ['sol_fac'] + values_var0, where each row is a valid combination
+    """
+    from itertools import combinations_with_replacement
+
     try:
-        # Initial setup with optimized dtypes
-        v = pd.DataFrame({
-            'on': [0] * (len(values_var1) + 1),
-            'value': [0] + values_var1
-        })
-        v = optimize_dtypes(v)
-       
-        df_v = pd.DataFrame({'on': [0]})
-        i_anterior = None
+        n_bins = len(values_var0)
+        # Include 0 as a possible cut, and deduplicate + sort
+        cut_values = np.array(sorted(set([0] + list(values_var1))))
+
         logger.info('--Getting feasible solutions')
-        # Process each value with memory management
-        for n, i in tqdm(enumerate(values_var0), desc="Processing Bins"):
-            # Memory-efficient merge
-            df_v = df_v.merge(
-                v.rename(columns={'value': i}),
-                on='on',
-                how='outer'
-            )
-           
-            # Apply constraints
-            if i > values_var0[0]:
-                if inv_var1:
-                    df_v = df_v[df_v[i_anterior] >= df_v[i]]
-                else:
-                    df_v = df_v[df_v[i_anterior] <= df_v[i]]
-           
-            i_anterior = i
-           
-            # Optimize dtypes after operations
-            df_v = optimize_dtypes(df_v)
-           
-            # Force garbage collection
-            gc.collect()
-           
-            # Progress update
-            logger.info(f'Bins: {n+1}/{len(values_var0)}')
-            logger.info(f'Number of feasible solutions: {df_v.shape[0]:,}')
-       
-        # Prepare final output efficiently
-        df_v = df_v.drop(columns=['on'])
-        df_v = optimize_dtypes(
-            df_v.reset_index(drop=True)
-            .reset_index()
-            .rename(columns={'index': 'sol_fac'})
-        )
-       
+        logger.info(f'Bins: {n_bins}, Cut values: {len(cut_values)}')
+
+        # Generate monotonically non-decreasing combinations using numpy
+        # combinations_with_replacement returns indices we can use directly
+        n_values = len(cut_values)
+
+        # Use numpy to generate combinations more efficiently
+        # Create array directly from combinations_with_replacement
+        comb_indices = np.array(list(combinations_with_replacement(range(n_values), n_bins)), dtype=np.int16)
+        combinations_array = cut_values[comb_indices]
+
+        logger.info(f'Number of feasible solutions: {len(combinations_array):,}')
+
+        # If inv_var1, we need monotonically decreasing, so reverse each row
+        if inv_var1:
+            combinations_array = combinations_array[:, ::-1]
+
+        # Create DataFrame with bin indices as column names
+        df_v = pd.DataFrame(combinations_array, columns=values_var0)
+        df_v = optimize_dtypes(df_v)
+
+        # Add solution index
+        df_v.insert(0, 'sol_fac', np.arange(len(df_v), dtype=np.int32))
+
         return df_v
-       
+
     except Exception as e:
         logger.error(f"Error in get_fact_sol: {str(e)}")
         raise
 
-def kpi_of_fact_sol(df_v, values_var0, data_sumary_desagregado, variables, indicadores, inv_var1=False, chunk_size=1000):
+def kpi_of_fact_sol(
+    df_v: pd.DataFrame,
+    values_var0: np.ndarray,
+    data_sumary_desagregado: pd.DataFrame,
+    variables: List[str],
+    indicadores: List[str],
+    inv_var1: bool = False,
+    chunk_size: int = 1000
+) -> pd.DataFrame:
+    """
+    Calculate KPIs for all feasible solutions by applying cuts to aggregated data.
+
+    For each feasible solution (defined by cut points), calculates aggregate KPIs
+    by matching records to cut points and summing indicators. Uses parallel
+    processing to efficiently handle large solution spaces.
+
+    Args:
+        df_v: DataFrame of feasible solutions from get_fact_sol(), with columns
+            for solution ID and cut points for each bin.
+        values_var0: Array of bin values for the first variable.
+        data_sumary_desagregado: Aggregated data with indicators by variable combinations.
+            Expected columns: variables, indicators with '_boo' and '_rep' suffixes.
+        variables: List of two variable names [var0, var1].
+        indicadores: List of indicator column names to aggregate.
+        inv_var1: If True, apply inverse ordering for var1 (decreasing cuts).
+        chunk_size: Number of solutions to process per parallel chunk.
+
+    Returns:
+        DataFrame with one row per solution containing:
+        - sol_fac: Solution identifier
+        - Aggregated indicators with suffixes: _boo (booked), _rep (repesca), _cut (rejected)
+        - Calculated b2_ever_h6 metrics for each suffix
+        Sorted by b2_ever_h6 (risk) and oa_amt_h0 (production).
+
+    Raises:
+        Exception: If parallel processing or aggregation fails.
+    """
     try:
         logger.info('--Calculating KPIs for feasible solutions')
         
@@ -463,7 +531,7 @@ def calculate_and_plot_transformation_rate(
     
     # Identify booked (Numerator: Status Booked AND Eligible)
     # Note: We rely on the row being in the eligible set first
-    df_eligible['is_booked'] = df_eligible['status_name'] == 'booked'
+    df_eligible['is_booked'] = df_eligible[Columns.STATUS_NAME] == StatusName.BOOKED.value
     
     # 2. Calculation
     # ---------------------------------------------------------

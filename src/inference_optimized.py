@@ -34,13 +34,14 @@ from sklearn.model_selection import train_test_split
 # Project imports
 from src.models import preprocess_data, transform_variables
 from src.utils import calculate_b2_ever_h6
-from src import styles 
+from src.constants import (
+    Columns, StatusName, Suffixes,
+    DEFAULT_TEST_SIZE, DEFAULT_Z_THRESHOLD, DEFAULT_RANDOM_STATE
+)
+from src import styles
 
 
-# Constants
-DEFAULT_TEST_SIZE = 0.4
-DEFAULT_Z_THRESHOLD = 3
-DEFAULT_RANDOM_STATE = 42
+# Module-specific constants
 DEFAULT_N_POINTS_3D = 20
 
 
@@ -253,7 +254,7 @@ def split_and_prepare_data(
         Tuple of (train_data, test_data, var_reg, var_reg_extended)
     """
     # Filter to booked data only
-    booked_data = data[data['status_name'] == 'booked'].copy()
+    booked_data = data[data[Columns.STATUS_NAME] == StatusName.BOOKED.value].copy()
     
     # Split at record level before grouping
     train_raw, test_raw = train_test_split(
@@ -430,13 +431,13 @@ def evaluate_models_for_aggregated_data(
     
     # Evaluate models
     results = []
-    
-    print("\nEvaluating models...")
+
+    logger.info("Evaluating models...")
     if weights_train is not None:
         logger.info(f"Using weighted regression with sample weights")
         logger.info(f"Weight range - Train: [{weights_train.min():.0f}, {weights_train.max():.0f}], "
               f"Test: [{weights_test.min():.0f}, {weights_test.max():.0f}]")
-    print("-" * 80)
+    logger.info("-" * 80)
     
     for name, model in models.items():
         try:
@@ -487,10 +488,9 @@ def evaluate_models_for_aggregated_data(
     display_cols = ['Model', 'Train R²', 'Test R²', 'Test RMSE', 'Overfit']
     if include_hurdle:
         display_cols.append('Zero/NonZero Acc')
-    
-    print("\nTop 10 Models by Test R²:" if len(results_df) > 10 else "\nAll Models by Test R²:")
-    # Using print for DataFrame display as logger might mess up formatting
-    print(results_df[display_cols].head(10))
+
+    logger.info("Top 10 Models by Test R²:" if len(results_df) > 10 else "All Models by Test R²:")
+    logger.info(f"\n{results_df[display_cols].head(10).to_string()}")
     
     # Get best model
     best_idx = results_df['Test R²'].idxmax()
@@ -574,9 +574,9 @@ def save_model_with_metadata(
     # Save model summary
     _save_model_summary(version_path, model, features, metadata, timestamp)
     
-    print("\n" + "=" * 60)
+    logger.info("=" * 60)
     logger.info("MODEL SAVED SUCCESSFULLY")
-    print("=" * 60)
+    logger.info("=" * 60)
     logger.info(f"Directory: {version_path}")
     logger.info(f"   - Model: model.pkl")
     logger.info(f"   - Metadata: metadata.json")
@@ -889,22 +889,20 @@ def inference_pipeline(
     >>> model_path = results['model_path']
     """
     
-    print("="*80)
-    print("FULL MODELING PIPELINE")
-    print("="*80)
+    logger.info("=" * 80)
+    logger.info("FULL MODELING PIPELINE")
+    logger.info("=" * 80)
     logger.info(f"Target variable: {target_var}")
     logger.info(f"Test size: {test_size:.1%}")
     logger.info(f"Include Hurdle models: {include_hurdle}")
-    print("="*80)
+    logger.info("=" * 80)
     
     # ========================================================================
     # STEP 1: DATA PREPARATION
     # ========================================================================
-    # STEP 1: DATA PREPARATION
-    # ========================================================================
-    print("\n" + "="*80)
-    print("STEP 1: DATA PREPARATION")
-    print("="*80)
+    logger.info("=" * 80)
+    logger.info("STEP 1: DATA PREPARATION")
+    logger.info("=" * 80)
     
     train_data, test_data, var_reg, var_reg_extended = split_and_prepare_data(
         data=data,
@@ -931,9 +929,9 @@ def inference_pipeline(
     # ========================================================================
     # STEP 2: FEATURE EXTRACTION
     # ========================================================================
-    print("\n" + "="*80)
-    print("STEP 2: FEATURE EXTRACTION")
-    print("="*80)
+    logger.info("=" * 80)
+    logger.info("STEP 2: FEATURE EXTRACTION")
+    logger.info("=" * 80)
     
     # Extract features and target
     X_train = train_data[var_reg]
@@ -971,9 +969,9 @@ def inference_pipeline(
     # ========================================================================
     # STEP 3: MODEL EVALUATION
     # ========================================================================
-    print("\n" + "="*80)
-    print("STEP 3: MODEL EVALUATION")
-    print("="*80)
+    logger.info("=" * 80)
+    logger.info("STEP 3: MODEL EVALUATION")
+    logger.info("=" * 80)
     
     results_df, best_model_info = evaluate_models_for_aggregated_data(
         X_train=X_train,
@@ -989,9 +987,9 @@ def inference_pipeline(
     # ========================================================================
     # STEP 4: MODEL ANALYSIS
     # ========================================================================
-    print("\n" + "="*80)
-    print("STEP 4: MODEL ANALYSIS")
-    print("="*80)
+    logger.info("=" * 80)
+    logger.info("STEP 4: MODEL ANALYSIS")
+    logger.info("=" * 80)
     
     # Display detailed results for best model
     # Display detailed results for best model
@@ -1023,20 +1021,20 @@ def inference_pipeline(
             logger.info(f"  {feature}: {coef:.6f}")
     
     # Compare top models
-    print(f"\nTop 5 Models Comparison:")
+    logger.info("Top 5 Models Comparison:")
     display_cols = ['Model', 'Test R²', 'Test RMSE', 'Overfit']
     if 'Zero/NonZero Acc' in results_df.columns:
         display_cols.append('Zero/NonZero Acc')
-    print(results_df[display_cols].head())
+    logger.info(f"\n{results_df[display_cols].head().to_string()}")
     
     # ========================================================================
     # STEP 5: MODEL SAVING
     # ========================================================================
     model_path = None
     if save_model:
-        print("\n" + "="*80)
-        print("STEP 5: MODEL SAVING")
-        print("="*80)
+        logger.info("=" * 80)
+        logger.info("STEP 5: MODEL SAVING")
+        logger.info("=" * 80)
         
         # Prepare metadata
         model_metadata = {
@@ -1089,9 +1087,9 @@ def inference_pipeline(
     # ========================================================================
     fig = None
     if create_visualizations and len(variables) == 2:
-        print("\n" + "="*80)
-        print("STEP 6: 3D VISUALIZATION")
-        print("="*80)
+        logger.info("=" * 80)
+        logger.info("STEP 6: 3D VISUALIZATION")
+        logger.info("=" * 80)
         
         try:
             fig = plot_3d_surface(
@@ -1119,9 +1117,9 @@ def inference_pipeline(
     # ========================================================================
     # STEP 7: PIPELINE SUMMARY
     # ========================================================================
-    print("\n" + "="*80)
-    print("PIPELINE SUMMARY")
-    print("="*80)
+    logger.info("=" * 80)
+    logger.info("PIPELINE SUMMARY")
+    logger.info("=" * 80)
     
     logger.info(f"Pipeline completed successfully!")
     logger.info(f"Key Results:")
@@ -1133,8 +1131,8 @@ def inference_pipeline(
     
     if model_path:
         logger.info(f"  - Model saved: {model_path}")
-    
-    print("\n" + "="*80)
+
+    logger.info("=" * 80)
     
     # ========================================================================
     # RETURN ALL RESULTS
@@ -1181,9 +1179,9 @@ def predict_on_new_data(model_path: str, new_data: pd.DataFrame):
     ...     new_data=new_df
     ... )
     """
-    print("="*80)
-    print("PREDICTION ON NEW DATA")
-    print("="*80)
+    logger.info("=" * 80)
+    logger.info("PREDICTION ON NEW DATA")
+    logger.info("=" * 80)
     
     # Load model
     model, metadata, features = load_model_for_prediction(model_path)
@@ -1203,7 +1201,7 @@ def predict_on_new_data(model_path: str, new_data: pd.DataFrame):
     
     # Additional info for Hurdle models
     if metadata.get('is_hurdle', False):
-        from inference_optimized import HurdleRegressor
+        from src.inference_optimized import HurdleRegressor
         if isinstance(model, HurdleRegressor):
             binary_pred = model.predict_binary(new_data[features])
             prob_nonzero = model.classifier_.predict_proba(new_data[features])[:, 1]
@@ -1222,7 +1220,7 @@ def todu_average_inference(
     target_col: str = 'todu_amt_pile_h6', # Renamed from hardcoded var_target_oa
     z_threshold: float = 3.0, 
     plot_output_path: Optional[str] = "images/todu_avg_inference.html",
-    model_output_path: Optional[str] = "models/todu_model.pathlib"
+    model_output_path: Optional[str] = "models/todu_model.joblib"
 ) -> Tuple[go.Figure, Any, float]:
     """
         Calculate linear regression between a feature and a target (Todu), 
@@ -1257,7 +1255,7 @@ def todu_average_inference(
     # 2. Data Preparation
     # ---------------------------------------------------------
     # Filter for 'booked' status (case insensitive)
-    mask_booked = data['status_name'].astype(str).str.lower() == 'booked'
+    mask_booked = data[Columns.STATUS_NAME].astype(str).str.lower() == StatusName.BOOKED.value
     
     # Aggregation
     df_grouped = (
@@ -1388,9 +1386,9 @@ def run_optimization_pipeline(data_booked, data_demand, risk_inference, reg_todu
     
     # Calculate aggregate data for booked and repesca cases
     def calculate_aggregate_data(data, status, reject_reason=None):
-        filtered_data = data[data['status_name'] == status]
+        filtered_data = data[data[Columns.STATUS_NAME] == status]
         if reject_reason:
-            filtered_data = filtered_data[filtered_data['reject_reason'] == reject_reason]
+            filtered_data = filtered_data[filtered_data[Columns.REJECT_REASON] == reject_reason]
         return (
             filtered_data.groupby(VARIABLES)
             .agg({col: "sum" for col in INDICADORES})
@@ -1398,10 +1396,12 @@ def run_optimization_pipeline(data_booked, data_demand, risk_inference, reg_todu
             .reset_index()[VARIABLES + INDICADORES]
         )
 
-    data_sumary_desagregado_booked = calculate_aggregate_data(data_booked, "booked")
-    data_sumary_desagregado_booked.rename(columns={i: i+'_boo' for i in INDICADORES}, inplace=True)
-    
-    data_sumary_desagregado_repesca = calculate_aggregate_data(data_demand, "rejected", "09-score")
+    data_sumary_desagregado_booked = calculate_aggregate_data(data_booked, StatusName.BOOKED.value)
+    data_sumary_desagregado_booked.rename(columns={i: i + Suffixes.BOOKED for i in INDICADORES}, inplace=True)
+
+    data_sumary_desagregado_repesca = calculate_aggregate_data(
+        data_demand, StatusName.REJECTED.value, "09-score"
+    )
     
     # Apply Risk Model to Repesca
     # Note: calculate_risk_values is imported from src.models
