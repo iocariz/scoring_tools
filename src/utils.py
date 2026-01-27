@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 from tqdm import tqdm
 import gc
@@ -10,6 +10,46 @@ from joblib import Parallel, delayed
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from . import styles
+
+# Default multiplier for b2_ever_h6 calculation
+DEFAULT_RISK_MULTIPLIER = 7
+
+
+def calculate_b2_ever_h6(
+    numerator: Union[pd.Series, np.ndarray, float],
+    denominator: Union[pd.Series, np.ndarray, float],
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
+    as_percentage: bool = False,
+    decimals: int = 2
+) -> Union[pd.Series, np.ndarray, float]:
+    """
+    Calculate the b2_ever_h6 risk metric.
+
+    Formula: multiplier * numerator / denominator
+
+    Args:
+        numerator: todu_30ever_h6 values
+        denominator: todu_amt_pile_h6 values
+        multiplier: Risk multiplier (default: 7)
+        as_percentage: If True, multiply result by 100
+        decimals: Number of decimal places to round to
+
+    Returns:
+        Calculated b2_ever_h6 values, with division-by-zero handled as NaN
+    """
+    # Handle division by zero
+    if isinstance(denominator, (pd.Series, np.ndarray)):
+        safe_denominator = np.where(denominator == 0, np.nan, denominator)
+    else:
+        safe_denominator = np.nan if denominator == 0 else denominator
+
+    result = multiplier * numerator / safe_denominator
+
+    if as_percentage:
+        result = result * 100
+
+    return np.round(result, decimals)
+
 
 def get_data_information(df: pd.DataFrame) -> pd.DataFrame:
     """

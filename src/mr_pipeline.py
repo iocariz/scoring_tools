@@ -6,6 +6,7 @@ from loguru import logger
 import plotly.graph_objects as go
 from src.preprocess_improved import filter_by_date, StatusName
 from src.inference_optimized import run_optimization_pipeline
+from src.utils import calculate_b2_ever_h6
 from src import styles
 
 def calculate_metrics_from_cuts(
@@ -166,11 +167,10 @@ def process_mr_period(
             agg_data = data_booked.groupby(merge_keys)[['todu_30ever_h6', 'todu_amt_pile_h6']].sum().reset_index()
             
             # Calculate b2_ever_h6_tmp
-            agg_data['b2_ever_h6_tmp'] = np.where(
-                agg_data['todu_amt_pile_h6'] > 0,
-                (agg_data['todu_30ever_h6'] / agg_data['todu_amt_pile_h6']) * 7,
-                0.0
-            )
+            agg_data['b2_ever_h6_tmp'] = calculate_b2_ever_h6(
+                agg_data['todu_30ever_h6'],
+                agg_data['todu_amt_pile_h6']
+            ).fillna(0.0)
             
             merge_df = agg_data[merge_keys + ['b2_ever_h6_tmp']]
             
@@ -241,9 +241,10 @@ def process_mr_period(
         fig_mr = go.Figure()
         data_surf_mr = data_summary_desagregado_mr.copy()
         
-        data_surf_mr['b2_ever_h6'] = np.nan
-        mask_mr_valid = data_surf_mr['todu_amt_pile_h6'] > 0
-        data_surf_mr.loc[mask_mr_valid, 'b2_ever_h6'] = 7 * data_surf_mr.loc[mask_mr_valid, 'todu_30ever_h6'] / data_surf_mr.loc[mask_mr_valid, 'todu_amt_pile_h6']
+        data_surf_mr['b2_ever_h6'] = calculate_b2_ever_h6(
+            data_surf_mr['todu_30ever_h6'],
+            data_surf_mr['todu_amt_pile_h6']
+        )
         
         data_surf_pivot_mr = data_surf_mr.pivot(index=VARIABLES[1], columns=VARIABLES[0], values='b2_ever_h6')
         

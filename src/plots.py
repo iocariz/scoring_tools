@@ -10,6 +10,7 @@ from plotly.subplots import make_subplots
 # from colorama import Fore <-- Removed
 from sklearn.metrics import roc_curve, auc
 from .metrics import ks_statistic, compute_metrics
+from .utils import calculate_b2_ever_h6
 from typing import List, Dict, Optional
 from . import styles
 
@@ -544,14 +545,16 @@ def plot_risk_vs_production(
         df_plot[f"{col}_MA{rolling_window}"] = df_plot[col].rolling(rolling_window).sum()
    
     # Calculate risk percentages
-    # Use numpy to avoid division by zero errors (returns inf/nan)
-    df_plot['b2_ever_h6'] = np.round(
-        100 * 7 * df_plot['todu_30ever_h6'] / df_plot['todu_amt_pile_h6'].replace(0, np.nan), 2
+    df_plot['b2_ever_h6'] = calculate_b2_ever_h6(
+        df_plot['todu_30ever_h6'],
+        df_plot['todu_amt_pile_h6'],
+        as_percentage=True
     )
-    
-    df_plot['b2_ever_h6_MA'] = np.round(
-        100 * 7 * df_plot[f'todu_30ever_h6_MA{rolling_window}'] /
-        df_plot[f'todu_amt_pile_h6_MA{rolling_window}'].replace(0, np.nan), 2
+
+    df_plot['b2_ever_h6_MA'] = calculate_b2_ever_h6(
+        df_plot[f'todu_30ever_h6_MA{rolling_window}'],
+        df_plot[f'todu_amt_pile_h6_MA{rolling_window}'],
+        as_percentage=True
     )
     
     # 2. Dynamic Comfort Zone Logic

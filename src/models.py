@@ -3,7 +3,6 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.cluster import KMeans
 from sklearn import tree as sktree
 import matplotlib.pyplot as plt
 from typing import List
@@ -47,22 +46,6 @@ def optimal_splits_using_tree(data_frame, numeric_variable, binary_outcome, num_
                                  bins=[-float("inf")] + splits + [float("inf")],
                                  labels=range(1, len(splits) + 2))
     
-    return data_frame
-
-def optimal_splits_using_clusters(data_frame, numeric_variable, binary_outcome, num_groups):
-    """
-    Cluster the numeric_variable using KMeans clustering.
-    """
-    logger.debug(f"Data shape for clustering: {data_frame[[numeric_variable]].shape}")
-
-    X = data_frame[[numeric_variable]]
-    
-    kmeans = KMeans(n_clusters=num_groups, random_state=0, n_init='auto').fit(X)
-    data_frame['cluster'] = kmeans.labels_ +1
-    
-    cluster_means = data_frame.groupby('cluster')[binary_outcome].mean().sort_values(ascending=False)
-    cluster_order = {cluster: i for i, cluster in enumerate(cluster_means.index)}
-    data_frame['cluster'] = data_frame['cluster'].replace(cluster_order)
     return data_frame
 
 def calculate_financing_rates(data, date_ini_demand, lm=6):

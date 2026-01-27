@@ -32,7 +32,8 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
 # Project imports
-from src.models import preprocess_data, transform_variables 
+from src.models import preprocess_data, transform_variables
+from src.utils import calculate_b2_ever_h6
 from src import styles 
 
 
@@ -472,12 +473,7 @@ def evaluate_models_for_aggregated_data(
                 'model_object': model
             })
         except Exception as e:
-            import traceback
-        except Exception as e:
-            import traceback
             logger.error(f"Failed to train {name}:")
-            # Traceback is printed to stderr by default, which logic calls might capture differently
-            # For loguru, we can use exception
             logger.exception("Training failed")
             continue
     
@@ -1432,7 +1428,10 @@ def run_optimization_pipeline(data_booked, data_demand, risk_inference, reg_todu
     logger.info("Generating optimization visualization...")
     fig = go.Figure()
     data_surf = data_sumary_desagregado.copy()
-    data_surf['b2_ever_h6'] = 7 * data_surf['todu_30ever_h6'] / data_surf['todu_amt_pile_h6']
+    data_surf['b2_ever_h6'] = calculate_b2_ever_h6(
+        data_surf['todu_30ever_h6'],
+        data_surf['todu_amt_pile_h6']
+    )
     data_surf_pivot = data_surf.pivot(index=VARIABLES[1], columns=VARIABLES[0], values='b2_ever_h6')
     
     fig = fig.add_trace(go.Surface(

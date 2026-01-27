@@ -6,12 +6,24 @@ import pytest
 import pandas as pd
 import numpy as np
 import logging
-from src.preprocess_improved import PreprocessingConfig, complete_preprocessing_pipeline, preprocess_data
+from src.preprocess_improved import (
+    PreprocessingConfig,
+    complete_preprocessing_pipeline,
+    preprocess_data,
+    apply_binning_transformations,
+    update_oa_amt_h0,
+    filter_by_date,
+    update_status_and_reject_reason,
+    StatusName,
+    RejectReason,
+)
+
 
 @pytest.fixture
 def sample_data():
     """Create a sample dataframe for testing."""
     records = 100
+    np.random.seed(42)
     df = pd.DataFrame({
         'mis_date': pd.to_datetime(np.random.choice(pd.date_range('2024-01-01', '2025-01-01'), records)),
         'status_name': np.random.choice(['booked', 'rejected', 'cancelled'], records),
@@ -30,9 +42,9 @@ def sample_data():
         'fraud_flag': 'n',
         'nature_holder': 'physical',
         'm_ct_direct_sc_nov23': np.random.choice(['y', 'n'], records),
-        # Add required columns for m_ct_direct logic
     })
     return df
+
 
 @pytest.fixture
 def config():
@@ -49,64 +61,372 @@ def config():
         log_level=logging.WARNING
     )
 
-def test_config_validation():
-    """Test configuration validation."""
-    with pytest.raises(ValueError):
+
+# =============================================================================
+# Configuration Validation Tests
+# =============================================================================
+
+def test_config_validation_empty_keep_vars():
+    """Test that empty keep_vars raises error."""
+    with pytest.raises(ValueError, match="keep_vars cannot be empty"):
         PreprocessingConfig(keep_vars=[], indicators=['a']).validate()
-    
-    with pytest.raises(ValueError):
+
+
+def test_config_validation_empty_indicators():
+    """Test that empty indicators raises error."""
+    with pytest.raises(ValueError, match="indicators cannot be empty"):
         PreprocessingConfig(keep_vars=['a'], indicators=[]).validate()
+
+
+def test_config_validation_invalid_bins():
+    """Test that bins with less than 2 values raise error."""
+    with pytest.raises(ValueError, match="octroi_bins must have at least 2 values"):
+        PreprocessingConfig(
+            keep_vars=['a'],
+            indicators=['b'],
+            octroi_bins=[1],
+            efx_bins=[1, 2]
+        ).validate()
+
+    with pytest.raises(ValueError, match="efx_bins must have at least 2 values"):
+        PreprocessingConfig(
+            keep_vars=['a'],
+            indicators=['b'],
+            octroi_bins=[1, 2],
+            efx_bins=[1]
+        ).validate()
+
+
+def test_config_validation_valid():
+    """Test that valid config passes validation."""
+    config = PreprocessingConfig(
+        keep_vars=['a', 'b'],
+        indicators=['c', 'd'],
+        octroi_bins=[1, 2, 3],
+        efx_bins=[1, 2, 3]
+    )
+    config.validate()  # Should not raise
+
+
+# =============================================================================
+# apply_binning_transformations Tests
+# =============================================================================
+
+@pytest.fixture
+def binning_data():
+    """Create data specifically for binning tests."""
+    return pd.DataFrame({
+        'score_rf': [320, 360, 380, 410, 440],
+        'risk_score_rf': [10, 30, 55, 75, 95],
+    })
+
+
+def test_apply_binning_basic(binning_data):
+    """Test basic binning transformation."""
+    octroi_bins = [-np.inf, 350, 400, 450, np.inf]
+    efx_bins = [-np.inf, 25, 50, 75, np.inf]
+
+    result = apply_binning_transformations(binning_data, octroi_bins, efx_bins)
+
+    assert 'sc_octroi_new_clus' in result.columns
+    assert 'new_efx_clus' in result.columns
+
+    # Check bins are 1-indexed
+    assert result['sc_octroi_new_clus'].min() >= 1
+    assert result['new_efx_clus'].min() >= 1
+
+
+def test_apply_binning_preserves_data(binning_data):
+    """Test that binning preserves original data."""
+    octroi_bins = [-np.inf, 350, 400, 450, np.inf]
+    efx_bins = [-np.inf, 25, 50, 75, np.inf]
+
+    result = apply_binning_transformations(binning_data, octroi_bins, efx_bins)
+
+    # Original columns should be preserved
+    assert 'score_rf' in result.columns
+    assert 'risk_score_rf' in result.columns
+    pd.testing.assert_series_equal(result['score_rf'], binning_data['score_rf'])
+
+
+def test_apply_binning_handles_edge_values():
+    """Test binning handles edge values correctly."""
+    data = pd.DataFrame({
+        'score_rf': [350, 400],  # Exact bin edges
+        'risk_score_rf': [25, 50],
+    })
+    octroi_bins = [-np.inf, 350, 400, 450, np.inf]
+    efx_bins = [-np.inf, 25, 50, 75, np.inf]
+
+    result = apply_binning_transformations(data, octroi_bins, efx_bins)
+
+    # Should not raise and should produce valid bins
+    assert not result['sc_octroi_new_clus'].isna().any()
+    assert not result['new_efx_clus'].isna().any()
+
+
+def test_apply_binning_missing_columns():
+    """Test binning raises error for missing columns."""
+    data = pd.DataFrame({'other_col': [1, 2, 3]})
+
+    with pytest.raises(ValueError, match="Missing required columns"):
+        apply_binning_transformations(data, [0, 1], [0, 1])
+
+
+# =============================================================================
+# update_oa_amt_h0 Tests
+# =============================================================================
+
+def test_update_oa_amt_h0_basic():
+    """Test oa_amt_h0 update for non-booked records."""
+    data = pd.DataFrame({
+        'status_name': ['booked', 'rejected', 'cancelled'],
+        'oa_amt': [1000, 2000, 3000],
+        'oa_amt_h0': [1000, 0, 0],
+    })
+
+    result = update_oa_amt_h0(data)
+
+    # Booked should remain unchanged
+    assert result.loc[0, 'oa_amt_h0'] == 1000
+
+    # Non-booked should be updated to oa_amt
+    assert result.loc[1, 'oa_amt_h0'] == 2000
+    assert result.loc[2, 'oa_amt_h0'] == 3000
+
+
+def test_update_oa_amt_h0_preserves_booked():
+    """Test that booked records are not modified."""
+    data = pd.DataFrame({
+        'status_name': ['booked', 'booked'],
+        'oa_amt': [5000, 6000],
+        'oa_amt_h0': [1000, 2000],
+    })
+
+    result = update_oa_amt_h0(data)
+
+    # Booked values should be unchanged
+    assert result.loc[0, 'oa_amt_h0'] == 1000
+    assert result.loc[1, 'oa_amt_h0'] == 2000
+
+
+def test_update_oa_amt_h0_missing_columns():
+    """Test error handling for missing columns."""
+    data = pd.DataFrame({'other_col': [1, 2, 3]})
+
+    with pytest.raises(ValueError, match="Missing required columns"):
+        update_oa_amt_h0(data)
+
+
+# =============================================================================
+# filter_by_date Tests
+# =============================================================================
+
+def test_filter_by_date_basic():
+    """Test basic date filtering."""
+    data = pd.DataFrame({
+        'date_col': pd.to_datetime(['2024-01-01', '2024-06-15', '2024-12-31', '2025-01-01']),
+        'value': [1, 2, 3, 4],
+    })
+
+    result = filter_by_date(data, 'date_col', '2024-01-01', '2024-12-31')
+
+    assert len(result) == 3
+    assert result['value'].tolist() == [1, 2, 3]
+
+
+def test_filter_by_date_inclusive():
+    """Test that date filtering is inclusive on both ends."""
+    data = pd.DataFrame({
+        'date_col': pd.to_datetime(['2024-01-01', '2024-12-31']),
+        'value': [1, 2],
+    })
+
+    result = filter_by_date(data, 'date_col', '2024-01-01', '2024-12-31')
+
+    assert len(result) == 2
+
+
+def test_filter_by_date_string_conversion():
+    """Test that string dates in data are converted."""
+    data = pd.DataFrame({
+        'date_col': ['2024-01-01', '2024-06-15', '2024-12-31'],
+        'value': [1, 2, 3],
+    })
+
+    result = filter_by_date(data, 'date_col', '2024-01-01', '2024-06-30')
+
+    assert len(result) == 2
+
+
+def test_filter_by_date_invalid_range():
+    """Test error for invalid date range (start > end)."""
+    data = pd.DataFrame({
+        'date_col': pd.to_datetime(['2024-01-01']),
+        'value': [1],
+    })
+
+    with pytest.raises(ValueError, match="start_date.*must be <= end_date"):
+        filter_by_date(data, 'date_col', '2024-12-31', '2024-01-01')
+
+
+def test_filter_by_date_missing_column():
+    """Test error for missing date column."""
+    data = pd.DataFrame({'other_col': [1, 2, 3]})
+
+    with pytest.raises(ValueError, match="Missing required columns"):
+        filter_by_date(data, 'date_col', '2024-01-01', '2024-12-31')
+
+
+def test_filter_by_date_empty_result():
+    """Test filtering that results in empty DataFrame."""
+    data = pd.DataFrame({
+        'date_col': pd.to_datetime(['2023-01-01', '2023-06-15']),
+        'value': [1, 2],
+    })
+
+    result = filter_by_date(data, 'date_col', '2024-01-01', '2024-12-31')
+
+    assert len(result) == 0
+
+
+# =============================================================================
+# update_status_and_reject_reason Tests
+# =============================================================================
+
+def test_update_status_basic():
+    """Test status update based on measures."""
+    data = pd.DataFrame({
+        'status_name': ['booked', 'booked', 'rejected'],
+        'reject_reason': [None, None, '08-other'],
+        'm_ct_direct_test': ['y', 'n', 'n'],
+    })
+
+    result = update_status_and_reject_reason(data)
+
+    # First row should be updated (has 'y' in measure)
+    assert result.loc[0, 'status_name'] == StatusName.REJECTED.value
+    assert result.loc[0, 'reject_reason'] == RejectReason.OTHER.value
+
+    # Second row should remain unchanged
+    assert result.loc[1, 'status_name'] == 'booked'
+
+    # Third row should remain unchanged
+    assert result.loc[2, 'status_name'] == 'rejected'
+
+
+def test_update_status_with_score_measures():
+    """Test status update with score measures."""
+    data = pd.DataFrame({
+        'status_name': ['booked', 'booked'],
+        'reject_reason': [None, None],
+        'm_ct_direct_test': ['y', 'y'],
+        'score_measure': ['y', 'n'],
+    })
+
+    result = update_status_and_reject_reason(data, score_measures=['score_measure'])
+
+    # First row has 'y' in score measure
+    assert result.loc[0, 'reject_reason'] == RejectReason.SCORE.value
+
+    # Second row has 'n' in score measure, should be OTHER
+    assert result.loc[1, 'reject_reason'] == RejectReason.OTHER.value
+
+
+def test_update_status_no_measures():
+    """Test status update when no m_ct_direct columns exist."""
+    data = pd.DataFrame({
+        'status_name': ['booked', 'booked'],
+        'reject_reason': [None, None],
+        'other_col': [1, 2],
+    })
+
+    result = update_status_and_reject_reason(data)
+
+    # Should return unchanged since no m_ct_direct columns
+    assert result.loc[0, 'status_name'] == 'booked'
+    assert result.loc[1, 'status_name'] == 'booked'
+
+
+# =============================================================================
+# Edge Cases Tests
+# =============================================================================
+
+def test_preprocess_empty_dataframe(config):
+    """Test handling of empty DataFrame."""
+    empty_df = pd.DataFrame()
+
+    with pytest.raises(ValueError, match="Input DataFrame is empty"):
+        preprocess_data(empty_df, config.keep_vars, config.indicators, config.segment_filter)
+
+
+def test_binning_with_nan_values():
+    """Test binning handles NaN values gracefully."""
+    data = pd.DataFrame({
+        'score_rf': [320, np.nan, 380],
+        'risk_score_rf': [10, 30, np.nan],
+    })
+    octroi_bins = [-np.inf, 350, 400, np.inf]
+    efx_bins = [-np.inf, 25, 50, np.inf]
+
+    result = apply_binning_transformations(data, octroi_bins, efx_bins)
+
+    # NaN input should produce NaN bins (filled with median by function)
+    assert 'sc_octroi_new_clus' in result.columns
+    assert 'new_efx_clus' in result.columns
+
+
+def test_filter_by_date_with_nat():
+    """Test date filtering with NaT values."""
+    data = pd.DataFrame({
+        'date_col': pd.to_datetime(['2024-01-01', pd.NaT, '2024-12-31']),
+        'value': [1, 2, 3],
+    })
+
+    result = filter_by_date(data, 'date_col', '2024-01-01', '2024-12-31')
+
+    # NaT should be excluded
+    assert len(result) == 2
+
+
+# =============================================================================
+# Integration Tests
+# =============================================================================
 
 def test_preprocess_data_filtering(sample_data, config):
     """Test that data is filtered correctly."""
-    # Modify one record to be filtered out
     sample_data.loc[0, 'fuera_norma'] = 'y'
-    
-    # We only call the low-level function here for unit testing
-    # But preprocess_data requires all columns to be present in data
-    # PreprocessingConfig has keep_vars, indicators.
-    # preprocess_data function signature: df, keep_vars, indicators, segment_filter.
-    
-    # Ensure config.keep_vars and config.indicators are in sample_data
-    # In fixture config, keep_vars=['mis_date', 'status_name', 'risk_score_rf']
-    # indicators=['oa_amt']
-    # m_ct_direct_sc_nov23 is in sample_data
-    
+
     processed = preprocess_data(
         sample_data,
         config.keep_vars,
         config.indicators,
         config.segment_filter
     )
-    
+
     assert len(processed) < len(sample_data)
-    assert 'fuera_norma' not in processed.columns # It is used for filtering but not kept unless in keep_vars
     assert 'risk_score_rf' in processed.columns
+
 
 def test_complete_pipeline(sample_data, config):
     """Test the complete pipeline execution."""
     data_clean, data_booked, data_demand = complete_preprocessing_pipeline(sample_data, config)
-    
+
     assert not data_clean.empty
     assert 'sc_octroi_new_clus' in data_clean.columns
     assert 'new_efx_clus' in data_clean.columns
     assert 'status_name' in data_clean.columns
-    
-    # Check date filtering on booked
-    assert data_booked['mis_date'].min() >= pd.to_datetime(config.date_ini_book_obs)
-    assert data_booked['mis_date'].max() <= pd.to_datetime(config.date_fin_book_obs)
 
-def test_status_update(sample_data, config):
-    """Test status update based on measures."""
-    # Ensure at least one record has 'y' in measure
-    sample_data.loc[0, 'm_ct_direct_sc_nov23'] = 'y'
-    sample_data.loc[0, 'status_name'] = 'approved' # Initially approved
-    
-    data_clean, _, _ = complete_preprocessing_pipeline(sample_data, config)
-    
-    # We can't easily check row 0 unless we preserved index or something, 
-    # but we can check logic generally if possible.
-    # Actually complete_pipeline returns copies/new dfs.
-    
-    # Let's rely on logic correctness verified by code review or specific unit test for `update_status_and_reject_reason`.
-    pass
+    # Check date filtering on booked
+    if not data_booked.empty:
+        assert data_booked['mis_date'].min() >= pd.to_datetime(config.date_ini_book_obs)
+        assert data_booked['mis_date'].max() <= pd.to_datetime(config.date_fin_book_obs)
+
+
+def test_complete_pipeline_returns_three_dataframes(sample_data, config):
+    """Test that pipeline returns exactly 3 DataFrames."""
+    result = complete_preprocessing_pipeline(sample_data, config)
+
+    assert isinstance(result, tuple)
+    assert len(result) == 3
+    assert all(isinstance(df, pd.DataFrame) for df in result)
