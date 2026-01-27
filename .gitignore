@@ -1,5 +1,6 @@
 # User requested exclusions
 data/
+data_backup/
 images/
 models/
 output/
