@@ -46,6 +46,13 @@ def load_segments_config(segments_path: str = "segments.toml") -> Dict[str, Dict
     return config.get("segments", {})
 
 
+def load_supersegments_config(segments_path: str = "segments.toml") -> Dict[str, Dict[str, Any]]:
+    """Load supersegment configurations from segments.toml."""
+    with open(segments_path, "rb") as f:
+        config = tomllib.load(f)
+    return config.get("supersegments", {})
+
+
 def create_output_directories(base_output_dir: Path) -> Dict[str, Path]:
     """Create output directory structure for a segment."""
     dirs = {
@@ -73,7 +80,8 @@ def run_segment_pipeline(
     segment_name: str,
     segment_config: Dict[str, Any],
     base_config: Dict[str, Any],
-    output_base: str = "output"
+    output_base: str = "output",
+    model_path: Optional[str] = None
 ) -> bool:
     """
     Run the pipeline for a single segment.
@@ -83,6 +91,9 @@ def run_segment_pipeline(
         segment_config: Segment-specific configuration overrides
         base_config: Base configuration from config.toml
         output_base: Base directory for all outputs
+        model_path: Optional path to a pre-trained model. If provided, skips
+                   inference training and loads the existing model (used for
+                   supersegment workflows).
 
     Returns:
         True if successful, False otherwise
@@ -104,6 +115,8 @@ def run_segment_pipeline(
     merged_config = merge_configs(base_config, segment_config)
     logger.info(f"Segment filter: {merged_config.get('segment_filter')}")
     logger.info(f"Optimum risk: {merged_config.get('optimum_risk')}")
+    if model_path:
+        logger.info(f"Using pre-trained model from: {model_path}")
 
     # Change to output directory context and run
     original_cwd = os.getcwd()
@@ -132,7 +145,7 @@ def run_segment_pipeline(
 
         try:
             # Run the main pipeline
-            result = run_main_pipeline(config_path=str(temp_config))
+            result = run_main_pipeline(config_path=str(temp_config), model_path=model_path)
 
             if result is None:
                 logger.error(f"Pipeline failed for segment: {segment_name}")
@@ -149,6 +162,102 @@ def run_segment_pipeline(
         logger.error(f"Error processing segment {segment_name}: {e}")
         logger.exception("Full traceback:")
         return False
+
+
+def run_supersegment_training(
+    supersegment_name: str,
+    supersegment_config: Dict[str, Any],
+    base_config: Dict[str, Any],
+    output_base: str = "output"
+) -> Optional[str]:
+    """
+    Train a model on combined supersegment data (multiple segment_filters).
+
+    This function:
+    1. Creates a combined segment_filter using regex OR pattern
+    2. Trains the inference model on the combined population
+    3. Saves the model for use by individual segment optimizations
+
+    Args:
+        supersegment_name: Name of the supersegment
+        supersegment_config: Config containing list of segment_filters to combine
+        base_config: Base configuration from config.toml
+        output_base: Base directory for all outputs
+
+    Returns:
+        Path to the trained model directory, or None if training failed
+    """
+    # Create output directories for supersegment
+    output_dir = Path(output_base) / f"_supersegment_{supersegment_name}"
+    dirs = create_output_directories(output_dir)
+
+    # Setup logging
+    log_file = dirs["logs"] / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    logger.add(log_file, rotation="10 MB", level="DEBUG")
+
+    logger.info(f"=" * 80)
+    logger.info(f"TRAINING SUPERSEGMENT MODEL: {supersegment_name}")
+    logger.info(f"=" * 80)
+    logger.info(f"Output directory: {output_dir}")
+
+    # Get the list of segment_filters to combine
+    segment_filters = supersegment_config.get("segment_filters", [])
+    if not segment_filters:
+        logger.error(f"No segment_filters defined for supersegment: {supersegment_name}")
+        return None
+
+    logger.info(f"Combining {len(segment_filters)} segment filters:")
+    for sf in segment_filters:
+        logger.info(f"  - {sf}")
+
+    # Create combined segment_filter using regex OR pattern
+    # The preprocess module should handle this as a regex match
+    combined_filter = "|".join(f"({sf})" for sf in segment_filters)
+
+    # Merge config with combined filter
+    merged_config = base_config.copy()
+    merged_config["segment_filter"] = combined_filter
+
+    original_cwd = os.getcwd()
+
+    try:
+        from main import main as run_main_pipeline
+
+        # Create temporary config
+        temp_config = write_temp_config(merged_config, dirs["root"])
+
+        # Setup output redirection
+        data_file = merged_config.get("data_path", "data/demanda_direct_out.sas7bdat")
+        setup_output_redirection(dirs, data_file=data_file)
+
+        try:
+            # Run the main pipeline in training-only mode (skip optimization)
+            result = run_main_pipeline(config_path=str(temp_config), training_only=True)
+
+            if result is None:
+                logger.error(f"Supersegment training failed: {supersegment_name}")
+                return None
+
+            # Find the most recent model directory
+            models_dir = dirs["models"]
+            model_dirs = sorted(models_dir.glob("model_*"), reverse=True)
+
+            if not model_dirs:
+                logger.error(f"No model directory found after training")
+                return None
+
+            model_path = str(model_dirs[0])
+            logger.info(f"Supersegment model trained successfully: {model_path}")
+
+            return model_path
+
+        finally:
+            cleanup_output_redirection(dirs)
+
+    except Exception as e:
+        logger.error(f"Error training supersegment {supersegment_name}: {e}")
+        logger.exception("Full traceback:")
+        return None
 
     finally:
         os.chdir(original_cwd)
@@ -222,14 +331,83 @@ def cleanup_output_redirection(dirs: Dict[str, Path]) -> None:
 def run_segments_sequential(
     segments: Dict[str, Dict[str, Any]],
     base_config: Dict[str, Any],
-    output_base: str = "output"
+    output_base: str = "output",
+    supersegments: Dict[str, Dict[str, Any]] = None
 ) -> Dict[str, bool]:
-    """Run all segments sequentially."""
+    """
+    Run all segments sequentially, with supersegment support.
+
+    If segments reference a supersegment, the supersegment model is trained first
+    and then reused for all segments in that supersegment.
+
+    Args:
+        segments: Segment configurations
+        base_config: Base configuration
+        output_base: Output directory base
+        supersegments: Optional supersegment configurations
+
+    Returns:
+        Dictionary of segment names to success status
+    """
     results = {}
+    supersegment_models = {}  # Cache: supersegment_name -> model_path
+
+    # Phase 1: Train supersegment models
+    if supersegments:
+        # Find which supersegments are actually used by the selected segments
+        used_supersegments = set()
+        for segment_config in segments.values():
+            ss = segment_config.get("supersegment")
+            if ss and ss in supersegments:
+                used_supersegments.add(ss)
+
+        # Train each used supersegment
+        for ss_name in used_supersegments:
+            logger.info(f"\n{'='*80}")
+            logger.info(f"PHASE 1: Training supersegment model: {ss_name}")
+            logger.info(f"{'='*80}")
+
+            model_path = run_supersegment_training(
+                supersegment_name=ss_name,
+                supersegment_config=supersegments[ss_name],
+                base_config=base_config,
+                output_base=output_base
+            )
+
+            if model_path:
+                supersegment_models[ss_name] = model_path
+                logger.info(f"Supersegment {ss_name} model ready: {model_path}")
+            else:
+                logger.error(f"Failed to train supersegment {ss_name}")
+                # Mark all segments using this supersegment as failed
+                for seg_name, seg_config in segments.items():
+                    if seg_config.get("supersegment") == ss_name:
+                        results[seg_name] = False
+                        logger.error(f"Segment {seg_name} marked as failed (supersegment training failed)")
+
+    # Phase 2: Run individual segment optimizations
+    logger.info(f"\n{'='*80}")
+    logger.info(f"PHASE 2: Running individual segment optimizations")
+    logger.info(f"{'='*80}")
 
     for segment_name, segment_config in segments.items():
+        # Skip if already marked as failed
+        if segment_name in results:
+            continue
+
         logger.info(f"\nStarting segment: {segment_name}")
-        success = run_segment_pipeline(segment_name, segment_config, base_config, output_base)
+
+        # Check if this segment uses a supersegment model
+        supersegment = segment_config.get("supersegment")
+        model_path = None
+        if supersegment and supersegment in supersegment_models:
+            model_path = supersegment_models[supersegment]
+            logger.info(f"Using supersegment model: {supersegment}")
+
+        success = run_segment_pipeline(
+            segment_name, segment_config, base_config, output_base,
+            model_path=model_path
+        )
         results[segment_name] = success
 
         if success:
@@ -244,22 +422,72 @@ def run_segments_parallel(
     segments: Dict[str, Dict[str, Any]],
     base_config: Dict[str, Any],
     output_base: str = "output",
-    max_workers: int = None
+    max_workers: int = None,
+    supersegments: Dict[str, Dict[str, Any]] = None
 ) -> Dict[str, bool]:
-    """Run all segments in parallel."""
+    """
+    Run all segments in parallel, with supersegment support.
+
+    Note: Supersegment models are trained sequentially first, then
+    individual segment optimizations run in parallel.
+
+    Args:
+        segments: Segment configurations
+        base_config: Base configuration
+        output_base: Output directory base
+        max_workers: Maximum parallel workers
+        supersegments: Optional supersegment configurations
+
+    Returns:
+        Dictionary of segment names to success status
+    """
     results = {}
+    supersegment_models = {}
+
+    # Phase 1: Train supersegment models SEQUENTIALLY (cannot parallelize training)
+    if supersegments:
+        used_supersegments = set()
+        for segment_config in segments.values():
+            ss = segment_config.get("supersegment")
+            if ss and ss in supersegments:
+                used_supersegments.add(ss)
+
+        for ss_name in used_supersegments:
+            logger.info(f"\nTraining supersegment model: {ss_name}")
+            model_path = run_supersegment_training(
+                supersegment_name=ss_name,
+                supersegment_config=supersegments[ss_name],
+                base_config=base_config,
+                output_base=output_base
+            )
+            if model_path:
+                supersegment_models[ss_name] = model_path
+            else:
+                for seg_name, seg_config in segments.items():
+                    if seg_config.get("supersegment") == ss_name:
+                        results[seg_name] = False
+
+    # Phase 2: Run individual segment optimizations IN PARALLEL
+    segments_to_run = {
+        name: config for name, config in segments.items()
+        if name not in results
+    }
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
+        futures = {}
+        for segment_name, segment_config in segments_to_run.items():
+            supersegment = segment_config.get("supersegment")
+            model_path = supersegment_models.get(supersegment) if supersegment else None
+
+            future = executor.submit(
                 run_segment_pipeline,
                 segment_name,
                 segment_config,
                 base_config,
-                output_base
-            ): segment_name
-            for segment_name, segment_config in segments.items()
-        }
+                output_base,
+                model_path
+            )
+            futures[future] = segment_name
 
         for future in as_completed(futures):
             segment_name = futures[future]
@@ -302,8 +530,21 @@ def print_summary(results: Dict[str, bool]) -> None:
 
 
 def list_segments(segments_path: str = "segments.toml") -> None:
-    """List all available segments."""
+    """List all available segments and supersegments."""
     segments = load_segments_config(segments_path)
+    supersegments = load_supersegments_config(segments_path)
+
+    # Show supersegments first
+    if supersegments:
+        print("\nSupersegments (shared model training):")
+        print("-" * 60)
+        for name, config in supersegments.items():
+            filters = config.get("segment_filters", [])
+            print(f"  {name}:")
+            print(f"    segment_filters:")
+            for sf in filters:
+                print(f"      - {sf}")
+            print()
 
     print("\nAvailable segments:")
     print("-" * 60)
@@ -311,9 +552,12 @@ def list_segments(segments_path: str = "segments.toml") -> None:
     for name, config in segments.items():
         filter_val = config.get("segment_filter", "N/A")
         risk = config.get("optimum_risk", "default")
+        supersegment = config.get("supersegment", None)
         print(f"  {name}:")
         print(f"    segment_filter: {filter_val}")
         print(f"    optimum_risk: {risk}")
+        if supersegment:
+            print(f"    supersegment: {supersegment} (uses shared model)")
         print()
 
 
@@ -372,6 +616,7 @@ def main():
     try:
         base_config = load_base_config(args.config)
         all_segments = load_segments_config(args.segments_config)
+        all_supersegments = load_supersegments_config(args.segments_config)
     except FileNotFoundError as e:
         print(f"Error: Configuration file not found: {e}")
         return 1
@@ -398,7 +643,16 @@ def main():
     else:
         segments = all_segments
 
+    # Identify supersegments used by selected segments
+    used_supersegments = set()
+    for seg_config in segments.values():
+        ss = seg_config.get("supersegment")
+        if ss and ss in all_supersegments:
+            used_supersegments.add(ss)
+
     print(f"\nProcessing {len(segments)} segment(s): {list(segments.keys())}")
+    if used_supersegments:
+        print(f"Supersegments to train: {list(used_supersegments)}")
     print(f"Output directory: {args.output}")
     print(f"Mode: {'parallel' if args.parallel else 'sequential'}")
     print()
@@ -406,11 +660,13 @@ def main():
     # Run segments
     if args.parallel:
         results = run_segments_parallel(
-            segments, base_config, args.output, args.workers
+            segments, base_config, args.output, args.workers,
+            supersegments=all_supersegments
         )
     else:
         results = run_segments_sequential(
-            segments, base_config, args.output
+            segments, base_config, args.output,
+            supersegments=all_supersegments
         )
 
     # Print summary

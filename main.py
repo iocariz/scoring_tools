@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 from loguru import logger
@@ -8,7 +9,8 @@ import plotly.graph_objects as go
 from src.preprocess_improved import PreprocessingConfig, complete_preprocessing_pipeline, filter_by_date, StatusName
 from src.utils import calculate_stress_factor, calculate_and_plot_transformation_rate, get_fact_sol, kpi_of_fact_sol, get_optimal_solutions, calculate_annual_coef, calculate_b2_ever_h6
 from src.plots import plot_risk_vs_production, RiskProductionVisualizer
-from src.inference_optimized import inference_pipeline, todu_average_inference, run_optimization_pipeline
+from src.inference_optimized import inference_pipeline, todu_average_inference, run_optimization_pipeline, load_model_for_prediction
+import joblib
 from src.models import calculate_risk_values
 from src.mr_pipeline import process_mr_period
 from src import styles
@@ -214,12 +216,19 @@ def load_data(df_path: str) -> pd.DataFrame:
     df = pd.read_sas(df_path, format="sas7bdat", encoding="utf-8")
     return df
 
-def main(config_path: str = "config.toml"):
+def main(config_path: str = "config.toml", model_path: str = None, training_only: bool = False):
     """
     Load and preprocess SAS data using configuration.
 
     Args:
         config_path: Path to the configuration TOML file (default: config.toml)
+        model_path: Optional path to a pre-trained model directory. If provided,
+                   skips inference training and loads the existing model.
+                   Used for supersegment workflows where model is trained on
+                   combined data and optimization runs on individual segments.
+        training_only: If True, only runs data preprocessing and model training,
+                      skipping optimization and scenario analysis. Used for
+                      supersegment model training.
 
     Returns:
         Tuple of processed DataFrames, or None if processing fails
@@ -351,35 +360,83 @@ def main(config_path: str = "config.toml"):
     logger.info(f"Finance Rate (last {config_data.get('n_months')} months): {result['overall_rate']:.2%}") 
 
     # Risk Inference
-    logger.info("Calculating risk inference...")
-    risk_inference = inference_pipeline(
-        data=data_clean, 
-        bins=(config_data.get('octroi_bins'), config_data.get('efx_bins')), 
-        variables=config_data.get('variables'), 
-        indicators=config_data.get('indicators'), 
-        target_var='todu_30ever_h6', 
-        multiplier=config_data.get('multiplier', 7), 
-        test_size=0.4, 
-        include_hurdle=True, 
-        save_model=True, 
-        model_base_path='models', 
-        create_visualizations=True
-    )
-    logger.info(f"Best model: {risk_inference['best_model_info']['name']}")
-    logger.info(f"Test R²: {risk_inference['best_model_info']['test_r2']:.4f}")
+    if model_path:
+        # Load pre-trained model from supersegment
+        logger.info(f"Loading pre-trained model from {model_path}...")
+        try:
+            model, metadata, features = load_model_for_prediction(model_path)
+            risk_inference = {
+                'best_model_info': {
+                    'model': model,
+                    'name': metadata.get('model_type', 'Unknown'),
+                    'test_r2': metadata.get('test_r2', 0.0),
+                },
+                'features': features,
+                'model_path': model_path
+            }
+            logger.info(f"Loaded model: {risk_inference['best_model_info']['name']}")
+            logger.info(f"Original Test R²: {risk_inference['best_model_info']['test_r2']:.4f}")
 
-    # Todu Average Inference
-    _, reg_todu_amt_pile, _ = todu_average_inference(
-        data=data_clean,
-        variables=config_data.get('variables'),
-        indicators=config_data.get('indicators'),
-        feature_col='oa_amt',
-        target_col='todu_amt_pile_h6',
-        z_threshold=config_data.get('z_threshold', 3.0),
-        plot_output_path="models/todu_avg_inference.html",
-        model_output_path="models/todu_model.joblib"
-    )   
-  
+            # Load todu model from the same directory
+            todu_model_path = Path(model_path).parent / "todu_model.joblib"
+            if todu_model_path.exists():
+                reg_todu_amt_pile = joblib.load(todu_model_path)
+                logger.info(f"Loaded todu model from {todu_model_path}")
+            else:
+                # Fallback: train todu model on current segment data
+                logger.warning(f"Todu model not found at {todu_model_path}, training on current data...")
+                _, reg_todu_amt_pile, _ = todu_average_inference(
+                    data=data_clean,
+                    variables=config_data.get('variables'),
+                    indicators=config_data.get('indicators'),
+                    feature_col='oa_amt',
+                    target_col='todu_amt_pile_h6',
+                    z_threshold=config_data.get('z_threshold', 3.0),
+                    plot_output_path="models/todu_avg_inference.html",
+                    model_output_path=None  # Don't save, it's a fallback
+                )
+        except Exception as e:
+            logger.error(f"Failed to load pre-trained model: {e}")
+            return None
+    else:
+        # Train new model
+        logger.info("Calculating risk inference...")
+        risk_inference = inference_pipeline(
+            data=data_clean,
+            bins=(config_data.get('octroi_bins'), config_data.get('efx_bins')),
+            variables=config_data.get('variables'),
+            indicators=config_data.get('indicators'),
+            target_var='todu_30ever_h6',
+            multiplier=config_data.get('multiplier', 7),
+            test_size=0.4,
+            include_hurdle=True,
+            save_model=True,
+            model_base_path='models',
+            create_visualizations=True
+        )
+        logger.info(f"Best model: {risk_inference['best_model_info']['name']}")
+        logger.info(f"Test R²: {risk_inference['best_model_info']['test_r2']:.4f}")
+
+        # Todu Average Inference
+        _, reg_todu_amt_pile, _ = todu_average_inference(
+            data=data_clean,
+            variables=config_data.get('variables'),
+            indicators=config_data.get('indicators'),
+            feature_col='oa_amt',
+            target_col='todu_amt_pile_h6',
+            z_threshold=config_data.get('z_threshold', 3.0),
+            plot_output_path="models/todu_avg_inference.html",
+            model_output_path="models/todu_model.joblib"
+        )
+
+    # Early return for training_only mode (supersegment training)
+    if training_only:
+        logger.info("=" * 80)
+        logger.info("TRAINING ONLY MODE - Skipping optimization")
+        logger.info("=" * 80)
+        logger.info(f"Model trained and saved. Path: {risk_inference.get('model_path', 'models/')}")
+        return data_clean, data_booked, data_demand, risk_inference, reg_todu_amt_pile
+
     # Apply inference model and Optimization Pipeline
     # Using the new refactored function
     

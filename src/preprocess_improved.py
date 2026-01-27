@@ -162,12 +162,24 @@ def preprocess_data(df: pd.DataFrame,
     query_start = time.time()
     logger.info(f"Applying filters: fuera_norma='n', fraud_flag='n', "
                 f"nature_holder!='legal', segment_cut_off='{segment_filter}'")
-    
+
     try:
+        # First apply non-segment filters
         data_filtered = df.query(
             "fuera_norma == 'n' & fraud_flag == 'n' & "
-            "nature_holder != 'legal' & segment_cut_off == @segment_filter"
+            "nature_holder != 'legal'"
         ).copy()
+
+        # Apply segment filter - support both exact match and regex patterns
+        # If segment_filter contains '|' (OR operator), treat as regex pattern
+        if '|' in segment_filter:
+            # Regex pattern for multiple segments (e.g., supersegment combinations)
+            logger.info(f"Using regex pattern matching for segment_filter")
+            segment_mask = data_filtered['segment_cut_off'].astype(str).str.match(segment_filter, na=False)
+            data_filtered = data_filtered[segment_mask]
+        else:
+            # Exact match for single segment
+            data_filtered = data_filtered[data_filtered['segment_cut_off'] == segment_filter]
     except Exception as e:
         logger.error(f"Error applying filters: {e}")
         raise

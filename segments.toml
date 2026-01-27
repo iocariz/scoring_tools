@@ -1,20 +1,48 @@
 # Segment configurations for batch processing
 # Each segment defines a segment_filter and optional overrides
 
+# =============================================================================
+# SUPERSEGMENTS
+# =============================================================================
+# A supersegment combines multiple segments for shared model training.
+# When segments share a supersegment, the model is trained on combined data
+# and then optimization runs individually for each sub-segment.
+
+[supersegments.no_premium]
+# List of segment_filter values to combine for model training
+segment_filters = [
+    "personal_loans,_fusion_and_tj_direct-no_premium-a-b",
+    "personal_loans,_fusion_and_tj_direct-no_premium-c-d",
+    "personal_loans,_fusion_and_tj_direct-no_premium-e-f"
+]
+
+# =============================================================================
+# SEGMENTS
+# =============================================================================
+
 [segments.no_premium_ab]
 segment_filter = "personal_loans,_fusion_and_tj_direct-no_premium-a-b"
 optimum_risk = 1.1
+supersegment = "no_premium"  # Use shared model from supersegment
 
 [segments.no_premium_cd]
 segment_filter = "personal_loans,_fusion_and_tj_direct-no_premium-c-d"
 optimum_risk = 1.3
+supersegment = "no_premium"  # Use shared model from supersegment
+
+[segments.no_premium_ef]
+segment_filter = "personal_loans,_fusion_and_tj_direct-no_premium-e-f"
+optimum_risk = 1.2
+supersegment = "no_premium"  # Use shared model from supersegment
 
 [segments.premium]
 segment_filter = "personal_loans,_fusion_and_tj_direct-premium-"
 optimum_risk = 0.9
+# No supersegment = individual model training
 
 # Add more segments as needed:
 # [segments.another_segment]
 # segment_filter = "your_segment_filter_value"
 # optimum_risk = 1.0  # optional, defaults to config.toml value
 # scenario_step = 0.1  # optional override
+# supersegment = "supersegment_name"  # optional, for shared model training
