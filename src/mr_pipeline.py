@@ -20,6 +20,7 @@ import plotly.graph_objects as go
 from src.preprocess_improved import filter_by_date, StatusName
 from src.inference_optimized import run_optimization_pipeline
 from src.utils import calculate_b2_ever_h6
+from src.stability import compare_main_vs_mr, calculate_stability_report, plot_stability_dashboard
 from src import styles
 
 def calculate_metrics_from_cuts(
@@ -305,7 +306,57 @@ def process_mr_period(
             mr_summary_table.to_csv(mr_summary_path, index=False)
             logger.info(f"MR Risk Production Summary Table saved to {mr_summary_path}")
             logger.info(f"MR Table:\n{mr_summary_table.to_string()}")
-            
+
+        # --- Calculate PSI/CSI Stability Metrics ---
+        logger.info("Calculating PSI/CSI stability metrics (Main vs MR)...")
+        try:
+            # Get numeric columns for stability analysis
+            stability_vars = []
+            for col in data_booked.columns:
+                if col in data_booked_mr.columns:
+                    if pd.api.types.is_numeric_dtype(data_booked[col]):
+                        # Exclude ID columns and date columns
+                        if not any(x in col.lower() for x in ['id', 'date', 'mis_']):
+                            stability_vars.append(col)
+
+            # Include key score/cluster variables
+            key_vars = ['sc_octroi', 'new_efx', 'oa_amt', 'risk_score_rf']
+            stability_vars = list(set(stability_vars + [v for v in key_vars if v in data_booked.columns]))
+
+            if stability_vars:
+                # Determine main score variable for overall PSI
+                score_var = 'sc_octroi' if 'sc_octroi' in stability_vars else stability_vars[0]
+
+                stability_report = compare_main_vs_mr(
+                    main_df=data_booked,
+                    mr_df=data_booked_mr,
+                    variables=stability_vars,
+                    score_variable=score_var,
+                    output_path=f"images/stability_report{file_suffix}.html",
+                    verbose=True
+                )
+
+                # Save stability results to CSV
+                stability_df = stability_report.to_dataframe()
+                stability_csv_path = f"data/stability_psi{file_suffix}.csv"
+                stability_df.to_csv(stability_csv_path, index=False)
+                logger.info(f"Stability metrics saved to {stability_csv_path}")
+
+                # Log summary
+                if stability_report.unstable_vars:
+                    logger.warning(
+                        f"STABILITY WARNING: {len(stability_report.unstable_vars)} variables "
+                        f"show significant drift (PSI >= 0.25): "
+                        f"{[r.variable for r in stability_report.unstable_vars]}"
+                    )
+            else:
+                logger.warning("No numeric variables found for stability analysis")
+
+        except Exception as e:
+            logger.error(f"Error calculating stability metrics: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+
     except Exception as e:
         logger.error(f"Error processing MR period: {e}")
         import traceback

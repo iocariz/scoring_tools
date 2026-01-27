@@ -83,7 +83,8 @@ def run_segment_pipeline(
     segment_config: Dict[str, Any],
     base_config: Dict[str, Any],
     output_base: str = "output",
-    model_path: Optional[str] = None
+    model_path: Optional[str] = None,
+    skip_dq_checks: bool = False
 ) -> bool:
     """
     Run the pipeline for a single segment.
@@ -147,7 +148,11 @@ def run_segment_pipeline(
 
         try:
             # Run the main pipeline
-            result = run_main_pipeline(config_path=str(temp_config), model_path=model_path)
+            result = run_main_pipeline(
+                config_path=str(temp_config),
+                model_path=model_path,
+                skip_dq_checks=skip_dq_checks
+            )
 
             if result is None:
                 logger.error(f"Pipeline failed for segment: {segment_name}")
@@ -170,7 +175,8 @@ def run_supersegment_training(
     supersegment_name: str,
     supersegment_config: Dict[str, Any],
     base_config: Dict[str, Any],
-    output_base: str = "output"
+    output_base: str = "output",
+    skip_dq_checks: bool = False
 ) -> Optional[str]:
     """
     Train a model on combined supersegment data (multiple segment_filters).
@@ -235,7 +241,11 @@ def run_supersegment_training(
 
         try:
             # Run the main pipeline in training-only mode (skip optimization)
-            result = run_main_pipeline(config_path=str(temp_config), training_only=True)
+            result = run_main_pipeline(
+                config_path=str(temp_config),
+                training_only=True,
+                skip_dq_checks=skip_dq_checks
+            )
 
             if result is None:
                 logger.error(f"Supersegment training failed: {supersegment_name}")
@@ -336,7 +346,8 @@ def run_segments_sequential(
     base_config: Dict[str, Any],
     output_base: str = "output",
     supersegments: Dict[str, Dict[str, Any]] = None,
-    reuse_models: bool = False
+    reuse_models: bool = False,
+    skip_dq_checks: bool = False
 ) -> Dict[str, bool]:
     """
     Run all segments sequentially, with supersegment support.
@@ -399,7 +410,8 @@ def run_segments_sequential(
                     supersegment_name=ss_name,
                     supersegment_config=supersegments[ss_name],
                     base_config=base_config,
-                    output_base=output_base
+                    output_base=output_base,
+                    skip_dq_checks=skip_dq_checks
                 )
 
                 if model_path:
@@ -444,7 +456,8 @@ def run_segments_sequential(
 
             success = run_segment_pipeline(
                 segment_name, segment_config, base_config, output_base,
-                model_path=model_path
+                model_path=model_path,
+                skip_dq_checks=skip_dq_checks
             )
             results[segment_name] = success
 
@@ -463,7 +476,8 @@ def run_segments_parallel(
     output_base: str = "output",
     max_workers: int = None,
     supersegments: Dict[str, Dict[str, Any]] = None,
-    reuse_models: bool = False
+    reuse_models: bool = False,
+    skip_dq_checks: bool = False
 ) -> Dict[str, bool]:
     """
     Run all segments in parallel, with supersegment support.
@@ -524,7 +538,8 @@ def run_segments_parallel(
                     supersegment_name=ss_name,
                     supersegment_config=supersegments[ss_name],
                     base_config=base_config,
-                    output_base=output_base
+                    output_base=output_base,
+                    skip_dq_checks=skip_dq_checks
                 )
                 if model_path:
                     supersegment_models[ss_name] = model_path
@@ -556,7 +571,8 @@ def run_segments_parallel(
                     segment_config,
                     base_config,
                     output_base,
-                    model_path
+                    model_path,
+                    skip_dq_checks
                 )
                 futures[future] = segment_name
 
@@ -757,6 +773,11 @@ def main():
         action="store_true",
         help="Only clean output directories (don't run pipeline)"
     )
+    parser.add_argument(
+        "--skip-dq-checks",
+        action="store_true",
+        help="Skip data quality checks (not recommended for production)"
+    )
 
     args = parser.parse_args()
 
@@ -831,6 +852,8 @@ def main():
         print(f"Supersegments to train: {list(used_supersegments)}")
         if args.reuse_models:
             print(f"Reuse models: enabled (will skip training if model exists)")
+    if args.skip_dq_checks:
+        print(f"Data quality checks: DISABLED (--skip-dq-checks)")
     print(f"Output directory: {args.output}")
     print(f"Mode: {'parallel' if args.parallel else 'sequential'}")
     print()
@@ -840,13 +863,15 @@ def main():
         results = run_segments_parallel(
             segments, base_config, args.output, args.workers,
             supersegments=all_supersegments,
-            reuse_models=args.reuse_models
+            reuse_models=args.reuse_models,
+            skip_dq_checks=args.skip_dq_checks
         )
     else:
         results = run_segments_sequential(
             segments, base_config, args.output,
             supersegments=all_supersegments,
-            reuse_models=args.reuse_models
+            reuse_models=args.reuse_models,
+            skip_dq_checks=args.skip_dq_checks
         )
 
     # Print summary

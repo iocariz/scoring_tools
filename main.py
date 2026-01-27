@@ -13,6 +13,7 @@ from src.inference_optimized import inference_pipeline, todu_average_inference, 
 import joblib
 from src.models import calculate_risk_values
 from src.mr_pipeline import process_mr_period
+from src.data_quality import run_data_quality_checks
 from src import styles
 
 
@@ -216,7 +217,7 @@ def load_data(df_path: str) -> pd.DataFrame:
     df = pd.read_sas(df_path, format="sas7bdat", encoding="utf-8")
     return df
 
-def main(config_path: str = "config.toml", model_path: str = None, training_only: bool = False):
+def main(config_path: str = "config.toml", model_path: str = None, training_only: bool = False, skip_dq_checks: bool = False):
     """
     Load and preprocess SAS data using configuration.
 
@@ -229,6 +230,8 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
         training_only: If True, only runs data preprocessing and model training,
                       skipping optimization and scenario analysis. Used for
                       supersegment model training.
+        skip_dq_checks: If True, skip data quality checks (not recommended for
+                       production runs).
 
     Returns:
         Tuple of processed DataFrames, or None if processing fails
@@ -320,7 +323,24 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
     logger.info(f"Shape: {data.shape[0]:,} rows × {data.shape[1]} columns")
 
     # =========================================================================
-    # STEP 4: Preprocessing
+    # STEP 4: Data Quality Checks
+    # =========================================================================
+    if skip_dq_checks:
+        logger.warning("Skipping data quality checks (--skip-dq-checks flag set)")
+    else:
+        logger.info("Running data quality checks...")
+        dq_report = run_data_quality_checks(data, config_data, verbose=True)
+
+        if not dq_report.is_valid:
+            logger.error("Data quality validation failed. Fix issues before proceeding.")
+            logger.error("Use --skip-dq-checks to bypass (not recommended).")
+            return None
+
+        if dq_report.warnings:
+            logger.warning(f"Data quality warnings: {len(dq_report.warnings)}. Proceeding with caution.")
+
+    # =========================================================================
+    # STEP 5: Preprocessing
     # =========================================================================
     logger.info("Preprocessing data...")
 
