@@ -377,8 +377,11 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
             logger.info(f"Loaded model: {risk_inference['best_model_info']['name']}")
             logger.info(f"Original Test R²: {risk_inference['best_model_info']['test_r2']:.4f}")
 
-            # Load todu model from the same directory
+            # Load todu model from the models directory (sibling to model subdirectory)
             todu_model_path = Path(model_path).parent / "todu_model.joblib"
+            if not todu_model_path.exists():
+                # Also check parent's parent (models/ directory)
+                todu_model_path = Path(model_path).parent.parent / "todu_model.joblib"
             if todu_model_path.exists():
                 reg_todu_amt_pile = joblib.load(todu_model_path)
                 logger.info(f"Loaded todu model from {todu_model_path}")

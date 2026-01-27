@@ -21,6 +21,7 @@ Output structure:
 """
 import argparse
 import os
+import re
 import shutil
 import sys
 import tomllib
@@ -30,6 +31,7 @@ from typing import Dict, Any, List, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from loguru import logger
+from tqdm import tqdm
 
 
 def load_base_config(config_path: str = "config.toml") -> Dict[str, Any]:
@@ -211,8 +213,9 @@ def run_supersegment_training(
         logger.info(f"  - {sf}")
 
     # Create combined segment_filter using regex OR pattern
-    # The preprocess module should handle this as a regex match
-    combined_filter = "|".join(f"({sf})" for sf in segment_filters)
+    # Escape special regex characters in segment filter values
+    escaped_filters = [re.escape(sf) for sf in segment_filters]
+    combined_filter = "|".join(f"({sf})" for sf in escaped_filters)
 
     # Merge config with combined filter
     merged_config = base_config.copy()
@@ -332,7 +335,8 @@ def run_segments_sequential(
     segments: Dict[str, Dict[str, Any]],
     base_config: Dict[str, Any],
     output_base: str = "output",
-    supersegments: Dict[str, Dict[str, Any]] = None
+    supersegments: Dict[str, Dict[str, Any]] = None,
+    reuse_models: bool = False
 ) -> Dict[str, bool]:
     """
     Run all segments sequentially, with supersegment support.
@@ -345,6 +349,7 @@ def run_segments_sequential(
         base_config: Base configuration
         output_base: Output directory base
         supersegments: Optional supersegment configurations
+        reuse_models: If True, reuse existing supersegment models instead of retraining
 
     Returns:
         Dictionary of segment names to success status
@@ -352,68 +357,102 @@ def run_segments_sequential(
     results = {}
     supersegment_models = {}  # Cache: supersegment_name -> model_path
 
-    # Phase 1: Train supersegment models
+    # Phase 1: Train supersegment models (or reuse existing)
     if supersegments:
         # Find which supersegments are actually used by the selected segments
-        used_supersegments = set()
+        used_supersegments = []
         for segment_config in segments.values():
             ss = segment_config.get("supersegment")
-            if ss and ss in supersegments:
-                used_supersegments.add(ss)
+            if ss and ss in supersegments and ss not in used_supersegments:
+                used_supersegments.append(ss)
 
-        # Train each used supersegment
-        for ss_name in used_supersegments:
-            logger.info(f"\n{'='*80}")
-            logger.info(f"PHASE 1: Training supersegment model: {ss_name}")
-            logger.info(f"{'='*80}")
+        # Train or reuse each supersegment with progress bar
+        if used_supersegments:
+            print(f"\n{'='*60}")
+            print("PHASE 1: Training Supersegment Models")
+            print(f"{'='*60}")
 
-            model_path = run_supersegment_training(
-                supersegment_name=ss_name,
-                supersegment_config=supersegments[ss_name],
-                base_config=base_config,
-                output_base=output_base
+            ss_progress = tqdm(
+                used_supersegments,
+                desc="Supersegments",
+                unit="model",
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
             )
 
-            if model_path:
-                supersegment_models[ss_name] = model_path
-                logger.info(f"Supersegment {ss_name} model ready: {model_path}")
-            else:
-                logger.error(f"Failed to train supersegment {ss_name}")
-                # Mark all segments using this supersegment as failed
-                for seg_name, seg_config in segments.items():
-                    if seg_config.get("supersegment") == ss_name:
-                        results[seg_name] = False
-                        logger.error(f"Segment {seg_name} marked as failed (supersegment training failed)")
+            for ss_name in ss_progress:
+                ss_progress.set_postfix_str(ss_name)
+
+                # Check for existing model if reuse_models is enabled
+                if reuse_models:
+                    ss_output_dir = Path(output_base) / f"_supersegment_{ss_name}" / "models"
+                    if ss_output_dir.exists():
+                        model_dirs = sorted(ss_output_dir.glob("model_*"), reverse=True)
+                        if model_dirs:
+                            model_path = str(model_dirs[0])
+                            logger.info(f"Reusing existing supersegment model: {model_path}")
+                            supersegment_models[ss_name] = model_path
+                            continue
+
+                # Train new model
+                logger.info(f"Training supersegment model: {ss_name}")
+                model_path = run_supersegment_training(
+                    supersegment_name=ss_name,
+                    supersegment_config=supersegments[ss_name],
+                    base_config=base_config,
+                    output_base=output_base
+                )
+
+                if model_path:
+                    supersegment_models[ss_name] = model_path
+                    logger.info(f"Supersegment {ss_name} model ready: {model_path}")
+                else:
+                    logger.error(f"Failed to train supersegment {ss_name}")
+                    # Mark all segments using this supersegment as failed
+                    for seg_name, seg_config in segments.items():
+                        if seg_config.get("supersegment") == ss_name:
+                            results[seg_name] = False
+                            logger.error(f"Segment {seg_name} marked as failed (supersegment training failed)")
 
     # Phase 2: Run individual segment optimizations
-    logger.info(f"\n{'='*80}")
-    logger.info(f"PHASE 2: Running individual segment optimizations")
-    logger.info(f"{'='*80}")
+    # Filter segments that haven't already failed
+    segments_to_run = [
+        (name, config) for name, config in segments.items()
+        if name not in results
+    ]
 
-    for segment_name, segment_config in segments.items():
-        # Skip if already marked as failed
-        if segment_name in results:
-            continue
+    if segments_to_run:
+        print(f"\n{'='*60}")
+        print("PHASE 2: Running Segment Optimizations")
+        print(f"{'='*60}")
 
-        logger.info(f"\nStarting segment: {segment_name}")
-
-        # Check if this segment uses a supersegment model
-        supersegment = segment_config.get("supersegment")
-        model_path = None
-        if supersegment and supersegment in supersegment_models:
-            model_path = supersegment_models[supersegment]
-            logger.info(f"Using supersegment model: {supersegment}")
-
-        success = run_segment_pipeline(
-            segment_name, segment_config, base_config, output_base,
-            model_path=model_path
+        seg_progress = tqdm(
+            segments_to_run,
+            desc="Segments",
+            unit="segment",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
         )
-        results[segment_name] = success
 
-        if success:
-            logger.info(f"Segment {segment_name} completed successfully")
-        else:
-            logger.error(f"Segment {segment_name} failed")
+        for segment_name, segment_config in seg_progress:
+            seg_progress.set_postfix_str(segment_name)
+
+            # Check if this segment uses a supersegment model
+            supersegment = segment_config.get("supersegment")
+            model_path = None
+            if supersegment and supersegment in supersegment_models:
+                model_path = supersegment_models[supersegment]
+                logger.info(f"Using supersegment model: {supersegment}")
+
+            success = run_segment_pipeline(
+                segment_name, segment_config, base_config, output_base,
+                model_path=model_path
+            )
+            results[segment_name] = success
+
+            # Update progress bar color based on result
+            if success:
+                seg_progress.set_postfix_str(f"{segment_name} ✓", refresh=True)
+            else:
+                seg_progress.set_postfix_str(f"{segment_name} ✗", refresh=True)
 
     return results
 
@@ -423,7 +462,8 @@ def run_segments_parallel(
     base_config: Dict[str, Any],
     output_base: str = "output",
     max_workers: int = None,
-    supersegments: Dict[str, Dict[str, Any]] = None
+    supersegments: Dict[str, Dict[str, Any]] = None,
+    reuse_models: bool = False
 ) -> Dict[str, bool]:
     """
     Run all segments in parallel, with supersegment support.
@@ -437,6 +477,7 @@ def run_segments_parallel(
         output_base: Output directory base
         max_workers: Maximum parallel workers
         supersegments: Optional supersegment configurations
+        reuse_models: If True, reuse existing supersegment models instead of retraining
 
     Returns:
         Dictionary of segment names to success status
@@ -446,26 +487,51 @@ def run_segments_parallel(
 
     # Phase 1: Train supersegment models SEQUENTIALLY (cannot parallelize training)
     if supersegments:
-        used_supersegments = set()
+        used_supersegments = []
         for segment_config in segments.values():
             ss = segment_config.get("supersegment")
-            if ss and ss in supersegments:
-                used_supersegments.add(ss)
+            if ss and ss in supersegments and ss not in used_supersegments:
+                used_supersegments.append(ss)
 
-        for ss_name in used_supersegments:
-            logger.info(f"\nTraining supersegment model: {ss_name}")
-            model_path = run_supersegment_training(
-                supersegment_name=ss_name,
-                supersegment_config=supersegments[ss_name],
-                base_config=base_config,
-                output_base=output_base
+        if used_supersegments:
+            print(f"\n{'='*60}")
+            print("PHASE 1: Training Supersegment Models (sequential)")
+            print(f"{'='*60}")
+
+            ss_progress = tqdm(
+                used_supersegments,
+                desc="Supersegments",
+                unit="model",
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
             )
-            if model_path:
-                supersegment_models[ss_name] = model_path
-            else:
-                for seg_name, seg_config in segments.items():
-                    if seg_config.get("supersegment") == ss_name:
-                        results[seg_name] = False
+
+            for ss_name in ss_progress:
+                ss_progress.set_postfix_str(ss_name)
+
+                # Check for existing model if reuse_models is enabled
+                if reuse_models:
+                    ss_output_dir = Path(output_base) / f"_supersegment_{ss_name}" / "models"
+                    if ss_output_dir.exists():
+                        model_dirs = sorted(ss_output_dir.glob("model_*"), reverse=True)
+                        if model_dirs:
+                            model_path = str(model_dirs[0])
+                            logger.info(f"Reusing existing supersegment model: {model_path}")
+                            supersegment_models[ss_name] = model_path
+                            continue
+
+                logger.info(f"Training supersegment model: {ss_name}")
+                model_path = run_supersegment_training(
+                    supersegment_name=ss_name,
+                    supersegment_config=supersegments[ss_name],
+                    base_config=base_config,
+                    output_base=output_base
+                )
+                if model_path:
+                    supersegment_models[ss_name] = model_path
+                else:
+                    for seg_name, seg_config in segments.items():
+                        if seg_config.get("supersegment") == ss_name:
+                            results[seg_name] = False
 
     # Phase 2: Run individual segment optimizations IN PARALLEL
     segments_to_run = {
@@ -473,32 +539,47 @@ def run_segments_parallel(
         if name not in results
     }
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {}
-        for segment_name, segment_config in segments_to_run.items():
-            supersegment = segment_config.get("supersegment")
-            model_path = supersegment_models.get(supersegment) if supersegment else None
+    if segments_to_run:
+        print(f"\n{'='*60}")
+        print(f"PHASE 2: Running Segment Optimizations (parallel, {max_workers or 'auto'} workers)")
+        print(f"{'='*60}")
 
-            future = executor.submit(
-                run_segment_pipeline,
-                segment_name,
-                segment_config,
-                base_config,
-                output_base,
-                model_path
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for segment_name, segment_config in segments_to_run.items():
+                supersegment = segment_config.get("supersegment")
+                model_path = supersegment_models.get(supersegment) if supersegment else None
+
+                future = executor.submit(
+                    run_segment_pipeline,
+                    segment_name,
+                    segment_config,
+                    base_config,
+                    output_base,
+                    model_path
+                )
+                futures[future] = segment_name
+
+            # Progress bar for parallel execution
+            seg_progress = tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="Segments",
+                unit="segment",
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
             )
-            futures[future] = segment_name
 
-        for future in as_completed(futures):
-            segment_name = futures[future]
-            try:
-                success = future.result()
-                results[segment_name] = success
-                status = "completed" if success else "failed"
-                logger.info(f"Segment {segment_name} {status}")
-            except Exception as e:
-                results[segment_name] = False
-                logger.error(f"Segment {segment_name} raised exception: {e}")
+            for future in seg_progress:
+                segment_name = futures[future]
+                try:
+                    success = future.result()
+                    results[segment_name] = success
+                    status = "✓" if success else "✗"
+                    seg_progress.set_postfix_str(f"{segment_name} {status}", refresh=True)
+                except Exception as e:
+                    results[segment_name] = False
+                    seg_progress.set_postfix_str(f"{segment_name} ✗", refresh=True)
+                    logger.error(f"Segment {segment_name} raised exception: {e}")
 
     return results
 
@@ -527,6 +608,63 @@ def print_summary(results: Dict[str, bool]) -> None:
             print(f"  - {name}")
 
     print("\n" + "=" * 80)
+
+
+def clean_output_directories(
+    segments: Dict[str, Dict[str, Any]],
+    supersegments: Dict[str, Dict[str, Any]],
+    output_base: str = "output"
+) -> Dict[str, bool]:
+    """
+    Remove output directories for specified segments and their supersegments.
+
+    Args:
+        segments: Segment configurations to clean
+        supersegments: All supersegment configurations
+        output_base: Base output directory
+
+    Returns:
+        Dictionary of directory names to removal success status
+    """
+    results = {}
+    output_path = Path(output_base)
+
+    # Find supersegments used by these segments
+    used_supersegments = set()
+    for seg_config in segments.values():
+        ss = seg_config.get("supersegment")
+        if ss and ss in supersegments:
+            used_supersegments.add(ss)
+
+    # Clean supersegment directories
+    for ss_name in used_supersegments:
+        ss_dir = output_path / f"_supersegment_{ss_name}"
+        if ss_dir.exists():
+            try:
+                shutil.rmtree(ss_dir)
+                print(f"  Removed: {ss_dir}")
+                results[f"_supersegment_{ss_name}"] = True
+            except Exception as e:
+                print(f"  Failed to remove {ss_dir}: {e}")
+                results[f"_supersegment_{ss_name}"] = False
+        else:
+            results[f"_supersegment_{ss_name}"] = True  # Already clean
+
+    # Clean segment directories
+    for seg_name in segments.keys():
+        seg_dir = output_path / seg_name
+        if seg_dir.exists():
+            try:
+                shutil.rmtree(seg_dir)
+                print(f"  Removed: {seg_dir}")
+                results[seg_name] = True
+            except Exception as e:
+                print(f"  Failed to remove {seg_dir}: {e}")
+                results[seg_name] = False
+        else:
+            results[seg_name] = True  # Already clean
+
+    return results
 
 
 def list_segments(segments_path: str = "segments.toml") -> None:
@@ -604,6 +742,21 @@ def main():
         default="segments.toml",
         help="Path to segments config file (default: segments.toml)"
     )
+    parser.add_argument(
+        "--reuse-models",
+        action="store_true",
+        help="Reuse existing supersegment models if available (skip retraining)"
+    )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Remove output directories for selected segments before running"
+    )
+    parser.add_argument(
+        "--clean-only",
+        action="store_true",
+        help="Only clean output directories (don't run pipeline)"
+    )
 
     args = parser.parse_args()
 
@@ -643,16 +796,41 @@ def main():
     else:
         segments = all_segments
 
-    # Identify supersegments used by selected segments
+    # Identify and validate supersegments used by selected segments
     used_supersegments = set()
-    for seg_config in segments.values():
+    for seg_name, seg_config in segments.items():
         ss = seg_config.get("supersegment")
-        if ss and ss in all_supersegments:
-            used_supersegments.add(ss)
+        if ss:
+            if ss not in all_supersegments:
+                print(f"Warning: Segment '{seg_name}' references unknown supersegment '{ss}'")
+                print(f"  Available supersegments: {list(all_supersegments.keys())}")
+                print(f"  Segment will train its own model instead.")
+            else:
+                used_supersegments.add(ss)
+
+    # Handle clean operations
+    if args.clean or args.clean_only:
+        print(f"\nCleaning output directories for {len(segments)} segment(s)...")
+        clean_results = clean_output_directories(
+            segments=segments,
+            supersegments=all_supersegments,
+            output_base=args.output
+        )
+        failed_cleans = [name for name, success in clean_results.items() if not success]
+        if failed_cleans:
+            print(f"Warning: Failed to clean: {failed_cleans}")
+
+        if args.clean_only:
+            print("\nClean complete.")
+            return 0 if not failed_cleans else 1
+
+        print()  # Blank line after clean output
 
     print(f"\nProcessing {len(segments)} segment(s): {list(segments.keys())}")
     if used_supersegments:
         print(f"Supersegments to train: {list(used_supersegments)}")
+        if args.reuse_models:
+            print(f"Reuse models: enabled (will skip training if model exists)")
     print(f"Output directory: {args.output}")
     print(f"Mode: {'parallel' if args.parallel else 'sequential'}")
     print()
@@ -661,12 +839,14 @@ def main():
     if args.parallel:
         results = run_segments_parallel(
             segments, base_config, args.output, args.workers,
-            supersegments=all_supersegments
+            supersegments=all_supersegments,
+            reuse_models=args.reuse_models
         )
     else:
         results = run_segments_sequential(
             segments, base_config, args.output,
-            supersegments=all_supersegments
+            supersegments=all_supersegments,
+            reuse_models=args.reuse_models
         )
 
     # Print summary
