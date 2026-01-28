@@ -412,6 +412,21 @@ def consolidate_segments(
 
     # Map scenario suffixes to meaningful names (base, pessimistic, optimistic)
     scenario_name_map = map_scenario_names(scenarios)
+
+    # Deduplicate scenarios that map to the same name (e.g., '' and '_base' both map to 'base')
+    # Keep the more specific suffix (e.g., '_base' over '')
+    seen_names = {}
+    for suffix in scenarios:
+        name = scenario_name_map.get(suffix, 'base')
+        if name not in seen_names:
+            seen_names[name] = suffix
+        elif suffix:  # Prefer non-empty suffix
+            seen_names[name] = suffix
+
+    # Rebuild scenarios list with deduplicated suffixes
+    scenarios = list(seen_names.values())
+    scenario_name_map = {s: map_scenario_names([s]).get(s, 'base') for s in scenarios}
+
     logger.info(f"Consolidating data for scenarios: {scenario_name_map}")
 
     results = []
