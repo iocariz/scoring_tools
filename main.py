@@ -526,13 +526,18 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
     annual_coef_mr = calculate_annual_coef(date_ini_book_obs=date_ini_mr, date_fin_book_obs=date_fin_mr)
     logger.info(f"Annual Coef MR: {annual_coef_mr}")
 
-    scenarios = [base_optimum_risk - scenario_step, base_optimum_risk, base_optimum_risk + scenario_step]
-    
+    # Scenarios: pessimistic (lower risk threshold), base (optimum), optimistic (higher risk threshold)
+    scenarios = [
+        (base_optimum_risk - scenario_step, 'pessimistic'),
+        (base_optimum_risk, 'base'),
+        (base_optimum_risk + scenario_step, 'optimistic'),
+    ]
+
     optimal_solution_df_base = None
-    
-    for scenario_risk in scenarios:
+
+    for scenario_risk, scenario_name in scenarios:
         current_risk = float(round(scenario_risk, 1))
-        logger.info(f"Running scenario: optimum_risk = {current_risk}")
+        logger.info(f"Running scenario: {scenario_name} (optimum_risk = {current_risk})")
         
         visualizer = RiskProductionVisualizer(
              data_summary=data_summary,
@@ -545,29 +550,29 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
              tasa_fin=result['overall_rate']
         )
     
-        suffix = f"_{current_risk:.1f}"
-        
+        suffix = f"_{scenario_name}"
+
         # Save HTML
         visualizer.save_html(f"images/risk_production_visualizer{suffix}.html")
-        
+
         # Save summary table
         summary_table = visualizer.get_summary_table()
         summary_table.to_csv(f"data/risk_production_summary_table{suffix}.csv", index=False)
-        logger.info(f"Risk production summary table saved to data/risk_production_summary_table{suffix}.csv")  
-    
+        logger.info(f"Risk production summary table saved to data/risk_production_summary_table{suffix}.csv")
+
         # Save optimal solution
         opt_sol = visualizer.get_selected_solution()
         opt_sol.to_csv(f"data/optimal_solution{suffix}.csv", index=False)
         logger.info(f"Optimal solution saved to data/optimal_solution{suffix}.csv")
-        
-        if abs(current_risk - base_optimum_risk) < 0.001:
+
+        if scenario_name == 'base':
             optimal_solution_df_base = opt_sol
             # Also save as default filenames for backward compatibility
             visualizer.save_html("images/risk_production_visualizer.html")
             summary_table.to_csv("data/risk_production_summary_table.csv", index=False)
             opt_sol.to_csv("data/optimal_solution.csv", index=False)
             logger.info("Base scenario outputs saved to default filenames.")
-            
+
             # Base Scenario MR Processing (Default filenames)
             process_mr_period(
                 data_clean=data_clean,

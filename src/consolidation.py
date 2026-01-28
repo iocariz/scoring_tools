@@ -85,6 +85,7 @@ class ConsolidatedMetrics:
         return self.optimum_risk - self.actual_risk
 
     def to_dict(self) -> Dict[str, Any]:
+        # Risk values are converted to percentage format (0.1 -> 10%)
         return {
             'group': self.group_name,
             'period': self.period,
@@ -92,41 +93,124 @@ class ConsolidatedMetrics:
             'n_segments': len(self.segments),
             'segments': ', '.join(self.segments),
             'actual_production': self.actual_production,
-            'actual_risk': self.actual_risk,
+            'actual_risk_pct': self.actual_risk * 100,
             'actual_todu_30ever_h6': self.actual_todu_30ever_h6,
             'actual_todu_amt_pile_h6': self.actual_todu_amt_pile_h6,
             'optimum_production': self.optimum_production,
-            'optimum_risk': self.optimum_risk,
+            'optimum_risk_pct': self.optimum_risk * 100,
             'optimum_todu_30ever_h6': self.optimum_todu_30ever_h6,
             'optimum_todu_amt_pile_h6': self.optimum_todu_amt_pile_h6,
             'swap_in_production': self.swap_in_production,
-            'swap_in_risk': self.swap_in_risk,
+            'swap_in_risk_pct': self.swap_in_risk * 100,
             'swap_in_todu_30ever_h6': self.swap_in_todu_30ever_h6,
             'swap_in_todu_amt_pile_h6': self.swap_in_todu_amt_pile_h6,
             'swap_out_production': self.swap_out_production,
-            'swap_out_risk': self.swap_out_risk,
+            'swap_out_risk_pct': self.swap_out_risk * 100,
             'swap_out_todu_30ever_h6': self.swap_out_todu_30ever_h6,
             'swap_out_todu_amt_pile_h6': self.swap_out_todu_amt_pile_h6,
             'production_delta': self.production_delta,
-            'production_delta_pct': self.production_delta_pct,
-            'risk_delta': self.risk_delta,
+            'production_delta_pct': self.production_delta_pct * 100,
+            'risk_delta_pct': self.risk_delta * 100,
         }
 
 
 def find_scenario_suffix(filename: str) -> str:
-    """Extract scenario suffix from filename like 'risk_production_summary_table_1.1.csv'."""
+    """Extract scenario suffix from filename.
+
+    Handles both named scenarios (e.g., 'risk_production_summary_table_pessimistic.csv')
+    and legacy numeric scenarios (e.g., 'risk_production_summary_table_1.1.csv').
+    """
     # Remove extension
     name = Path(filename).stem
 
-    # Check for scenario pattern (e.g., _1.1, _0.9)
+    # Named scenarios to detect
+    named_scenarios = ['pessimistic', 'base', 'optimistic']
+
+    # Check for named scenario pattern first
     parts = name.split('_')
+    for part in reversed(parts):
+        if part.lower() in named_scenarios:
+            return f"_{part.lower()}"
+
+    # Check for legacy numeric pattern (e.g., _1.1, _0.9)
     for part in reversed(parts):
         try:
             float(part)
             return f"_{part}"
         except ValueError:
             continue
+
     return ""
+
+
+def map_scenario_names(scenario_suffixes: List[str]) -> Dict[str, str]:
+    """
+    Map scenario suffixes to meaningful names.
+
+    Scenarios:
+    - base: optimum risk threshold (middle value or no suffix)
+    - pessimistic: optimum - step (lower value, more conservative)
+    - optimistic: optimum + step (higher value, more aggressive)
+
+    Args:
+        scenario_suffixes: List of suffixes like ['_pessimistic', '_base', '_optimistic']
+                          or legacy format ['', '_0.9', '_1.0', '_1.1']
+
+    Returns:
+        Dict mapping suffix to name, e.g., {'_base': 'base', '_pessimistic': 'pessimistic'}
+    """
+    mapping = {}
+
+    # Check if we have named scenarios (new format)
+    named_scenarios = {'pessimistic', 'base', 'optimistic'}
+
+    for suffix in scenario_suffixes:
+        clean_suffix = suffix.strip('_').lower()
+
+        if clean_suffix in named_scenarios:
+            # New format: _pessimistic, _base, _optimistic
+            mapping[suffix] = clean_suffix
+        elif suffix == '':
+            # Empty suffix defaults to base
+            mapping[suffix] = 'base'
+        else:
+            # Legacy format: try to parse as numeric
+            try:
+                val = float(clean_suffix)
+                # Will be mapped later based on relative values
+                mapping[suffix] = None  # Placeholder
+            except ValueError:
+                # Unknown format, use as-is
+                mapping[suffix] = clean_suffix
+
+    # Handle legacy numeric format if any placeholders exist
+    placeholders = [s for s, v in mapping.items() if v is None]
+    if placeholders:
+        # Extract numeric values and sort
+        numeric_suffixes = []
+        for suffix in placeholders:
+            try:
+                val = float(suffix.strip('_'))
+                numeric_suffixes.append((suffix, val))
+            except ValueError:
+                mapping[suffix] = suffix.strip('_')
+
+        if numeric_suffixes:
+            numeric_suffixes.sort(key=lambda x: x[1])
+
+            if len(numeric_suffixes) == 1:
+                mapping[numeric_suffixes[0][0]] = 'base'
+            elif len(numeric_suffixes) == 2:
+                mapping[numeric_suffixes[0][0]] = 'pessimistic'
+                mapping[numeric_suffixes[1][0]] = 'optimistic'
+            else:
+                # Three or more: lowest is pessimistic, highest is optimistic, middle is base
+                mapping[numeric_suffixes[0][0]] = 'pessimistic'
+                mapping[numeric_suffixes[-1][0]] = 'optimistic'
+                for suffix, val in numeric_suffixes[1:-1]:
+                    mapping[suffix] = 'base'
+
+    return mapping
 
 
 def load_risk_production_table(
@@ -308,17 +392,27 @@ def consolidate_segments(
     """
     if scenarios is None:
         # Auto-detect scenarios from first segment
-        scenarios = ['']
+        scenarios = []
         for seg_name in segments:
             seg_dir = output_base / seg_name / "data"
             if seg_dir.exists():
                 for f in seg_dir.glob("risk_production_summary_table*.csv"):
+                    # Skip MR files for scenario detection
+                    if '_mr' in f.name:
+                        continue
                     suffix = find_scenario_suffix(f.name)
-                    if suffix and suffix not in scenarios:
+                    if suffix not in scenarios:
                         scenarios.append(suffix)
-                break
+                if scenarios:
+                    break
 
-    logger.info(f"Consolidating data for scenarios: {scenarios}")
+        # Ensure we have at least one scenario
+        if not scenarios:
+            scenarios = ['']
+
+    # Map scenario suffixes to meaningful names (base, pessimistic, optimistic)
+    scenario_name_map = map_scenario_names(scenarios)
+    logger.info(f"Consolidating data for scenarios: {scenario_name_map}")
 
     results = []
 
@@ -331,7 +425,7 @@ def consolidate_segments(
 
     # Process each scenario
     for scenario_suffix in scenarios:
-        scenario_name = scenario_suffix.strip('_') if scenario_suffix else 'base'
+        scenario_name = scenario_name_map.get(scenario_suffix, 'base')
 
         # Process each period (main and MR)
         for period in ['main', 'mr']:
@@ -440,11 +534,11 @@ def consolidate_segments(
     # Reorder columns for clarity
     column_order = [
         'group', 'period', 'scenario', 'n_segments', 'segments',
-        'actual_production', 'actual_risk', 'actual_todu_30ever_h6', 'actual_todu_amt_pile_h6',
-        'optimum_production', 'optimum_risk', 'optimum_todu_30ever_h6', 'optimum_todu_amt_pile_h6',
-        'production_delta', 'production_delta_pct', 'risk_delta',
-        'swap_in_production', 'swap_in_risk', 'swap_in_todu_30ever_h6', 'swap_in_todu_amt_pile_h6',
-        'swap_out_production', 'swap_out_risk', 'swap_out_todu_30ever_h6', 'swap_out_todu_amt_pile_h6',
+        'actual_production', 'actual_risk_pct', 'actual_todu_30ever_h6', 'actual_todu_amt_pile_h6',
+        'optimum_production', 'optimum_risk_pct', 'optimum_todu_30ever_h6', 'optimum_todu_amt_pile_h6',
+        'production_delta', 'production_delta_pct', 'risk_delta_pct',
+        'swap_in_production', 'swap_in_risk_pct', 'swap_in_todu_30ever_h6', 'swap_in_todu_amt_pile_h6',
+        'swap_out_production', 'swap_out_risk_pct', 'swap_out_todu_30ever_h6', 'swap_out_todu_amt_pile_h6',
     ]
     df = df[[c for c in column_order if c in df.columns]]
 
@@ -526,7 +620,7 @@ def create_consolidation_dashboard(
             go.Bar(
                 name=f'{period.upper()} Risk',
                 x=period_data['scenario'],
-                y=period_data['actual_risk'],
+                y=period_data['actual_risk_pct'],
                 marker_color=colors[period],
                 showlegend=False
             ),
@@ -542,7 +636,7 @@ def create_consolidation_dashboard(
                 x=period_data['scenario'],
                 y=period_data['production_delta'],
                 marker_color=colors[period],
-                text=[f"{v:.1%}" for v in period_data['production_delta_pct']],
+                text=[f"{v:.1f}%" for v in period_data['production_delta_pct']],
                 textposition='outside',
                 showlegend=False
             ),
@@ -675,9 +769,8 @@ def print_consolidation_summary(df: pd.DataFrame) -> None:
             print(f"\n  {period} Period:")
             print(f"    Actual Production:  €{row['actual_production']:,.0f}")
             print(f"    Optimum Production: €{row['optimum_production']:,.0f}")
-            print(f"    Delta:              €{row['production_delta']:,.0f} ({row['production_delta_pct']:.1%})")
-            # Risk is already in percentage form (b2_ever_h6 = todu_30ever_h6/todu_amt_pile_h6 * 7)
-            print(f"    Risk:               {row['actual_risk']:.2f}% → {row['optimum_risk']:.2f}%")
+            print(f"    Delta:              €{row['production_delta']:,.0f} ({row['production_delta_pct']:.1f}%)")
+            print(f"    Risk:               {row['actual_risk_pct']:.2f}% → {row['optimum_risk_pct']:.2f}%")
 
         # Show supersegment breakdown
         ss_df = scenario_df[scenario_df['group'].str.startswith('supersegment_')]
@@ -687,6 +780,6 @@ def print_consolidation_summary(df: pd.DataFrame) -> None:
             for _, row in main_ss.iterrows():
                 ss_name = row['group'].replace('supersegment_', '')
                 print(f"    {ss_name}: €{row['actual_production']:,.0f} → €{row['optimum_production']:,.0f} "
-                      f"({row['production_delta_pct']:+.1%}), Risk: {row['actual_risk']:.2f}% → {row['optimum_risk']:.2f}%")
+                      f"({row['production_delta_pct']:+.1f}%), Risk: {row['actual_risk_pct']:.2f}% → {row['optimum_risk_pct']:.2f}%")
 
     print("\n" + "=" * 80)
