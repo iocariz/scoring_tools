@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 from src.preprocess_improved import PreprocessingConfig, complete_preprocessing_pipeline, filter_by_date, StatusName
 from src.utils import calculate_stress_factor, calculate_and_plot_transformation_rate, get_fact_sol, kpi_of_fact_sol, get_optimal_solutions, calculate_annual_coef, calculate_b2_ever_h6
 from src.plots import plot_risk_vs_production, RiskProductionVisualizer
-from src.inference_optimized import inference_pipeline, todu_average_inference, run_optimization_pipeline, load_model_for_prediction
+from src.inference_optimized import inference_pipeline_with_feature_selection, todu_average_inference, run_optimization_pipeline, load_model_for_prediction
 import joblib
 from src.models import calculate_risk_values
 from src.mr_pipeline import process_mr_period
@@ -422,9 +422,9 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
             logger.error(f"Failed to load pre-trained model: {e}")
             return None
     else:
-        # Train new model
-        logger.info("Calculating risk inference...")
-        risk_inference = inference_pipeline(
+        # Train new model with feature selection
+        logger.info("Calculating risk inference with feature selection...")
+        risk_inference = inference_pipeline_with_feature_selection(
             data=data_clean,
             bins=(config_data.get('octroi_bins'), config_data.get('efx_bins')),
             variables=config_data.get('variables'),
@@ -438,6 +438,8 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
             create_visualizations=True
         )
         logger.info(f"Best model: {risk_inference['best_model_info']['name']}")
+        logger.info(f"Model type: {risk_inference['best_model_info'].get('model_type', 'N/A')}")
+        logger.info(f"Feature set: {risk_inference['best_model_info'].get('feature_set', 'N/A')}")
         logger.info(f"Test R²: {risk_inference['best_model_info']['test_r2']:.4f}")
 
         # Todu Average Inference

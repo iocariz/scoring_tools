@@ -1155,6 +1155,332 @@ def inference_pipeline(
     }
 
 
+def inference_pipeline_with_feature_selection(
+    data: pd.DataFrame,
+    bins: tuple,
+    variables: list,
+    indicators: list,
+    target_var: str,
+    multiplier: float,
+    test_size: float = 0.4,
+    include_hurdle: bool = True,
+    save_model: bool = True,
+    model_base_path: str = 'models',
+    create_visualizations: bool = True
+):
+    """
+    Two-step inference pipeline:
+    1. Select best model type using var_reg
+    2. Select best feature set using the chosen model type
+
+    Parameters:
+    -----------
+    data : pd.DataFrame
+        Raw input data containing all records
+    bins : tuple
+        Tuple of (octroi_bins, efx_bins) for variable binning
+    variables : list
+        List of variable names for modeling (e.g., ['octroi_binned', 'efx_binned'])
+    indicators : list
+        List of indicator column names for calculations
+    target_var : str
+        Name of the target variable to predict
+    multiplier : float
+        Multiplier for target variable calculation
+    test_size : float, optional
+        Proportion of data for testing (default: 0.4)
+    include_hurdle : bool, optional
+        Whether to include Hurdle models (default: True)
+    save_model : bool, optional
+        Whether to save the best model (default: True)
+    model_base_path : str, optional
+        Base path for saving models (default: 'models')
+    create_visualizations : bool, optional
+        Whether to create 3D plots (default: True)
+
+    Returns:
+    --------
+    dict
+        Dictionary containing all pipeline outputs:
+        - train_data, test_data: Processed datasets
+        - features: Best feature set selected
+        - var_reg, var_reg_extended: Available feature sets
+        - step1_results: Model type comparison results
+        - step2_results: Feature set comparison results
+        - best_model_info: Final model details
+        - model_path: Path to saved model (if save_model=True)
+        - visualization: Plotly figure (if create_visualizations=True)
+    """
+    from sklearn.base import clone
+
+    logger.info("=" * 80)
+    logger.info("INFERENCE PIPELINE WITH FEATURE SELECTION")
+    logger.info("=" * 80)
+    logger.info(f"Target variable: {target_var}")
+    logger.info(f"Test size: {test_size:.1%}")
+    logger.info("=" * 80)
+
+    # ========================================================================
+    # DATA PREPARATION
+    # ========================================================================
+    logger.info("DATA PREPARATION")
+    logger.info("-" * 40)
+
+    train_data, test_data, var_reg, var_reg_extended = split_and_prepare_data(
+        data=data,
+        bins=bins,
+        variables=variables,
+        indicators=indicators,
+        target_var=target_var,
+        multiplier=multiplier,
+        test_size=test_size
+    )
+
+    # Extract targets and weights
+    y_train = train_data[target_var]
+    y_test = test_data[target_var]
+    weights_train = train_data['n_observations'] if 'n_observations' in train_data.columns else None
+    weights_test = test_data['n_observations'] if 'n_observations' in test_data.columns else None
+
+    logger.info(f"Training data shape: {train_data.shape}")
+    logger.info(f"Test data shape: {test_data.shape}")
+    logger.info(f"var_reg features: {var_reg}")
+    logger.info(f"var_reg_extended features: {var_reg_extended}")
+
+    # ========================================================================
+    # STEP 1: MODEL TYPE SELECTION (using var_reg)
+    # ========================================================================
+    logger.info("=" * 80)
+    logger.info("STEP 1: MODEL TYPE SELECTION (using var_reg)")
+    logger.info("=" * 80)
+
+    X_train_base = train_data[var_reg]
+    X_test_base = test_data[var_reg]
+
+    results_step1, best_model_step1 = evaluate_models_for_aggregated_data(
+        X_train=X_train_base,
+        X_test=X_test_base,
+        y_train=y_train,
+        y_test=y_test,
+        var_reg=var_reg,
+        weights_train=weights_train,
+        weights_test=weights_test,
+        include_hurdle=include_hurdle
+    )
+
+    best_model_name = best_model_step1['name']
+    logger.info(f"Best model type selected: {best_model_name}")
+    logger.info(f"Test R² with var_reg: {best_model_step1['test_r2']:.4f}")
+
+    # ========================================================================
+    # STEP 2: FEATURE SET SELECTION
+    # ========================================================================
+    logger.info("=" * 80)
+    logger.info(f"STEP 2: FEATURE SET SELECTION (using {best_model_name})")
+    logger.info("=" * 80)
+
+    # Define feature sets to compare
+    feature_sets = {
+        'var_reg': var_reg,
+        'var_reg_extended': var_reg_extended,
+    }
+
+    # Add subset: var_reg + only squared terms
+    squared_terms = [f for f in var_reg_extended if '^2' in f and f not in var_reg]
+    if squared_terms:
+        feature_sets['var_reg + squared'] = var_reg + squared_terms
+
+    # Get the model object to clone
+    best_model_obj = best_model_step1['model']
+
+    feature_results = []
+
+    for feature_name, features in feature_sets.items():
+        # Check all features exist in data
+        missing = [f for f in features if f not in train_data.columns]
+        if missing:
+            logger.warning(f"Skipping {feature_name}: missing columns {missing}")
+            continue
+
+        X_train_feat = train_data[features]
+        X_test_feat = test_data[features]
+
+        # Clone and fit the same model type
+        model_clone = clone(best_model_obj)
+        model_clone.fit(X_train_feat, y_train, sample_weight=weights_train)
+
+        # Evaluate
+        y_train_pred = model_clone.predict(X_train_feat)
+        y_test_pred = model_clone.predict(X_test_feat)
+
+        train_r2 = r2_score(y_train, y_train_pred, sample_weight=weights_train)
+        test_r2 = r2_score(y_test, y_test_pred, sample_weight=weights_test)
+        test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred, sample_weight=weights_test))
+        test_mae = mean_absolute_error(y_test, y_test_pred, sample_weight=weights_test)
+
+        feature_results.append({
+            'Feature Set': feature_name,
+            'Num Features': len(features),
+            'Features': features,
+            'Train R²': train_r2,
+            'Test R²': test_r2,
+            'Test RMSE': test_rmse,
+            'Test MAE': test_mae,
+            'Overfit': train_r2 - test_r2,
+            'model': model_clone
+        })
+
+        logger.info(f"{feature_name}: Test R² = {test_r2:.4f}, RMSE = {test_rmse:.4f}")
+
+    # Find best feature set
+    feature_results_df = pd.DataFrame(feature_results)
+    best_idx = feature_results_df['Test R²'].idxmax()
+    best_feature_set = feature_results_df.loc[best_idx]
+
+    logger.info("=" * 80)
+    logger.info("FEATURE SELECTION RESULTS")
+    logger.info("=" * 80)
+    display_cols = ['Feature Set', 'Num Features', 'Train R²', 'Test R²', 'Test RMSE', 'Overfit']
+    logger.info(f"\n{feature_results_df[display_cols].to_string()}")
+    logger.info(f"\nBest feature set: {best_feature_set['Feature Set']}")
+    logger.info(f"Best features: {best_feature_set['Features']}")
+
+    # Final model and features
+    final_model = best_feature_set['model']
+    final_features = best_feature_set['Features']
+
+    best_model_info = {
+        'model': final_model,
+        'name': f"{best_model_name} + {best_feature_set['Feature Set']}",
+        'test_r2': best_feature_set['Test R²'],
+        'train_r2': best_feature_set['Train R²'],
+        'test_rmse': best_feature_set['Test RMSE'],
+        'test_mae': best_feature_set['Test MAE'],
+        'model_type': best_model_name,
+        'feature_set': best_feature_set['Feature Set'],
+        'weighted': weights_train is not None,
+        'is_hurdle': isinstance(final_model, HurdleRegressor)
+    }
+
+    # ========================================================================
+    # STEP 3: MODEL SAVING
+    # ========================================================================
+    model_path = None
+    if save_model:
+        logger.info("=" * 80)
+        logger.info("STEP 3: MODEL SAVING")
+        logger.info("=" * 80)
+
+        # Calculate zero proportions
+        zero_prop_train = (np.abs(y_train) < 1e-10).mean()
+        zero_prop_test = (np.abs(y_test) < 1e-10).mean()
+
+        # Prepare metadata
+        model_metadata = {
+            'test_r2': best_model_info['test_r2'],
+            'train_r2': best_model_info['train_r2'],
+            'test_rmse': best_model_info['test_rmse'],
+            'test_mae': best_model_info['test_mae'],
+            'train_samples': len(train_data),
+            'test_samples': len(test_data),
+            'target_variable': target_var,
+            'multiplier': multiplier,
+            'model_type_selected': best_model_name,
+            'feature_set_selected': best_feature_set['Feature Set'],
+            'weighted_regression': best_model_info.get('weighted', False),
+            'is_hurdle': best_model_info.get('is_hurdle', False),
+            'zero_proportion_train': float(zero_prop_train),
+            'zero_proportion_test': float(zero_prop_test),
+            'step1_best_test_r2': best_model_step1['test_r2'],
+            'step2_improvement': best_model_info['test_r2'] - best_model_step1['test_r2']
+        }
+
+        # Add weight statistics if weighted
+        if weights_train is not None:
+            model_metadata['weight_stats'] = {
+                'train_min': float(weights_train.min()),
+                'train_max': float(weights_train.max()),
+                'train_mean': float(weights_train.mean()),
+                'test_min': float(weights_test.min()),
+                'test_max': float(weights_test.max()),
+                'test_mean': float(weights_test.mean())
+            }
+
+        # Save model
+        model_path = save_model_with_metadata(
+            model=final_model,
+            features=final_features,
+            metadata=model_metadata,
+            base_path=model_base_path
+        )
+
+    # ========================================================================
+    # STEP 4: VISUALIZATION
+    # ========================================================================
+    fig = None
+    if create_visualizations and len(variables) == 2:
+        logger.info("=" * 80)
+        logger.info("STEP 4: 3D VISUALIZATION")
+        logger.info("=" * 80)
+
+        try:
+            fig = plot_3d_surface(
+                model=final_model,
+                train_data=train_data,
+                test_data=test_data,
+                variables=variables,
+                target_var=target_var,
+                features=final_features,
+                n_points=20
+            )
+
+            if fig is not None:
+                logger.info("3D surface plot created")
+                if model_path:
+                    plot_path = Path(model_path) / "prediction_surface.html"
+                    fig.write_html(str(plot_path))
+                    logger.info(f"Plot saved to: {plot_path}")
+        except Exception as e:
+            logger.error(f"Visualization failed: {str(e)}")
+
+    # ========================================================================
+    # PIPELINE SUMMARY
+    # ========================================================================
+    logger.info("=" * 80)
+    logger.info("PIPELINE SUMMARY")
+    logger.info("=" * 80)
+    logger.info(f"Step 1 - Best model type: {best_model_name}")
+    logger.info(f"Step 1 - Test R² (var_reg): {best_model_step1['test_r2']:.4f}")
+    logger.info(f"Step 2 - Best feature set: {best_feature_set['Feature Set']}")
+    logger.info(f"Step 2 - Final Test R²: {best_model_info['test_r2']:.4f}")
+    logger.info(f"Improvement from feature selection: {best_model_info['test_r2'] - best_model_step1['test_r2']:+.4f}")
+    if model_path:
+        logger.info(f"Model saved: {model_path}")
+    logger.info("=" * 80)
+
+    # ========================================================================
+    # RETURN ALL RESULTS
+    # ========================================================================
+    return {
+        'train_data': train_data,
+        'test_data': test_data,
+        'X_train': train_data[final_features],
+        'X_test': test_data[final_features],
+        'y_train': y_train,
+        'y_test': y_test,
+        'weights_train': weights_train,
+        'weights_test': weights_test,
+        'features': final_features,
+        'var_reg': var_reg,
+        'var_reg_extended': var_reg_extended,
+        'step1_results': results_step1,
+        'step2_results': feature_results_df.drop('model', axis=1),
+        'best_model_info': best_model_info,
+        'model_path': model_path,
+        'visualization': fig
+    }
+
+
 def predict_on_new_data(model_path: str, new_data: pd.DataFrame):
     """
     Load a saved model and make predictions on new data.
