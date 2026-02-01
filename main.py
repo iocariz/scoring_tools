@@ -578,6 +578,10 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
         summary_table.to_csv(f"data/risk_production_summary_table{suffix}.csv", index=False)
         logger.info(f"Risk production summary table saved to data/risk_production_summary_table{suffix}.csv")
 
+        # Save disaggregated data (for Cutoff Explorer)
+        data_summary_desagregado.to_csv(f"data/data_summary_desagregado{suffix}.csv", index=False)
+        logger.info(f"Disaggregated summary data saved to data/data_summary_desagregado{suffix}.csv")
+
         # Save optimal solution
         opt_sol = visualizer.get_selected_solution()
         opt_sol.to_csv(f"data/optimal_solution{suffix}.csv", index=False)
@@ -605,6 +609,7 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
             visualizer.save_html("images/risk_production_visualizer.html")
             summary_table.to_csv("data/risk_production_summary_table.csv", index=False)
             opt_sol.to_csv("data/optimal_solution.csv", index=False)
+            data_summary_desagregado.to_csv("data/data_summary_desagregado.csv", index=False)
             logger.info("Base scenario outputs saved to default filenames.")
 
             # Base Scenario MR Processing (Default filenames)

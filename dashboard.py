@@ -5,6 +5,7 @@ Provides an interactive Dash application to explore:
 - Scenario comparisons (pessimistic, base, optimistic)
 - Main period results and visualizations
 - MR (Recent Monitoring) period results
+- Cutoff Explorer for interactive what-if analysis
 
 Supports both single-run output (data/, images/) and batch output (output/{segment}/).
 
@@ -15,13 +16,15 @@ Usage:
 """
 
 import argparse
+import json
 import re
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 
 import dash
-from dash import dcc, html, Input, Output
+from dash import dcc, html, Input, Output, State, callback_context
 import dash_bootstrap_components as dbc
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -32,6 +35,8 @@ from src.styles import (
     COLOR_PRIMARY,
     COLOR_RISK,
     COLOR_PRODUCTION,
+    COLOR_GOOD,
+    COLOR_BAD,
     apply_plotly_style,
 )
 
@@ -168,6 +173,7 @@ def get_scenario_paths(scenario: str, segment: Optional[str] = None) -> Dict[str
         'mr_viz': f"{static_prefix}/b2_ever_h6_vs_octroi_and_risk_score_mr{suffix}.html",
         'stability': f"{static_prefix}/stability_report{suffix}.html",
         'cutoffs': data_dir / f"optimal_solution{suffix}.csv",
+        'summary_data': data_dir / f"data_summary_desagregado{suffix}.csv",
     }
 
     # Fallback to unsuffixed files for base scenario
@@ -179,8 +185,9 @@ def get_scenario_paths(scenario: str, segment: Optional[str] = None) -> Dict[str
             'mr_viz': f"{static_prefix}/b2_ever_h6_vs_octroi_and_risk_score_mr.html",
             'stability': f"{static_prefix}/stability_report.html",
             'cutoffs': data_dir / "optimal_solution.csv",
+            'summary_data': data_dir / "data_summary_desagregado.csv",
         }
-        for key in ['main_csv', 'mr_csv', 'cutoffs']:
+        for key in ['main_csv', 'mr_csv', 'cutoffs', 'summary_data']:
             if not paths[key].exists() and fallbacks[key].exists():
                 paths[key] = fallbacks[key]
 
@@ -455,6 +462,232 @@ def create_empty_state() -> html.Div:
     ], color="info", className="mt-3")
 
 
+# --- Cutoff Explorer Functions ---
+
+def load_cutoff_data(scenario: str, segment: Optional[str] = None) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], List[str]]:
+    """
+    Load data needed for cutoff explorer.
+
+    Returns:
+        Tuple of (summary_data, optimal_solution, variables)
+    """
+    paths = get_scenario_paths(scenario, segment)
+
+    summary_data = None
+    optimal_solution = None
+    variables = []
+
+    # Load summary data
+    if paths['summary_data'].exists():
+        summary_data = pd.read_csv(paths['summary_data'])
+        # Detect variables (first two columns that look like cluster columns)
+        for col in summary_data.columns:
+            if 'clus' in col.lower() or col in ['sc_octroi_new_clus', 'new_efx_clus']:
+                variables.append(col)
+            if len(variables) == 2:
+                break
+
+    # Load optimal solution
+    if paths['cutoffs'].exists():
+        optimal_solution = pd.read_csv(paths['cutoffs'])
+
+    return summary_data, optimal_solution, variables
+
+
+def calculate_metrics_from_custom_cuts(
+    data: pd.DataFrame,
+    cut_map: Dict[int, int],
+    var0_col: str,
+    var1_col: str
+) -> Dict[str, Any]:
+    """
+    Calculate metrics for custom cutoff configuration.
+
+    Args:
+        data: Summary data DataFrame
+        cut_map: Dictionary mapping var0 bins to var1 cutoff values
+        var0_col: First variable column name
+        var1_col: Second variable column name
+
+    Returns:
+        Dictionary with calculated metrics
+    """
+    df = data.copy()
+
+    # Apply cuts
+    df['cut_limit'] = df[var0_col].map(cut_map)
+    df['passes_cut'] = df[var1_col] <= df['cut_limit']
+
+    def calc_metrics(subset, suffix):
+        prod_col = f'oa_amt_h0{suffix}'
+        risk_num_col = f'todu_30ever_h6{suffix}'
+        risk_den_col = f'todu_amt_pile_h6{suffix}'
+
+        if prod_col not in subset.columns:
+            return 0, 0, 0, 0
+
+        prod = subset[prod_col].sum()
+        risk_num = subset[risk_num_col].sum() if risk_num_col in subset.columns else 0
+        risk_den = subset[risk_den_col].sum() if risk_den_col in subset.columns else 0
+        b2_ever = (risk_num / risk_den * 7) if risk_den > 0 else 0.0
+        return prod, b2_ever, risk_num, risk_den
+
+    # Actual (All Booked)
+    actual_prod, actual_risk, actual_rn, actual_rd = calc_metrics(df, '_boo')
+
+    # Swap-in (Repesca that passes)
+    swap_in_df = df[df['passes_cut']]
+    si_prod, si_risk, si_rn, si_rd = calc_metrics(swap_in_df, '_rep')
+
+    # Swap-out (Booked that fails)
+    swap_out_df = df[~df['passes_cut']]
+    so_prod, so_risk, so_rn, so_rd = calc_metrics(swap_out_df, '_boo')
+
+    # Optimum
+    opt_prod = (actual_prod - so_prod) + si_prod
+    opt_rn = (actual_rn - so_rn) + si_rn
+    opt_rd = (actual_rd - so_rd) + si_rd
+    opt_risk = (opt_rn / opt_rd * 7) if opt_rd > 0 else 0.0
+
+    return {
+        'actual_prod': actual_prod,
+        'actual_risk': actual_risk,
+        'swap_in_prod': si_prod,
+        'swap_in_risk': si_risk,
+        'swap_out_prod': so_prod,
+        'swap_out_risk': so_risk,
+        'opt_prod': opt_prod,
+        'opt_risk': opt_risk,
+        'opt_prod_pct': opt_prod / actual_prod if actual_prod > 0 else 0,
+    }
+
+
+def create_cutoff_explorer_layout(scenario: str, segment: Optional[str] = None) -> html.Div:
+    """Create the cutoff explorer tab layout."""
+    summary_data, optimal_solution, variables = load_cutoff_data(scenario, segment)
+
+    if summary_data is None or len(variables) < 2:
+        return dbc.Alert([
+            html.H4("Cutoff Explorer Not Available", className="alert-heading"),
+            html.P("Summary data not found for this scenario. Run the pipeline first."),
+        ], color="warning")
+
+    var0_col, var1_col = variables[0], variables[1]
+
+    # Get unique bins
+    bins = sorted(summary_data[var0_col].unique())
+    var1_max = int(summary_data[var1_col].max())
+
+    # Get optimal cutoffs
+    optimal_cuts = {}
+    if optimal_solution is not None and not optimal_solution.empty:
+        opt_row = optimal_solution.iloc[0]
+        for bin_val in bins:
+            if bin_val in optimal_solution.columns:
+                optimal_cuts[bin_val] = int(opt_row[bin_val])
+            elif str(bin_val) in optimal_solution.columns:
+                optimal_cuts[bin_val] = int(opt_row[str(bin_val)])
+            else:
+                optimal_cuts[bin_val] = var1_max
+
+    # Create sliders for each bin
+    sliders = []
+    for bin_val in bins:
+        initial_value = optimal_cuts.get(bin_val, var1_max)
+        sliders.append(
+            dbc.Col([
+                html.Label(f"Bin {int(bin_val)}", className="fw-bold text-center d-block"),
+                dcc.Slider(
+                    id={'type': 'cutoff-slider', 'index': int(bin_val)},
+                    min=1,
+                    max=var1_max,
+                    step=1,
+                    value=initial_value,
+                    marks={i: str(i) for i in range(1, var1_max + 1, max(1, var1_max // 5))},
+                    vertical=True,
+                    verticalHeight=200,
+                    tooltip={"placement": "right", "always_visible": True},
+                ),
+                html.Div(
+                    f"Opt: {initial_value}",
+                    className="text-muted text-center small mt-1",
+                    id={'type': 'optimal-label', 'index': int(bin_val)}
+                )
+            ], className="text-center", style={'minWidth': '80px'})
+        )
+
+    # Store for data
+    scenario_display = scenario.capitalize()
+    segment_display = f" - {segment}" if segment else ""
+
+    return html.Div([
+        html.H4(f"Cutoff Explorer ({scenario_display}{segment_display})", className="mb-4"),
+
+        # Store data for callbacks
+        dcc.Store(id='cutoff-data-store', data={
+            'scenario': scenario,
+            'segment': segment,
+            'var0_col': var0_col,
+            'var1_col': var1_col,
+            'optimal_cuts': {str(k): v for k, v in optimal_cuts.items()},
+            'bins': [int(b) for b in bins],
+        }),
+
+        dbc.Row([
+            # Sliders panel
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.Span("Adjust Cutoffs by Score Bin", className="fw-bold"),
+                        dbc.Button(
+                            "Reset to Optimal",
+                            id="reset-cutoffs-btn",
+                            color="secondary",
+                            size="sm",
+                            className="float-end"
+                        )
+                    ]),
+                    dbc.CardBody([
+                        html.P([
+                            f"Variable: {var0_col} (bins) → {var1_col} (max cutoff)",
+                        ], className="text-muted small"),
+                        html.Div([
+                            dbc.Row(sliders, className="g-2 justify-content-center")
+                        ], style={'overflowX': 'auto'}),
+                    ])
+                ], className="mb-3"),
+            ], md=5),
+
+            # Results panel
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader("Impact Analysis"),
+                    dbc.CardBody(id="cutoff-results")
+                ], className="mb-3"),
+
+                dbc.Card([
+                    dbc.CardHeader("Risk vs Production"),
+                    dbc.CardBody([
+                        dcc.Graph(id="cutoff-chart", style={'height': '300px'})
+                    ])
+                ]),
+            ], md=7),
+        ]),
+
+        # Heatmap
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader("Cutoff Visualization (cells passing cut are highlighted)"),
+                    dbc.CardBody([
+                        dcc.Graph(id="cutoff-heatmap", style={'height': '400px'})
+                    ])
+                ])
+            ])
+        ], className="mt-3"),
+    ])
+
+
 # --- Initialize Dash App ---
 app = dash.Dash(
     __name__,
@@ -540,6 +773,7 @@ def create_layout():
             dbc.Tab(label="Scenario Comparison", tab_id="tab-comp"),
             dbc.Tab(label="Main Period", tab_id="tab-main", disabled=not has_data),
             dbc.Tab(label="MR Period (Recent)", tab_id="tab-mr", disabled=not has_data),
+            dbc.Tab(label="Cutoff Explorer", tab_id="tab-cutoff", disabled=not has_data),
             dbc.Tab(label="Stability Analysis", tab_id="tab-stability", disabled=not has_data),
         ], id="tabs", active_tab="tab-comp", className="mb-3"),
 
@@ -583,6 +817,7 @@ def update_scenarios_on_segment_change(segment: Optional[str]):
         dbc.Tab(label="Scenario Comparison", tab_id="tab-comp"),
         dbc.Tab(label="Main Period", tab_id="tab-main", disabled=not has_data),
         dbc.Tab(label="MR Period (Recent)", tab_id="tab-mr", disabled=not has_data),
+        dbc.Tab(label="Cutoff Explorer", tab_id="tab-cutoff", disabled=not has_data),
         dbc.Tab(label="Stability Analysis", tab_id="tab-stability", disabled=not has_data),
     ]
 
@@ -654,6 +889,9 @@ def render_content(active_tab: str, scenario: Optional[str], segment: Optional[s
             ])
         ])
 
+    elif active_tab == "tab-cutoff":
+        return create_cutoff_explorer_layout(scenario, segment)
+
     elif active_tab == "tab-stability":
         return html.Div([
             html.H4(f"Stability Analysis ({scenario_display}{segment_display})", className="mb-4"),
@@ -668,6 +906,170 @@ def render_content(active_tab: str, scenario: Optional[str], segment: Optional[s
         ])
 
     return html.Div("Select a tab", className="text-muted")
+
+
+# Cutoff Explorer callbacks
+@app.callback(
+    [Output("cutoff-results", "children"),
+     Output("cutoff-chart", "figure"),
+     Output("cutoff-heatmap", "figure")],
+    [Input({'type': 'cutoff-slider', 'index': dash.ALL}, 'value'),
+     Input("cutoff-data-store", "data")],
+    prevent_initial_call=False
+)
+def update_cutoff_analysis(slider_values, store_data):
+    """Update cutoff analysis when sliders change."""
+    if not store_data or not slider_values:
+        empty_fig = go.Figure()
+        empty_fig.update_layout(
+            annotations=[dict(text="No data available", x=0.5, y=0.5, showarrow=False)]
+        )
+        return html.Div("No data available"), empty_fig, empty_fig
+
+    scenario = store_data['scenario']
+    segment = store_data.get('segment')
+    var0_col = store_data['var0_col']
+    var1_col = store_data['var1_col']
+    optimal_cuts = {int(k): v for k, v in store_data['optimal_cuts'].items()}
+    bins = store_data['bins']
+
+    # Load data
+    summary_data, _, _ = load_cutoff_data(scenario, segment)
+    if summary_data is None:
+        empty_fig = go.Figure()
+        return html.Div("Data not available"), empty_fig, empty_fig
+
+    # Build current cut map from sliders
+    current_cuts = {bins[i]: slider_values[i] for i in range(len(bins))}
+
+    # Calculate metrics for current and optimal
+    current_metrics = calculate_metrics_from_custom_cuts(summary_data, current_cuts, var0_col, var1_col)
+    optimal_metrics = calculate_metrics_from_custom_cuts(summary_data, optimal_cuts, var0_col, var1_col)
+
+    # Create results display
+    risk_delta = current_metrics['opt_risk'] - optimal_metrics['opt_risk']
+    prod_delta = current_metrics['opt_prod_pct'] - optimal_metrics['opt_prod_pct']
+
+    risk_color = COLOR_GOOD if risk_delta <= 0 else COLOR_BAD
+    prod_color = COLOR_GOOD if prod_delta >= 0 else COLOR_BAD
+
+    results = dbc.Row([
+        dbc.Col([
+            html.H6("Current Configuration", className="text-primary"),
+            html.P([
+                html.Strong("Risk: "),
+                f"{current_metrics['opt_risk']:.2%}",
+                html.Span(
+                    f" ({risk_delta:+.2%})",
+                    style={'color': risk_color},
+                    className="ms-1"
+                )
+            ]),
+            html.P([
+                html.Strong("Production: "),
+                f"{current_metrics['opt_prod_pct']:.1%}",
+                html.Span(
+                    f" ({prod_delta:+.1%})",
+                    style={'color': prod_color},
+                    className="ms-1"
+                )
+            ]),
+        ], md=6),
+        dbc.Col([
+            html.H6("Optimal Configuration", className="text-muted"),
+            html.P([
+                html.Strong("Risk: "),
+                f"{optimal_metrics['opt_risk']:.2%}"
+            ]),
+            html.P([
+                html.Strong("Production: "),
+                f"{optimal_metrics['opt_prod_pct']:.1%}"
+            ]),
+        ], md=6),
+    ])
+
+    # Create comparison chart
+    fig_chart = go.Figure()
+
+    categories = ['Risk (%)', 'Production (%)']
+    fig_chart.add_trace(go.Bar(
+        name='Current',
+        x=categories,
+        y=[current_metrics['opt_risk'] * 100, current_metrics['opt_prod_pct'] * 100],
+        marker_color=COLOR_PRIMARY
+    ))
+    fig_chart.add_trace(go.Bar(
+        name='Optimal',
+        x=categories,
+        y=[optimal_metrics['opt_risk'] * 100, optimal_metrics['opt_prod_pct'] * 100],
+        marker_color=COLOR_PRODUCTION
+    ))
+
+    fig_chart.update_layout(
+        barmode='group',
+        margin=dict(l=40, r=20, t=30, b=40),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02),
+        yaxis_title="Value (%)"
+    )
+    apply_plotly_style(fig_chart, height=280)
+
+    # Create heatmap showing which cells pass/fail
+    df = summary_data.copy()
+    df['cut_limit'] = df[var0_col].map(current_cuts)
+    df['passes'] = (df[var1_col] <= df['cut_limit']).astype(int)
+
+    # Pivot for heatmap
+    pivot = df.pivot_table(index=var1_col, columns=var0_col, values='passes', aggfunc='first')
+    pivot = pivot.sort_index(ascending=False)
+
+    fig_heatmap = go.Figure(data=go.Heatmap(
+        z=pivot.values,
+        x=[str(int(c)) for c in pivot.columns],
+        y=[str(int(r)) for r in pivot.index],
+        colorscale=[[0, '#ffcccc'], [1, '#ccffcc']],
+        showscale=False,
+        hovertemplate=f'{var0_col}: %{{x}}<br>{var1_col}: %{{y}}<br>Status: %{{customdata}}<extra></extra>',
+        customdata=[['Pass' if v == 1 else 'Reject' for v in row] for row in pivot.values]
+    ))
+
+    # Add cutoff line
+    for i, bin_val in enumerate(pivot.columns):
+        cut_val = current_cuts.get(int(bin_val), 9)
+        fig_heatmap.add_shape(
+            type="line",
+            x0=i - 0.5, x1=i + 0.5,
+            y0=len(pivot.index) - cut_val - 0.5,
+            y1=len(pivot.index) - cut_val - 0.5,
+            line=dict(color="red", width=3)
+        )
+
+    fig_heatmap.update_layout(
+        xaxis_title=var0_col,
+        yaxis_title=var1_col,
+        margin=dict(l=60, r=20, t=30, b=60),
+    )
+    apply_plotly_style(fig_heatmap, height=380)
+
+    return results, fig_chart, fig_heatmap
+
+
+# Reset button callback
+@app.callback(
+    Output({'type': 'cutoff-slider', 'index': dash.ALL}, 'value'),
+    [Input("reset-cutoffs-btn", "n_clicks")],
+    [State("cutoff-data-store", "data"),
+     State({'type': 'cutoff-slider', 'index': dash.ALL}, 'value')],
+    prevent_initial_call=True
+)
+def reset_cutoffs(n_clicks, store_data, current_values):
+    """Reset sliders to optimal values."""
+    if not store_data or not n_clicks:
+        return current_values
+
+    optimal_cuts = {int(k): v for k, v in store_data['optimal_cuts'].items()}
+    bins = store_data['bins']
+
+    return [optimal_cuts.get(bin_val, 9) for bin_val in bins]
 
 
 def parse_args():
