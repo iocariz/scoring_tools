@@ -1,3 +1,4 @@
+import argparse
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -6,10 +7,23 @@ from typing import Dict, Any, Optional, List, Tuple
 from loguru import logger
 import tomllib
 import plotly.graph_objects as go
-from src.preprocess_improved import PreprocessingConfig, complete_preprocessing_pipeline, filter_by_date, StatusName
-from src.utils import calculate_stress_factor, calculate_and_plot_transformation_rate, get_fact_sol, kpi_of_fact_sol, get_optimal_solutions, calculate_annual_coef, calculate_b2_ever_h6
+from src.preprocess_improved import PreprocessingConfig, complete_preprocessing_pipeline, filter_by_date
+from src.constants import StatusName
+from src.utils import (
+    calculate_stress_factor,
+    calculate_and_plot_transformation_rate,
+    get_fact_sol,
+    kpi_of_fact_sol,
+    get_optimal_solutions,
+    calculate_annual_coef,
+    calculate_b2_ever_h6,
+    generate_cutoff_summary,
+    consolidate_cutoff_summaries,
+    format_cutoff_summary_table,
+)
 from src.plots import plot_risk_vs_production, RiskProductionVisualizer
-from src.inference_optimized import inference_pipeline_with_feature_selection, todu_average_inference, run_optimization_pipeline, load_model_for_prediction
+from src.inference_optimized import inference_pipeline_with_feature_selection, todu_average_inference, run_optimization_pipeline
+from src.persistence import load_model_for_prediction
 import joblib
 from src.models import calculate_risk_values
 from src.mr_pipeline import process_mr_period
@@ -536,11 +550,13 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
     ]
 
     optimal_solution_df_base = None
+    cutoff_summaries = []  # Collect cutoff summaries for all scenarios
+    segment_name = config_data.get('segment_filter', 'unknown_segment')
 
     for scenario_risk, scenario_name in scenarios:
         current_risk = float(round(scenario_risk, 1))
         logger.info(f"Running scenario: {scenario_name} (optimum_risk = {current_risk})")
-        
+
         visualizer = RiskProductionVisualizer(
              data_summary=data_summary,
              data_summary_disaggregated=data_summary_desagregado,
@@ -551,7 +567,7 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
              optimum_risk=current_risk,
              tasa_fin=result['overall_rate']
         )
-    
+
         suffix = f"_{scenario_name}"
 
         # Save HTML
@@ -566,6 +582,22 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
         opt_sol = visualizer.get_selected_solution()
         opt_sol.to_csv(f"data/optimal_solution{suffix}.csv", index=False)
         logger.info(f"Optimal solution saved to data/optimal_solution{suffix}.csv")
+
+        # Extract risk and production values from summary table for cutoff summary
+        optimum_row = summary_table[summary_table['Metric'] == 'Optimum selected']
+        risk_pct = optimum_row['Risk (%)'].values[0] if not optimum_row.empty else None
+        production = optimum_row['Production (€)'].values[0] if not optimum_row.empty else None
+
+        # Generate cutoff summary for this scenario
+        cutoff_summary = generate_cutoff_summary(
+            optimal_solution_df=opt_sol,
+            variables=config_data.get('variables'),
+            segment_name=segment_name,
+            scenario_name=scenario_name,
+            risk_value=risk_pct,
+            production_value=production,
+        )
+        cutoff_summaries.append(cutoff_summary)
 
         if scenario_name == 'base':
             optimal_solution_df_base = opt_sol
@@ -603,9 +635,98 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
             file_suffix=suffix
         )
 
+    # Consolidate and save cutoff summaries
+    logger.info("=" * 80)
+    logger.info("CUTOFF SUMMARY BY SEGMENT")
+    logger.info("=" * 80)
+
+    consolidated_cutoffs = consolidate_cutoff_summaries(
+        summaries=cutoff_summaries,
+        output_path="data/cutoff_summary_by_segment.csv"
+    )
+
+    # Also create a wide-format summary for easier reading
+    if not consolidated_cutoffs.empty:
+        wide_cutoffs = format_cutoff_summary_table(
+            cutoff_summary=consolidated_cutoffs,
+            variables=config_data.get('variables'),
+        )
+        wide_cutoffs.to_csv("data/cutoff_summary_wide.csv", index=False)
+        logger.info("Cutoff summary (wide format) saved to data/cutoff_summary_wide.csv")
+
+        # Log the cutoff summary table
+        logger.info(f"\nCutoff Summary for segment '{segment_name}':")
+        logger.info(f"\n{wide_cutoffs.to_string()}")
+
 
 
     return data_clean, data_booked, data_demand, data_summary_desagregado, data_summary
 
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Credit Risk Scoring and Portfolio Optimization Pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run with default config
+  uv run python main.py
+
+  # Run with custom config file
+  uv run python main.py --config path/to/config.toml
+
+  # Skip data quality checks (faster, not recommended for production)
+  uv run python main.py --skip-dq-checks
+
+  # Training only mode (skip optimization and scenario analysis)
+  uv run python main.py --training-only
+
+  # Use pre-trained model for optimization
+  uv run python main.py --model-path models/model_20240101_120000
+
+Output files:
+  data/optimal_solution_*.csv          - Optimal cutoff solutions per scenario
+  data/risk_production_summary_*.csv   - Risk/production metrics
+  data/cutoff_summary_by_segment.csv   - Cutoff points summary (long format)
+  data/cutoff_summary_wide.csv         - Cutoff points summary (wide format)
+  images/risk_production_*.html        - Interactive visualizations
+        """
+    )
+
+    parser.add_argument(
+        "--config", "-c",
+        type=str,
+        default="config.toml",
+        help="Path to configuration TOML file (default: config.toml)"
+    )
+
+    parser.add_argument(
+        "--model-path", "-m",
+        type=str,
+        default=None,
+        help="Path to pre-trained model directory. Skips training and uses existing model."
+    )
+
+    parser.add_argument(
+        "--training-only", "-t",
+        action="store_true",
+        help="Only run preprocessing and model training, skip optimization."
+    )
+
+    parser.add_argument(
+        "--skip-dq-checks",
+        action="store_true",
+        help="Skip data quality checks (not recommended for production)."
+    )
+
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    main(
+        config_path=args.config,
+        model_path=args.model_path,
+        training_only=args.training_only,
+        skip_dq_checks=args.skip_dq_checks,
+    )

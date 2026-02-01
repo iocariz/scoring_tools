@@ -646,3 +646,164 @@ def calculate_annual_coef(date_ini_book_obs: pd.Timestamp, date_fin_book_obs: pd
     )
     annual_coef = 12/n_month
     return annual_coef
+
+
+def generate_cutoff_summary(
+    optimal_solution_df: pd.DataFrame,
+    variables: List[str],
+    segment_name: str,
+    scenario_name: str = "base",
+    risk_value: Optional[float] = None,
+    production_value: Optional[float] = None,
+) -> pd.DataFrame:
+    """
+    Generate a readable summary of cutoff points by segment.
+
+    This function transforms the optimal solution into a human-readable format
+    showing the cutoff threshold for each bin of the first variable.
+
+    Args:
+        optimal_solution_df: DataFrame containing the optimal solution with bin columns
+        variables: List of two variable names [var0, var1] used in the optimization
+        segment_name: Name of the segment being analyzed
+        scenario_name: Name of the scenario (e.g., 'pessimistic', 'base', 'optimistic')
+        risk_value: Optional risk (b2_ever_h6) value for this solution
+        production_value: Optional production (oa_amt_h0) value for this solution
+
+    Returns:
+        DataFrame with columns:
+        - segment: Segment name
+        - scenario: Scenario name
+        - var0_bin: Bin number of the first variable
+        - var0_name: Name of the first variable
+        - cutoff_value: Maximum value of var1 to accept for this bin
+        - var1_name: Name of the second variable
+        - risk_pct: Risk percentage (if provided)
+        - production: Production amount (if provided)
+
+    Example output:
+        segment     scenario  var0_bin  var0_name          cutoff_value  var1_name
+        loan_known  base      1         sc_octroi_new_clus  2            new_efx_clus
+        loan_known  base      2         sc_octroi_new_clus  4            new_efx_clus
+        ...
+    """
+    if optimal_solution_df is None or optimal_solution_df.empty:
+        logger.warning("No optimal solution provided for cutoff summary")
+        return pd.DataFrame()
+
+    var0_name = variables[0] if len(variables) > 0 else "var0"
+    var1_name = variables[1] if len(variables) > 1 else "var1"
+
+    # Get the first (selected) solution row
+    opt_row = optimal_solution_df.iloc[0]
+
+    # Find bin columns (numeric column names representing bins)
+    bin_columns = []
+    for col in optimal_solution_df.columns:
+        try:
+            bin_val = int(col) if isinstance(col, str) else col
+            if isinstance(bin_val, (int, float)) and not pd.isna(bin_val):
+                bin_columns.append((bin_val, col))
+        except (ValueError, TypeError):
+            continue
+
+    # Sort bins numerically
+    bin_columns.sort(key=lambda x: x[0])
+
+    if not bin_columns:
+        logger.warning("No bin columns found in optimal solution")
+        return pd.DataFrame()
+
+    # Build summary rows
+    summary_rows = []
+    for bin_val, col_name in bin_columns:
+        cutoff = opt_row[col_name]
+        summary_rows.append({
+            'segment': segment_name,
+            'scenario': scenario_name,
+            f'{var0_name}_bin': int(bin_val),
+            'var0_name': var0_name,
+            'cutoff_value': int(cutoff) if pd.notna(cutoff) else None,
+            'var1_name': var1_name,
+            'risk_pct': risk_value,
+            'production': production_value,
+        })
+
+    summary_df = pd.DataFrame(summary_rows)
+
+    logger.info(f"Generated cutoff summary for segment '{segment_name}', scenario '{scenario_name}'")
+    logger.info(f"  Bins: {len(bin_columns)}, Cutoff range: "
+                f"[{summary_df['cutoff_value'].min()}, {summary_df['cutoff_value'].max()}]")
+
+    return summary_df
+
+
+def format_cutoff_summary_table(
+    cutoff_summary: pd.DataFrame,
+    variables: List[str],
+) -> pd.DataFrame:
+    """
+    Format cutoff summary into a wide pivot table for easier reading.
+
+    Args:
+        cutoff_summary: DataFrame from generate_cutoff_summary
+        variables: List of variable names [var0, var1]
+
+    Returns:
+        Pivoted DataFrame with segments/scenarios as rows and bins as columns
+    """
+    if cutoff_summary.empty:
+        return pd.DataFrame()
+
+    var0_name = variables[0] if len(variables) > 0 else "var0"
+    bin_col = f'{var0_name}_bin'
+
+    # Pivot to wide format
+    pivot_df = cutoff_summary.pivot_table(
+        index=['segment', 'scenario', 'risk_pct', 'production'],
+        columns=bin_col,
+        values='cutoff_value',
+        aggfunc='first'
+    ).reset_index()
+
+    # Rename bin columns to be more readable
+    pivot_df.columns = [
+        f'bin_{col}' if isinstance(col, (int, float)) else col
+        for col in pivot_df.columns
+    ]
+
+    return pivot_df
+
+
+def consolidate_cutoff_summaries(
+    summaries: List[pd.DataFrame],
+    output_path: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Consolidate multiple cutoff summaries into a single DataFrame.
+
+    Args:
+        summaries: List of DataFrames from generate_cutoff_summary
+        output_path: Optional path to save the consolidated summary as CSV
+
+    Returns:
+        Consolidated DataFrame with all summaries
+    """
+    if not summaries:
+        logger.warning("No summaries provided for consolidation")
+        return pd.DataFrame()
+
+    # Filter out empty DataFrames
+    valid_summaries = [s for s in summaries if not s.empty]
+
+    if not valid_summaries:
+        logger.warning("All provided summaries are empty")
+        return pd.DataFrame()
+
+    consolidated = pd.concat(valid_summaries, ignore_index=True)
+
+    if output_path:
+        consolidated.to_csv(output_path, index=False)
+        logger.info(f"Consolidated cutoff summary saved to {output_path}")
+
+    return consolidated

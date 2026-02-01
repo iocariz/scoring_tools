@@ -28,6 +28,7 @@ class StatusName(str, Enum):
 
 class RejectReason(str, Enum):
     """Rejection reason codes."""
+    OTHER = "08-other"
     SCORE = "09-score"
 
 
@@ -86,6 +87,10 @@ DEFAULT_TEST_SIZE: Final[float] = 0.4
 
 # Random state for reproducibility
 DEFAULT_RANDOM_STATE: Final[int] = 42
+
+# Model and visualization constants
+DEFAULT_N_POINTS_3D: Final[int] = 20
+DEFAULT_ZERO_THRESHOLD: Final[float] = 1e-10
 
 
 # =============================================================================

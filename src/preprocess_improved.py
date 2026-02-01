@@ -10,22 +10,11 @@ import pandas as pd
 from scipy.stats import zscore
 from typing import List, Dict, Tuple, Union, Optional
 from dataclasses import dataclass
-from enum import Enum
 import time
 import sys
 from loguru import logger
 
-
-class StatusName(Enum):
-    """Enum for status names to avoid string literals."""
-    BOOKED = 'booked'
-    REJECTED = 'rejected'
-
-
-class RejectReason(Enum):
-    """Enum for reject reasons to avoid string literals."""
-    OTHER = '08-other'
-    SCORE = '09-score'
+from src.constants import StatusName, RejectReason
 
 
 @dataclass
@@ -289,7 +278,7 @@ def apply_binning_transformations(data: pd.DataFrame,
             logger.warning(f"{nan_count:,} records have NaN values after efx binning")
             median_val = transformed_data['new_efx_clus'].median()
             logger.warning(f"Filling NaN values with median: {median_val}")
-            transformed_data['new_efx_clus'].fillna(median_val, inplace=True)
+            transformed_data['new_efx_clus'] = transformed_data['new_efx_clus'].fillna(median_val)
         
         # Adjust bins to 1-indexed
         transformed_data['new_efx_clus'] = transformed_data['new_efx_clus'] + 1

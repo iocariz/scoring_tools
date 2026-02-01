@@ -14,9 +14,8 @@ from src.preprocess_improved import (
     update_oa_amt_h0,
     filter_by_date,
     update_status_and_reject_reason,
-    StatusName,
-    RejectReason,
 )
+from src.constants import StatusName, RejectReason
 
 
 @pytest.fixture

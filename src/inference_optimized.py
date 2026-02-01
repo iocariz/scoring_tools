@@ -36,148 +36,16 @@ from src.models import preprocess_data, transform_variables
 from src.utils import calculate_b2_ever_h6
 from src.constants import (
     Columns, StatusName, Suffixes,
-    DEFAULT_TEST_SIZE, DEFAULT_Z_THRESHOLD, DEFAULT_RANDOM_STATE
+    DEFAULT_TEST_SIZE, DEFAULT_Z_THRESHOLD, DEFAULT_RANDOM_STATE,
+    DEFAULT_N_POINTS_3D, DEFAULT_ZERO_THRESHOLD
 )
 from src import styles
-
-
-# Module-specific constants
-DEFAULT_N_POINTS_3D = 20
-
-
-class HurdleRegressor(BaseEstimator, RegressorMixin):
-    """
-    Hurdle Regression for zero-inflated data.
-    
-    Two-stage model:
-    1. Classification: Predict if value is zero or non-zero (logistic regression)
-    2. Regression: Predict magnitude for non-zero values (linear regression)
-    
-    This is ideal when you have many zero values that create a flat regression surface.
-    
-    Parameters:
-    -----------
-    classifier : sklearn classifier, optional
-        Model for predicting zero vs non-zero (default: LogisticRegression)
-    regressor : sklearn regressor, optional
-        Model for predicting non-zero values (default: Ridge)
-    zero_threshold : float, optional
-        Values below this are considered "zero" (default: 1e-10)
-    
-    Attributes:
-    -----------
-    classifier_ : fitted classifier
-    regressor_ : fitted regressor
-    
-    Example:
-    --------
-    >>> from sklearn.linear_model import Ridge, LogisticRegression
-    >>> hurdle = HurdleRegressor(
-    ...     classifier=LogisticRegression(max_iter=1000),
-    ...     regressor=Ridge(alpha=0.5, fit_intercept=False)
-    ... )
-    >>> hurdle.fit(X_train, y_train, sample_weight=weights_train)
-    >>> predictions = hurdle.predict(X_test)
-    """
-    
-    def __init__(self, classifier=None, regressor=None, zero_threshold=1e-10):
-        self.classifier = classifier
-        self.regressor = regressor
-        self.zero_threshold = zero_threshold
-    
-    def fit(self, X, y, sample_weight=None):
-        """
-        Fit the hurdle model.
-        
-        Args:
-            X: Features
-            y: Target variable
-            sample_weight: Optional sample weights
-        
-        Returns:
-            self
-        """
-        # Initialize models if not provided
-        if self.classifier is None:
-            self.classifier_ = LogisticRegression(max_iter=1000, random_state=DEFAULT_RANDOM_STATE)
-        else:
-            from sklearn.base import clone
-            self.classifier_ = clone(self.classifier)
-        
-        if self.regressor is None:
-            self.regressor_ = Ridge(alpha=0.5, fit_intercept=False)
-        else:
-            from sklearn.base import clone
-            self.regressor_ = clone(self.regressor)
-        
-        # Create binary target: 0 if zero, 1 if non-zero
-        y_binary = (np.abs(y) > self.zero_threshold).astype(int)
-        
-        # Stage 1: Fit classifier (zero vs non-zero)
-        self.classifier_.fit(X, y_binary, sample_weight=sample_weight)
-        
-        # Stage 2: Fit regressor on non-zero values only
-        non_zero_mask = y_binary == 1
-        
-        if non_zero_mask.sum() > 0:
-            X_nonzero = X[non_zero_mask]
-            y_nonzero = y[non_zero_mask]
-            weights_nonzero = sample_weight[non_zero_mask] if sample_weight is not None else None
-            
-            self.regressor_.fit(X_nonzero, y_nonzero, sample_weight=weights_nonzero)
-        else:
-            # Fallback: if no non-zero values, just fit on all data
-            self.regressor_.fit(X, y, sample_weight=sample_weight)
-        
-        return self
-    
-    def predict(self, X):
-        """
-        Predict using the hurdle model.
-        
-        Process:
-        1. Predict probability of non-zero
-        2. Predict magnitude if non-zero
-        3. Combine: P(non-zero) * predicted_magnitude
-        
-        Args:
-            X: Features
-        
-        Returns:
-            predictions: Array of predictions
-        """
-        # Stage 1: Predict probability of being non-zero
-        prob_nonzero = self.classifier_.predict_proba(X)[:, 1]
-        
-        # Stage 2: Predict magnitude for all observations
-        magnitude = self.regressor_.predict(X)
-        
-        # Combine: Expected value = P(non-zero) * E(Y | Y > 0)
-        predictions = prob_nonzero * magnitude
-        
-        return predictions
-    
-    def predict_binary(self, X):
-        """Predict binary outcome (zero vs non-zero) only."""
-        return self.classifier_.predict(X)
-    
-    def predict_magnitude(self, X):
-        """Predict magnitude (without zero-inflation adjustment)."""
-        return self.regressor_.predict(X)
-    
-    def get_params(self, deep=True):
-        """Get parameters for this estimator."""
-        return {
-            'classifier': self.classifier,
-            'regressor': self.regressor,
-            'zero_threshold': self.zero_threshold
-        }
-    
-    def set_params(self, **params):
-        """Set parameters for this estimator."""
-        for key, value in params.items():
-            setattr(self, key, value)
-        return self
+from src.estimators import HurdleRegressor
+from src.persistence import (
+    save_model_with_metadata,
+    load_model_for_prediction,
+    predict_on_new_data,
+)
 
 
 def calculate_target_metric(
@@ -513,141 +381,6 @@ def evaluate_models_for_aggregated_data(
         logger.info(f"   (Hurdle model - handles zero-inflation)")
     
     return results_df.drop('model_object', axis=1), best_model_info
-
-
-def save_model_with_metadata(
-    model,
-    features: List[str],
-    metadata: Dict,
-    base_path: str = 'models'
-) -> str:
-    """
-    Save trained model with comprehensive metadata for production use.
-    
-    Args:
-        model: Trained model object
-        features: List of feature names
-        metadata: Dictionary containing model metadata
-        base_path: Base directory for saving models
-    
-    Returns:
-        Path to saved model directory
-    """
-    # Create directory structure
-    base_path = Path(base_path)
-    base_path.mkdir(parents=True, exist_ok=True)
-    
-    # Generate timestamp
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    
-    # Create version directory
-    version_path = base_path / f"model_{timestamp}"
-    version_path.mkdir(exist_ok=True)
-    
-    # Save model
-    model_path = version_path / "model.pkl"
-    joblib.dump(model, model_path, compress=3)  # Add compression
-    
-    # Enhance metadata
-    metadata_enhanced = {
-        'timestamp': timestamp,
-        'model_type': type(model).__name__,
-        'model_params': model.get_params() if hasattr(model, 'get_params') else {},
-        'features': features,
-        'num_features': len(features),
-        'aggregated_data': True,
-        **metadata
-    }
-    
-    # Save metadata
-    with open(version_path / "metadata.json", 'w') as f:
-        json.dump(metadata_enhanced, f, indent=2, default=str)
-    
-    # Save features
-    with open(version_path / "features.txt", 'w') as f:
-        f.write(f"# Features for {type(model).__name__}\n")
-        f.write(f"# Timestamp: {timestamp}\n")
-        f.write(f"# Test R²: {metadata.get('test_r2', 'N/A'):.4f}\n\n")
-        for i, feature in enumerate(features, 1):
-            f.write(f"{i}. {feature}\n")
-    
-    # Save model summary
-    _save_model_summary(version_path, model, features, metadata, timestamp)
-    
-    logger.info("=" * 60)
-    logger.info("MODEL SAVED SUCCESSFULLY")
-    logger.info("=" * 60)
-    logger.info(f"Directory: {version_path}")
-    logger.info(f"   - Model: model.pkl")
-    logger.info(f"   - Metadata: metadata.json")
-    logger.info(f"   - Features: features.txt")
-    logger.info(f"   - Summary: model_summary.txt")
-    
-    return str(version_path)
-
-
-def _save_model_summary(
-    version_path: Path,
-    model,
-    features: List[str],
-    metadata: Dict,
-    timestamp: str
-) -> None:
-    """Helper function to save model summary."""
-    with open(version_path / "model_summary.txt", 'w') as f:
-        f.write("=" * 60 + "\n")
-        f.write("MODEL SUMMARY\n")
-        f.write("=" * 60 + "\n\n")
-        f.write(f"Model Type: {type(model).__name__}\n")
-        f.write(f"Training Date: {timestamp}\n")
-        f.write(f"Number of Features: {len(features)}\n")
-        f.write(f"Aggregated Data: Yes\n\n")
-        
-        f.write("PERFORMANCE METRICS:\n")
-        f.write("-" * 30 + "\n")
-        for key in ['train_r2', 'test_r2', 'test_rmse', 'test_mae']:
-            value = metadata.get(key, 'N/A')
-            display_value = f"{value:.4f}" if isinstance(value, (int, float)) else value
-            f.write(f"{key.replace('_', ' ').title()}: {display_value}\n")
-        
-        f.write(f"Training Samples: {metadata.get('train_samples', 'N/A')}\n")
-        f.write(f"Test Samples: {metadata.get('test_samples', 'N/A')}\n")
-        
-        if hasattr(model, 'coef_'):
-            f.write("\nMODEL COEFFICIENTS:\n")
-            f.write("-" * 30 + "\n")
-            for feature, coef in zip(features, model.coef_):
-                f.write(f"{feature}: {coef:.6f}\n")
-
-
-def load_model_for_prediction(model_path: str) -> Tuple[object, Dict, List[str]]:
-    """
-    Load a saved model for making predictions.
-    
-    Args:
-        model_path: Path to model directory
-    
-    Returns:
-        Tuple of (model, metadata, features)
-    """
-    model_dir = Path(model_path)
-    
-    # Load model
-    model = joblib.load(model_dir / "model.pkl")
-    
-    # Load metadata
-    with open(model_dir / "metadata.json", 'r') as f:
-        metadata = json.load(f)
-    
-    features = metadata['features']
-    
-    logger.info("Model loaded successfully")
-    logger.info(f"   Type: {metadata['model_type']}")
-    logger.info(f"   Features: {metadata['num_features']}")
-    test_r2 = metadata.get('test_r2', 'N/A')
-    logger.info(f"   Test R²: {test_r2:.4f}" if isinstance(test_r2, (int, float)) else f"   Test R²: {test_r2}")
-    
-    return model, metadata, features
 
 
 def _create_feature_dataframe(
@@ -1481,63 +1214,6 @@ def inference_pipeline_with_feature_selection(
     }
 
 
-def predict_on_new_data(model_path: str, new_data: pd.DataFrame):
-    """
-    Load a saved model and make predictions on new data.
-    
-    Parameters:
-    -----------
-    model_path : str
-        Path to the saved model directory
-    new_data : pd.DataFrame
-        New data with the same features as training
-    
-    Returns:
-    --------
-    np.ndarray
-        Predictions for the new data
-    
-    Example:
-    --------
-    >>> # Load model and predict
-    >>> predictions = predict_on_new_data(
-    ...     model_path='models/production/model_20240121_143022',
-    ...     new_data=new_df
-    ... )
-    """
-    logger.info("=" * 80)
-    logger.info("PREDICTION ON NEW DATA")
-    logger.info("=" * 80)
-    
-    # Load model
-    model, metadata, features = load_model_for_prediction(model_path)
-    
-    # Verify features exist in new data
-    missing_features = [f for f in features if f not in new_data.columns]
-    if missing_features:
-        raise ValueError(f"Missing features in new data: {missing_features}")
-    
-    # Make predictions
-    predictions = model.predict(new_data[features])
-    
-    logger.info(f"Predictions generated")
-    logger.info(f"  Number of predictions: {len(predictions):,}")
-    logger.info(f"  Prediction range: [{predictions.min():.4f}, {predictions.max():.4f}]")
-    logger.info(f"  Mean prediction: {predictions.mean():.4f}")
-    
-    # Additional info for Hurdle models
-    if metadata.get('is_hurdle', False):
-        from src.inference_optimized import HurdleRegressor
-        if isinstance(model, HurdleRegressor):
-            binary_pred = model.predict_binary(new_data[features])
-            prob_nonzero = model.classifier_.predict_proba(new_data[features])[:, 1]
-            logger.info(f"Hurdle Model Details:")
-            logger.info(f"  Predicted non-zero: {binary_pred.sum():,} ({binary_pred.mean():.1%})")
-            logger.info(f"  Mean P(non-zero): {prob_nonzero.mean():.2%}")
-    
-    return predictions
-
-
 def todu_average_inference(
     data: pd.DataFrame, 
     variables: List[str], 
@@ -1723,7 +1399,7 @@ def run_optimization_pipeline(data_booked, data_demand, risk_inference, reg_todu
         )
 
     data_sumary_desagregado_booked = calculate_aggregate_data(data_booked, StatusName.BOOKED.value)
-    data_sumary_desagregado_booked.rename(columns={i: i + Suffixes.BOOKED for i in INDICADORES}, inplace=True)
+    data_sumary_desagregado_booked = data_sumary_desagregado_booked.rename(columns={i: i + Suffixes.BOOKED for i in INDICADORES})
 
     data_sumary_desagregado_repesca = calculate_aggregate_data(
         data_demand, StatusName.REJECTED.value, "09-score"
@@ -1737,7 +1413,7 @@ def run_optimization_pipeline(data_booked, data_demand, risk_inference, reg_todu
     )[VARIABLES + INDICADORES]
 
     data_sumary_desagregado_repesca[INDICADORES] *= tasa_fin
-    data_sumary_desagregado_repesca.rename(columns={i: i + '_rep' for i in INDICADORES}, inplace=True)
+    data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.rename(columns={i: i + '_rep' for i in INDICADORES})
 
     # Merge and adjust indicators
     data_sumary_desagregado = data_sumary_desagregado_booked.merge(

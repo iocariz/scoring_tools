@@ -17,9 +17,11 @@ from typing import Dict, Any, List, Optional
 
 from loguru import logger
 import plotly.graph_objects as go
-from src.preprocess_improved import filter_by_date, StatusName
+from src.preprocess_improved import filter_by_date
+from src.constants import StatusName
 from src.inference_optimized import run_optimization_pipeline
 from src.utils import calculate_b2_ever_h6
+from src.models import calculate_B2
 from src.stability import compare_main_vs_mr, calculate_stability_report, plot_stability_dashboard
 from src import styles
 
@@ -194,7 +196,80 @@ def process_mr_period(
             # Keep variable only for booked accounts
             non_booked_mask = data_demand_mr['status_name'] != StatusName.BOOKED.value
             data_demand_mr.loc[non_booked_mask, 'b2_ever_h6_tmp'] = np.nan
-            
+
+            # Check for booked accounts with null b2_ever_h6_tmp
+            booked_mask = data_demand_mr['status_name'] == StatusName.BOOKED.value
+            null_b2_mask = booked_mask & data_demand_mr['b2_ever_h6_tmp'].isna()
+            null_count = null_b2_mask.sum()
+
+            if null_count > 0:
+                # Get the missing bin combinations for logging
+                missing_bins = data_demand_mr.loc[null_b2_mask, merge_keys].drop_duplicates()
+                logger.warning(
+                    f"Found {null_count:,} booked accounts with null b2_ever_h6_tmp. "
+                    f"These bin combinations exist in MR period but not in initial period. "
+                    f"Inferring b2_ever_h6 using the risk model..."
+                )
+                for _, row in missing_bins.iterrows():
+                    logger.warning(f"  Missing bin: {dict(row)}")
+
+                # Use inference model to predict b2_ever_h6 for missing bins
+                try:
+                    final_model = risk_inference['best_model_info']['model']
+                    final_features = risk_inference['features']
+
+                    # Create a DataFrame with missing bin combinations for prediction
+                    missing_bins_df = missing_bins.copy()
+
+                    # Apply calculate_B2 to predict b2_ever_h6 for missing bins
+                    missing_bins_df = calculate_B2(
+                        missing_bins_df,
+                        final_model,
+                        merge_keys,
+                        stress_factor,
+                        final_features
+                    )
+
+                    # Merge inferred values back into agg_data
+                    inferred_b2 = missing_bins_df[merge_keys + ['b2_ever_h6']].rename(
+                        columns={'b2_ever_h6': 'b2_ever_h6_inferred'}
+                    )
+
+                    # Merge inferred values into data_demand_mr
+                    data_demand_mr = pd.merge(
+                        data_demand_mr,
+                        inferred_b2,
+                        on=merge_keys,
+                        how='left'
+                    )
+
+                    # Fill missing b2_ever_h6_tmp with inferred values
+                    fill_mask = data_demand_mr['b2_ever_h6_tmp'].isna() & data_demand_mr['b2_ever_h6_inferred'].notna()
+                    data_demand_mr.loc[fill_mask, 'b2_ever_h6_tmp'] = data_demand_mr.loc[fill_mask, 'b2_ever_h6_inferred']
+
+                    # Drop the helper column
+                    data_demand_mr = data_demand_mr.drop(columns=['b2_ever_h6_inferred'], errors='ignore')
+
+                    # Verify all booked accounts now have values
+                    remaining_nulls = (booked_mask & data_demand_mr['b2_ever_h6_tmp'].isna()).sum()
+                    if remaining_nulls > 0:
+                        logger.error(f"Still have {remaining_nulls:,} booked accounts with null b2_ever_h6_tmp after inference")
+                        raise ValueError(f"Inference failed to fill all missing b2_ever_h6_tmp values")
+
+                    logger.info(
+                        f"Successfully inferred b2_ever_h6 for {null_count:,} booked accounts "
+                        f"across {len(missing_bins)} bin combinations using risk model"
+                    )
+
+                except Exception as e:
+                    logger.error(f"Error inferring b2_ever_h6 for missing bins: {e}")
+                    raise ValueError(
+                        f"Data integrity error: {null_count:,} booked accounts in MR period "
+                        f"have no matching b2_ever_h6 from initial period, and inference failed: {e}"
+                    )
+            else:
+                logger.info(f"Validation passed: all {booked_mask.sum():,} booked accounts have b2_ever_h6_tmp values")
+
         else:
             logger.warning(f"Missing columns for aggregation. Required: {required_agg_cols}. Skipping b2_ever_h6_tmp calculation.")
 
@@ -289,8 +364,8 @@ def process_mr_period(
         # --- Cleanup ---
         if 'b2_ever_h6_tmp' in data_demand_mr.columns:
             logger.info("Dropping b2_ever_h6_tmp from data_demand_mr and data_booked_mr...")
-            data_demand_mr.drop(columns=['b2_ever_h6_tmp'], inplace=True, errors='ignore')
-            data_booked_mr.drop(columns=['b2_ever_h6_tmp'], inplace=True, errors='ignore')
+            data_demand_mr = data_demand_mr.drop(columns=['b2_ever_h6_tmp'], errors='ignore')
+            data_booked_mr = data_booked_mr.drop(columns=['b2_ever_h6_tmp'], errors='ignore')
 
         # --- Generate Risk Production Summary Table for MR ---
         logger.info("Generating Risk Production Summary Table for MR period...")
