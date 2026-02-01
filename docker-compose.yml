@@ -1,0 +1,20 @@
+services:
+  scoring-pipeline:
+    build: .
+    image: scoring-tools:latest
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+      - ./config.toml:/app/config.toml
+      - ./segments.toml:/app/segments.toml
+    command: python run_batch.py --parallel --workers 4
+
+  dashboard:
+    build: .
+    image: scoring-tools:latest
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+    command: python dashboard.py
