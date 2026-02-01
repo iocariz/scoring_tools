@@ -1000,7 +1000,7 @@ def update_cutoff_analysis(slider_values, store_data):
     bins = store_data['bins']
 
     # Load data
-    summary_data, _, _ = load_cutoff_data(scenario, segment)
+    summary_data, _, _, _ = load_cutoff_data(scenario, segment)
     if summary_data is None:
         empty_fig = go.Figure()
         return html.Div("Data not available"), empty_fig, empty_fig
