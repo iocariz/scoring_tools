@@ -70,7 +70,7 @@ jobs:
             -v
 
       - name: Upload coverage reports
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           files: ./coverage.xml
