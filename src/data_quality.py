@@ -6,15 +6,17 @@ Helps avoid wasted compute time on bad data.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Tuple
 from enum import Enum
-import pandas as pd
+from typing import Any
+
 import numpy as np
+import pandas as pd
 from loguru import logger
 
 
 class CheckStatus(Enum):
     """Status of a data quality check."""
+
     PASSED = "passed"
     WARNING = "warning"
     FAILED = "failed"
@@ -24,10 +26,11 @@ class CheckStatus(Enum):
 @dataclass
 class CheckResult:
     """Result of a single data quality check."""
+
     name: str
     status: CheckStatus
     message: str
-    details: Optional[Dict[str, Any]] = None
+    details: dict[str, Any] | None = None
 
     def __str__(self) -> str:
         icon = {"passed": "✓", "warning": "⚠", "failed": "✗", "skipped": "○"}[self.status.value]
@@ -37,18 +40,19 @@ class CheckResult:
 @dataclass
 class DataQualityReport:
     """Complete data quality report."""
-    checks: List[CheckResult] = field(default_factory=list)
+
+    checks: list[CheckResult] = field(default_factory=list)
 
     @property
-    def passed(self) -> List[CheckResult]:
+    def passed(self) -> list[CheckResult]:
         return [c for c in self.checks if c.status == CheckStatus.PASSED]
 
     @property
-    def warnings(self) -> List[CheckResult]:
+    def warnings(self) -> list[CheckResult]:
         return [c for c in self.checks if c.status == CheckStatus.WARNING]
 
     @property
-    def failures(self) -> List[CheckResult]:
+    def failures(self) -> list[CheckResult]:
         return [c for c in self.checks if c.status == CheckStatus.FAILED]
 
     @property
@@ -93,11 +97,7 @@ class DataQualityReport:
         print("=" * 60 + "\n")
 
 
-def check_required_columns(
-    df: pd.DataFrame,
-    required_columns: List[str],
-    context: str = "data"
-) -> CheckResult:
+def check_required_columns(df: pd.DataFrame, required_columns: list[str], context: str = "data") -> CheckResult:
     """Check that required columns exist in the DataFrame."""
     df_columns = set(df.columns.str.lower())
     required_lower = {col.lower(): col for col in required_columns}
@@ -108,32 +108,25 @@ def check_required_columns(
         return CheckResult(
             name="Required Columns",
             status=CheckStatus.PASSED,
-            message=f"All {len(required_columns)} required columns present"
+            message=f"All {len(required_columns)} required columns present",
         )
     else:
         return CheckResult(
             name="Required Columns",
             status=CheckStatus.FAILED,
             message=f"Missing {len(missing)} required columns",
-            details={"missing_columns": missing}
+            details={"missing_columns": missing},
         )
 
 
 def check_missing_values(
-    df: pd.DataFrame,
-    columns: List[str],
-    threshold_warn: float = 0.05,
-    threshold_fail: float = 0.20
+    df: pd.DataFrame, columns: list[str], threshold_warn: float = 0.05, threshold_fail: float = 0.20
 ) -> CheckResult:
     """Check for missing values in specified columns."""
     # Filter to columns that exist
     existing_cols = [c for c in columns if c in df.columns]
     if not existing_cols:
-        return CheckResult(
-            name="Missing Values",
-            status=CheckStatus.SKIPPED,
-            message="No columns to check"
-        )
+        return CheckResult(name="Missing Values", status=CheckStatus.SKIPPED, message="No columns to check")
 
     missing_stats = {}
     max_missing_pct = 0
@@ -150,38 +143,28 @@ def check_missing_values(
             name="Missing Values",
             status=CheckStatus.FAILED,
             message=f"High missing rate detected (>{threshold_fail:.0%})",
-            details=missing_stats
+            details=missing_stats,
         )
     elif max_missing_pct >= threshold_warn:
         return CheckResult(
             name="Missing Values",
             status=CheckStatus.WARNING,
             message=f"Some missing values detected (>{threshold_warn:.0%})",
-            details=missing_stats
+            details=missing_stats,
         )
     else:
-        return CheckResult(
-            name="Missing Values",
-            status=CheckStatus.PASSED,
-            message="No significant missing values"
-        )
+        return CheckResult(name="Missing Values", status=CheckStatus.PASSED, message="No significant missing values")
 
 
-def check_segment_exists(
-    df: pd.DataFrame,
-    segment_filter: str,
-    segment_column: str = "segment_cut_off"
-) -> CheckResult:
+def check_segment_exists(df: pd.DataFrame, segment_filter: str, segment_column: str = "segment_cut_off") -> CheckResult:
     """Check that the segment filter matches data in the DataFrame."""
     if segment_column not in df.columns:
         return CheckResult(
-            name="Segment Filter",
-            status=CheckStatus.SKIPPED,
-            message=f"Column '{segment_column}' not found"
+            name="Segment Filter", status=CheckStatus.SKIPPED, message=f"Column '{segment_column}' not found"
         )
 
     # Handle regex patterns (supersegments)
-    if '|' in segment_filter:
+    if "|" in segment_filter:
         # Regex pattern
         mask = df[segment_column].astype(str).str.match(segment_filter, na=False)
         match_count = mask.sum()
@@ -196,7 +179,7 @@ def check_segment_exists(
             name="Segment Filter",
             status=CheckStatus.FAILED,
             message=f"No data matches segment filter '{segment_filter}'",
-            details={"available_segments (top 10)": available}
+            details={"available_segments (top 10)": available},
         )
     else:
         pct = match_count / len(df)
@@ -204,7 +187,7 @@ def check_segment_exists(
             name="Segment Filter",
             status=CheckStatus.PASSED,
             message=f"Found {match_count:,} rows ({pct:.1%}) matching segment",
-            details={"segment_filter": segment_filter}
+            details={"segment_filter": segment_filter},
         )
 
 
@@ -213,18 +196,16 @@ def check_segment_size(
     segment_filter: str,
     segment_column: str = "segment_cut_off",
     min_rows_warn: int = 1000,
-    min_rows_fail: int = 100
+    min_rows_fail: int = 100,
 ) -> CheckResult:
     """Check that segment has sufficient data for modeling."""
     if segment_column not in df.columns:
         return CheckResult(
-            name="Segment Size",
-            status=CheckStatus.SKIPPED,
-            message=f"Column '{segment_column}' not found"
+            name="Segment Size", status=CheckStatus.SKIPPED, message=f"Column '{segment_column}' not found"
         )
 
     # Count matching rows
-    if '|' in segment_filter:
+    if "|" in segment_filter:
         mask = df[segment_column].astype(str).str.match(segment_filter, na=False)
         count = mask.sum()
     else:
@@ -235,36 +216,23 @@ def check_segment_size(
             name="Segment Size",
             status=CheckStatus.FAILED,
             message=f"Segment too small: {count:,} rows (minimum: {min_rows_fail:,})",
-            details={"row_count": count, "minimum_required": min_rows_fail}
+            details={"row_count": count, "minimum_required": min_rows_fail},
         )
     elif count < min_rows_warn:
         return CheckResult(
             name="Segment Size",
             status=CheckStatus.WARNING,
             message=f"Segment may be too small: {count:,} rows (recommended: {min_rows_warn:,}+)",
-            details={"row_count": count, "recommended_minimum": min_rows_warn}
+            details={"row_count": count, "recommended_minimum": min_rows_warn},
         )
     else:
-        return CheckResult(
-            name="Segment Size",
-            status=CheckStatus.PASSED,
-            message=f"Segment has {count:,} rows"
-        )
+        return CheckResult(name="Segment Size", status=CheckStatus.PASSED, message=f"Segment has {count:,} rows")
 
 
-def check_date_range(
-    df: pd.DataFrame,
-    date_column: str,
-    expected_start: str,
-    expected_end: str
-) -> CheckResult:
+def check_date_range(df: pd.DataFrame, date_column: str, expected_start: str, expected_end: str) -> CheckResult:
     """Check that data covers the expected date range."""
     if date_column not in df.columns:
-        return CheckResult(
-            name="Date Range",
-            status=CheckStatus.SKIPPED,
-            message=f"Column '{date_column}' not found"
-        )
+        return CheckResult(name="Date Range", status=CheckStatus.SKIPPED, message=f"Column '{date_column}' not found")
 
     try:
         dates = pd.to_datetime(df[date_column])
@@ -285,47 +253,30 @@ def check_date_range(
 
         details = {
             "expected_range": f"{expected_start} to {expected_end}",
-            "actual_range": f"{actual_start.date()} to {actual_end.date()}"
+            "actual_range": f"{actual_start.date()} to {actual_end.date()}",
         }
 
         if issues:
             return CheckResult(
-                name="Date Range",
-                status=CheckStatus.WARNING,
-                message="; ".join(issues),
-                details=details
+                name="Date Range", status=CheckStatus.WARNING, message="; ".join(issues), details=details
             )
         else:
             return CheckResult(
-                name="Date Range",
-                status=CheckStatus.PASSED,
-                message="Data covers expected date range",
-                details=details
+                name="Date Range", status=CheckStatus.PASSED, message="Data covers expected date range", details=details
             )
     except Exception as e:
-        return CheckResult(
-            name="Date Range",
-            status=CheckStatus.WARNING,
-            message=f"Could not parse dates: {e}"
-        )
+        return CheckResult(name="Date Range", status=CheckStatus.WARNING, message=f"Could not parse dates: {e}")
 
 
 def check_numeric_outliers(
-    df: pd.DataFrame,
-    columns: List[str],
-    z_threshold: float = 5.0,
-    max_outlier_pct: float = 0.01
+    df: pd.DataFrame, columns: list[str], z_threshold: float = 5.0, max_outlier_pct: float = 0.01
 ) -> CheckResult:
     """Check for extreme outliers in numeric columns."""
     existing_cols = [c for c in columns if c in df.columns]
     numeric_cols = [c for c in existing_cols if pd.api.types.is_numeric_dtype(df[c])]
 
     if not numeric_cols:
-        return CheckResult(
-            name="Numeric Outliers",
-            status=CheckStatus.SKIPPED,
-            message="No numeric columns to check"
-        )
+        return CheckResult(name="Numeric Outliers", status=CheckStatus.SKIPPED, message="No numeric columns to check")
 
     outlier_stats = {}
     has_severe_outliers = False
@@ -354,29 +305,22 @@ def check_numeric_outliers(
             name="Numeric Outliers",
             status=CheckStatus.WARNING,
             message=f"Extreme outliers detected in {len(outlier_stats)} columns",
-            details=outlier_stats
+            details=outlier_stats,
         )
     else:
         return CheckResult(
             name="Numeric Outliers",
             status=CheckStatus.PASSED,
-            message=f"No severe outliers in {len(numeric_cols)} numeric columns"
+            message=f"No severe outliers in {len(numeric_cols)} numeric columns",
         )
 
 
-def check_indicator_values(
-    df: pd.DataFrame,
-    indicators: List[str]
-) -> CheckResult:
+def check_indicator_values(df: pd.DataFrame, indicators: list[str]) -> CheckResult:
     """Check that indicator columns have valid values (non-negative for counts/amounts)."""
     existing = [c for c in indicators if c in df.columns]
 
     if not existing:
-        return CheckResult(
-            name="Indicator Values",
-            status=CheckStatus.SKIPPED,
-            message="No indicator columns found"
-        )
+        return CheckResult(name="Indicator Values", status=CheckStatus.SKIPPED, message="No indicator columns found")
 
     issues = {}
 
@@ -393,13 +337,13 @@ def check_indicator_values(
             name="Indicator Values",
             status=CheckStatus.WARNING,
             message=f"Negative values in {len(issues)} indicator columns",
-            details=issues
+            details=issues,
         )
     else:
         return CheckResult(
             name="Indicator Values",
             status=CheckStatus.PASSED,
-            message=f"All {len(existing)} indicators have valid values"
+            message=f"All {len(existing)} indicators have valid values",
         )
 
 
@@ -408,14 +352,12 @@ def check_booked_ratio(
     status_column: str = "status_name",
     booked_value: str = "booked",
     min_ratio_warn: float = 0.05,
-    min_ratio_fail: float = 0.01
+    min_ratio_fail: float = 0.01,
 ) -> CheckResult:
     """Check that there's a reasonable ratio of booked vs total applications."""
     if status_column not in df.columns:
         return CheckResult(
-            name="Booked Ratio",
-            status=CheckStatus.SKIPPED,
-            message=f"Column '{status_column}' not found"
+            name="Booked Ratio", status=CheckStatus.SKIPPED, message=f"Column '{status_column}' not found"
         )
 
     status_lower = df[status_column].astype(str).str.lower()
@@ -423,48 +365,35 @@ def check_booked_ratio(
     total_count = len(df)
     ratio = booked_count / total_count if total_count > 0 else 0
 
-    details = {
-        "booked_count": f"{booked_count:,}",
-        "total_count": f"{total_count:,}",
-        "ratio": f"{ratio:.1%}"
-    }
+    details = {"booked_count": f"{booked_count:,}", "total_count": f"{total_count:,}", "ratio": f"{ratio:.1%}"}
 
     if ratio < min_ratio_fail:
         return CheckResult(
             name="Booked Ratio",
             status=CheckStatus.FAILED,
             message=f"Very low booked ratio: {ratio:.1%} (minimum: {min_ratio_fail:.0%})",
-            details=details
+            details=details,
         )
     elif ratio < min_ratio_warn:
         return CheckResult(
-            name="Booked Ratio",
-            status=CheckStatus.WARNING,
-            message=f"Low booked ratio: {ratio:.1%}",
-            details=details
+            name="Booked Ratio", status=CheckStatus.WARNING, message=f"Low booked ratio: {ratio:.1%}", details=details
         )
     else:
         return CheckResult(
             name="Booked Ratio",
             status=CheckStatus.PASSED,
-            message=f"Booked ratio: {ratio:.1%} ({booked_count:,} of {total_count:,})"
+            message=f"Booked ratio: {ratio:.1%} ({booked_count:,} of {total_count:,})",
         )
 
 
 def check_duplicate_rows(
-    df: pd.DataFrame,
-    key_columns: Optional[List[str]] = None,
-    max_dup_pct: float = 0.01
+    df: pd.DataFrame, key_columns: list[str] | None = None, max_dup_pct: float = 0.01
 ) -> CheckResult:
     """Check for duplicate rows."""
     if key_columns:
         existing_keys = [c for c in key_columns if c in df.columns]
         if not existing_keys:
-            return CheckResult(
-                name="Duplicate Rows",
-                status=CheckStatus.SKIPPED,
-                message="No key columns found"
-            )
+            return CheckResult(name="Duplicate Rows", status=CheckStatus.SKIPPED, message="No key columns found")
         dup_count = df.duplicated(subset=existing_keys).sum()
         context = f"on key columns {existing_keys}"
     else:
@@ -478,21 +407,15 @@ def check_duplicate_rows(
             name="Duplicate Rows",
             status=CheckStatus.WARNING,
             message=f"{dup_count:,} duplicate rows ({dup_pct:.1%}) {context}",
-            details={"duplicate_count": dup_count, "percentage": f"{dup_pct:.2%}"}
+            details={"duplicate_count": dup_count, "percentage": f"{dup_pct:.2%}"},
         )
     else:
         return CheckResult(
-            name="Duplicate Rows",
-            status=CheckStatus.PASSED,
-            message=f"No significant duplicates {context}"
+            name="Duplicate Rows", status=CheckStatus.PASSED, message=f"No significant duplicates {context}"
         )
 
 
-def run_data_quality_checks(
-    df: pd.DataFrame,
-    config: Dict[str, Any],
-    verbose: bool = True
-) -> DataQualityReport:
+def run_data_quality_checks(df: pd.DataFrame, config: dict[str, Any], verbose: bool = True) -> DataQualityReport:
     """
     Run all data quality checks on the input data.
 
@@ -507,13 +430,13 @@ def run_data_quality_checks(
     report = DataQualityReport()
 
     # Extract config values
-    keep_vars = config.get('keep_vars', [])
-    indicators = config.get('indicators', [])
-    segment_filter = config.get('segment_filter', '')
-    date_ini = config.get('date_ini_book_obs', '')
-    date_fin = config.get('date_fin_book_obs', '')
+    keep_vars = config.get("keep_vars", [])
+    indicators = config.get("indicators", [])
+    segment_filter = config.get("segment_filter", "")
+    date_ini = config.get("date_ini_book_obs", "")
+    date_fin = config.get("date_fin_book_obs", "")
 
-    required_columns = keep_vars + indicators + ['segment_cut_off', 'status_name', 'mis_date']
+    required_columns = keep_vars + indicators + ["segment_cut_off", "status_name", "mis_date"]
 
     logger.info("Running data quality checks...")
 
@@ -522,7 +445,7 @@ def run_data_quality_checks(
     report.add(check_missing_values(df, required_columns))
     report.add(check_segment_exists(df, segment_filter))
     report.add(check_segment_size(df, segment_filter))
-    report.add(check_date_range(df, 'mis_date', date_ini, date_fin))
+    report.add(check_date_range(df, "mis_date", date_ini, date_fin))
     report.add(check_numeric_outliers(df, indicators))
     report.add(check_indicator_values(df, indicators))
     report.add(check_booked_ratio(df))
@@ -534,11 +457,7 @@ def run_data_quality_checks(
     return report
 
 
-def validate_data_or_fail(
-    df: pd.DataFrame,
-    config: Dict[str, Any],
-    allow_warnings: bool = True
-) -> DataQualityReport:
+def validate_data_or_fail(df: pd.DataFrame, config: dict[str, Any], allow_warnings: bool = True) -> DataQualityReport:
     """
     Run data quality checks and raise an exception if validation fails.
 
@@ -563,8 +482,7 @@ def validate_data_or_fail(
 
     if not allow_warnings and report.warnings:
         raise ValueError(
-            f"Data quality validation found {len(report.warnings)} warnings. "
-            "Set allow_warnings=True to proceed anyway."
+            f"Data quality validation found {len(report.warnings)} warnings. Set allow_warnings=True to proceed anyway."
         )
 
     logger.info(f"Data quality validation passed: {report.summary()}")

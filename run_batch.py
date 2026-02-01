@@ -19,16 +19,17 @@ Output structure:
     │   └── logs/
     └── ...
 """
+
 import argparse
 import os
 import re
 import shutil
 import sys
 import tomllib
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, List, Optional
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Any
 
 from loguru import logger
 from tqdm import tqdm
@@ -36,28 +37,28 @@ from tqdm import tqdm
 from src.consolidation import generate_consolidation_report
 
 
-def load_base_config(config_path: str = "config.toml") -> Dict[str, Any]:
+def load_base_config(config_path: str = "config.toml") -> dict[str, Any]:
     """Load the base configuration from config.toml."""
     with open(config_path, "rb") as f:
         config = tomllib.load(f)
     return config.get("preprocessing", {})
 
 
-def load_segments_config(segments_path: str = "segments.toml") -> Dict[str, Dict[str, Any]]:
+def load_segments_config(segments_path: str = "segments.toml") -> dict[str, dict[str, Any]]:
     """Load segment configurations from segments.toml."""
     with open(segments_path, "rb") as f:
         config = tomllib.load(f)
     return config.get("segments", {})
 
 
-def load_supersegments_config(segments_path: str = "segments.toml") -> Dict[str, Dict[str, Any]]:
+def load_supersegments_config(segments_path: str = "segments.toml") -> dict[str, dict[str, Any]]:
     """Load supersegment configurations from segments.toml."""
     with open(segments_path, "rb") as f:
         config = tomllib.load(f)
     return config.get("supersegments", {})
 
 
-def create_output_directories(base_output_dir: Path) -> Dict[str, Path]:
+def create_output_directories(base_output_dir: Path) -> dict[str, Path]:
     """Create output directory structure for a segment."""
     dirs = {
         "root": base_output_dir,
@@ -73,7 +74,7 @@ def create_output_directories(base_output_dir: Path) -> Dict[str, Path]:
     return dirs
 
 
-def merge_configs(base_config: Dict[str, Any], segment_config: Dict[str, Any]) -> Dict[str, Any]:
+def merge_configs(base_config: dict[str, Any], segment_config: dict[str, Any]) -> dict[str, Any]:
     """Merge base config with segment-specific overrides."""
     merged = base_config.copy()
     merged.update(segment_config)
@@ -82,11 +83,11 @@ def merge_configs(base_config: Dict[str, Any], segment_config: Dict[str, Any]) -
 
 def run_segment_pipeline(
     segment_name: str,
-    segment_config: Dict[str, Any],
-    base_config: Dict[str, Any],
+    segment_config: dict[str, Any],
+    base_config: dict[str, Any],
     output_base: str = "output",
-    model_path: Optional[str] = None,
-    skip_dq_checks: bool = False
+    model_path: str | None = None,
+    skip_dq_checks: bool = False,
 ) -> bool:
     """
     Run the pipeline for a single segment.
@@ -111,9 +112,9 @@ def run_segment_pipeline(
     log_file = dirs["logs"] / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     logger.add(log_file, rotation="10 MB", level="DEBUG")
 
-    logger.info(f"=" * 80)
+    logger.info("=" * 80)
     logger.info(f"PROCESSING SEGMENT: {segment_name}")
-    logger.info(f"=" * 80)
+    logger.info("=" * 80)
     logger.info(f"Output directory: {output_dir}")
 
     # Merge configurations
@@ -124,8 +125,6 @@ def run_segment_pipeline(
         logger.info(f"Using pre-trained model from: {model_path}")
 
     # Change to output directory context and run
-    original_cwd = os.getcwd()
-
     try:
         # Import main module
         from main import main as run_main_pipeline
@@ -136,13 +135,6 @@ def run_segment_pipeline(
         # Create a temporary config with this segment's settings
         temp_config = write_temp_config(merged_config, dirs["root"])
 
-        # Store original image/model/data directories
-        original_dirs = {
-            "images": Path("images"),
-            "models": Path("models"),
-            "data": Path("data"),
-        }
-
         # Create symbolic links or rename directories
         # Copy input data file to segment directory before redirection
         data_file = merged_config.get("data_path", "data/demanda_direct_out.sas7bdat")
@@ -151,9 +143,7 @@ def run_segment_pipeline(
         try:
             # Run the main pipeline
             result = run_main_pipeline(
-                config_path=str(temp_config),
-                model_path=model_path,
-                skip_dq_checks=skip_dq_checks
+                config_path=str(temp_config), model_path=model_path, skip_dq_checks=skip_dq_checks
             )
 
             if result is None:
@@ -175,11 +165,11 @@ def run_segment_pipeline(
 
 def run_supersegment_training(
     supersegment_name: str,
-    supersegment_config: Dict[str, Any],
-    base_config: Dict[str, Any],
+    supersegment_config: dict[str, Any],
+    base_config: dict[str, Any],
     output_base: str = "output",
-    skip_dq_checks: bool = False
-) -> Optional[str]:
+    skip_dq_checks: bool = False,
+) -> str | None:
     """
     Train a model on combined supersegment data (multiple segment_filters).
 
@@ -205,9 +195,9 @@ def run_supersegment_training(
     log_file = dirs["logs"] / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     logger.add(log_file, rotation="10 MB", level="DEBUG")
 
-    logger.info(f"=" * 80)
+    logger.info("=" * 80)
     logger.info(f"TRAINING SUPERSEGMENT MODEL: {supersegment_name}")
-    logger.info(f"=" * 80)
+    logger.info("=" * 80)
     logger.info(f"Output directory: {output_dir}")
 
     # Get the list of segment_filters to combine
@@ -243,11 +233,7 @@ def run_supersegment_training(
 
         try:
             # Run the main pipeline in training-only mode (skip optimization)
-            result = run_main_pipeline(
-                config_path=str(temp_config),
-                training_only=True,
-                skip_dq_checks=skip_dq_checks
-            )
+            result = run_main_pipeline(config_path=str(temp_config), training_only=True, skip_dq_checks=skip_dq_checks)
 
             if result is None:
                 logger.error(f"Supersegment training failed: {supersegment_name}")
@@ -258,7 +244,7 @@ def run_supersegment_training(
             model_dirs = sorted(models_dir.glob("model_*"), reverse=True)
 
             if not model_dirs:
-                logger.error(f"No model directory found after training")
+                logger.error("No model directory found after training")
                 return None
 
             model_path = str(model_dirs[0])
@@ -278,7 +264,7 @@ def run_supersegment_training(
         os.chdir(original_cwd)
 
 
-def write_temp_config(config: Dict[str, Any], output_dir: Path) -> Path:
+def write_temp_config(config: dict[str, Any], output_dir: Path) -> Path:
     """Write a temporary config file for this segment run."""
     import tomli_w
 
@@ -293,7 +279,7 @@ def write_temp_config(config: Dict[str, Any], output_dir: Path) -> Path:
     return config_path
 
 
-def setup_output_redirection(dirs: Dict[str, Path], data_file: str = None) -> None:
+def setup_output_redirection(dirs: dict[str, Path], data_file: str = None) -> None:
     """
     Setup output redirection by renaming existing directories
     and creating symlinks to segment directories.
@@ -328,7 +314,7 @@ def setup_output_redirection(dirs: Dict[str, Path], data_file: str = None) -> No
         original.symlink_to(segment_dir.absolute())
 
 
-def cleanup_output_redirection(dirs: Dict[str, Path]) -> None:
+def cleanup_output_redirection(dirs: dict[str, Path]) -> None:
     """Restore original directory structure after processing."""
     for name in ["images", "models", "data"]:
         original = Path(name)
@@ -344,13 +330,13 @@ def cleanup_output_redirection(dirs: Dict[str, Path]) -> None:
 
 
 def run_segments_sequential(
-    segments: Dict[str, Dict[str, Any]],
-    base_config: Dict[str, Any],
+    segments: dict[str, dict[str, Any]],
+    base_config: dict[str, Any],
     output_base: str = "output",
-    supersegments: Dict[str, Dict[str, Any]] = None,
+    supersegments: dict[str, dict[str, Any]] = None,
     reuse_models: bool = False,
-    skip_dq_checks: bool = False
-) -> Dict[str, bool]:
+    skip_dq_checks: bool = False,
+) -> dict[str, bool]:
     """
     Run all segments sequentially, with supersegment support.
 
@@ -381,15 +367,15 @@ def run_segments_sequential(
 
         # Train or reuse each supersegment with progress bar
         if used_supersegments:
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print("PHASE 1: Training Supersegment Models")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
 
             ss_progress = tqdm(
                 used_supersegments,
                 desc="Supersegments",
                 unit="model",
-                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
             )
 
             for ss_name in ss_progress:
@@ -413,7 +399,7 @@ def run_segments_sequential(
                     supersegment_config=supersegments[ss_name],
                     base_config=base_config,
                     output_base=output_base,
-                    skip_dq_checks=skip_dq_checks
+                    skip_dq_checks=skip_dq_checks,
                 )
 
                 if model_path:
@@ -429,21 +415,18 @@ def run_segments_sequential(
 
     # Phase 2: Run individual segment optimizations
     # Filter segments that haven't already failed
-    segments_to_run = [
-        (name, config) for name, config in segments.items()
-        if name not in results
-    ]
+    segments_to_run = [(name, config) for name, config in segments.items() if name not in results]
 
     if segments_to_run:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("PHASE 2: Running Segment Optimizations")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         seg_progress = tqdm(
             segments_to_run,
             desc="Segments",
             unit="segment",
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
         )
 
         for segment_name, segment_config in seg_progress:
@@ -457,9 +440,12 @@ def run_segments_sequential(
                 logger.info(f"Using supersegment model: {supersegment}")
 
             success = run_segment_pipeline(
-                segment_name, segment_config, base_config, output_base,
+                segment_name,
+                segment_config,
+                base_config,
+                output_base,
                 model_path=model_path,
-                skip_dq_checks=skip_dq_checks
+                skip_dq_checks=skip_dq_checks,
             )
             results[segment_name] = success
 
@@ -473,14 +459,14 @@ def run_segments_sequential(
 
 
 def run_segments_parallel(
-    segments: Dict[str, Dict[str, Any]],
-    base_config: Dict[str, Any],
+    segments: dict[str, dict[str, Any]],
+    base_config: dict[str, Any],
     output_base: str = "output",
     max_workers: int = None,
-    supersegments: Dict[str, Dict[str, Any]] = None,
+    supersegments: dict[str, dict[str, Any]] = None,
     reuse_models: bool = False,
-    skip_dq_checks: bool = False
-) -> Dict[str, bool]:
+    skip_dq_checks: bool = False,
+) -> dict[str, bool]:
     """
     Run all segments in parallel, with supersegment support.
 
@@ -510,15 +496,15 @@ def run_segments_parallel(
                 used_supersegments.append(ss)
 
         if used_supersegments:
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print("PHASE 1: Training Supersegment Models (sequential)")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
 
             ss_progress = tqdm(
                 used_supersegments,
                 desc="Supersegments",
                 unit="model",
-                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
             )
 
             for ss_name in ss_progress:
@@ -541,7 +527,7 @@ def run_segments_parallel(
                     supersegment_config=supersegments[ss_name],
                     base_config=base_config,
                     output_base=output_base,
-                    skip_dq_checks=skip_dq_checks
+                    skip_dq_checks=skip_dq_checks,
                 )
                 if model_path:
                     supersegment_models[ss_name] = model_path
@@ -551,15 +537,12 @@ def run_segments_parallel(
                             results[seg_name] = False
 
     # Phase 2: Run individual segment optimizations IN PARALLEL
-    segments_to_run = {
-        name: config for name, config in segments.items()
-        if name not in results
-    }
+    segments_to_run = {name: config for name, config in segments.items() if name not in results}
 
     if segments_to_run:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"PHASE 2: Running Segment Optimizations (parallel, {max_workers or 'auto'} workers)")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
@@ -574,7 +557,7 @@ def run_segments_parallel(
                     base_config,
                     output_base,
                     model_path,
-                    skip_dq_checks
+                    skip_dq_checks,
                 )
                 futures[future] = segment_name
 
@@ -584,7 +567,7 @@ def run_segments_parallel(
                 total=len(futures),
                 desc="Segments",
                 unit="segment",
-                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
             )
 
             for future in seg_progress:
@@ -602,7 +585,7 @@ def run_segments_parallel(
     return results
 
 
-def print_summary(results: Dict[str, bool]) -> None:
+def print_summary(results: dict[str, bool]) -> None:
     """Print a summary of all segment runs."""
     print("\n" + "=" * 80)
     print("BATCH PROCESSING SUMMARY")
@@ -616,12 +599,12 @@ def print_summary(results: Dict[str, bool]) -> None:
     print(f"Failed: {len(failed)}")
 
     if successful:
-        print(f"\nSuccessful segments:")
+        print("\nSuccessful segments:")
         for name in successful:
             print(f"  - {name}")
 
     if failed:
-        print(f"\nFailed segments:")
+        print("\nFailed segments:")
         for name in failed:
             print(f"  - {name}")
 
@@ -629,10 +612,8 @@ def print_summary(results: Dict[str, bool]) -> None:
 
 
 def clean_output_directories(
-    segments: Dict[str, Dict[str, Any]],
-    supersegments: Dict[str, Dict[str, Any]],
-    output_base: str = "output"
-) -> Dict[str, bool]:
+    segments: dict[str, dict[str, Any]], supersegments: dict[str, dict[str, Any]], output_base: str = "output"
+) -> dict[str, bool]:
     """
     Remove output directories for specified segments and their supersegments.
 
@@ -669,7 +650,7 @@ def clean_output_directories(
             results[f"_supersegment_{ss_name}"] = True  # Already clean
 
     # Clean segment directories
-    for seg_name in segments.keys():
+    for seg_name in segments:
         seg_dir = output_path / seg_name
         if seg_dir.exists():
             try:
@@ -697,7 +678,7 @@ def list_segments(segments_path: str = "segments.toml") -> None:
         for name, config in supersegments.items():
             filters = config.get("segment_filters", [])
             print(f"  {name}:")
-            print(f"    segment_filters:")
+            print("    segment_filters:")
             for sf in filters:
                 print(f"      - {sf}")
             print()
@@ -721,74 +702,35 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run scoring pipeline for multiple segments",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__
+        epilog=__doc__,
     )
 
+    parser.add_argument("--segments", "-s", nargs="+", help="Specific segments to run (default: all)")
+    parser.add_argument("--list", "-l", action="store_true", help="List available segments and exit")
+    parser.add_argument("--parallel", "-p", action="store_true", help="Run segments in parallel")
     parser.add_argument(
-        "--segments", "-s",
-        nargs="+",
-        help="Specific segments to run (default: all)"
+        "--workers", "-w", type=int, default=None, help="Number of parallel workers (default: CPU count)"
+    )
+    parser.add_argument("--output", "-o", default="output", help="Base output directory (default: output)")
+    parser.add_argument("--config", "-c", default="config.toml", help="Path to base config file (default: config.toml)")
+    parser.add_argument(
+        "--segments-config", default="segments.toml", help="Path to segments config file (default: segments.toml)"
     )
     parser.add_argument(
-        "--list", "-l",
-        action="store_true",
-        help="List available segments and exit"
+        "--reuse-models", action="store_true", help="Reuse existing supersegment models if available (skip retraining)"
     )
     parser.add_argument(
-        "--parallel", "-p",
-        action="store_true",
-        help="Run segments in parallel"
+        "--clean", action="store_true", help="Remove output directories for selected segments before running"
+    )
+    parser.add_argument("--clean-only", action="store_true", help="Only clean output directories (don't run pipeline)")
+    parser.add_argument(
+        "--skip-dq-checks", action="store_true", help="Skip data quality checks (not recommended for production)"
     )
     parser.add_argument(
-        "--workers", "-w",
-        type=int,
-        default=None,
-        help="Number of parallel workers (default: CPU count)"
+        "--no-consolidation", action="store_true", help="Skip generating consolidated report at the end"
     )
     parser.add_argument(
-        "--output", "-o",
-        default="output",
-        help="Base output directory (default: output)"
-    )
-    parser.add_argument(
-        "--config", "-c",
-        default="config.toml",
-        help="Path to base config file (default: config.toml)"
-    )
-    parser.add_argument(
-        "--segments-config",
-        default="segments.toml",
-        help="Path to segments config file (default: segments.toml)"
-    )
-    parser.add_argument(
-        "--reuse-models",
-        action="store_true",
-        help="Reuse existing supersegment models if available (skip retraining)"
-    )
-    parser.add_argument(
-        "--clean",
-        action="store_true",
-        help="Remove output directories for selected segments before running"
-    )
-    parser.add_argument(
-        "--clean-only",
-        action="store_true",
-        help="Only clean output directories (don't run pipeline)"
-    )
-    parser.add_argument(
-        "--skip-dq-checks",
-        action="store_true",
-        help="Skip data quality checks (not recommended for production)"
-    )
-    parser.add_argument(
-        "--no-consolidation",
-        action="store_true",
-        help="Skip generating consolidated report at the end"
-    )
-    parser.add_argument(
-        "--consolidate-only",
-        action="store_true",
-        help="Only generate consolidated report (skip running segments)"
+        "--consolidate-only", action="store_true", help="Only generate consolidated report (skip running segments)"
     )
 
     args = parser.parse_args()
@@ -812,11 +754,7 @@ def main():
 
     # Filter segments if specific ones requested
     if args.segments:
-        segments = {
-            name: config
-            for name, config in all_segments.items()
-            if name in args.segments
-        }
+        segments = {name: config for name, config in all_segments.items() if name in args.segments}
 
         # Check for unknown segments
         unknown = set(args.segments) - set(all_segments.keys())
@@ -837,7 +775,7 @@ def main():
             if ss not in all_supersegments:
                 print(f"Warning: Segment '{seg_name}' references unknown supersegment '{ss}'")
                 print(f"  Available supersegments: {list(all_supersegments.keys())}")
-                print(f"  Segment will train its own model instead.")
+                print("  Segment will train its own model instead.")
             else:
                 used_supersegments.add(ss)
 
@@ -845,9 +783,7 @@ def main():
     if args.clean or args.clean_only:
         print(f"\nCleaning output directories for {len(segments)} segment(s)...")
         clean_results = clean_output_directories(
-            segments=segments,
-            supersegments=all_supersegments,
-            output_base=args.output
+            segments=segments, supersegments=all_supersegments, output_base=args.output
         )
         failed_cleans = [name for name, success in clean_results.items() if not success]
         if failed_cleans:
@@ -861,17 +797,14 @@ def main():
 
     # Handle consolidate-only mode
     if args.consolidate_only:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("Consolidate-Only Mode")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         try:
             consolidated_df, _ = generate_consolidation_report(
-                output_base=args.output,
-                segments=segments,
-                supersegments=all_supersegments,
-                output_path=args.output
+                output_base=args.output, segments=segments, supersegments=all_supersegments, output_path=args.output
             )
-            print(f"\nConsolidated report saved to:")
+            print("\nConsolidated report saved to:")
             print(f"  - {args.output}/consolidated_risk_production.csv")
             print(f"  - {args.output}/consolidated_risk_production.html")
             return 0
@@ -884,9 +817,9 @@ def main():
     if used_supersegments:
         print(f"Supersegments to train: {list(used_supersegments)}")
         if args.reuse_models:
-            print(f"Reuse models: enabled (will skip training if model exists)")
+            print("Reuse models: enabled (will skip training if model exists)")
     if args.skip_dq_checks:
-        print(f"Data quality checks: DISABLED (--skip-dq-checks)")
+        print("Data quality checks: DISABLED (--skip-dq-checks)")
     print(f"Output directory: {args.output}")
     print(f"Mode: {'parallel' if args.parallel else 'sequential'}")
     print()
@@ -894,17 +827,22 @@ def main():
     # Run segments
     if args.parallel:
         results = run_segments_parallel(
-            segments, base_config, args.output, args.workers,
+            segments,
+            base_config,
+            args.output,
+            args.workers,
             supersegments=all_supersegments,
             reuse_models=args.reuse_models,
-            skip_dq_checks=args.skip_dq_checks
+            skip_dq_checks=args.skip_dq_checks,
         )
     else:
         results = run_segments_sequential(
-            segments, base_config, args.output,
+            segments,
+            base_config,
+            args.output,
             supersegments=all_supersegments,
             reuse_models=args.reuse_models,
-            skip_dq_checks=args.skip_dq_checks
+            skip_dq_checks=args.skip_dq_checks,
         )
 
     # Print summary
@@ -914,17 +852,17 @@ def main():
     if not args.no_consolidation:
         successful_segments = {name: config for name, config in segments.items() if results.get(name, False)}
         if successful_segments:
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print("Generating Consolidated Report")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             try:
                 consolidated_df, _ = generate_consolidation_report(
                     output_base=args.output,
                     segments=successful_segments,
                     supersegments=all_supersegments,
-                    output_path=args.output
+                    output_path=args.output,
                 )
-                print(f"\nConsolidated report saved to:")
+                print("\nConsolidated report saved to:")
                 print(f"  - {args.output}/consolidated_risk_production.csv")
                 print(f"  - {args.output}/consolidated_risk_production.html")
             except Exception as e:

@@ -12,6 +12,7 @@ Using these constants instead of hardcoded strings improves:
 - Type safety: IDE autocompletion and typo detection
 - Documentation: Clear overview of data schema expectations
 """
+
 from enum import Enum
 from typing import Final
 
@@ -21,6 +22,7 @@ from typing import Final
 # =============================================================================
 class StatusName(str, Enum):
     """Status values for loan applications."""
+
     BOOKED = "booked"
     REJECTED = "rejected"
     PENDING = "pending"
@@ -28,6 +30,7 @@ class StatusName(str, Enum):
 
 class RejectReason(str, Enum):
     """Rejection reason codes."""
+
     OTHER = "08-other"
     SCORE = "09-score"
 
@@ -68,6 +71,7 @@ class Columns:
 # Suffixes for aggregated data
 class Suffixes:
     """Suffixes used for indicator columns in aggregated data."""
+
     BOOKED: Final[str] = "_boo"
     REPESCA: Final[str] = "_rep"
     CUT: Final[str] = "_cut"

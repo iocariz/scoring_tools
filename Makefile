@@ -19,7 +19,7 @@ lint: ## Run linting (ruff) - checks only
 	$(RUFF) check .
 
 format: ## Run formatting (ruff) - apply changes
-	$(PYTEST) check --fix .
+	$(RUFF) check --fix .
 	$(RUFF) format .
 
 clean: ## Clean output directory and cache

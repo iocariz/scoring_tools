@@ -1,74 +1,76 @@
 import argparse
-import pandas as pd
-import numpy as np
-from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
-
-from loguru import logger
 import tomllib
-import plotly.graph_objects as go
-from src.preprocess_improved import PreprocessingConfig, complete_preprocessing_pipeline, filter_by_date
-from src.constants import StatusName
+from pathlib import Path
+from typing import Any
+
+import joblib
+import numpy as np
+import pandas as pd
+from loguru import logger
+
+from src.data_quality import run_data_quality_checks
+from src.inference_optimized import (
+    inference_pipeline_with_feature_selection,
+    run_optimization_pipeline,
+    todu_average_inference,
+)
+from src.mr_pipeline import process_mr_period
+from src.persistence import load_model_for_prediction
+from src.plots import RiskProductionVisualizer, plot_risk_vs_production
+from src.preprocess_improved import PreprocessingConfig, complete_preprocessing_pipeline
 from src.utils import (
-    calculate_stress_factor,
     calculate_and_plot_transformation_rate,
-    get_fact_sol,
-    kpi_of_fact_sol,
-    get_optimal_solutions,
     calculate_annual_coef,
     calculate_b2_ever_h6,
-    generate_cutoff_summary,
+    calculate_stress_factor,
     consolidate_cutoff_summaries,
     format_cutoff_summary_table,
+    generate_cutoff_summary,
+    get_fact_sol,
+    get_optimal_solutions,
+    kpi_of_fact_sol,
 )
-from src.plots import plot_risk_vs_production, RiskProductionVisualizer
-from src.inference_optimized import inference_pipeline_with_feature_selection, todu_average_inference, run_optimization_pipeline
-from src.persistence import load_model_for_prediction
-import joblib
-from src.models import calculate_risk_values
-from src.mr_pipeline import process_mr_period
-from src.data_quality import run_data_quality_checks
-from src import styles
-
 
 # Required configuration keys
 REQUIRED_CONFIG_KEYS = [
-    'keep_vars',
-    'indicators',
-    'segment_filter',
-    'octroi_bins',
-    'efx_bins',
-    'date_ini_book_obs',
-    'date_fin_book_obs',
-    'variables',
+    "keep_vars",
+    "indicators",
+    "segment_filter",
+    "octroi_bins",
+    "efx_bins",
+    "date_ini_book_obs",
+    "date_fin_book_obs",
+    "variables",
 ]
 
 OPTIONAL_CONFIG_KEYS = [
-    'date_ini_book_obs_mr',
-    'date_fin_book_obs_mr',
-    'score_measures',
-    'data_path',
-    'n_months',
-    'multiplier',
-    'z_threshold',
-    'optimum_risk',
-    'scenario_step',
-    'cz_config',
-    'log_level',
+    "date_ini_book_obs_mr",
+    "date_fin_book_obs_mr",
+    "score_measures",
+    "data_path",
+    "n_months",
+    "multiplier",
+    "z_threshold",
+    "optimum_risk",
+    "scenario_step",
+    "cz_config",
+    "log_level",
 ]
 
 
 class ConfigValidationError(Exception):
     """Raised when configuration validation fails."""
+
     pass
 
 
 class DataValidationError(Exception):
     """Raised when data validation fails."""
+
     pass
 
 
-def validate_config(config_data: Dict[str, Any]) -> List[str]:
+def validate_config(config_data: dict[str, Any]) -> list[str]:
     """
     Validate that all required configuration keys are present and have valid values.
 
@@ -89,36 +91,38 @@ def validate_config(config_data: Dict[str, Any]) -> List[str]:
         raise ConfigValidationError(f"Missing required configuration keys: {missing_keys}")
 
     # Validate keep_vars and indicators are non-empty lists
-    if not config_data['keep_vars'] or not isinstance(config_data['keep_vars'], list):
+    if not config_data["keep_vars"] or not isinstance(config_data["keep_vars"], list):
         raise ConfigValidationError("'keep_vars' must be a non-empty list")
 
-    if not config_data['indicators'] or not isinstance(config_data['indicators'], list):
+    if not config_data["indicators"] or not isinstance(config_data["indicators"], list):
         raise ConfigValidationError("'indicators' must be a non-empty list")
 
     # Validate variables has exactly 2 elements
-    variables = config_data.get('variables', [])
+    variables = config_data.get("variables", [])
     if len(variables) != 2:
         raise ConfigValidationError(f"'variables' must contain exactly 2 elements, got {len(variables)}")
 
     # Validate bins have at least 2 values
-    if len(config_data['octroi_bins']) < 2:
+    if len(config_data["octroi_bins"]) < 2:
         raise ConfigValidationError("'octroi_bins' must have at least 2 values")
 
-    if len(config_data['efx_bins']) < 2:
+    if len(config_data["efx_bins"]) < 2:
         raise ConfigValidationError("'efx_bins' must have at least 2 values")
 
     # Validate numeric parameters
-    if 'multiplier' in config_data and config_data['multiplier'] <= 0:
+    if "multiplier" in config_data and config_data["multiplier"] <= 0:
         raise ConfigValidationError("'multiplier' must be positive")
 
-    if 'z_threshold' in config_data and config_data['z_threshold'] <= 0:
+    if "z_threshold" in config_data and config_data["z_threshold"] <= 0:
         raise ConfigValidationError("'z_threshold' must be positive")
 
     # Check for MR config completeness
-    has_mr_ini = 'date_ini_book_obs_mr' in config_data
-    has_mr_fin = 'date_fin_book_obs_mr' in config_data
+    has_mr_ini = "date_ini_book_obs_mr" in config_data
+    has_mr_fin = "date_fin_book_obs_mr" in config_data
     if has_mr_ini != has_mr_fin:
-        warnings.append("MR period dates partially configured - both date_ini_book_obs_mr and date_fin_book_obs_mr should be set")
+        warnings.append(
+            "MR period dates partially configured - both date_ini_book_obs_mr and date_fin_book_obs_mr should be set"
+        )
 
     return warnings
 
@@ -143,7 +147,7 @@ def validate_date_string(date_str: str, field_name: str) -> pd.Timestamp:
     try:
         return pd.to_datetime(date_str)
     except Exception as e:
-        raise ConfigValidationError(f"Invalid date format for '{field_name}': {date_str}. Error: {e}")
+        raise ConfigValidationError(f"Invalid date format for '{field_name}': {date_str}. Error: {e}") from e
 
 
 def validate_date_range(start_date: pd.Timestamp, end_date: pd.Timestamp, range_name: str) -> None:
@@ -164,7 +168,7 @@ def validate_date_range(start_date: pd.Timestamp, end_date: pd.Timestamp, range_
         )
 
 
-def validate_data_columns(data: pd.DataFrame, required_columns: List[str], context: str = "data") -> List[str]:
+def validate_data_columns(data: pd.DataFrame, required_columns: list[str], context: str = "data") -> list[str]:
     """
     Validate that required columns exist in the DataFrame.
 
@@ -204,7 +208,7 @@ def validate_data_not_empty(data: pd.DataFrame, context: str = "data") -> None:
         raise DataValidationError(f"{context} is empty")
 
 
-def convert_bins(bins: List[float]) -> List[float]:
+def convert_bins(bins: list[float]) -> list[float]:
     """
     Convert bin values, replacing float('inf') with numpy constants.
 
@@ -216,14 +220,14 @@ def convert_bins(bins: List[float]) -> List[float]:
     """
     if not bins:
         return bins
-    return [np.inf if x == float('inf') else -np.inf if x == float('-inf') else x for x in bins]
+    return [np.inf if x == float("inf") else -np.inf if x == float("-inf") else x for x in bins]
 
 
-def load_config(config_path: str = "config.toml") -> Dict[str, Any]:
+def load_config(config_path: str = "config.toml") -> dict[str, Any]:
     """Load configuration from TOML file."""
     with open(config_path, "rb") as f:
         config_data = tomllib.load(f)
-    return config_data['preprocessing']
+    return config_data["preprocessing"]
 
 
 def load_data(df_path: str) -> pd.DataFrame:
@@ -231,7 +235,10 @@ def load_data(df_path: str) -> pd.DataFrame:
     df = pd.read_sas(df_path, format="sas7bdat", encoding="utf-8")
     return df
 
-def main(config_path: str = "config.toml", model_path: str = None, training_only: bool = False, skip_dq_checks: bool = False):
+
+def main(
+    config_path: str = "config.toml", model_path: str = None, training_only: bool = False, skip_dq_checks: bool = False
+):
     """
     Load and preprocess SAS data using configuration.
 
@@ -260,8 +267,8 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
         logger.info("Configuration loaded successfully.")
 
         # Ensure cz_config keys are integers (TOML keys are always strings)
-        if 'cz_config' in config_data:
-            config_data['cz_config'] = {int(k): v for k, v in config_data['cz_config'].items()}
+        if "cz_config" in config_data:
+            config_data["cz_config"] = {int(k): v for k, v in config_data["cz_config"].items()}
 
         # Validate configuration
         warnings = validate_config(config_data)
@@ -280,8 +287,8 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
     # =========================================================================
     logger.info("Validating dates...")
     try:
-        date_ini = validate_date_string(config_data['date_ini_book_obs'], 'date_ini_book_obs')
-        date_fin = validate_date_string(config_data['date_fin_book_obs'], 'date_fin_book_obs')
+        date_ini = validate_date_string(config_data["date_ini_book_obs"], "date_ini_book_obs")
+        date_fin = validate_date_string(config_data["date_fin_book_obs"], "date_fin_book_obs")
         validate_date_range(date_ini, date_fin, "main observation period")
         annual_coef = calculate_annual_coef(date_ini, date_fin)
         logger.info(f"Observation period: {date_ini.date()} to {date_fin.date()} (annual_coef: {annual_coef:.2f})")
@@ -294,7 +301,7 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
     # =========================================================================
     logger.info("Loading data...")
     try:
-        data_path = config_data.get('data_path', "data/demanda_direct_out.sas7bdat")
+        data_path = config_data.get("data_path", "data/demanda_direct_out.sas7bdat")
         data = load_data(data_path)
         validate_data_not_empty(data, "Input data")
         logger.info(f"Data loaded successfully: {data.shape[0]:,} rows × {data.shape[1]} columns")
@@ -315,17 +322,13 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
 
     # Standardize categorical values
     logger.info("Standardizing categorical values...")
-    for col in data.select_dtypes(include=['object', 'category', 'string']).columns:
-        data[col] = (data[col]
-                    .astype("string")
-                    .str.lower()
-                    .str.replace(" ", "_")
-                    .astype("category"))
+    for col in data.select_dtypes(include=["object", "category", "string"]).columns:
+        data[col] = data[col].astype("string").str.lower().str.replace(" ", "_").astype("category")
     logger.debug("Categorical values standardized")
 
     # Validate required columns exist after standardization
     try:
-        required_cols = config_data['keep_vars'] + config_data['indicators']
+        required_cols = config_data["keep_vars"] + config_data["indicators"]
         validate_data_columns(data, required_cols, "input data")
         logger.info("All required columns present in data")
     except DataValidationError as e:
@@ -359,26 +362,26 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
     logger.info("Preprocessing data...")
 
     # Parse bins to replace -inf/inf with numpy constants
-    octroi_bins = convert_bins(config_data.get('octroi_bins'))
-    efx_bins = convert_bins(config_data.get('efx_bins'))
+    octroi_bins = convert_bins(config_data.get("octroi_bins"))
+    efx_bins = convert_bins(config_data.get("efx_bins"))
 
     config = PreprocessingConfig(
-        keep_vars=config_data['keep_vars'],
-        indicators=config_data['indicators'],
-        segment_filter=config_data['segment_filter'],
+        keep_vars=config_data["keep_vars"],
+        indicators=config_data["indicators"],
+        segment_filter=config_data["segment_filter"],
         octroi_bins=octroi_bins,
         efx_bins=efx_bins,
-        date_ini_book_obs=config_data.get('date_ini_book_obs'),
-        date_fin_book_obs=config_data.get('date_fin_book_obs'),
-        score_measures=config_data.get('score_measures'),
-        log_level=config_data.get('log_level', 'INFO')
+        date_ini_book_obs=config_data.get("date_ini_book_obs"),
+        date_fin_book_obs=config_data.get("date_fin_book_obs"),
+        score_measures=config_data.get("score_measures"),
+        log_level=config_data.get("log_level", "INFO"),
     )
-    
+
     data_clean, data_booked, data_demand = complete_preprocessing_pipeline(data, config)
 
     # Saving risk vs production plot
     logger.info("Saving risk vs production plot...")
-    fig = plot_risk_vs_production(data_clean, config_data.get('indicators'), config_data.get('cz_config'), data_booked)
+    fig = plot_risk_vs_production(data_clean, config_data.get("indicators"), config_data.get("cz_config"), data_booked)
     fig.write_html("images/risk_vs_production.html")
     logger.info("Risk vs production plot saved successfully into images folder")
 
@@ -389,9 +392,11 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
 
     # Calculating transformation rate
     logger.info("Calculating transformation rate...")
-    result = calculate_and_plot_transformation_rate(data_clean, date_col='mis_date', amount_col='oa_amt', n_months=config_data.get('n_months'))
-    result['figure'].write_html("images/transformation_rate.html")
-    logger.info(f"Finance Rate (last {config_data.get('n_months')} months): {result['overall_rate']:.2%}") 
+    result = calculate_and_plot_transformation_rate(
+        data_clean, date_col="mis_date", amount_col="oa_amt", n_months=config_data.get("n_months")
+    )
+    result["figure"].write_html("images/transformation_rate.html")
+    logger.info(f"Finance Rate (last {config_data.get('n_months')} months): {result['overall_rate']:.2%}")
 
     # Risk Inference
     if model_path:
@@ -400,13 +405,13 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
         try:
             model, metadata, features = load_model_for_prediction(model_path)
             risk_inference = {
-                'best_model_info': {
-                    'model': model,
-                    'name': metadata.get('model_type', 'Unknown'),
-                    'test_r2': metadata.get('test_r2', 0.0),
+                "best_model_info": {
+                    "model": model,
+                    "name": metadata.get("model_type", "Unknown"),
+                    "test_r2": metadata.get("test_r2", 0.0),
                 },
-                'features': features,
-                'model_path': model_path
+                "features": features,
+                "model_path": model_path,
             }
             logger.info(f"Loaded model: {risk_inference['best_model_info']['name']}")
             logger.info(f"Original Test R²: {risk_inference['best_model_info']['test_r2']:.4f}")
@@ -424,13 +429,13 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
                 logger.warning(f"Todu model not found at {todu_model_path}, training on current data...")
                 _, reg_todu_amt_pile, _ = todu_average_inference(
                     data=data_clean,
-                    variables=config_data.get('variables'),
-                    indicators=config_data.get('indicators'),
-                    feature_col='oa_amt',
-                    target_col='todu_amt_pile_h6',
-                    z_threshold=config_data.get('z_threshold', 3.0),
+                    variables=config_data.get("variables"),
+                    indicators=config_data.get("indicators"),
+                    feature_col="oa_amt",
+                    target_col="todu_amt_pile_h6",
+                    z_threshold=config_data.get("z_threshold", 3.0),
                     plot_output_path="models/todu_avg_inference.html",
-                    model_output_path=None  # Don't save, it's a fallback
+                    model_output_path=None,  # Don't save, it's a fallback
                 )
         except Exception as e:
             logger.error(f"Failed to load pre-trained model: {e}")
@@ -440,16 +445,16 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
         logger.info("Calculating risk inference with feature selection...")
         risk_inference = inference_pipeline_with_feature_selection(
             data=data_clean,
-            bins=(config_data.get('octroi_bins'), config_data.get('efx_bins')),
-            variables=config_data.get('variables'),
-            indicators=config_data.get('indicators'),
-            target_var='todu_30ever_h6',
-            multiplier=config_data.get('multiplier', 7),
+            bins=(config_data.get("octroi_bins"), config_data.get("efx_bins")),
+            variables=config_data.get("variables"),
+            indicators=config_data.get("indicators"),
+            target_var="todu_30ever_h6",
+            multiplier=config_data.get("multiplier", 7),
             test_size=0.4,
             include_hurdle=True,
             save_model=True,
-            model_base_path='models',
-            create_visualizations=True
+            model_base_path="models",
+            create_visualizations=True,
         )
         logger.info(f"Best model: {risk_inference['best_model_info']['name']}")
         logger.info(f"Model type: {risk_inference['best_model_info'].get('model_type', 'N/A')}")
@@ -459,13 +464,13 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
         # Todu Average Inference
         _, reg_todu_amt_pile, _ = todu_average_inference(
             data=data_clean,
-            variables=config_data.get('variables'),
-            indicators=config_data.get('indicators'),
-            feature_col='oa_amt',
-            target_col='todu_amt_pile_h6',
-            z_threshold=config_data.get('z_threshold', 3.0),
+            variables=config_data.get("variables"),
+            indicators=config_data.get("indicators"),
+            feature_col="oa_amt",
+            target_col="todu_amt_pile_h6",
+            z_threshold=config_data.get("z_threshold", 3.0),
             plot_output_path="models/todu_avg_inference.html",
-            model_output_path="models/todu_model.joblib"
+            model_output_path="models/todu_model.joblib",
         )
 
     # Early return for training_only mode (supersegment training)
@@ -478,38 +483,34 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
 
     # Apply inference model and Optimization Pipeline
     # Using the new refactored function
-    
+
     data_summary_desagregado = run_optimization_pipeline(
         data_booked=data_booked,
         data_demand=data_demand,
         risk_inference=risk_inference,
         reg_todu_amt_pile=reg_todu_amt_pile,
         stressor=stress_factor,
-        tasa_fin=result['overall_rate'],
+        tasa_fin=result["overall_rate"],
         config_data=config_data,
-        annual_coef=annual_coef
+        annual_coef=annual_coef,
     )
 
     # Cutoff optimization
     logger.info("Optimizing cutoff...")
-    values_var0 = sorted(data_summary_desagregado[config_data.get('variables')[0]].unique())
-    values_var1 = sorted(data_summary_desagregado[config_data.get('variables')[1]].unique())
+    values_var0 = sorted(data_summary_desagregado[config_data.get("variables")[0]].unique())
+    values_var1 = sorted(data_summary_desagregado[config_data.get("variables")[1]].unique())
 
-    # Get feasible solutions    
-    df_v = get_fact_sol(
-        values_var0=values_var0,
-        values_var1=values_var1,
-        chunk_size=10000
-    )
+    # Get feasible solutions
+    df_v = get_fact_sol(values_var0=values_var0, values_var1=values_var1, chunk_size=10000)
 
     # Obtener KPIs de las soluciones factibles
     data_summary = kpi_of_fact_sol(
         df_v=df_v,
         values_var0=values_var0,
         data_sumary_desagregado=data_summary_desagregado,
-        variables=config_data.get('variables'),
-        indicadores=config_data.get('indicators'),
-        chunk_size=100000  # Adjust based on available memory
+        variables=config_data.get("variables"),
+        indicadores=config_data.get("indicators"),
+        chunk_size=100000,  # Adjust based on available memory
     )
 
     # display not optimal solutions
@@ -519,57 +520,58 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
     data_summary = get_optimal_solutions(
         df_v=df_v,
         data_sumary=data_summary,
-        chunk_size=100000  # Adjust based on available memory
+        chunk_size=100000,  # Adjust based on available memory
     )
 
     # Save all Pareto-optimal solutions (for Cutoff Explorer risk slider)
     data_summary.to_csv("data/pareto_optimal_solutions.csv", index=False)
     logger.info(f"Pareto-optimal solutions saved ({len(data_summary)} solutions)")
 
-    multiplier = config_data.get('multiplier', 7)
-    data_summary_desagregado['b2_ever_h6'] = calculate_b2_ever_h6(
-        data_summary_desagregado['todu_30ever_h6'],
-        data_summary_desagregado['todu_amt_pile_h6'],
+    multiplier = config_data.get("multiplier", 7)
+    data_summary_desagregado["b2_ever_h6"] = calculate_b2_ever_h6(
+        data_summary_desagregado["todu_30ever_h6"],
+        data_summary_desagregado["todu_amt_pile_h6"],
         multiplier=multiplier,
-        as_percentage=True
+        as_percentage=True,
     )
-    data_summary_desagregado['text'] = data_summary_desagregado.apply(lambda x: str(
-    "{:,.2f}M".format(x['oa_amt_h0']/1000000))+' '+str("{:.2%}".format(x['b2_ever_h6']/100)), axis=1)
+    data_summary_desagregado["text"] = data_summary_desagregado.apply(
+        lambda x: str("{:,.2f}M".format(x["oa_amt_h0"] / 1000000)) + " " + str("{:.2%}".format(x["b2_ever_h6"] / 100)),
+        axis=1,
+    )
 
     # Scenario Analysis
-    base_optimum_risk = config_data.get('optimum_risk', 1.1)
-    scenario_step = config_data.get('scenario_step', 0.1)
+    base_optimum_risk = config_data.get("optimum_risk", 1.1)
+    scenario_step = config_data.get("scenario_step", 0.1)
 
     # Calculate MR coefficients before loop
-    date_ini_mr = pd.to_datetime(config_data.get('date_ini_book_obs_mr'))
-    date_fin_mr = pd.to_datetime(config_data.get('date_fin_book_obs_mr'))
+    date_ini_mr = pd.to_datetime(config_data.get("date_ini_book_obs_mr"))
+    date_fin_mr = pd.to_datetime(config_data.get("date_fin_book_obs_mr"))
     annual_coef_mr = calculate_annual_coef(date_ini_book_obs=date_ini_mr, date_fin_book_obs=date_fin_mr)
     logger.info(f"Annual Coef MR: {annual_coef_mr}")
 
     # Scenarios: pessimistic (lower risk threshold), base (optimum), optimistic (higher risk threshold)
     scenarios = [
-        (base_optimum_risk - scenario_step, 'pessimistic'),
-        (base_optimum_risk, 'base'),
-        (base_optimum_risk + scenario_step, 'optimistic'),
+        (base_optimum_risk - scenario_step, "pessimistic"),
+        (base_optimum_risk, "base"),
+        (base_optimum_risk + scenario_step, "optimistic"),
     ]
 
-    optimal_solution_df_base = None
     cutoff_summaries = []  # Collect cutoff summaries for all scenarios
-    segment_name = config_data.get('segment_filter', 'unknown_segment')
+    segment_name = config_data.get("segment_filter", "unknown_segment")
 
     for scenario_risk, scenario_name in scenarios:
         current_risk = float(round(scenario_risk, 1))
         logger.info(f"Running scenario: {scenario_name} (optimum_risk = {current_risk})")
 
         visualizer = RiskProductionVisualizer(
-             data_summary=data_summary,
-             data_summary_disaggregated=data_summary_desagregado,
-             data_summary_sample_no_opt=data_summary_sample_no_opt,
-             variables=config_data.get('variables'),
-             values_var0=values_var0,
-             values_var1=values_var1,
-             optimum_risk=current_risk,
-             tasa_fin=result['overall_rate']
+            data_summary=data_summary,
+            data_summary_disaggregated=data_summary_desagregado,
+            data_summary_sample_no_opt=data_summary_sample_no_opt,
+            variables=config_data.get("variables"),
+            values_var0=values_var0,
+            values_var1=values_var1,
+            optimum_risk=current_risk,
+            tasa_fin=result["overall_rate"],
         )
 
         suffix = f"_{scenario_name}"
@@ -592,14 +594,14 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
         logger.info(f"Optimal solution saved to data/optimal_solution{suffix}.csv")
 
         # Extract risk and production values from summary table for cutoff summary
-        optimum_row = summary_table[summary_table['Metric'] == 'Optimum selected']
-        risk_pct = optimum_row['Risk (%)'].values[0] if not optimum_row.empty else None
-        production = optimum_row['Production (€)'].values[0] if not optimum_row.empty else None
+        optimum_row = summary_table[summary_table["Metric"] == "Optimum selected"]
+        risk_pct = optimum_row["Risk (%)"].values[0] if not optimum_row.empty else None
+        production = optimum_row["Production (€)"].values[0] if not optimum_row.empty else None
 
         # Generate cutoff summary for this scenario
         cutoff_summary = generate_cutoff_summary(
             optimal_solution_df=opt_sol,
-            variables=config_data.get('variables'),
+            variables=config_data.get("variables"),
             segment_name=segment_name,
             scenario_name=scenario_name,
             risk_value=risk_pct,
@@ -607,8 +609,7 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
         )
         cutoff_summaries.append(cutoff_summary)
 
-        if scenario_name == 'base':
-            optimal_solution_df_base = opt_sol
+        if scenario_name == "base":
             # Also save as default filenames for backward compatibility
             visualizer.save_html("images/risk_production_visualizer.html")
             summary_table.to_csv("data/risk_production_summary_table.csv", index=False)
@@ -624,10 +625,10 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
                 risk_inference=risk_inference,
                 reg_todu_amt_pile=reg_todu_amt_pile,
                 stress_factor=stress_factor,
-                tasa_fin=result['overall_rate'],
+                tasa_fin=result["overall_rate"],
                 annual_coef=annual_coef_mr,
                 optimal_solution_df=opt_sol,
-                file_suffix=""
+                file_suffix="",
             )
 
         # Scenario MR Processing
@@ -638,10 +639,10 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
             risk_inference=risk_inference,
             reg_todu_amt_pile=reg_todu_amt_pile,
             stress_factor=stress_factor,
-            tasa_fin=result['overall_rate'],
+            tasa_fin=result["overall_rate"],
             annual_coef=annual_coef_mr,
             optimal_solution_df=opt_sol,
-            file_suffix=suffix
+            file_suffix=suffix,
         )
 
     # Consolidate and save cutoff summaries
@@ -650,15 +651,14 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
     logger.info("=" * 80)
 
     consolidated_cutoffs = consolidate_cutoff_summaries(
-        summaries=cutoff_summaries,
-        output_path="data/cutoff_summary_by_segment.csv"
+        summaries=cutoff_summaries, output_path="data/cutoff_summary_by_segment.csv"
     )
 
     # Also create a wide-format summary for easier reading
     if not consolidated_cutoffs.empty:
         wide_cutoffs = format_cutoff_summary_table(
             cutoff_summary=consolidated_cutoffs,
-            variables=config_data.get('variables'),
+            variables=config_data.get("variables"),
         )
         wide_cutoffs.to_csv("data/cutoff_summary_wide.csv", index=False)
         logger.info("Cutoff summary (wide format) saved to data/cutoff_summary_wide.csv")
@@ -667,9 +667,8 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
         logger.info(f"\nCutoff Summary for segment '{segment_name}':")
         logger.info(f"\n{wide_cutoffs.to_string()}")
 
-
-
     return data_clean, data_booked, data_demand, data_summary_desagregado, data_summary
+
 
 def parse_args():
     """Parse command-line arguments."""
@@ -699,33 +698,30 @@ Output files:
   data/cutoff_summary_by_segment.csv   - Cutoff points summary (long format)
   data/cutoff_summary_wide.csv         - Cutoff points summary (wide format)
   images/risk_production_*.html        - Interactive visualizations
-        """
+        """,
     )
 
     parser.add_argument(
-        "--config", "-c",
-        type=str,
-        default="config.toml",
-        help="Path to configuration TOML file (default: config.toml)"
+        "--config", "-c", type=str, default="config.toml", help="Path to configuration TOML file (default: config.toml)"
     )
 
     parser.add_argument(
-        "--model-path", "-m",
+        "--model-path",
+        "-m",
         type=str,
         default=None,
-        help="Path to pre-trained model directory. Skips training and uses existing model."
+        help="Path to pre-trained model directory. Skips training and uses existing model.",
     )
 
     parser.add_argument(
-        "--training-only", "-t",
+        "--training-only",
+        "-t",
         action="store_true",
-        help="Only run preprocessing and model training, skip optimization."
+        help="Only run preprocessing and model training, skip optimization.",
     )
 
     parser.add_argument(
-        "--skip-dq-checks",
-        action="store_true",
-        help="Skip data quality checks (not recommended for production)."
+        "--skip-dq-checks", action="store_true", help="Skip data quality checks (not recommended for production)."
     )
 
     return parser.parse_args()

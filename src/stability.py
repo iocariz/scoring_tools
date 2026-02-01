@@ -11,25 +11,27 @@ PSI Interpretation:
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Union
 from enum import Enum
-import pandas as pd
+
 import numpy as np
-from loguru import logger
+import pandas as pd
 import plotly.graph_objects as go
+from loguru import logger
 from plotly.subplots import make_subplots
 
 
 class StabilityStatus(Enum):
     """Stability status based on PSI/CSI value."""
-    STABLE = "stable"          # PSI < 0.1
-    MODERATE = "moderate"      # 0.1 <= PSI < 0.25
-    UNSTABLE = "unstable"      # PSI >= 0.25
+
+    STABLE = "stable"  # PSI < 0.1
+    MODERATE = "moderate"  # 0.1 <= PSI < 0.25
+    UNSTABLE = "unstable"  # PSI >= 0.25
 
 
 @dataclass
 class PSIResult:
     """Result of a PSI calculation for a single variable."""
+
     variable: str
     psi_value: float
     status: StabilityStatus
@@ -38,11 +40,7 @@ class PSIResult:
 
     @property
     def status_icon(self) -> str:
-        icons = {
-            StabilityStatus.STABLE: "✓",
-            StabilityStatus.MODERATE: "⚠",
-            StabilityStatus.UNSTABLE: "✗"
-        }
+        icons = {StabilityStatus.STABLE: "✓", StabilityStatus.MODERATE: "⚠", StabilityStatus.UNSTABLE: "✗"}
         return icons[self.status]
 
     def __str__(self) -> str:
@@ -52,23 +50,24 @@ class PSIResult:
 @dataclass
 class StabilityReport:
     """Complete stability report comparing two populations."""
+
     baseline_name: str
     comparison_name: str
     baseline_count: int
     comparison_count: int
-    psi_results: List[PSIResult] = field(default_factory=list)
-    overall_psi: Optional[float] = None
+    psi_results: list[PSIResult] = field(default_factory=list)
+    overall_psi: float | None = None
 
     @property
-    def stable_vars(self) -> List[PSIResult]:
+    def stable_vars(self) -> list[PSIResult]:
         return [r for r in self.psi_results if r.status == StabilityStatus.STABLE]
 
     @property
-    def moderate_vars(self) -> List[PSIResult]:
+    def moderate_vars(self) -> list[PSIResult]:
         return [r for r in self.psi_results if r.status == StabilityStatus.MODERATE]
 
     @property
-    def unstable_vars(self) -> List[PSIResult]:
+    def unstable_vars(self) -> list[PSIResult]:
         return [r for r in self.psi_results if r.status == StabilityStatus.UNSTABLE]
 
     @property
@@ -90,13 +89,8 @@ class StabilityReport:
         """Convert results to a DataFrame for export."""
         data = []
         for r in self.psi_results:
-            data.append({
-                'variable': r.variable,
-                'psi': r.psi_value,
-                'status': r.status.value,
-                'n_bins': r.n_bins
-            })
-        return pd.DataFrame(data).sort_values('psi', ascending=False)
+            data.append({"variable": r.variable, "psi": r.psi_value, "status": r.status.value, "n_bins": r.n_bins})
+        return pd.DataFrame(data).sort_values("psi", ascending=False)
 
     def print_report(self) -> None:
         """Print formatted stability report to console."""
@@ -112,7 +106,7 @@ class StabilityReport:
             print(f"\nOverall PSI: {self.overall_psi:.4f} {icon} ({status.value})")
 
         # Group by status
-        for status, label, color in [
+        for status, label, _color in [
             (StabilityStatus.UNSTABLE, "UNSTABLE (PSI ≥ 0.25)", "red"),
             (StabilityStatus.MODERATE, "MODERATE (0.1 ≤ PSI < 0.25)", "yellow"),
             (StabilityStatus.STABLE, "STABLE (PSI < 0.1)", "green"),
@@ -139,11 +133,8 @@ def get_psi_status(psi_value: float) -> StabilityStatus:
 
 
 def calculate_psi(
-    baseline: pd.Series,
-    comparison: pd.Series,
-    bins: Union[int, List[float]] = 10,
-    min_pct: float = 0.0001
-) -> Tuple[float, pd.DataFrame]:
+    baseline: pd.Series, comparison: pd.Series, bins: int | list[float] = 10, min_pct: float = 0.0001
+) -> tuple[float, pd.DataFrame]:
     """
     Calculate Population Stability Index between two distributions.
 
@@ -171,7 +162,7 @@ def calculate_psi(
     if isinstance(bins, int):
         # Use quantiles from baseline to create bins
         try:
-            _, bin_edges = pd.qcut(baseline_clean, q=bins, retbins=True, duplicates='drop')
+            _, bin_edges = pd.qcut(baseline_clean, q=bins, retbins=True, duplicates="drop")
         except ValueError:
             # Fallback to equal-width bins if quantiles fail
             _, bin_edges = pd.cut(baseline_clean, bins=bins, retbins=True)
@@ -205,21 +196,20 @@ def calculate_psi(
     psi_value = psi_components.sum()
 
     # Create breakdown DataFrame
-    breakdown = pd.DataFrame({
-        'bin': [str(b) for b in all_bins],
-        'baseline_pct': baseline_pct.values,
-        'comparison_pct': comparison_pct.values,
-        'psi_component': psi_components.values
-    })
+    breakdown = pd.DataFrame(
+        {
+            "bin": [str(b) for b in all_bins],
+            "baseline_pct": baseline_pct.values,
+            "comparison_pct": comparison_pct.values,
+            "psi_component": psi_components.values,
+        }
+    )
 
     return psi_value, breakdown
 
 
 def calculate_psi_for_variable(
-    baseline_df: pd.DataFrame,
-    comparison_df: pd.DataFrame,
-    variable: str,
-    bins: Union[int, List[float]] = 10
+    baseline_df: pd.DataFrame, comparison_df: pd.DataFrame, variable: str, bins: int | list[float] = 10
 ) -> PSIResult:
     """
     Calculate PSI for a single variable.
@@ -238,29 +228,25 @@ def calculate_psi_for_variable(
     if variable not in comparison_df.columns:
         raise ValueError(f"Variable '{variable}' not found in comparison DataFrame")
 
-    psi_value, breakdown = calculate_psi(
-        baseline_df[variable],
-        comparison_df[variable],
-        bins=bins
-    )
+    psi_value, breakdown = calculate_psi(baseline_df[variable], comparison_df[variable], bins=bins)
 
     return PSIResult(
         variable=variable,
         psi_value=psi_value,
         status=get_psi_status(psi_value),
         n_bins=len(breakdown),
-        bin_details=breakdown
+        bin_details=breakdown,
     )
 
 
 def calculate_stability_report(
     baseline_df: pd.DataFrame,
     comparison_df: pd.DataFrame,
-    variables: List[str],
+    variables: list[str],
     baseline_name: str = "Baseline",
     comparison_name: str = "Comparison",
-    bins: Union[int, Dict[str, Union[int, List[float]]]] = 10,
-    score_variable: Optional[str] = None
+    bins: int | dict[str, int | list[float]] = 10,
+    score_variable: str | None = None,
 ) -> StabilityReport:
     """
     Calculate PSI/CSI for multiple variables and generate a stability report.
@@ -283,7 +269,7 @@ def calculate_stability_report(
         baseline_name=baseline_name,
         comparison_name=comparison_name,
         baseline_count=len(baseline_df),
-        comparison_count=len(comparison_df)
+        comparison_count=len(comparison_df),
     )
 
     for var in variables:
@@ -300,9 +286,7 @@ def calculate_stability_report(
         var_bins = bins if isinstance(bins, int) else bins.get(var, 10)
 
         try:
-            result = calculate_psi_for_variable(
-                baseline_df, comparison_df, var, bins=var_bins
-            )
+            result = calculate_psi_for_variable(baseline_df, comparison_df, var, bins=var_bins)
             report.add(result)
             logger.debug(f"  {result}")
         except Exception as e:
@@ -314,7 +298,7 @@ def calculate_stability_report(
             overall_psi, _ = calculate_psi(
                 baseline_df[score_variable],
                 comparison_df[score_variable],
-                bins=20  # More bins for overall score
+                bins=20,  # More bins for overall score
             )
             report.overall_psi = overall_psi
         except Exception as e:
@@ -324,10 +308,7 @@ def calculate_stability_report(
     return report
 
 
-def plot_psi_comparison(
-    result: PSIResult,
-    title: Optional[str] = None
-) -> go.Figure:
+def plot_psi_comparison(result: PSIResult, title: str | None = None) -> go.Figure:
     """
     Create a bar chart comparing baseline vs comparison distributions.
 
@@ -341,50 +322,30 @@ def plot_psi_comparison(
     df = result.bin_details
 
     if title is None:
-        status_color = {
-            StabilityStatus.STABLE: "green",
-            StabilityStatus.MODERATE: "orange",
-            StabilityStatus.UNSTABLE: "red"
-        }[result.status]
         title = f"{result.variable} - PSI: {result.psi_value:.4f} ({result.status.value})"
 
     fig = go.Figure()
 
     # Baseline bars
-    fig.add_trace(go.Bar(
-        name='Baseline',
-        x=df['bin'],
-        y=df['baseline_pct'],
-        marker_color='steelblue',
-        opacity=0.7
-    ))
+    fig.add_trace(go.Bar(name="Baseline", x=df["bin"], y=df["baseline_pct"], marker_color="steelblue", opacity=0.7))
 
     # Comparison bars
-    fig.add_trace(go.Bar(
-        name='Comparison',
-        x=df['bin'],
-        y=df['comparison_pct'],
-        marker_color='coral',
-        opacity=0.7
-    ))
+    fig.add_trace(go.Bar(name="Comparison", x=df["bin"], y=df["comparison_pct"], marker_color="coral", opacity=0.7))
 
     fig.update_layout(
         title=title,
-        xaxis_title='Bin',
-        yaxis_title='Percentage',
-        barmode='group',
-        yaxis_tickformat='.1%',
+        xaxis_title="Bin",
+        yaxis_title="Percentage",
+        barmode="group",
+        yaxis_tickformat=".1%",
         legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99),
-        template='plotly_white'
+        template="plotly_white",
     )
 
     return fig
 
 
-def plot_stability_dashboard(
-    report: StabilityReport,
-    top_n: int = 10
-) -> go.Figure:
+def plot_stability_dashboard(report: StabilityReport, top_n: int = 10) -> go.Figure:
     """
     Create a dashboard showing PSI values for all variables.
 
@@ -404,54 +365,43 @@ def plot_stability_dashboard(
 
     # Create figure with subplots
     fig = make_subplots(
-        rows=2, cols=1,
+        rows=2,
+        cols=1,
         row_heights=[0.6, 0.4],
-        subplot_titles=(
-            f'PSI by Variable ({report.baseline_name} vs {report.comparison_name})',
-            'PSI Distribution'
-        ),
-        vertical_spacing=0.15
+        subplot_titles=(f"PSI by Variable ({report.baseline_name} vs {report.comparison_name})", "PSI Distribution"),
+        vertical_spacing=0.15,
     )
 
     # Color based on status
     colors = []
     for _, row in df.iterrows():
-        if row['psi'] >= 0.25:
-            colors.append('red')
-        elif row['psi'] >= 0.1:
-            colors.append('orange')
+        if row["psi"] >= 0.25:
+            colors.append("red")
+        elif row["psi"] >= 0.1:
+            colors.append("orange")
         else:
-            colors.append('green')
+            colors.append("green")
 
     # Bar chart of PSI values
     fig.add_trace(
         go.Bar(
-            x=df['variable'],
-            y=df['psi'],
+            x=df["variable"],
+            y=df["psi"],
             marker_color=colors,
-            name='PSI',
-            text=[f"{v:.3f}" for v in df['psi']],
-            textposition='outside'
+            name="PSI",
+            text=[f"{v:.3f}" for v in df["psi"]],
+            textposition="outside",
         ),
-        row=1, col=1
+        row=1,
+        col=1,
     )
 
     # Add threshold lines
-    fig.add_hline(y=0.1, line_dash="dash", line_color="orange",
-                  annotation_text="Moderate (0.1)", row=1, col=1)
-    fig.add_hline(y=0.25, line_dash="dash", line_color="red",
-                  annotation_text="Unstable (0.25)", row=1, col=1)
+    fig.add_hline(y=0.1, line_dash="dash", line_color="orange", annotation_text="Moderate (0.1)", row=1, col=1)
+    fig.add_hline(y=0.25, line_dash="dash", line_color="red", annotation_text="Unstable (0.25)", row=1, col=1)
 
     # Histogram of PSI values
-    fig.add_trace(
-        go.Histogram(
-            x=df['psi'],
-            nbinsx=20,
-            marker_color='steelblue',
-            name='Distribution'
-        ),
-        row=2, col=1
-    )
+    fig.add_trace(go.Histogram(x=df["psi"], nbinsx=20, marker_color="steelblue", name="Distribution"), row=2, col=1)
 
     # Add threshold lines to histogram
     fig.add_vline(x=0.1, line_dash="dash", line_color="orange", row=2, col=1)
@@ -460,12 +410,12 @@ def plot_stability_dashboard(
     fig.update_layout(
         height=800,
         showlegend=False,
-        template='plotly_white',
+        template="plotly_white",
         title=dict(
             text=f"Stability Report: {len(report.stable_vars)} stable, "
-                 f"{len(report.moderate_vars)} moderate, {len(report.unstable_vars)} unstable",
-            x=0.5
-        )
+            f"{len(report.moderate_vars)} moderate, {len(report.unstable_vars)} unstable",
+            x=0.5,
+        ),
     )
 
     fig.update_xaxes(tickangle=45, row=1, col=1)
@@ -479,10 +429,10 @@ def plot_stability_dashboard(
 def compare_main_vs_mr(
     main_df: pd.DataFrame,
     mr_df: pd.DataFrame,
-    variables: List[str],
-    score_variable: str = 'sc_octroi',
-    output_path: Optional[str] = None,
-    verbose: bool = True
+    variables: list[str],
+    score_variable: str = "sc_octroi",
+    output_path: str | None = None,
+    verbose: bool = True,
 ) -> StabilityReport:
     """
     Convenience function to compare Main period vs MR period stability.
@@ -504,7 +454,7 @@ def compare_main_vs_mr(
         variables=variables,
         baseline_name="Main Period",
         comparison_name="MR Period",
-        score_variable=score_variable
+        score_variable=score_variable,
     )
 
     if verbose:
@@ -519,10 +469,8 @@ def compare_main_vs_mr(
 
 
 def calculate_csi_for_categorical(
-    baseline: pd.Series,
-    comparison: pd.Series,
-    min_pct: float = 0.0001
-) -> Tuple[float, pd.DataFrame]:
+    baseline: pd.Series, comparison: pd.Series, min_pct: float = 0.0001
+) -> tuple[float, pd.DataFrame]:
     """
     Calculate Characteristic Stability Index for categorical variables.
 
@@ -551,11 +499,13 @@ def calculate_csi_for_categorical(
     csi_components = (comparison_pct - baseline_pct) * np.log(comparison_pct / baseline_pct)
     csi_value = csi_components.sum()
 
-    breakdown = pd.DataFrame({
-        'category': all_cats,
-        'baseline_pct': baseline_pct.values,
-        'comparison_pct': comparison_pct.values,
-        'csi_component': csi_components.values
-    })
+    breakdown = pd.DataFrame(
+        {
+            "category": all_cats,
+            "baseline_pct": baseline_pct.values,
+            "comparison_pct": comparison_pct.values,
+            "csi_component": csi_components.values,
+        }
+    )
 
     return csi_value, breakdown

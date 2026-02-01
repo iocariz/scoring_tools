@@ -1,16 +1,17 @@
-import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import sys
 
-import pytest
-import pandas as pd
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import numpy as np
-from src.utils import calculate_b2_ever_h6, DEFAULT_RISK_MULTIPLIER
+import pandas as pd
 
+from src.utils import DEFAULT_RISK_MULTIPLIER, calculate_b2_ever_h6
 
 # =============================================================================
 # calculate_b2_ever_h6 Tests
 # =============================================================================
+
 
 class TestCalculateB2EverH6:
     """Tests for the calculate_b2_ever_h6 utility function."""
@@ -145,39 +146,37 @@ class TestCalculateB2EverH6:
 # Integration Tests
 # =============================================================================
 
+
 class TestB2EverH6Integration:
     """Integration tests for b2_ever_h6 calculation in realistic scenarios."""
 
     def test_realistic_risk_data(self):
         """Test with realistic risk data."""
         # Simulate aggregated loan data
-        data = pd.DataFrame({
-            'todu_30ever_h6': [10, 25, 50, 100],
-            'todu_amt_pile_h6': [1000, 2000, 3000, 4000],
-        })
-
-        result = calculate_b2_ever_h6(
-            data['todu_30ever_h6'],
-            data['todu_amt_pile_h6']
+        data = pd.DataFrame(
+            {
+                "todu_30ever_h6": [10, 25, 50, 100],
+                "todu_amt_pile_h6": [1000, 2000, 3000, 4000],
+            }
         )
 
+        result = calculate_b2_ever_h6(data["todu_30ever_h6"], data["todu_amt_pile_h6"])
+
         # Expected: 7 * num / den
-        expected = 7 * data['todu_30ever_h6'] / data['todu_amt_pile_h6']
+        expected = 7 * data["todu_30ever_h6"] / data["todu_amt_pile_h6"]
 
         np.testing.assert_array_almost_equal(result, expected.round(2))
 
     def test_dataframe_column_assignment(self):
         """Test assigning result to DataFrame column."""
-        df = pd.DataFrame({
-            'todu_30ever_h6': [10, 25, 50],
-            'todu_amt_pile_h6': [1000, 2000, 3000],
-        })
-
-        df['b2_ever_h6'] = calculate_b2_ever_h6(
-            df['todu_30ever_h6'],
-            df['todu_amt_pile_h6'],
-            as_percentage=True
+        df = pd.DataFrame(
+            {
+                "todu_30ever_h6": [10, 25, 50],
+                "todu_amt_pile_h6": [1000, 2000, 3000],
+            }
         )
 
-        assert 'b2_ever_h6' in df.columns
-        assert not df['b2_ever_h6'].isna().any()
+        df["b2_ever_h6"] = calculate_b2_ever_h6(df["todu_30ever_h6"], df["todu_amt_pile_h6"], as_percentage=True)
+
+        assert "b2_ever_h6" in df.columns
+        assert not df["b2_ever_h6"].isna().any()

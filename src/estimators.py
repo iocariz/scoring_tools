@@ -132,11 +132,7 @@ class HurdleRegressor(BaseEstimator, RegressorMixin):
 
     def get_params(self, deep=True):
         """Get parameters for this estimator."""
-        return {
-            'classifier': self.classifier,
-            'regressor': self.regressor,
-            'zero_threshold': self.zero_threshold
-        }
+        return {"classifier": self.classifier, "regressor": self.regressor, "zero_threshold": self.zero_threshold}
 
     def set_params(self, **params):
         """Set parameters for this estimator."""
