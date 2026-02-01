@@ -464,17 +464,19 @@ def create_empty_state() -> html.Div:
 
 # --- Cutoff Explorer Functions ---
 
-def load_cutoff_data(scenario: str, segment: Optional[str] = None) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], List[str]]:
+def load_cutoff_data(scenario: str, segment: Optional[str] = None) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[pd.DataFrame], List[str]]:
     """
     Load data needed for cutoff explorer.
 
     Returns:
-        Tuple of (summary_data, optimal_solution, variables)
+        Tuple of (summary_data, optimal_solution, pareto_solutions, variables)
     """
     paths = get_scenario_paths(scenario, segment)
+    data_dir = get_data_dir(segment)
 
     summary_data = None
     optimal_solution = None
+    pareto_solutions = None
     variables = []
 
     # Load summary data
@@ -491,7 +493,12 @@ def load_cutoff_data(scenario: str, segment: Optional[str] = None) -> Tuple[Opti
     if paths['cutoffs'].exists():
         optimal_solution = pd.read_csv(paths['cutoffs'])
 
-    return summary_data, optimal_solution, variables
+    # Load all Pareto-optimal solutions (for risk slider)
+    pareto_path = data_dir / "pareto_optimal_solutions.csv"
+    if pareto_path.exists():
+        pareto_solutions = pd.read_csv(pareto_path)
+
+    return summary_data, optimal_solution, pareto_solutions, variables
 
 
 def calculate_metrics_from_custom_cuts(
@@ -564,7 +571,7 @@ def calculate_metrics_from_custom_cuts(
 
 def create_cutoff_explorer_layout(scenario: str, segment: Optional[str] = None) -> html.Div:
     """Create the cutoff explorer tab layout."""
-    summary_data, optimal_solution, variables = load_cutoff_data(scenario, segment)
+    summary_data, optimal_solution, pareto_solutions, variables = load_cutoff_data(scenario, segment)
 
     if summary_data is None or len(variables) < 2:
         return dbc.Alert([
@@ -589,6 +596,20 @@ def create_cutoff_explorer_layout(scenario: str, segment: Optional[str] = None) 
                 optimal_cuts[bin_val] = int(opt_row[str(bin_val)])
             else:
                 optimal_cuts[bin_val] = var1_max
+
+    # Get risk range from Pareto solutions
+    risk_min, risk_max, risk_current = 0.0, 2.0, 1.0
+    pareto_data = []
+    if pareto_solutions is not None and not pareto_solutions.empty:
+        risk_min = float(pareto_solutions['b2_ever_h6'].min())
+        risk_max = float(pareto_solutions['b2_ever_h6'].max())
+        # Get current risk from optimal solution if available
+        if optimal_solution is not None and 'b2_ever_h6' in optimal_solution.columns:
+            risk_current = float(optimal_solution['b2_ever_h6'].iloc[0])
+        else:
+            risk_current = (risk_min + risk_max) / 2
+        # Convert Pareto solutions to list of dicts for storage
+        pareto_data = pareto_solutions.to_dict('records')
 
     # Create sliders for each bin
     sliders = []
@@ -620,6 +641,13 @@ def create_cutoff_explorer_layout(scenario: str, segment: Optional[str] = None) 
     scenario_display = scenario.capitalize()
     segment_display = f" - {segment}" if segment else ""
 
+    # Create risk slider marks
+    risk_step = (risk_max - risk_min) / 4 if risk_max > risk_min else 0.25
+    risk_marks = {
+        round(risk_min + i * risk_step, 2): f"{round(risk_min + i * risk_step, 2):.2f}%"
+        for i in range(5)
+    }
+
     return html.Div([
         html.H4(f"Cutoff Explorer ({scenario_display}{segment_display})", className="mb-4"),
 
@@ -631,7 +659,45 @@ def create_cutoff_explorer_layout(scenario: str, segment: Optional[str] = None) 
             'var1_col': var1_col,
             'optimal_cuts': {str(k): v for k, v in optimal_cuts.items()},
             'bins': [int(b) for b in bins],
+            'pareto_solutions': pareto_data,
         }),
+
+        # Risk Level Selector
+        dbc.Card([
+            dbc.CardHeader([
+                html.Span("Target Risk Level", className="fw-bold"),
+                html.Span(
+                    " - Select a risk level to find the closest optimal solution",
+                    className="text-muted small ms-2"
+                )
+            ]),
+            dbc.CardBody([
+                dbc.Row([
+                    dbc.Col([
+                        html.Label("Risk Level (b2_ever_h6 %)", className="small"),
+                        dcc.Slider(
+                            id="risk-level-slider",
+                            min=round(risk_min, 2),
+                            max=round(risk_max, 2),
+                            step=0.01,
+                            value=round(risk_current, 2),
+                            marks=risk_marks,
+                            tooltip={"placement": "bottom", "always_visible": True},
+                        ),
+                    ], md=10),
+                    dbc.Col([
+                        dbc.Button(
+                            "Apply",
+                            id="apply-risk-btn",
+                            color="primary",
+                            size="sm",
+                            className="mt-4"
+                        ),
+                    ], md=2, className="d-flex align-items-center"),
+                ]),
+                html.Div(id="risk-selection-info", className="mt-2 small text-muted"),
+            ])
+        ], className="mb-3"),
 
         dbc.Row([
             # Sliders panel
@@ -1056,20 +1122,102 @@ def update_cutoff_analysis(slider_values, store_data):
 # Reset button callback
 @app.callback(
     Output({'type': 'cutoff-slider', 'index': dash.ALL}, 'value'),
-    [Input("reset-cutoffs-btn", "n_clicks")],
+    [Input("reset-cutoffs-btn", "n_clicks"),
+     Input("apply-risk-btn", "n_clicks")],
     [State("cutoff-data-store", "data"),
+     State("risk-level-slider", "value"),
      State({'type': 'cutoff-slider', 'index': dash.ALL}, 'value')],
     prevent_initial_call=True
 )
-def reset_cutoffs(n_clicks, store_data, current_values):
-    """Reset sliders to optimal values."""
-    if not store_data or not n_clicks:
+def update_cutoffs_from_buttons(reset_clicks, apply_clicks, store_data, risk_value, current_values):
+    """Update sliders from reset button or risk level selection."""
+    if not store_data:
         return current_values
 
-    optimal_cuts = {int(k): v for k, v in store_data['optimal_cuts'].items()}
+    ctx = callback_context
+    if not ctx.triggered:
+        return current_values
+
+    trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
     bins = store_data['bins']
 
-    return [optimal_cuts.get(bin_val, 9) for bin_val in bins]
+    if trigger_id == "reset-cutoffs-btn":
+        # Reset to original optimal values
+        optimal_cuts = {int(k): v for k, v in store_data['optimal_cuts'].items()}
+        return [optimal_cuts.get(bin_val, 9) for bin_val in bins]
+
+    elif trigger_id == "apply-risk-btn":
+        # Find closest Pareto-optimal solution to selected risk level
+        pareto_solutions = store_data.get('pareto_solutions', [])
+        if not pareto_solutions or risk_value is None:
+            return current_values
+
+        # Find the solution with risk closest to the selected value
+        closest_solution = None
+        min_diff = float('inf')
+        for sol in pareto_solutions:
+            diff = abs(sol.get('b2_ever_h6', 0) - risk_value)
+            if diff < min_diff:
+                min_diff = diff
+                closest_solution = sol
+
+        if closest_solution is None:
+            return current_values
+
+        # Extract cutoffs from the closest solution
+        new_values = []
+        for bin_val in bins:
+            # Try both integer and string keys
+            cutoff = closest_solution.get(bin_val) or closest_solution.get(str(bin_val)) or closest_solution.get(float(bin_val))
+            if cutoff is not None:
+                new_values.append(int(cutoff))
+            else:
+                # Fallback to current value
+                idx = bins.index(bin_val)
+                new_values.append(current_values[idx] if idx < len(current_values) else 9)
+
+        return new_values
+
+    return current_values
+
+
+# Risk selection info callback
+@app.callback(
+    Output("risk-selection-info", "children"),
+    [Input("risk-level-slider", "value")],
+    [State("cutoff-data-store", "data")],
+    prevent_initial_call=False
+)
+def update_risk_info(risk_value, store_data):
+    """Show info about the closest optimal solution to selected risk."""
+    if not store_data or risk_value is None:
+        return ""
+
+    pareto_solutions = store_data.get('pareto_solutions', [])
+    if not pareto_solutions:
+        return html.Span("No Pareto solutions available. Run the pipeline first.", className="text-warning")
+
+    # Find closest solution
+    closest_solution = None
+    min_diff = float('inf')
+    for sol in pareto_solutions:
+        diff = abs(sol.get('b2_ever_h6', 0) - risk_value)
+        if diff < min_diff:
+            min_diff = diff
+            closest_solution = sol
+
+    if closest_solution is None:
+        return ""
+
+    actual_risk = closest_solution.get('b2_ever_h6', 0)
+    production = closest_solution.get('oa_amt_h0', 0)
+
+    return html.Div([
+        html.Span(f"Closest optimal solution: ", className="fw-bold"),
+        html.Span(f"Risk = {actual_risk:.2f}%, Production = €{production:,.0f}"),
+        html.Br(),
+        html.Span(f"({len(pareto_solutions)} Pareto-optimal solutions available)", className="text-muted"),
+    ])
 
 
 def parse_args():

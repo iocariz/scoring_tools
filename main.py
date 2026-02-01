@@ -522,6 +522,10 @@ def main(config_path: str = "config.toml", model_path: str = None, training_only
         chunk_size=100000  # Adjust based on available memory
     )
 
+    # Save all Pareto-optimal solutions (for Cutoff Explorer risk slider)
+    data_summary.to_csv("data/pareto_optimal_solutions.csv", index=False)
+    logger.info(f"Pareto-optimal solutions saved ({len(data_summary)} solutions)")
+
     multiplier = config_data.get('multiplier', 7)
     data_summary_desagregado['b2_ever_h6'] = calculate_b2_ever_h6(
         data_summary_desagregado['todu_30ever_h6'],
