@@ -46,3 +46,29 @@ optimum_risk = 0.9
 # optimum_risk = 1.0  # optional, defaults to config.toml value
 # scenario_step = 0.1  # optional override
 # supersegment = "supersegment_name"  # optional, for shared model training
+
+# =============================================================================
+# FIXED CUTOFFS EXAMPLE
+# =============================================================================
+# Use fixed_cutoffs to skip optimization and apply predefined cutoff values.
+# This is useful for:
+# - Applying validated/approved cutoffs from a previous analysis
+# - Testing specific cutoff configurations
+# - Regulatory/compliance scenarios with mandated cutoffs
+#
+# Example configuration:
+# [segments.segment_with_fixed_cutoffs]
+# segment_filter = "your_segment_filter_value"
+# optimum_risk = 1.1  # Still used for reporting, but not for optimization
+#
+# # Fixed cutoffs: for each var0 bin, specify the max var1 value to accept
+# # The lists must have the same length (one cutoff per bin)
+# [segments.segment_with_fixed_cutoffs.fixed_cutoffs]
+# sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0]  # var0 bin values
+# new_efx_clus = [2, 2, 3, 4]                 # var1 cutoff for each var0 bin
+#
+# This means:
+#   - For sc_octroi_new_clus bin 1.0 -> accept new_efx_clus <= 2
+#   - For sc_octroi_new_clus bin 2.0 -> accept new_efx_clus <= 2
+#   - For sc_octroi_new_clus bin 3.0 -> accept new_efx_clus <= 3
+#   - For sc_octroi_new_clus bin 4.0 -> accept new_efx_clus <= 4

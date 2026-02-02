@@ -279,6 +279,84 @@ def get_fact_sol(
         raise
 
 
+def create_fixed_cutoff_solution(
+    fixed_cutoffs: dict[str, list[int | float]],
+    variables: list[str],
+    values_var0: list | np.ndarray,
+) -> pd.DataFrame:
+    """
+    Create a single-row solution DataFrame from predefined cutoffs.
+
+    This function allows bypassing the optimization process by specifying
+    exact cutoff values for each bin. Useful for applying known/validated
+    cutoffs or for scenario analysis with specific cutoff configurations.
+
+    Args:
+        fixed_cutoffs: Dictionary mapping variable names to cutoff lists.
+            For a 2-variable system with var0 bins [1,2,3,4]:
+            {
+                "sc_octroi_new_clus": [1, 2, 3, 4],  # var0 bin values
+                "new_efx_clus": [2, 2, 3, 4]         # var1 cutoff for each var0 bin
+            }
+            The var1 list specifies the maximum var1 value to accept for each var0 bin.
+        variables: List of two variable names [var0, var1].
+        values_var0: Array/list of bin values for the first variable.
+
+    Returns:
+        DataFrame with single row containing:
+        - sol_fac: Solution identifier (0 for fixed cutoffs)
+        - Columns for each var0 bin value containing the var1 cutoff limit
+
+    Raises:
+        ValueError: If cutoffs don't match expected structure or lengths.
+
+    Example:
+        >>> fixed_cutoffs = {
+        ...     "sc_octroi_new_clus": [1, 2, 3, 4],
+        ...     "new_efx_clus": [2, 2, 3, 4]
+        ... }
+        >>> df = create_fixed_cutoff_solution(fixed_cutoffs, ["sc_octroi_new_clus", "new_efx_clus"], [1, 2, 3, 4])
+        >>> # Result: DataFrame with columns [sol_fac, 1.0, 2.0, 3.0, 4.0]
+        >>> #         Values:                [0,       2,   2,   3,   4]
+    """
+    var0_name = variables[0]
+    var1_name = variables[1]
+
+    # Validate fixed_cutoffs structure
+    if var0_name not in fixed_cutoffs or var1_name not in fixed_cutoffs:
+        raise ValueError(f"fixed_cutoffs must contain both variables: {variables}. Got: {list(fixed_cutoffs.keys())}")
+
+    var0_bins = fixed_cutoffs[var0_name]
+    var1_cutoffs = fixed_cutoffs[var1_name]
+
+    if len(var0_bins) != len(var1_cutoffs):
+        raise ValueError(
+            f"Length mismatch: {var0_name} has {len(var0_bins)} bins, "
+            f"but {var1_name} has {len(var1_cutoffs)} cutoffs. They must match."
+        )
+
+    # Validate that var0_bins match the actual data bins
+    values_var0_set = {float(v) for v in values_var0}
+    var0_bins_set = {float(v) for v in var0_bins}
+
+    if var0_bins_set != values_var0_set:
+        logger.warning(
+            f"Fixed cutoff bins {sorted(var0_bins_set)} don't exactly match data bins {sorted(values_var0_set)}. "
+            f"Proceeding with provided cutoffs."
+        )
+
+    # Create solution DataFrame
+    # Columns are the var0 bin values, values are the var1 cutoff limits
+    solution_data = {"sol_fac": [0]}
+    for bin_val, cutoff_val in zip(var0_bins, var1_cutoffs):
+        solution_data[float(bin_val)] = [cutoff_val]
+
+    df = pd.DataFrame(solution_data)
+    logger.info(f"Created fixed cutoff solution: {dict(zip(var0_bins, var1_cutoffs))}")
+
+    return df
+
+
 def kpi_of_fact_sol(
     df_v: pd.DataFrame,
     values_var0: np.ndarray,

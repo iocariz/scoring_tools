@@ -24,6 +24,7 @@ from src.utils import (
     calculate_b2_ever_h6,
     calculate_stress_factor,
     consolidate_cutoff_summaries,
+    create_fixed_cutoff_solution,
     format_cutoff_summary_table,
     generate_cutoff_summary,
     get_fact_sol,
@@ -496,36 +497,72 @@ def main(
     )
 
     # Cutoff optimization
-    logger.info("Optimizing cutoff...")
     values_var0 = sorted(data_summary_desagregado[config_data.get("variables")[0]].unique())
     values_var1 = sorted(data_summary_desagregado[config_data.get("variables")[1]].unique())
 
-    # Get feasible solutions
-    df_v = get_fact_sol(values_var0=values_var0, values_var1=values_var1, chunk_size=10000)
+    # Check for fixed cutoffs (skip optimization if provided)
+    fixed_cutoffs = config_data.get("fixed_cutoffs")
+    use_fixed_cutoffs = fixed_cutoffs is not None and len(fixed_cutoffs) > 0
 
-    # Obtener KPIs de las soluciones factibles
-    data_summary = kpi_of_fact_sol(
-        df_v=df_v,
-        values_var0=values_var0,
-        data_sumary_desagregado=data_summary_desagregado,
-        variables=config_data.get("variables"),
-        indicadores=config_data.get("indicators"),
-        chunk_size=100000,  # Adjust based on available memory
-    )
+    if use_fixed_cutoffs:
+        logger.info("=" * 80)
+        logger.info("USING FIXED CUTOFFS (skipping optimization)")
+        logger.info("=" * 80)
+        logger.info(f"Fixed cutoffs: {fixed_cutoffs}")
 
-    # display not optimal solutions
-    data_summary_sample_no_opt = data_summary.sample(10000)
+        # Create single solution from fixed cutoffs
+        df_v = create_fixed_cutoff_solution(
+            fixed_cutoffs=fixed_cutoffs,
+            variables=config_data.get("variables"),
+            values_var0=values_var0,
+        )
 
-    # Find optimal solutions
-    data_summary = get_optimal_solutions(
-        df_v=df_v,
-        data_sumary=data_summary,
-        chunk_size=100000,  # Adjust based on available memory
-    )
+        # Calculate KPIs for the fixed cutoff solution
+        data_summary = kpi_of_fact_sol(
+            df_v=df_v,
+            values_var0=values_var0,
+            data_sumary_desagregado=data_summary_desagregado,
+            variables=config_data.get("variables"),
+            indicadores=config_data.get("indicators"),
+            chunk_size=100000,
+        )
 
-    # Save all Pareto-optimal solutions (for Cutoff Explorer risk slider)
-    data_summary.to_csv("data/pareto_optimal_solutions.csv", index=False)
-    logger.info(f"Pareto-optimal solutions saved ({len(data_summary)} solutions)")
+        # For fixed cutoffs, there's only one solution (no sampling needed)
+        data_summary_sample_no_opt = data_summary.copy()
+
+        # Save the fixed cutoff solution as the only Pareto solution
+        data_summary.to_csv("data/pareto_optimal_solutions.csv", index=False)
+        logger.info("Fixed cutoff solution saved as pareto_optimal_solutions.csv")
+
+    else:
+        logger.info("Optimizing cutoff...")
+
+        # Get feasible solutions
+        df_v = get_fact_sol(values_var0=values_var0, values_var1=values_var1, chunk_size=10000)
+
+        # Obtener KPIs de las soluciones factibles
+        data_summary = kpi_of_fact_sol(
+            df_v=df_v,
+            values_var0=values_var0,
+            data_sumary_desagregado=data_summary_desagregado,
+            variables=config_data.get("variables"),
+            indicadores=config_data.get("indicators"),
+            chunk_size=100000,  # Adjust based on available memory
+        )
+
+        # display not optimal solutions
+        data_summary_sample_no_opt = data_summary.sample(min(10000, len(data_summary)))
+
+        # Find optimal solutions
+        data_summary = get_optimal_solutions(
+            df_v=df_v,
+            data_sumary=data_summary,
+            chunk_size=100000,  # Adjust based on available memory
+        )
+
+        # Save all Pareto-optimal solutions (for Cutoff Explorer risk slider)
+        data_summary.to_csv("data/pareto_optimal_solutions.csv", index=False)
+        logger.info(f"Pareto-optimal solutions saved ({len(data_summary)} solutions)")
 
     multiplier = config_data.get("multiplier", 7)
     data_summary_desagregado["b2_ever_h6"] = calculate_b2_ever_h6(
@@ -550,11 +587,16 @@ def main(
     logger.info(f"Annual Coef MR: {annual_coef_mr}")
 
     # Scenarios: pessimistic (lower risk threshold), base (optimum), optimistic (higher risk threshold)
-    scenarios = [
-        (base_optimum_risk - scenario_step, "pessimistic"),
-        (base_optimum_risk, "base"),
-        (base_optimum_risk + scenario_step, "optimistic"),
-    ]
+    # When using fixed cutoffs, only run base scenario (there's only one solution)
+    if use_fixed_cutoffs:
+        scenarios = [(base_optimum_risk, "base")]
+        logger.info("Fixed cutoffs mode: running only base scenario")
+    else:
+        scenarios = [
+            (base_optimum_risk - scenario_step, "pessimistic"),
+            (base_optimum_risk, "base"),
+            (base_optimum_risk + scenario_step, "optimistic"),
+        ]
 
     cutoff_summaries = []  # Collect cutoff summaries for all scenarios
     segment_name = config_data.get("segment_filter", "unknown_segment")

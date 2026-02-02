@@ -5,8 +5,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from src.utils import DEFAULT_RISK_MULTIPLIER, calculate_b2_ever_h6
+from src.utils import (
+    DEFAULT_RISK_MULTIPLIER,
+    calculate_b2_ever_h6,
+    create_fixed_cutoff_solution,
+)
 
 # =============================================================================
 # calculate_b2_ever_h6 Tests
@@ -180,3 +185,88 @@ class TestB2EverH6Integration:
 
         assert "b2_ever_h6" in df.columns
         assert not df["b2_ever_h6"].isna().any()
+
+
+# =============================================================================
+# create_fixed_cutoff_solution Tests
+# =============================================================================
+
+
+class TestCreateFixedCutoffSolution:
+    """Tests for the create_fixed_cutoff_solution utility function."""
+
+    def test_basic_fixed_cutoff(self):
+        """Test creating a fixed cutoff solution."""
+        fixed_cutoffs = {
+            "sc_octroi_new_clus": [1.0, 2.0, 3.0, 4.0],
+            "new_efx_clus": [2, 2, 3, 4],
+        }
+        variables = ["sc_octroi_new_clus", "new_efx_clus"]
+        values_var0 = [1.0, 2.0, 3.0, 4.0]
+
+        result = create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0)
+
+        # Check structure
+        assert "sol_fac" in result.columns
+        assert result["sol_fac"].iloc[0] == 0
+        assert len(result) == 1
+
+        # Check cutoff values
+        assert result[1.0].iloc[0] == 2
+        assert result[2.0].iloc[0] == 2
+        assert result[3.0].iloc[0] == 3
+        assert result[4.0].iloc[0] == 4
+
+    def test_fixed_cutoff_with_integers(self):
+        """Test with integer bin values."""
+        fixed_cutoffs = {
+            "var0": [1, 2, 3],
+            "var1": [5, 6, 7],
+        }
+        variables = ["var0", "var1"]
+        values_var0 = [1, 2, 3]
+
+        result = create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0)
+
+        assert len(result) == 1
+        assert result[1.0].iloc[0] == 5
+        assert result[2.0].iloc[0] == 6
+        assert result[3.0].iloc[0] == 7
+
+    def test_missing_variable_raises_error(self):
+        """Test that missing variable raises ValueError."""
+        fixed_cutoffs = {
+            "sc_octroi_new_clus": [1.0, 2.0, 3.0],
+            # missing new_efx_clus
+        }
+        variables = ["sc_octroi_new_clus", "new_efx_clus"]
+        values_var0 = [1.0, 2.0, 3.0]
+
+        with pytest.raises(ValueError, match="must contain both variables"):
+            create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0)
+
+    def test_length_mismatch_raises_error(self):
+        """Test that mismatched lengths raise ValueError."""
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0, 3.0],
+            "var1": [2, 3],  # Wrong length
+        }
+        variables = ["var0", "var1"]
+        values_var0 = [1.0, 2.0, 3.0]
+
+        with pytest.raises(ValueError, match="Length mismatch"):
+            create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0)
+
+    def test_single_bin(self):
+        """Test with single bin."""
+        fixed_cutoffs = {
+            "var0": [1.0],
+            "var1": [5],
+        }
+        variables = ["var0", "var1"]
+        values_var0 = [1.0]
+
+        result = create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0)
+
+        assert len(result) == 1
+        assert result[1.0].iloc[0] == 5
