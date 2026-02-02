@@ -527,6 +527,11 @@ def main(
             chunk_size=100000,
         )
 
+        # Merge df_v (with bin columns) into data_summary (with KPIs)
+        # This is done automatically by get_optimal_solutions in the optimization path,
+        # but must be done manually for fixed cutoffs since we skip optimization
+        data_summary = data_summary.merge(df_v, on="sol_fac", how="left")
+
         # For fixed cutoffs, there's only one solution (no sampling needed)
         data_summary_sample_no_opt = data_summary.copy()
 

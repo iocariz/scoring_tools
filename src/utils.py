@@ -347,9 +347,21 @@ def create_fixed_cutoff_solution(
 
     # Create solution DataFrame
     # Columns are the var0 bin values, values are the var1 cutoff limits
+    # Use values_var0 elements as column names to ensure type consistency with get_fact_sol
     solution_data = {"sol_fac": [0]}
-    for bin_val, cutoff_val in zip(var0_bins, var1_cutoffs):
-        solution_data[float(bin_val)] = [cutoff_val]
+
+    # Build a mapping from var0_bins to cutoffs
+    bin_to_cutoff = {float(b): c for b, c in zip(var0_bins, var1_cutoffs)}
+
+    # Use values_var0 directly as column names (preserves original type: int or float)
+    for bin_val in values_var0:
+        cutoff_val = bin_to_cutoff.get(float(bin_val))
+        if cutoff_val is None:
+            raise ValueError(
+                f"No cutoff defined for bin {bin_val}. "
+                f"Fixed cutoffs must cover all data bins: {list(values_var0)}"
+            )
+        solution_data[bin_val] = [cutoff_val]
 
     df = pd.DataFrame(solution_data)
     logger.info(f"Created fixed cutoff solution: {dict(zip(var0_bins, var1_cutoffs))}")
