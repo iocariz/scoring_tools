@@ -31,10 +31,11 @@ z_threshold = 3.0
 
 # Fixed cutoffs (optional) - uncomment to skip optimization and use predefined cutoffs
 # When set, the optimization step is skipped and these cutoffs are applied directly.
-# Only the "base" scenario will be generated.
 # [preprocessing.fixed_cutoffs]
 # sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]  # var0 bins
 # new_efx_clus = [3, 4, 5, 6, 7, 8, 9, 10, 12, 15]                          # var1 cutoffs
+# strict_validation = false  # If true, raise errors instead of warnings for validation issues
+# run_all_scenarios = false  # If true, generate all scenarios (pessimistic/base/optimistic)
 
 [preprocessing.cz_config]
 2022 = 4.5

@@ -510,11 +510,18 @@ def main(
         logger.info("=" * 80)
         logger.info(f"Fixed cutoffs: {fixed_cutoffs}")
 
-        # Create single solution from fixed cutoffs
+        # Get validation settings from config
+        strict_validation = fixed_cutoffs.get("strict_validation", False)
+        inv_var1 = config_data.get("inv_var1", False)
+
+        # Create single solution from fixed cutoffs with enhanced validation
         df_v = create_fixed_cutoff_solution(
             fixed_cutoffs=fixed_cutoffs,
             variables=config_data.get("variables"),
             values_var0=values_var0,
+            values_var1=values_var1,
+            strict_validation=strict_validation,
+            inv_var1=inv_var1,
         )
 
         # Calculate KPIs for the fixed cutoff solution
@@ -531,6 +538,23 @@ def main(
         # This is done automatically by get_optimal_solutions in the optimization path,
         # but must be done manually for fixed cutoffs since we skip optimization
         data_summary = data_summary.merge(df_v, on="sol_fac", how="left")
+
+        # Log acceptance rate preview for fixed cutoffs
+        if len(data_summary) > 0:
+            row = data_summary.iloc[0]
+            production = row.get("oa_amt_h0", 0)
+            total_demand = data_summary_desagregado["oa_amt_h0"].sum() if "oa_amt_h0" in data_summary_desagregado.columns else 0
+            acceptance_rate = (production / total_demand * 100) if total_demand > 0 else 0
+            logger.info("=" * 60)
+            logger.info("FIXED CUTOFF METRICS PREVIEW")
+            logger.info(f"  Production (oa_amt_h0): {production:,.0f}")
+            logger.info(f"  Total Demand: {total_demand:,.0f}")
+            logger.info(f"  Acceptance Rate: {acceptance_rate:.2f}%")
+            if "todu_30ever_h6" in row and "todu_amt_pile_h6" in row:
+                multiplier = config_data.get("multiplier", 7)
+                risk = calculate_b2_ever_h6(row["todu_30ever_h6"], row["todu_amt_pile_h6"], multiplier=multiplier, as_percentage=True)
+                logger.info(f"  Risk (b2_ever_h6): {risk:.4f}%")
+            logger.info("=" * 60)
 
         # For fixed cutoffs, there's only one solution (no sampling needed)
         data_summary_sample_no_opt = data_summary.copy()
@@ -592,10 +616,19 @@ def main(
     logger.info(f"Annual Coef MR: {annual_coef_mr}")
 
     # Scenarios: pessimistic (lower risk threshold), base (optimum), optimistic (higher risk threshold)
-    # When using fixed cutoffs, only run base scenario (there's only one solution)
+    # When using fixed cutoffs, default to base scenario only unless run_all_scenarios is enabled
     if use_fixed_cutoffs:
-        scenarios = [(base_optimum_risk, "base")]
-        logger.info("Fixed cutoffs mode: running only base scenario")
+        run_all_scenarios = fixed_cutoffs.get("run_all_scenarios", False)
+        if run_all_scenarios:
+            scenarios = [
+                (base_optimum_risk - scenario_step, "pessimistic"),
+                (base_optimum_risk, "base"),
+                (base_optimum_risk + scenario_step, "optimistic"),
+            ]
+            logger.info("Fixed cutoffs mode: running all scenarios (same solution, different risk thresholds)")
+        else:
+            scenarios = [(base_optimum_risk, "base")]
+            logger.info("Fixed cutoffs mode: running only base scenario (set run_all_scenarios=true for all)")
     else:
         scenarios = [
             (base_optimum_risk - scenario_step, "pessimistic"),

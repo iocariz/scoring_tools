@@ -283,6 +283,9 @@ def create_fixed_cutoff_solution(
     fixed_cutoffs: dict[str, list[int | float]],
     variables: list[str],
     values_var0: list | np.ndarray,
+    values_var1: list | np.ndarray | None = None,
+    strict_validation: bool = False,
+    inv_var1: bool = False,
 ) -> pd.DataFrame:
     """
     Create a single-row solution DataFrame from predefined cutoffs.
@@ -301,6 +304,12 @@ def create_fixed_cutoff_solution(
             The var1 list specifies the maximum var1 value to accept for each var0 bin.
         variables: List of two variable names [var0, var1].
         values_var0: Array/list of bin values for the first variable.
+        values_var1: Optional array/list of bin values for the second variable.
+            If provided, validates that cutoffs are within data range.
+        strict_validation: If True, raise errors instead of warnings for
+            bin mismatches and validation issues. Default False.
+        inv_var1: If True, the var1 cutoffs represent minimum values to accept
+            (inverted logic). Affects monotonicity validation direction.
 
     Returns:
         DataFrame with single row containing:
@@ -308,7 +317,8 @@ def create_fixed_cutoff_solution(
         - Columns for each var0 bin value containing the var1 cutoff limit
 
     Raises:
-        ValueError: If cutoffs don't match expected structure or lengths.
+        ValueError: If cutoffs don't match expected structure or lengths,
+            or if strict_validation is True and validation fails.
 
     Example:
         >>> fixed_cutoffs = {
@@ -340,10 +350,58 @@ def create_fixed_cutoff_solution(
     var0_bins_set = {float(v) for v in var0_bins}
 
     if var0_bins_set != values_var0_set:
-        logger.warning(
+        msg = (
             f"Fixed cutoff bins {sorted(var0_bins_set)} don't exactly match data bins {sorted(values_var0_set)}. "
-            f"Proceeding with provided cutoffs."
         )
+        if strict_validation:
+            raise ValueError(msg + "Enable strict_validation=False to proceed anyway.")
+        logger.warning(msg + "Proceeding with provided cutoffs.")
+
+    # Validate monotonicity of cutoffs (cutoffs should be non-decreasing for ascending bins)
+    # For inv_var1=True, cutoffs should be non-increasing (lower cutoff = more restrictive)
+    sorted_pairs = sorted(zip(var0_bins, var1_cutoffs), key=lambda x: float(x[0]))
+    monotonicity_issues = []
+    for i in range(1, len(sorted_pairs)):
+        prev_bin, prev_cutoff = sorted_pairs[i - 1]
+        curr_bin, curr_cutoff = sorted_pairs[i]
+        if inv_var1:
+            # Inverted: cutoffs should be non-increasing (higher bin = lower or equal cutoff)
+            if curr_cutoff > prev_cutoff:
+                monotonicity_issues.append(
+                    f"bin {prev_bin} (cutoff={prev_cutoff}) -> bin {curr_bin} (cutoff={curr_cutoff})"
+                )
+        else:
+            # Normal: cutoffs should be non-decreasing (higher bin = higher or equal cutoff)
+            if curr_cutoff < prev_cutoff:
+                monotonicity_issues.append(
+                    f"bin {prev_bin} (cutoff={prev_cutoff}) -> bin {curr_bin} (cutoff={curr_cutoff})"
+                )
+
+    if monotonicity_issues:
+        direction = "non-increasing" if inv_var1 else "non-decreasing"
+        msg = (
+            f"Non-monotonic cutoffs detected. Expected {direction} cutoffs for ascending bins. "
+            f"Issues: {monotonicity_issues}. This may indicate a configuration error."
+        )
+        if strict_validation:
+            raise ValueError(msg)
+        logger.warning(msg)
+
+    # Validate cutoffs are within data range (if values_var1 provided)
+    if values_var1 is not None and len(values_var1) > 0:
+        min_var1, max_var1 = min(values_var1), max(values_var1)
+        out_of_range = []
+        for cutoff in var1_cutoffs:
+            if cutoff < min_var1 or cutoff > max_var1:
+                out_of_range.append(cutoff)
+        if out_of_range:
+            msg = (
+                f"Cutoff values {out_of_range} are outside data range [{min_var1}, {max_var1}]. "
+                f"This may result in unexpected acceptance rates."
+            )
+            if strict_validation:
+                raise ValueError(msg)
+            logger.warning(msg)
 
     # Create solution DataFrame
     # Columns are the var0 bin values, values are the var1 cutoff limits

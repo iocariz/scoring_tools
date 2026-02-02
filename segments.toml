@@ -74,6 +74,12 @@ risk_step = 0.1
 # [segments.segment_with_fixed_cutoffs.fixed_cutoffs]
 # sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0]  # var0 bin values
 # new_efx_clus = [2, 2, 3, 4]                 # var1 cutoff for each var0 bin
+# strict_validation = false  # If true, raise errors instead of warnings for:
+#                            #   - Bin mismatches between config and data
+#                            #   - Non-monotonic cutoffs
+#                            #   - Cutoffs outside data range
+# run_all_scenarios = false  # If true, generate all scenarios (pessimistic/base/optimistic)
+#                            # Default: only generate base scenario with fixed cutoffs
 #
 # This means:
 #   - For sc_octroi_new_clus bin 1.0 -> accept new_efx_clus <= 2
