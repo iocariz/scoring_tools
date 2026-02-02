@@ -7,7 +7,6 @@ indicators = [
     "acct_booked_h0", "oa_amt", "todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"
 ]
 
-segment_filter = "personal_loans,_fusion_and_tj_direct-no_premium-a-b"
 octroi_bins = [-inf, 364.0, 370.0, 379.0, 382.0, 389.0, 397.0, 404.0, 416.0, 431.0, inf]
 efx_bins = [-inf, 2.0, 7.0, 11.0, 16.0, 22.0, 27.0, 33.0, 38.0, 43.0, 47.0, 51.0, 56.0, 62.0, 68.0, 73.0, 83.0, 89.0, 94.0, inf]
 date_ini_book_obs = "2024-07-01"
@@ -29,10 +28,6 @@ n_months = 24
 variables = ['sc_octroi_new_clus', 'new_efx_clus']
 multiplier = 7
 z_threshold = 3.0
-
-# Scenario analysis parameters
-optimum_risk = 1.1          # Base risk threshold for optimization
-scenario_step = 0.1         # Step size for scenario analysis (+/- from base)
 
 # Fixed cutoffs (optional) - uncomment to skip optimization and use predefined cutoffs
 # When set, the optimization step is skipped and these cutoffs are applied directly.
