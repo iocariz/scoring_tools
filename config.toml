@@ -1,6 +1,6 @@
 [preprocessing]
 keep_vars = [
-    "mis_date", "status_name", "risk_score_rf", "se_decision_id", 
+    "authorization_id", "mis_date", "status_name", "risk_score_rf", "se_decision_id",
     "reject_reason", "score_rf", "segment_cut_off", "early_bad"
 ]
 indicators = [

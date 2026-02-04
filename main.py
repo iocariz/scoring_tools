@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
+from src.audit import save_audit_tables
 from src.data_quality import run_data_quality_checks
 from src.inference_optimized import (
     inference_pipeline_with_feature_selection,
@@ -17,7 +18,7 @@ from src.inference_optimized import (
 from src.mr_pipeline import process_mr_period
 from src.persistence import load_model_for_prediction
 from src.plots import RiskProductionVisualizer, plot_risk_vs_production
-from src.preprocess_improved import PreprocessingConfig, complete_preprocessing_pipeline
+from src.preprocess_improved import PreprocessingConfig, complete_preprocessing_pipeline, filter_by_date
 from src.utils import (
     calculate_and_plot_transformation_rate,
     calculate_annual_coef,
@@ -723,6 +724,37 @@ def main(
             annual_coef=annual_coef_mr,
             optimal_solution_df=opt_sol,
             file_suffix=suffix,
+        )
+
+        # Generate audit tables for this scenario
+        logger.info(f"Generating audit tables for scenario: {scenario_name}")
+
+        # Filter data for main period
+        data_main_period = filter_by_date(
+            data_clean,
+            "mis_date",
+            config_data.get("date_ini_book_obs"),
+            config_data.get("date_fin_book_obs"),
+        )
+
+        # Filter data for MR period
+        data_mr_period = filter_by_date(
+            data_clean,
+            "mis_date",
+            config_data.get("date_ini_book_obs_mr"),
+            config_data.get("date_fin_book_obs_mr"),
+        )
+
+        # Generate and save audit tables
+        inv_var1 = config_data.get("inv_var1", False)
+        save_audit_tables(
+            data_main=data_main_period,
+            data_mr=data_mr_period,
+            optimal_solution_df=opt_sol,
+            variables=config_data.get("variables"),
+            scenario_name=scenario_name,
+            output_dir="data",
+            inv_var1=inv_var1,
         )
 
     # Consolidate and save cutoff summaries
