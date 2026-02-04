@@ -31,10 +31,41 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 from loguru import logger
 from tqdm import tqdm
 
 from src.consolidation import generate_consolidation_report
+
+
+def load_and_standardize_data(data_path: str) -> pd.DataFrame:
+    """
+    Load data from SAS file and standardize column names and categorical values.
+
+    This function is called once at the batch level to avoid reloading the same
+    data file for each segment.
+
+    Args:
+        data_path: Path to the SAS data file.
+
+    Returns:
+        Standardized DataFrame ready for processing.
+    """
+    logger.info(f"Loading data from {data_path}...")
+    data = pd.read_sas(data_path, format="sas7bdat", encoding="utf-8")
+    logger.info(f"Data loaded: {data.shape[0]:,} rows × {data.shape[1]} columns")
+
+    # Standardize column names
+    logger.info("Standardizing column names...")
+    data.columns = data.columns.str.lower().str.replace(" ", "_")
+
+    # Standardize categorical values
+    logger.info("Standardizing categorical values...")
+    for col in data.select_dtypes(include=["object", "category", "string"]).columns:
+        data[col] = data[col].astype("string").str.lower().str.replace(" ", "_").astype("category")
+
+    logger.info("Data standardization complete.")
+    return data
 
 
 def load_base_config(config_path: str = "config.toml") -> dict[str, Any]:
@@ -88,6 +119,7 @@ def run_segment_pipeline(
     output_base: str = "output",
     model_path: str | None = None,
     skip_dq_checks: bool = False,
+    preloaded_data: pd.DataFrame = None,
 ) -> bool:
     """
     Run the pipeline for a single segment.
@@ -100,6 +132,9 @@ def run_segment_pipeline(
         model_path: Optional path to a pre-trained model. If provided, skips
                    inference training and loads the existing model (used for
                    supersegment workflows).
+        skip_dq_checks: If True, skip data quality checks.
+        preloaded_data: Optional pre-loaded and standardized DataFrame. If provided,
+                       skips loading data from file for faster batch processing.
 
     Returns:
         True if successful, False otherwise
@@ -143,7 +178,10 @@ def run_segment_pipeline(
         try:
             # Run the main pipeline
             result = run_main_pipeline(
-                config_path=str(temp_config), model_path=model_path, skip_dq_checks=skip_dq_checks
+                config_path=str(temp_config),
+                model_path=model_path,
+                skip_dq_checks=skip_dq_checks,
+                preloaded_data=preloaded_data,
             )
 
             if result is None:
@@ -169,6 +207,7 @@ def run_supersegment_training(
     base_config: dict[str, Any],
     output_base: str = "output",
     skip_dq_checks: bool = False,
+    preloaded_data: pd.DataFrame = None,
 ) -> str | None:
     """
     Train a model on combined supersegment data (multiple segment_filters).
@@ -233,7 +272,12 @@ def run_supersegment_training(
 
         try:
             # Run the main pipeline in training-only mode (skip optimization)
-            result = run_main_pipeline(config_path=str(temp_config), training_only=True, skip_dq_checks=skip_dq_checks)
+            result = run_main_pipeline(
+                config_path=str(temp_config),
+                training_only=True,
+                skip_dq_checks=skip_dq_checks,
+                preloaded_data=preloaded_data,
+            )
 
             if result is None:
                 logger.error(f"Supersegment training failed: {supersegment_name}")
@@ -336,6 +380,7 @@ def run_segments_sequential(
     supersegments: dict[str, dict[str, Any]] = None,
     reuse_models: bool = False,
     skip_dq_checks: bool = False,
+    preloaded_data: pd.DataFrame = None,
 ) -> dict[str, bool]:
     """
     Run all segments sequentially, with supersegment support.
@@ -349,6 +394,8 @@ def run_segments_sequential(
         output_base: Output directory base
         supersegments: Optional supersegment configurations
         reuse_models: If True, reuse existing supersegment models instead of retraining
+        skip_dq_checks: If True, skip data quality checks.
+        preloaded_data: Optional pre-loaded DataFrame to avoid reloading for each segment.
 
     Returns:
         Dictionary of segment names to success status
@@ -400,6 +447,7 @@ def run_segments_sequential(
                     base_config=base_config,
                     output_base=output_base,
                     skip_dq_checks=skip_dq_checks,
+                    preloaded_data=preloaded_data,
                 )
 
                 if model_path:
@@ -446,6 +494,7 @@ def run_segments_sequential(
                 output_base,
                 model_path=model_path,
                 skip_dq_checks=skip_dq_checks,
+                preloaded_data=preloaded_data,
             )
             results[segment_name] = success
 
@@ -466,12 +515,17 @@ def run_segments_parallel(
     supersegments: dict[str, dict[str, Any]] = None,
     reuse_models: bool = False,
     skip_dq_checks: bool = False,
+    preloaded_data: pd.DataFrame = None,
 ) -> dict[str, bool]:
     """
     Run all segments in parallel, with supersegment support.
 
     Note: Supersegment models are trained sequentially first, then
     individual segment optimizations run in parallel.
+
+    Note: When using preloaded_data with parallel execution, each worker
+    receives a copy of the data. For very large datasets, sequential
+    execution may be more memory-efficient.
 
     Args:
         segments: Segment configurations
@@ -480,6 +534,8 @@ def run_segments_parallel(
         max_workers: Maximum parallel workers
         supersegments: Optional supersegment configurations
         reuse_models: If True, reuse existing supersegment models instead of retraining
+        skip_dq_checks: If True, skip data quality checks.
+        preloaded_data: Optional pre-loaded DataFrame to avoid reloading for each segment.
 
     Returns:
         Dictionary of segment names to success status
@@ -528,6 +584,7 @@ def run_segments_parallel(
                     base_config=base_config,
                     output_base=output_base,
                     skip_dq_checks=skip_dq_checks,
+                    preloaded_data=preloaded_data,
                 )
                 if model_path:
                     supersegment_models[ss_name] = model_path
@@ -558,6 +615,7 @@ def run_segments_parallel(
                     output_base,
                     model_path,
                     skip_dq_checks,
+                    preloaded_data,
                 )
                 futures[future] = segment_name
 
@@ -824,6 +882,22 @@ def main():
     print(f"Mode: {'parallel' if args.parallel else 'sequential'}")
     print()
 
+    # Load data once for all segments
+    print(f"{'=' * 60}")
+    print("Loading data (once for all segments)")
+    print(f"{'=' * 60}")
+    data_path = base_config.get("data_path", "data/demanda_direct_out.sas7bdat")
+    try:
+        preloaded_data = load_and_standardize_data(data_path)
+        print(f"Data ready: {preloaded_data.shape[0]:,} rows × {preloaded_data.shape[1]} columns\n")
+    except FileNotFoundError:
+        print(f"Error: Data file not found at {data_path}")
+        return 1
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        logger.exception("Full traceback:")
+        return 1
+
     # Run segments
     if args.parallel:
         results = run_segments_parallel(
@@ -834,6 +908,7 @@ def main():
             supersegments=all_supersegments,
             reuse_models=args.reuse_models,
             skip_dq_checks=args.skip_dq_checks,
+            preloaded_data=preloaded_data,
         )
     else:
         results = run_segments_sequential(
@@ -843,6 +918,7 @@ def main():
             supersegments=all_supersegments,
             reuse_models=args.reuse_models,
             skip_dq_checks=args.skip_dq_checks,
+            preloaded_data=preloaded_data,
         )
 
     # Print summary

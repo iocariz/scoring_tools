@@ -3,6 +3,10 @@ Audit table generation for cutoff analysis.
 
 This module provides functions to generate audit tables that track individual
 records and their classification based on cutoff decisions.
+
+Classification logic matches the main pipeline:
+- Only rejected records with reject_reason="09-score" are eligible for swap-in
+- Swap-in amounts are multiplied by the financing rate (tasa_fin)
 """
 
 import pandas as pd
@@ -19,21 +23,26 @@ def classify_record(
     inv_var1: bool = False,
 ) -> str:
     """
-    Classify a single record based on cutoff and status.
+    Classify a single record based on cutoff, status, and reject_reason.
+
+    Only rejected records with reject_reason="09-score" can be classified as swap_in.
+    This matches the main pipeline logic where only score-rejected applications
+    are considered for potential approval under new cutoffs.
 
     Args:
-        row: DataFrame row with status and bin values.
+        row: DataFrame row with status_name, reject_reason, and bin values.
         var0_col: Name of the first variable column (e.g., 'sc_octroi_new_clus').
         var1_col: Name of the second variable column (e.g., 'new_efx_clus').
         cut_map: Dictionary mapping var0 bins to var1 cutoff limits.
         inv_var1: If True, use >= comparison instead of <= for var1.
 
     Returns:
-        Classification string: 'keep', 'swap_out', 'swap_in', or 'rejected'.
+        Classification string: 'keep', 'swap_out', 'swap_in', 'rejected', or 'rejected_other'.
     """
     var0_val = row[var0_col]
     var1_val = row[var1_col]
     status = row["status_name"]
+    reject_reason = row.get("reject_reason", None)
 
     # Get cutoff limit for this bin
     cut_limit = cut_map.get(var0_val)
@@ -51,23 +60,33 @@ def classify_record(
     else:
         passes_cut = var1_val <= cut_limit
 
-    # Classify based on status and cutoff
+    # Classify based on status, reject_reason, and cutoff
     is_booked = status == StatusName.BOOKED.value
+    is_score_rejected = (
+        status == StatusName.REJECTED.value and
+        reject_reason == RejectReason.SCORE.value
+    )
 
     if is_booked and passes_cut:
         return "keep"
     elif is_booked and not passes_cut:
         return "swap_out"
-    elif not is_booked and passes_cut:
+    elif is_score_rejected and passes_cut:
+        # Only score-rejected records that pass cutoff are swap-in
         return "swap_in"
-    else:  # not booked and not passes_cut
+    elif is_score_rejected and not passes_cut:
+        # Score-rejected that still don't pass
         return "rejected"
+    else:
+        # Other rejected records (reject_reason != "09-score") are not considered
+        return "rejected_other"
 
 
 def generate_audit_table(
     data: pd.DataFrame,
     optimal_solution_df: pd.DataFrame,
     variables: list[str],
+    financing_rate: float = 1.0,
     inv_var1: bool = False,
     audit_columns: list[str] | None = None,
 ) -> pd.DataFrame:
@@ -75,9 +94,10 @@ def generate_audit_table(
     Generate an audit table with individual record classifications.
 
     Args:
-        data: DataFrame with individual records (must include status_name, var0, var1).
+        data: DataFrame with individual records (must include status_name, reject_reason, var0, var1).
         optimal_solution_df: DataFrame with optimal solution (first row used).
         variables: List of two variable names [var0, var1].
+        financing_rate: Rate to multiply swap-in amounts (tasa_fin). Default 1.0.
         inv_var1: If True, use >= comparison for var1 cutoff.
         audit_columns: Columns to include in audit table. If None, uses defaults.
 
@@ -87,11 +107,12 @@ def generate_audit_table(
     var0_col = variables[0]
     var1_col = variables[1]
 
-    # Default audit columns
+    # Default audit columns - now includes reject_reason
     if audit_columns is None:
         audit_columns = [
             "authorization_id",
             "status_name",
+            "reject_reason",
             "risk_score_rf",
             "score_rf",
             var1_col,
@@ -143,23 +164,41 @@ def generate_audit_table(
     else:
         audit_df["passes_cut"] = data[var1_col] <= audit_df["cut_limit"]
 
+    # Calculate adjusted amount (swap-in multiplied by financing rate)
+    if "oa_amt" in audit_df.columns:
+        audit_df["oa_amt_adjusted"] = audit_df.apply(
+            lambda row: row["oa_amt"] * financing_rate if row["classification"] == "swap_in" else row["oa_amt"],
+            axis=1,
+        )
+
+    logger.info(f"Financing rate applied to swap-in: {financing_rate:.2%}")
+
     return audit_df
 
 
-def generate_audit_summary(audit_df: pd.DataFrame) -> pd.DataFrame:
+def generate_audit_summary(audit_df: pd.DataFrame, use_adjusted: bool = True) -> pd.DataFrame:
     """
     Generate summary statistics from audit table.
 
     Args:
         audit_df: Audit DataFrame with classification column.
+        use_adjusted: If True, use oa_amt_adjusted for totals. Default True.
 
     Returns:
         Summary DataFrame with counts and amounts by classification.
     """
-    summary = audit_df.groupby("classification").agg(
-        count=("classification", "size"),
-        total_oa_amt=("oa_amt", "sum") if "oa_amt" in audit_df.columns else ("classification", "size"),
-    ).reset_index()
+    amount_col = "oa_amt_adjusted" if use_adjusted and "oa_amt_adjusted" in audit_df.columns else "oa_amt"
+
+    if amount_col in audit_df.columns:
+        summary = audit_df.groupby("classification").agg(
+            count=("classification", "size"),
+            total_oa_amt=(amount_col, "sum"),
+        ).reset_index()
+    else:
+        summary = audit_df.groupby("classification").agg(
+            count=("classification", "size"),
+        ).reset_index()
+        summary["total_oa_amt"] = 0
 
     return summary
 
@@ -172,6 +211,7 @@ def save_audit_tables(
     scenario_name: str,
     output_dir: str = "data",
     inv_var1: bool = False,
+    financing_rate: float = 1.0,
 ) -> dict[str, pd.DataFrame]:
     """
     Generate and save audit tables for main and MR periods.
@@ -184,6 +224,7 @@ def save_audit_tables(
         scenario_name: Scenario name (e.g., 'base', 'optimistic', 'pessimistic').
         output_dir: Directory to save audit tables.
         inv_var1: If True, use >= comparison for var1 cutoff.
+        financing_rate: Rate to multiply swap-in amounts (tasa_fin). Default 1.0.
 
     Returns:
         Dictionary with audit DataFrames for main and MR periods.
@@ -196,6 +237,7 @@ def save_audit_tables(
         data=data_main,
         optimal_solution_df=optimal_solution_df,
         variables=variables,
+        financing_rate=financing_rate,
         inv_var1=inv_var1,
     )
 
@@ -215,6 +257,7 @@ def save_audit_tables(
         data=data_mr,
         optimal_solution_df=optimal_solution_df,
         variables=variables,
+        financing_rate=financing_rate,
         inv_var1=inv_var1,
     )
 
@@ -239,6 +282,8 @@ def validate_audit_against_summary(
     """
     Validate that audit table totals match the summary table.
 
+    Uses oa_amt_adjusted for swap-in comparison to account for financing rate.
+
     Args:
         audit_df: Audit DataFrame with classifications.
         summary_table: Risk production summary table.
@@ -247,11 +292,12 @@ def validate_audit_against_summary(
     Returns:
         True if validation passes, False otherwise.
     """
-    # Calculate totals from audit
-    audit_totals = audit_df.groupby("classification")["oa_amt"].sum()
+    # Calculate totals from audit using adjusted amounts
+    amount_col = "oa_amt_adjusted" if "oa_amt_adjusted" in audit_df.columns else "oa_amt"
+    audit_totals = audit_df.groupby("classification")[amount_col].sum()
 
     # Map to summary table metrics
-    # swap_in = Swap-in, swap_out = Swap-out, keep + swap_out = Booked
+    # swap_in = Swap-in (only 09-score rejected that pass), swap_out = Swap-out
     swap_in_audit = audit_totals.get("swap_in", 0)
     swap_out_audit = audit_totals.get("swap_out", 0)
     keep_audit = audit_totals.get("keep", 0)

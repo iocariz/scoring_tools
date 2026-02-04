@@ -239,7 +239,11 @@ def load_data(df_path: str) -> pd.DataFrame:
 
 
 def main(
-    config_path: str = "config.toml", model_path: str = None, training_only: bool = False, skip_dq_checks: bool = False
+    config_path: str = "config.toml",
+    model_path: str = None,
+    training_only: bool = False,
+    skip_dq_checks: bool = False,
+    preloaded_data: pd.DataFrame = None,
 ):
     """
     Load and preprocess SAS data using configuration.
@@ -255,6 +259,9 @@ def main(
                       supersegment model training.
         skip_dq_checks: If True, skip data quality checks (not recommended for
                        production runs).
+        preloaded_data: Optional pre-loaded and standardized DataFrame. If provided,
+                       skips loading data from file. Used by batch processing to
+                       avoid loading the same data file multiple times.
 
     Returns:
         Tuple of processed DataFrames, or None if processing fails
@@ -301,32 +308,37 @@ def main(
     # =========================================================================
     # STEP 3: Load and validate data
     # =========================================================================
-    logger.info("Loading data...")
-    try:
-        data_path = config_data.get("data_path", "data/demanda_direct_out.sas7bdat")
-        data = load_data(data_path)
-        validate_data_not_empty(data, "Input data")
-        logger.info(f"Data loaded successfully: {data.shape[0]:,} rows × {data.shape[1]} columns")
-    except FileNotFoundError:
-        logger.error(f"Error: Data file not found at {data_path}")
-        return None
-    except DataValidationError as e:
-        logger.error(f"Data validation failed: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Error loading data: {e}")
-        return None
+    if preloaded_data is not None:
+        logger.info("Using pre-loaded data (skipping file load)...")
+        data = preloaded_data.copy()
+        logger.info(f"Pre-loaded data: {data.shape[0]:,} rows × {data.shape[1]} columns")
+    else:
+        logger.info("Loading data...")
+        try:
+            data_path = config_data.get("data_path", "data/demanda_direct_out.sas7bdat")
+            data = load_data(data_path)
+            validate_data_not_empty(data, "Input data")
+            logger.info(f"Data loaded successfully: {data.shape[0]:,} rows × {data.shape[1]} columns")
+        except FileNotFoundError:
+            logger.error(f"Error: Data file not found at {data_path}")
+            return None
+        except DataValidationError as e:
+            logger.error(f"Data validation failed: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error loading data: {e}")
+            return None
 
-    # Standardize column names
-    logger.info("Standardizing column names...")
-    data.columns = data.columns.str.lower().str.replace(" ", "_")
-    logger.debug("Column names standardized")
+        # Standardize column names (only when loading fresh data)
+        logger.info("Standardizing column names...")
+        data.columns = data.columns.str.lower().str.replace(" ", "_")
+        logger.debug("Column names standardized")
 
-    # Standardize categorical values
-    logger.info("Standardizing categorical values...")
-    for col in data.select_dtypes(include=["object", "category", "string"]).columns:
-        data[col] = data[col].astype("string").str.lower().str.replace(" ", "_").astype("category")
-    logger.debug("Categorical values standardized")
+        # Standardize categorical values (only when loading fresh data)
+        logger.info("Standardizing categorical values...")
+        for col in data.select_dtypes(include=["object", "category", "string"]).columns:
+            data[col] = data[col].astype("string").str.lower().str.replace(" ", "_").astype("category")
+        logger.debug("Categorical values standardized")
 
     # Validate required columns exist after standardization
     try:
@@ -747,6 +759,7 @@ def main(
 
         # Generate and save audit tables
         inv_var1 = config_data.get("inv_var1", False)
+        financing_rate = result["overall_rate"]  # tasa_fin from transformation rate
         save_audit_tables(
             data_main=data_main_period,
             data_mr=data_mr_period,
@@ -755,6 +768,7 @@ def main(
             scenario_name=scenario_name,
             output_dir="data",
             inv_var1=inv_var1,
+            financing_rate=financing_rate,
         )
 
     # Consolidate and save cutoff summaries
