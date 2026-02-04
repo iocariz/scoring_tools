@@ -38,34 +38,43 @@ from tqdm import tqdm
 from src.consolidation import generate_consolidation_report
 
 
-def load_and_standardize_data(data_path: str) -> pd.DataFrame:
+def load_and_standardize_data(data_path: str) -> pd.DataFrame | None:
     """
     Load data from SAS file and standardize column names and categorical values.
 
     This function is called once at the batch level to avoid reloading the same
-    data file for each segment.
+    data file for each segment. If loading fails (e.g., remote storage like MinIO),
+    returns None and the pipeline will fall back to per-segment loading.
 
     Args:
         data_path: Path to the SAS data file.
 
     Returns:
-        Standardized DataFrame ready for processing.
+        Standardized DataFrame ready for processing, or None if loading fails.
     """
-    logger.info(f"Loading data from {data_path}...")
-    data = pd.read_sas(data_path, format="sas7bdat", encoding="utf-8")
-    logger.info(f"Data loaded: {data.shape[0]:,} rows × {data.shape[1]} columns")
+    try:
+        logger.info(f"Attempting to preload data from {data_path}...")
+        data = pd.read_sas(data_path, format="sas7bdat", encoding="utf-8")
+        logger.info(f"Data loaded: {data.shape[0]:,} rows × {data.shape[1]} columns")
 
-    # Standardize column names
-    logger.info("Standardizing column names...")
-    data.columns = data.columns.str.lower().str.replace(" ", "_")
+        # Standardize column names
+        logger.info("Standardizing column names...")
+        data.columns = data.columns.str.lower().str.replace(" ", "_")
 
-    # Standardize categorical values
-    logger.info("Standardizing categorical values...")
-    for col in data.select_dtypes(include=["object", "category", "string"]).columns:
-        data[col] = data[col].astype("string").str.lower().str.replace(" ", "_").astype("category")
+        # Standardize categorical values
+        logger.info("Standardizing categorical values...")
+        for col in data.select_dtypes(include=["object", "category", "string"]).columns:
+            data[col] = data[col].astype("string").str.lower().str.replace(" ", "_").astype("category")
 
-    logger.info("Data standardization complete.")
-    return data
+        logger.info("Data standardization complete.")
+        return data
+
+    except FileNotFoundError:
+        logger.warning(f"Data file not found at {data_path}. Each segment will load data individually.")
+        return None
+    except Exception as e:
+        logger.warning(f"Could not preload data: {e}. Each segment will load data individually.")
+        return None
 
 
 def load_base_config(config_path: str = "config.toml") -> dict[str, Any]:
@@ -882,21 +891,19 @@ def main():
     print(f"Mode: {'parallel' if args.parallel else 'sequential'}")
     print()
 
-    # Load data once for all segments
+    # Try to load data once for all segments (optimization)
     print(f"{'=' * 60}")
-    print("Loading data (once for all segments)")
+    print("Attempting to preload data (optimization)")
     print(f"{'=' * 60}")
     data_path = base_config.get("data_path", "data/demanda_direct_out.sas7bdat")
-    try:
-        preloaded_data = load_and_standardize_data(data_path)
-        print(f"Data ready: {preloaded_data.shape[0]:,} rows × {preloaded_data.shape[1]} columns\n")
-    except FileNotFoundError:
-        print(f"Error: Data file not found at {data_path}")
-        return 1
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        logger.exception("Full traceback:")
-        return 1
+    preloaded_data = load_and_standardize_data(data_path)
+
+    if preloaded_data is not None:
+        print(f"Data preloaded: {preloaded_data.shape[0]:,} rows × {preloaded_data.shape[1]} columns")
+        print("All segments will use preloaded data.\n")
+    else:
+        print("Data preloading skipped (file not accessible locally).")
+        print("Each segment will load data individually from configured path.\n")
 
     # Run segments
     if args.parallel:
