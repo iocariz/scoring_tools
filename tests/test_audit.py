@@ -108,6 +108,35 @@ class TestClassifyRecord:
         result = classify_record(row, "sc_octroi_new_clus", "new_efx_clus", cut_map)
         assert result == "keep"
 
+    def test_na_reject_reason_handled(self):
+        """Test that NA reject_reason is handled without error."""
+        row = pd.Series({
+            "sc_octroi_new_clus": 1.0,
+            "new_efx_clus": 3,
+            "status_name": "rejected",
+            "reject_reason": pd.NA,  # NA value
+        })
+        cut_map = {1.0: 5}
+
+        # Should not raise error, should classify as rejected_other
+        result = classify_record(row, "sc_octroi_new_clus", "new_efx_clus", cut_map)
+        assert result == "rejected_other"
+
+    def test_nan_reject_reason_handled(self):
+        """Test that NaN reject_reason is handled without error."""
+        import numpy as np
+        row = pd.Series({
+            "sc_octroi_new_clus": 1.0,
+            "new_efx_clus": 3,
+            "status_name": "rejected",
+            "reject_reason": np.nan,  # NaN value
+        })
+        cut_map = {1.0: 5}
+
+        # Should not raise error, should classify as rejected_other
+        result = classify_record(row, "sc_octroi_new_clus", "new_efx_clus", cut_map)
+        assert result == "rejected_other"
+
 
 class TestGenerateAuditTable:
     """Tests for the generate_audit_table function."""

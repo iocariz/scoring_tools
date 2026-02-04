@@ -44,6 +44,10 @@ def classify_record(
     status = row["status_name"]
     reject_reason = row.get("reject_reason", None)
 
+    # Handle NA/None values in reject_reason
+    if pd.isna(reject_reason):
+        reject_reason = None
+
     # Get cutoff limit for this bin
     cut_limit = cut_map.get(var0_val)
     if cut_limit is None:
