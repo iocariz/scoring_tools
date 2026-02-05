@@ -760,6 +760,26 @@ def main(
         # Generate and save audit tables
         inv_var1 = config_data.get("inv_var1", False)
         financing_rate = result["overall_rate"]  # tasa_fin from transformation rate
+
+        # Calculate n_months for each period (for annualization)
+        date_ini_main = pd.Timestamp(config_data.get("date_ini_book_obs"))
+        date_fin_main = pd.Timestamp(config_data.get("date_fin_book_obs"))
+        n_months_main = (
+            (date_fin_main.year - date_ini_main.year) * 12
+            + (date_fin_main.month - date_ini_main.month)
+            + 1
+        )
+
+        date_ini_mr = pd.Timestamp(config_data.get("date_ini_book_obs_mr"))
+        date_fin_mr = pd.Timestamp(config_data.get("date_fin_book_obs_mr"))
+        n_months_mr = (
+            (date_fin_mr.year - date_ini_mr.year) * 12
+            + (date_fin_mr.month - date_ini_mr.month)
+            + 1
+        )
+
+        logger.info(f"Main period: {n_months_main} months, MR period: {n_months_mr} months")
+
         save_audit_tables(
             data_main=data_main_period,
             data_mr=data_mr_period,
@@ -769,6 +789,8 @@ def main(
             output_dir="data",
             inv_var1=inv_var1,
             financing_rate=financing_rate,
+            n_months_main=n_months_main,
+            n_months_mr=n_months_mr,
         )
 
     # Consolidate and save cutoff summaries

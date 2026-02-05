@@ -93,6 +93,7 @@ def generate_audit_table(
     financing_rate: float = 1.0,
     inv_var1: bool = False,
     audit_columns: list[str] | None = None,
+    n_months: int | None = None,
 ) -> pd.DataFrame:
     """
     Generate an audit table with individual record classifications.
@@ -104,6 +105,7 @@ def generate_audit_table(
         financing_rate: Rate to multiply swap-in amounts (tasa_fin). Default 1.0.
         inv_var1: If True, use >= comparison for var1 cutoff.
         audit_columns: Columns to include in audit table. If None, uses defaults.
+        n_months: Number of months in the period. Used to annualize amounts (12/n_months).
 
     Returns:
         DataFrame with audit information for each record.
@@ -168,13 +170,23 @@ def generate_audit_table(
     else:
         audit_df["passes_cut"] = data[var1_col] <= audit_df["cut_limit"]
 
-    # Calculate adjusted amount (swap-in multiplied by financing rate)
+    # Calculate annualization coefficient
+    annual_coef = 12 / n_months if n_months else 1.0
+
+    # Calculate adjusted amount:
+    # - All amounts are annualized (multiplied by 12/n_months)
+    # - Swap-in amounts are also multiplied by financing rate (tasa_fin)
     if "oa_amt" in audit_df.columns:
         audit_df["oa_amt_adjusted"] = audit_df.apply(
-            lambda row: row["oa_amt"] * financing_rate if row["classification"] == "swap_in" else row["oa_amt"],
+            lambda row: (
+                row["oa_amt"] * financing_rate * annual_coef
+                if row["classification"] == "swap_in"
+                else row["oa_amt"] * annual_coef
+            ),
             axis=1,
         )
 
+    logger.info(f"Annualization: {n_months} months -> coefficient {annual_coef:.4f}")
     logger.info(f"Financing rate applied to swap-in: {financing_rate:.2%}")
 
     return audit_df
@@ -216,6 +228,8 @@ def save_audit_tables(
     output_dir: str = "data",
     inv_var1: bool = False,
     financing_rate: float = 1.0,
+    n_months_main: int | None = None,
+    n_months_mr: int | None = None,
 ) -> dict[str, pd.DataFrame]:
     """
     Generate and save audit tables for main and MR periods.
@@ -229,6 +243,8 @@ def save_audit_tables(
         output_dir: Directory to save audit tables.
         inv_var1: If True, use >= comparison for var1 cutoff.
         financing_rate: Rate to multiply swap-in amounts (tasa_fin). Default 1.0.
+        n_months_main: Number of months in main period for annualization.
+        n_months_mr: Number of months in MR period for annualization.
 
     Returns:
         Dictionary with audit DataFrames for main and MR periods.
@@ -243,6 +259,7 @@ def save_audit_tables(
         variables=variables,
         financing_rate=financing_rate,
         inv_var1=inv_var1,
+        n_months=n_months_main,
     )
 
     # Save main period audit
@@ -263,6 +280,7 @@ def save_audit_tables(
         variables=variables,
         financing_rate=financing_rate,
         inv_var1=inv_var1,
+        n_months=n_months_mr,
     )
 
     # Save MR period audit

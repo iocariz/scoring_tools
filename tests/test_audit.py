@@ -216,6 +216,49 @@ class TestGenerateAuditTable:
         keep_row = audit[audit["classification"] == "keep"].iloc[0]
         assert keep_row["oa_amt"] == keep_row["oa_amt_adjusted"]
 
+    def test_n_months_annualization(self, sample_data, optimal_solution):
+        """Test that n_months annualization is applied correctly."""
+        variables = ["sc_octroi_new_clus", "new_efx_clus"]
+        n_months = 6  # 6 months -> annual_coef = 12/6 = 2.0
+
+        audit = generate_audit_table(
+            sample_data, optimal_solution, variables, n_months=n_months
+        )
+
+        # All amounts should be multiplied by 2.0 (12/6)
+        # Record 1 is keep with oa_amt=1000
+        keep_row = audit[audit["classification"] == "keep"].iloc[0]
+        assert keep_row["oa_amt"] == 1000
+        assert keep_row["oa_amt_adjusted"] == 1000 * 2.0  # annualized
+
+        # Record 2 is swap_out with oa_amt=2000
+        swap_out_row = audit[audit["classification"] == "swap_out"].iloc[0]
+        assert swap_out_row["oa_amt"] == 2000
+        assert swap_out_row["oa_amt_adjusted"] == 2000 * 2.0  # annualized
+
+    def test_n_months_with_financing_rate(self, sample_data, optimal_solution):
+        """Test that both n_months and financing_rate are applied to swap-in."""
+        variables = ["sc_octroi_new_clus", "new_efx_clus"]
+        financing_rate = 0.5
+        n_months = 6  # annual_coef = 2.0
+
+        audit = generate_audit_table(
+            sample_data, optimal_solution, variables,
+            financing_rate=financing_rate, n_months=n_months
+        )
+
+        # Record 3 is swap_in with oa_amt=3000
+        # Should be: 3000 * 0.5 (financing) * 2.0 (annualized) = 3000
+        swap_in_row = audit[audit["classification"] == "swap_in"].iloc[0]
+        assert swap_in_row["oa_amt"] == 3000
+        assert swap_in_row["oa_amt_adjusted"] == 3000 * financing_rate * 2.0
+
+        # Record 1 is keep with oa_amt=1000
+        # Should be: 1000 * 2.0 (annualized only, no financing rate)
+        keep_row = audit[audit["classification"] == "keep"].iloc[0]
+        assert keep_row["oa_amt"] == 1000
+        assert keep_row["oa_amt_adjusted"] == 1000 * 2.0
+
     def test_cut_limits_correct(self, sample_data, optimal_solution):
         """Test that cut limits are correctly assigned."""
         variables = ["sc_octroi_new_clus", "new_efx_clus"]
