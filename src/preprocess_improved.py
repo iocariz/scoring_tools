@@ -188,6 +188,34 @@ def preprocess_data(
     return data_clean
 
 
+def _generate_bin_summary(data: pd.DataFrame, bin_col: str, source_col: str) -> pd.DataFrame:
+    """
+    Generate a summary table showing bin statistics.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Data with binned column
+    bin_col : str
+        Name of the binned column (e.g., 'sc_octroi_new_clus')
+    source_col : str
+        Name of the source column used for binning (e.g., 'score_rf')
+
+    Returns
+    -------
+    pd.DataFrame
+        Summary with columns: bin, min, max, count
+    """
+    summary = (
+        data.groupby(bin_col)[source_col]
+        .agg(["min", "max", "count"])
+        .reset_index()
+    )
+    summary.columns = ["bin", "min", "max", "count"]
+    summary = summary.sort_values("bin")
+    return summary
+
+
 def apply_binning_transformations(data: pd.DataFrame, octroi_bins: list[float], efx_bins: list[float]) -> pd.DataFrame:
     """
     Apply binning transformations to the data.
@@ -275,11 +303,22 @@ def apply_binning_transformations(data: pd.DataFrame, octroi_bins: list[float], 
         logger.error(f"Error in efx binning: {e}")
         raise
 
-    # Log distribution of binned variables
-    logger.info(
-        f"sc_octroi_new_clus distribution:\n{transformed_data['sc_octroi_new_clus'].value_counts().sort_index()}"
+    # Generate and log bin summaries
+    logger.info("=" * 60)
+    logger.info("BIN SUMMARY: sc_octroi_new_clus (from score_rf)")
+    logger.info("=" * 60)
+    octroi_summary = _generate_bin_summary(
+        transformed_data, bin_col="sc_octroi_new_clus", source_col="score_rf"
     )
-    logger.info(f"new_efx_clus distribution:\n{transformed_data['new_efx_clus'].value_counts().sort_index()}")
+    logger.info(f"\n{octroi_summary.to_string(index=False)}")
+
+    logger.info("=" * 60)
+    logger.info("BIN SUMMARY: new_efx_clus (from risk_score_rf)")
+    logger.info("=" * 60)
+    efx_summary = _generate_bin_summary(
+        transformed_data, bin_col="new_efx_clus", source_col="risk_score_rf"
+    )
+    logger.info(f"\n{efx_summary.to_string(index=False)}")
 
     # Log completion
     elapsed_time = time.time() - start_time
