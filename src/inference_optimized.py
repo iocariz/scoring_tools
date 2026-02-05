@@ -24,7 +24,7 @@ from scipy.stats import zscore
 # Scikit-learn imports
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, LogisticRegression, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold, cross_val_score, train_test_split
 
 from src import styles
 from src.constants import (
@@ -63,27 +63,63 @@ def calculate_target_metric(df: pd.DataFrame, multiplier: float, numerator: str,
     return np.round(result, 2)
 
 
-def _generate_regression_variables(variables: list[str]) -> tuple[list[str], list[str]]:
+def _generate_regression_variables(variables: list[str]) -> tuple[list[str], dict[str, list[str]]]:
     """
     Generate regression variable names dynamically.
 
     Args:
-        variables: List of base variable names
+        variables: List of base variable names [var0, var1]
 
     Returns:
-        Tuple of (var_reg, var_reg_extended)
+        Tuple of (var_reg, feature_sets) where:
+        - var_reg: Base feature set (3 features)
+        - feature_sets: Dictionary of named feature sets for comparison
     """
-    var_reg = [f"{variables[1]}", f"9-{variables[0]}", f"(9-{variables[0]}) x {variables[1]}"]
+    var0, var1 = variables
 
-    var_reg_extended = [
-        f"{variables[1]}^2",
-        f"(9-{variables[0]})^2",
-        f"{variables[1]}",
-        f"9-{variables[0]}",
-        f"(9-{variables[0]}) x {variables[1]}",
+    # Base features (3 features)
+    var_reg = [
+        f"{var1}",
+        f"9-{var0}",
+        f"(9-{var0}) x {var1}",
     ]
 
-    return var_reg, var_reg_extended
+    # Squared terms
+    squared_terms = [
+        f"{var1}^2",
+        f"(9-{var0})^2",
+    ]
+
+    # Cubic terms
+    cubic_terms = [
+        f"{var1}^3",
+        f"(9-{var0})^3",
+    ]
+
+    # Additional interaction terms (created by transform_variables)
+    extra_interactions = [
+        f"(9-{var0})^2 x {var1}",
+        f"(9-{var0}) x {var1}^2",
+    ]
+
+    # Simple two-variable set (no interaction)
+    var_simple = [
+        f"{var1}",
+        f"9-{var0}",
+    ]
+
+    # Define distinct feature sets for comparison
+    feature_sets = {
+        "simple": var_simple,
+        "base": var_reg,
+        "base + squared": var_reg + squared_terms,
+        "base + cubic": var_reg + cubic_terms,
+        "base + all_poly": var_reg + squared_terms + cubic_terms,
+        "base + interactions": var_reg + extra_interactions,
+        "full": var_reg + squared_terms + cubic_terms + extra_interactions,
+    }
+
+    return var_reg, feature_sets
 
 
 def split_and_prepare_data(
@@ -94,7 +130,7 @@ def split_and_prepare_data(
     target_var: str,
     multiplier: float,
     test_size: float = DEFAULT_TEST_SIZE,
-) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[str]]:
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict[str, list[str]]]:
     """
     Split data into train/test sets and preprocess each separately to avoid data leakage.
 
@@ -108,7 +144,7 @@ def split_and_prepare_data(
         test_size: Proportion of data to use for testing
 
     Returns:
-        Tuple of (train_data, test_data, var_reg, var_reg_extended)
+        Tuple of (train_data, test_data, var_reg, feature_sets)
     """
     # Filter to booked data only
     booked_data = data[data[Columns.STATUS_NAME] == StatusName.BOOKED.value].copy()
@@ -119,15 +155,15 @@ def split_and_prepare_data(
     logger.info(f"Training set: {len(train_raw):,} records")
     logger.info(f"Test set: {len(test_raw):,} records")
 
-    # Generate regression variables
-    var_reg, var_reg_extended = _generate_regression_variables(variables)
+    # Generate regression variables and feature sets
+    var_reg, feature_sets = _generate_regression_variables(variables)
 
     # Process datasets separately
     train_processed = process_dataset(train_raw, bins, variables, indicators, target_var, multiplier, var_reg)
 
     test_processed = process_dataset(test_raw, bins, variables, indicators, target_var, multiplier, var_reg)
 
-    return train_processed, test_processed, var_reg, var_reg_extended
+    return train_processed, test_processed, var_reg, feature_sets
 
 
 def process_dataset(
@@ -600,7 +636,7 @@ def inference_pipeline(
     logger.info("STEP 1: DATA PREPARATION")
     logger.info("=" * 80)
 
-    train_data, test_data, var_reg, var_reg_extended = split_and_prepare_data(
+    train_data, test_data, var_reg, feature_sets = split_and_prepare_data(
         data=data,
         bins=bins,
         variables=variables,
@@ -613,6 +649,7 @@ def inference_pipeline(
     logger.info(f"Training data shape: {train_data.shape}")
     logger.info(f"Test data shape: {test_data.shape}")
     logger.info(f"Features (var_reg): {var_reg}")
+    logger.info(f"Available feature sets: {list(feature_sets.keys())}")
 
     # Check for n_observations column
     if "n_observations" in train_data.columns:
@@ -841,7 +878,7 @@ def inference_pipeline(
         "weights_train": weights_train,
         "weights_test": weights_test,
         "features": var_reg,
-        "features_extended": var_reg_extended,
+        "feature_sets": feature_sets,
         "results_df": results_df,
         "best_model_info": best_model_info,
         "model_path": model_path,
@@ -857,6 +894,7 @@ def inference_pipeline_with_feature_selection(
     target_var: str,
     multiplier: float,
     test_size: float = 0.4,
+    cv_folds: int = 5,
     include_hurdle: bool = True,
     save_model: bool = True,
     model_base_path: str = "models",
@@ -865,7 +903,7 @@ def inference_pipeline_with_feature_selection(
     """
     Two-step inference pipeline:
     1. Select best model type using var_reg
-    2. Select best feature set using the chosen model type
+    2. Select best feature set using k-fold cross-validation
 
     Parameters:
     -----------
@@ -883,6 +921,8 @@ def inference_pipeline_with_feature_selection(
         Multiplier for target variable calculation
     test_size : float, optional
         Proportion of data for testing (default: 0.4)
+    cv_folds : int, optional
+        Number of cross-validation folds for feature selection (default: 5)
     include_hurdle : bool, optional
         Whether to include Hurdle models (default: True)
     save_model : bool, optional
@@ -898,7 +938,8 @@ def inference_pipeline_with_feature_selection(
         Dictionary containing all pipeline outputs:
         - train_data, test_data: Processed datasets
         - features: Best feature set selected
-        - var_reg, var_reg_extended: Available feature sets
+        - var_reg: Base feature set
+        - feature_sets: Dictionary of all available feature sets
         - step1_results: Model type comparison results
         - step2_results: Feature set comparison results
         - best_model_info: Final model details
@@ -920,7 +961,7 @@ def inference_pipeline_with_feature_selection(
     logger.info("DATA PREPARATION")
     logger.info("-" * 40)
 
-    train_data, test_data, var_reg, var_reg_extended = split_and_prepare_data(
+    train_data, test_data, var_reg, feature_sets = split_and_prepare_data(
         data=data,
         bins=bins,
         variables=variables,
@@ -938,8 +979,8 @@ def inference_pipeline_with_feature_selection(
 
     logger.info(f"Training data shape: {train_data.shape}")
     logger.info(f"Test data shape: {test_data.shape}")
-    logger.info(f"var_reg features: {var_reg}")
-    logger.info(f"var_reg_extended features: {var_reg_extended}")
+    logger.info(f"Base features (var_reg): {var_reg}")
+    logger.info(f"Available feature sets: {list(feature_sets.keys())}")
 
     # ========================================================================
     # STEP 1: MODEL TYPE SELECTION (using var_reg)
@@ -967,78 +1008,88 @@ def inference_pipeline_with_feature_selection(
     logger.info(f"Test R² with var_reg: {best_model_step1['test_r2']:.4f}")
 
     # ========================================================================
-    # STEP 2: FEATURE SET SELECTION
+    # STEP 2: FEATURE SET SELECTION (with Cross-Validation)
     # ========================================================================
     logger.info("=" * 80)
-    logger.info(f"STEP 2: FEATURE SET SELECTION (using {best_model_name})")
+    logger.info(f"STEP 2: FEATURE SET SELECTION (using {best_model_name}, {cv_folds}-fold CV)")
     logger.info("=" * 80)
 
-    # Define feature sets to compare
-    feature_sets = {
-        "var_reg": var_reg,
-        "var_reg_extended": var_reg_extended,
-    }
+    # Log feature sets being compared
+    logger.info("Comparing feature sets:")
+    for name, features in feature_sets.items():
+        logger.info(f"  {name}: {len(features)} features")
 
-    # Add subset: var_reg + only squared terms
-    squared_terms = [f for f in var_reg_extended if "^2" in f and f not in var_reg]
-    if squared_terms:
-        feature_sets["var_reg + squared"] = var_reg + squared_terms
+    # Combine train and test data for cross-validation
+    all_data = pd.concat([train_data, test_data], ignore_index=True)
+    y_all = all_data[target_var]
+    weights_all = all_data["n_observations"] if "n_observations" in all_data.columns else None
 
     # Get the model object to clone
     best_model_obj = best_model_step1["model"]
+
+    # Setup k-fold cross-validation
+    kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=DEFAULT_RANDOM_STATE)
 
     feature_results = []
 
     for feature_name, features in feature_sets.items():
         # Check all features exist in data
-        missing = [f for f in features if f not in train_data.columns]
+        missing = [f for f in features if f not in all_data.columns]
         if missing:
             logger.warning(f"Skipping {feature_name}: missing columns {missing}")
             continue
 
-        X_train_feat = train_data[features]
-        X_test_feat = test_data[features]
+        X_all = all_data[features]
 
-        # Clone and fit the same model type
-        model_clone = clone(best_model_obj)
-        model_clone.fit(X_train_feat, y_train, sample_weight=weights_train)
+        # Perform cross-validation
+        cv_scores = []
+        for train_idx, val_idx in kfold.split(X_all):
+            X_cv_train, X_cv_val = X_all.iloc[train_idx], X_all.iloc[val_idx]
+            y_cv_train, y_cv_val = y_all.iloc[train_idx], y_all.iloc[val_idx]
+            w_cv_train = weights_all.iloc[train_idx] if weights_all is not None else None
+            w_cv_val = weights_all.iloc[val_idx] if weights_all is not None else None
 
-        # Evaluate
-        y_train_pred = model_clone.predict(X_train_feat)
-        y_test_pred = model_clone.predict(X_test_feat)
+            model_clone = clone(best_model_obj)
+            model_clone.fit(X_cv_train, y_cv_train, sample_weight=w_cv_train)
+            y_cv_pred = model_clone.predict(X_cv_val)
+            fold_r2 = r2_score(y_cv_val, y_cv_pred, sample_weight=w_cv_val)
+            cv_scores.append(fold_r2)
 
-        train_r2 = r2_score(y_train, y_train_pred, sample_weight=weights_train)
-        test_r2 = r2_score(y_test, y_test_pred, sample_weight=weights_test)
-        test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred, sample_weight=weights_test))
-        test_mae = mean_absolute_error(y_test, y_test_pred, sample_weight=weights_test)
+        cv_mean = np.mean(cv_scores)
+        cv_std = np.std(cv_scores)
+
+        # Also train on full data for final model
+        model_final = clone(best_model_obj)
+        model_final.fit(X_all, y_all, sample_weight=weights_all)
+        y_all_pred = model_final.predict(X_all)
+        full_r2 = r2_score(y_all, y_all_pred, sample_weight=weights_all)
 
         feature_results.append(
             {
                 "Feature Set": feature_name,
                 "Num Features": len(features),
                 "Features": features,
-                "Train R²": train_r2,
-                "Test R²": test_r2,
-                "Test RMSE": test_rmse,
-                "Test MAE": test_mae,
-                "Overfit": train_r2 - test_r2,
-                "model": model_clone,
+                "CV Mean R²": cv_mean,
+                "CV Std R²": cv_std,
+                "Full R²": full_r2,
+                "model": model_final,
             }
         )
 
-        logger.info(f"{feature_name}: Test R² = {test_r2:.4f}, RMSE = {test_rmse:.4f}")
+        logger.info(f"{feature_name}: CV R² = {cv_mean:.4f} ± {cv_std:.4f}")
 
-    # Find best feature set
+    # Find best feature set based on CV mean R²
     feature_results_df = pd.DataFrame(feature_results)
-    best_idx = feature_results_df["Test R²"].idxmax()
+    best_idx = feature_results_df["CV Mean R²"].idxmax()
     best_feature_set = feature_results_df.loc[best_idx]
 
     logger.info("=" * 80)
-    logger.info("FEATURE SELECTION RESULTS")
+    logger.info("FEATURE SELECTION RESULTS (Cross-Validation)")
     logger.info("=" * 80)
-    display_cols = ["Feature Set", "Num Features", "Train R²", "Test R²", "Test RMSE", "Overfit"]
+    display_cols = ["Feature Set", "Num Features", "CV Mean R²", "CV Std R²", "Full R²"]
     logger.info(f"\n{feature_results_df[display_cols].to_string()}")
     logger.info(f"\nBest feature set: {best_feature_set['Feature Set']}")
+    logger.info(f"Best CV R²: {best_feature_set['CV Mean R²']:.4f} ± {best_feature_set['CV Std R²']:.4f}")
     logger.info(f"Best features: {best_feature_set['Features']}")
 
     # Final model and features
@@ -1048,13 +1099,12 @@ def inference_pipeline_with_feature_selection(
     best_model_info = {
         "model": final_model,
         "name": f"{best_model_name} + {best_feature_set['Feature Set']}",
-        "test_r2": best_feature_set["Test R²"],
-        "train_r2": best_feature_set["Train R²"],
-        "test_rmse": best_feature_set["Test RMSE"],
-        "test_mae": best_feature_set["Test MAE"],
+        "cv_mean_r2": best_feature_set["CV Mean R²"],
+        "cv_std_r2": best_feature_set["CV Std R²"],
+        "full_r2": best_feature_set["Full R²"],
         "model_type": best_model_name,
         "feature_set": best_feature_set["Feature Set"],
-        "weighted": weights_train is not None,
+        "weighted": weights_all is not None,
         "is_hurdle": isinstance(final_model, HurdleRegressor),
     }
 
@@ -1068,38 +1118,32 @@ def inference_pipeline_with_feature_selection(
         logger.info("=" * 80)
 
         # Calculate zero proportions
-        zero_prop_train = (np.abs(y_train) < 1e-10).mean()
-        zero_prop_test = (np.abs(y_test) < 1e-10).mean()
+        zero_prop = (np.abs(y_all) < 1e-10).mean()
 
         # Prepare metadata
         model_metadata = {
-            "test_r2": best_model_info["test_r2"],
-            "train_r2": best_model_info["train_r2"],
-            "test_rmse": best_model_info["test_rmse"],
-            "test_mae": best_model_info["test_mae"],
-            "train_samples": len(train_data),
-            "test_samples": len(test_data),
+            "cv_mean_r2": best_model_info["cv_mean_r2"],
+            "cv_std_r2": best_model_info["cv_std_r2"],
+            "full_r2": best_model_info["full_r2"],
+            "cv_folds": cv_folds,
+            "total_samples": len(all_data),
             "target_variable": target_var,
             "multiplier": multiplier,
             "model_type_selected": best_model_name,
             "feature_set_selected": best_feature_set["Feature Set"],
             "weighted_regression": best_model_info.get("weighted", False),
             "is_hurdle": best_model_info.get("is_hurdle", False),
-            "zero_proportion_train": float(zero_prop_train),
-            "zero_proportion_test": float(zero_prop_test),
+            "zero_proportion": float(zero_prop),
             "step1_best_test_r2": best_model_step1["test_r2"],
-            "step2_improvement": best_model_info["test_r2"] - best_model_step1["test_r2"],
+            "step2_cv_improvement": best_model_info["cv_mean_r2"] - best_model_step1["test_r2"],
         }
 
         # Add weight statistics if weighted
-        if weights_train is not None:
+        if weights_all is not None:
             model_metadata["weight_stats"] = {
-                "train_min": float(weights_train.min()),
-                "train_max": float(weights_train.max()),
-                "train_mean": float(weights_train.mean()),
-                "test_min": float(weights_test.min()),
-                "test_max": float(weights_test.max()),
-                "test_mean": float(weights_test.mean()),
+                "min": float(weights_all.min()),
+                "max": float(weights_all.max()),
+                "mean": float(weights_all.mean()),
             }
 
         # Save model
@@ -1145,8 +1189,9 @@ def inference_pipeline_with_feature_selection(
     logger.info(f"Step 1 - Best model type: {best_model_name}")
     logger.info(f"Step 1 - Test R² (var_reg): {best_model_step1['test_r2']:.4f}")
     logger.info(f"Step 2 - Best feature set: {best_feature_set['Feature Set']}")
-    logger.info(f"Step 2 - Final Test R²: {best_model_info['test_r2']:.4f}")
-    logger.info(f"Improvement from feature selection: {best_model_info['test_r2'] - best_model_step1['test_r2']:+.4f}")
+    logger.info(f"Step 2 - CV R²: {best_model_info['cv_mean_r2']:.4f} ± {best_model_info['cv_std_r2']:.4f}")
+    logger.info(f"Step 2 - Full R²: {best_model_info['full_r2']:.4f}")
+    logger.info(f"Improvement from feature selection (CV vs Step1): {best_model_info['cv_mean_r2'] - best_model_step1['test_r2']:+.4f}")
     if model_path:
         logger.info(f"Model saved: {model_path}")
     logger.info("=" * 80)
@@ -1157,15 +1202,14 @@ def inference_pipeline_with_feature_selection(
     return {
         "train_data": train_data,
         "test_data": test_data,
-        "X_train": train_data[final_features],
-        "X_test": test_data[final_features],
-        "y_train": y_train,
-        "y_test": y_test,
-        "weights_train": weights_train,
-        "weights_test": weights_test,
+        "all_data": all_data,
+        "X_all": all_data[final_features],
+        "y_all": y_all,
+        "weights_all": weights_all,
+        "cv_folds": cv_folds,
         "features": final_features,
         "var_reg": var_reg,
-        "var_reg_extended": var_reg_extended,
+        "feature_sets": feature_sets,
         "step1_results": results_step1,
         "step2_results": feature_results_df.drop("model", axis=1),
         "best_model_info": best_model_info,

@@ -418,17 +418,26 @@ def main(
         logger.info(f"Loading pre-trained model from {model_path}...")
         try:
             model, metadata, features = load_model_for_prediction(model_path)
+            # Support both old (test_r2) and new (cv_mean_r2) metric formats
+            if "cv_mean_r2" in metadata:
+                r2_metric = metadata.get("cv_mean_r2", 0.0)
+                r2_std = metadata.get("cv_std_r2", 0.0)
+                r2_display = f"{r2_metric:.4f} ± {r2_std:.4f}"
+            else:
+                r2_metric = metadata.get("test_r2", 0.0)
+                r2_display = f"{r2_metric:.4f}"
             risk_inference = {
                 "best_model_info": {
                     "model": model,
                     "name": metadata.get("model_type", "Unknown"),
-                    "test_r2": metadata.get("test_r2", 0.0),
+                    "cv_mean_r2": metadata.get("cv_mean_r2", metadata.get("test_r2", 0.0)),
+                    "cv_std_r2": metadata.get("cv_std_r2", 0.0),
                 },
                 "features": features,
                 "model_path": model_path,
             }
             logger.info(f"Loaded model: {risk_inference['best_model_info']['name']}")
-            logger.info(f"Original Test R²: {risk_inference['best_model_info']['test_r2']:.4f}")
+            logger.info(f"Original R²: {r2_display}")
 
             # Load todu model from the models directory (sibling to model subdirectory)
             todu_model_path = Path(model_path).parent / "todu_model.joblib"
@@ -473,7 +482,9 @@ def main(
         logger.info(f"Best model: {risk_inference['best_model_info']['name']}")
         logger.info(f"Model type: {risk_inference['best_model_info'].get('model_type', 'N/A')}")
         logger.info(f"Feature set: {risk_inference['best_model_info'].get('feature_set', 'N/A')}")
-        logger.info(f"Test R²: {risk_inference['best_model_info']['test_r2']:.4f}")
+        cv_r2 = risk_inference['best_model_info'].get('cv_mean_r2')
+        cv_std = risk_inference['best_model_info'].get('cv_std_r2', 0)
+        logger.info(f"CV R²: {cv_r2:.4f} ± {cv_std:.4f}")
 
         # Todu Average Inference
         _, reg_todu_amt_pile, _ = todu_average_inference(

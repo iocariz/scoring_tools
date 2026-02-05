@@ -67,7 +67,14 @@ def save_model_with_metadata(model, features: list[str], metadata: dict, base_pa
     with open(version_path / "features.txt", "w") as f:
         f.write(f"# Features for {type(model).__name__}\n")
         f.write(f"# Timestamp: {timestamp}\n")
-        f.write(f"# Test R²: {metadata.get('test_r2', 'N/A'):.4f}\n\n")
+        # Support both old (test_r2) and new (cv_mean_r2) metric names
+        if "cv_mean_r2" in metadata:
+            cv_std = metadata.get("cv_std_r2", 0)
+            f.write(f"# CV R²: {metadata['cv_mean_r2']:.4f} ± {cv_std:.4f}\n\n")
+        elif "test_r2" in metadata:
+            f.write(f"# Test R²: {metadata['test_r2']:.4f}\n\n")
+        else:
+            f.write("# R²: N/A\n\n")
         for i, feature in enumerate(features, 1):
             f.write(f"{i}. {feature}\n")
 
@@ -99,13 +106,24 @@ def _save_model_summary(version_path: Path, model, features: list[str], metadata
 
         f.write("PERFORMANCE METRICS:\n")
         f.write("-" * 30 + "\n")
-        for key in ["train_r2", "test_r2", "test_rmse", "test_mae"]:
-            value = metadata.get(key, "N/A")
-            display_value = f"{value:.4f}" if isinstance(value, (int, float)) else value
-            f.write(f"{key.replace('_', ' ').title()}: {display_value}\n")
-
-        f.write(f"Training Samples: {metadata.get('train_samples', 'N/A')}\n")
-        f.write(f"Test Samples: {metadata.get('test_samples', 'N/A')}\n")
+        # Support both old and new metric formats
+        if "cv_mean_r2" in metadata:
+            # New CV-based metrics
+            for key in ["cv_mean_r2", "cv_std_r2", "full_r2"]:
+                value = metadata.get(key, "N/A")
+                display_value = f"{value:.4f}" if isinstance(value, (int, float)) else value
+                label = key.replace("_", " ").replace("cv ", "CV ").replace("r2", "R²").title()
+                f.write(f"{label}: {display_value}\n")
+            f.write(f"CV Folds: {metadata.get('cv_folds', 'N/A')}\n")
+            f.write(f"Total Samples: {metadata.get('total_samples', 'N/A')}\n")
+        else:
+            # Old train/test metrics
+            for key in ["train_r2", "test_r2", "test_rmse", "test_mae"]:
+                value = metadata.get(key, "N/A")
+                display_value = f"{value:.4f}" if isinstance(value, (int, float)) else value
+                f.write(f"{key.replace('_', ' ').title()}: {display_value}\n")
+            f.write(f"Training Samples: {metadata.get('train_samples', 'N/A')}\n")
+            f.write(f"Test Samples: {metadata.get('test_samples', 'N/A')}\n")
 
         if hasattr(model, "coef_"):
             f.write("\nMODEL COEFFICIENTS:\n")
@@ -138,8 +156,14 @@ def load_model_for_prediction(model_path: str) -> tuple[Any, dict, list[str]]:
     logger.info("Model loaded successfully")
     logger.info(f"   Type: {metadata['model_type']}")
     logger.info(f"   Features: {metadata['num_features']}")
-    test_r2 = metadata.get("test_r2", "N/A")
-    logger.info(f"   Test R²: {test_r2:.4f}" if isinstance(test_r2, (int, float)) else f"   Test R²: {test_r2}")
+    # Support both old and new metric formats
+    if "cv_mean_r2" in metadata:
+        cv_r2 = metadata.get("cv_mean_r2")
+        cv_std = metadata.get("cv_std_r2", 0)
+        logger.info(f"   CV R²: {cv_r2:.4f} ± {cv_std:.4f}")
+    else:
+        test_r2 = metadata.get("test_r2", "N/A")
+        logger.info(f"   Test R²: {test_r2:.4f}" if isinstance(test_r2, (int, float)) else f"   Test R²: {test_r2}")
 
     return model, metadata, features
 
