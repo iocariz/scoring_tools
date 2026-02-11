@@ -14,10 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from loguru import logger
 from plotly.subplots import make_subplots
+
+from .utils import calculate_b2_ever_h6
 
 
 @dataclass
@@ -49,27 +52,19 @@ class ConsolidatedMetrics:
     # Calculated risk properties
     @property
     def actual_risk(self) -> float:
-        if self.actual_todu_amt_pile_h6 == 0:
-            return 0.0
-        return (self.actual_todu_30ever_h6 / self.actual_todu_amt_pile_h6) * 7
+        return float(np.nan_to_num(calculate_b2_ever_h6(self.actual_todu_30ever_h6, self.actual_todu_amt_pile_h6)))
 
     @property
     def optimum_risk(self) -> float:
-        if self.optimum_todu_amt_pile_h6 == 0:
-            return 0.0
-        return (self.optimum_todu_30ever_h6 / self.optimum_todu_amt_pile_h6) * 7
+        return float(np.nan_to_num(calculate_b2_ever_h6(self.optimum_todu_30ever_h6, self.optimum_todu_amt_pile_h6)))
 
     @property
     def swap_in_risk(self) -> float:
-        if self.swap_in_todu_amt_pile_h6 == 0:
-            return 0.0
-        return (self.swap_in_todu_30ever_h6 / self.swap_in_todu_amt_pile_h6) * 7
+        return float(np.nan_to_num(calculate_b2_ever_h6(self.swap_in_todu_30ever_h6, self.swap_in_todu_amt_pile_h6)))
 
     @property
     def swap_out_risk(self) -> float:
-        if self.swap_out_todu_amt_pile_h6 == 0:
-            return 0.0
-        return (self.swap_out_todu_30ever_h6 / self.swap_out_todu_amt_pile_h6) * 7
+        return float(np.nan_to_num(calculate_b2_ever_h6(self.swap_out_todu_30ever_h6, self.swap_out_todu_amt_pile_h6)))
 
     @property
     def production_delta(self) -> float:

@@ -1,17 +1,19 @@
 import argparse
-import tomllib
+import time
 from pathlib import Path
 from typing import Any
 
 import joblib
-import numpy as np
 import pandas as pd
 from loguru import logger
+from pydantic import ValidationError
 
 from src.audit import save_audit_tables
+from src.config import PreprocessingSettings
 from src.data_quality import run_data_quality_checks
+from src.data_manager import load_and_prepare_data, DataValidationError
 from src.inference_optimized import (
-    inference_pipeline_with_feature_selection,
+    inference_pipeline,
     run_optimization_pipeline,
     todu_average_inference,
 )
@@ -33,481 +35,260 @@ from src.utils import (
     kpi_of_fact_sol,
 )
 
-# Required configuration keys
-REQUIRED_CONFIG_KEYS = [
-    "keep_vars",
-    "indicators",
-    "segment_filter",
-    "octroi_bins",
-    "efx_bins",
-    "date_ini_book_obs",
-    "date_fin_book_obs",
-    "variables",
-]
-
-OPTIONAL_CONFIG_KEYS = [
-    "date_ini_book_obs_mr",
-    "date_fin_book_obs_mr",
-    "score_measures",
-    "data_path",
-    "n_months",
-    "multiplier",
-    "z_threshold",
-    "optimum_risk",
-    "scenario_step",
-    "cz_config",
-    "log_level",
-]
-
-
-class ConfigValidationError(Exception):
-    """Raised when configuration validation fails."""
-
-    pass
-
-
-class DataValidationError(Exception):
-    """Raised when data validation fails."""
-
-    pass
-
-
-def validate_config(config_data: dict[str, Any]) -> list[str]:
-    """
-    Validate that all required configuration keys are present and have valid values.
-
-    Args:
-        config_data: Configuration dictionary
-
-    Returns:
-        List of warning messages (empty if no warnings)
-
-    Raises:
-        ConfigValidationError: If required keys are missing or values are invalid
-    """
-    warnings = []
-
-    # Check required keys
-    missing_keys = [key for key in REQUIRED_CONFIG_KEYS if key not in config_data]
-    if missing_keys:
-        raise ConfigValidationError(f"Missing required configuration keys: {missing_keys}")
-
-    # Validate keep_vars and indicators are non-empty lists
-    if not config_data["keep_vars"] or not isinstance(config_data["keep_vars"], list):
-        raise ConfigValidationError("'keep_vars' must be a non-empty list")
-
-    if not config_data["indicators"] or not isinstance(config_data["indicators"], list):
-        raise ConfigValidationError("'indicators' must be a non-empty list")
-
-    # Validate variables has exactly 2 elements
-    variables = config_data.get("variables", [])
-    if len(variables) != 2:
-        raise ConfigValidationError(f"'variables' must contain exactly 2 elements, got {len(variables)}")
-
-    # Validate bins have at least 2 values
-    if len(config_data["octroi_bins"]) < 2:
-        raise ConfigValidationError("'octroi_bins' must have at least 2 values")
-
-    if len(config_data["efx_bins"]) < 2:
-        raise ConfigValidationError("'efx_bins' must have at least 2 values")
-
-    # Validate numeric parameters
-    if "multiplier" in config_data and config_data["multiplier"] <= 0:
-        raise ConfigValidationError("'multiplier' must be positive")
-
-    if "z_threshold" in config_data and config_data["z_threshold"] <= 0:
-        raise ConfigValidationError("'z_threshold' must be positive")
-
-    # Check for MR config completeness
-    has_mr_ini = "date_ini_book_obs_mr" in config_data
-    has_mr_fin = "date_fin_book_obs_mr" in config_data
-    if has_mr_ini != has_mr_fin:
-        warnings.append(
-            "MR period dates partially configured - both date_ini_book_obs_mr and date_fin_book_obs_mr should be set"
-        )
-
-    return warnings
-
-
-def validate_date_string(date_str: str, field_name: str) -> pd.Timestamp:
-    """
-    Validate and convert a date string to pandas Timestamp.
-
-    Args:
-        date_str: Date string to validate
-        field_name: Name of the field for error messages
-
-    Returns:
-        Parsed pandas Timestamp
-
-    Raises:
-        ConfigValidationError: If date string is invalid
-    """
-    if not date_str:
-        raise ConfigValidationError(f"'{field_name}' cannot be empty")
-
-    try:
-        return pd.to_datetime(date_str)
-    except Exception as e:
-        raise ConfigValidationError(f"Invalid date format for '{field_name}': {date_str}. Error: {e}") from e
-
-
-def validate_date_range(start_date: pd.Timestamp, end_date: pd.Timestamp, range_name: str) -> None:
-    """
-    Validate that start_date is before end_date.
-
-    Args:
-        start_date: Start date
-        end_date: End date
-        range_name: Name of the date range for error messages
-
-    Raises:
-        ConfigValidationError: If start_date is after end_date
-    """
-    if start_date > end_date:
-        raise ConfigValidationError(
-            f"Invalid {range_name}: start date ({start_date.date()}) is after end date ({end_date.date()})"
-        )
-
-
-def validate_data_columns(data: pd.DataFrame, required_columns: list[str], context: str = "data") -> list[str]:
-    """
-    Validate that required columns exist in the DataFrame.
-
-    Args:
-        data: DataFrame to validate
-        required_columns: List of required column names
-        context: Context for error messages
-
-    Returns:
-        List of missing columns (empty if all present)
-
-    Raises:
-        DataValidationError: If any required columns are missing
-    """
-    # Normalize column names for comparison
-    data_columns = set(data.columns.str.lower())
-    missing = [col for col in required_columns if col.lower() not in data_columns]
-
-    if missing:
-        raise DataValidationError(f"Missing required columns in {context}: {missing}")
-
-    return []
-
-
-def validate_data_not_empty(data: pd.DataFrame, context: str = "data") -> None:
-    """
-    Validate that DataFrame is not empty.
-
-    Args:
-        data: DataFrame to validate
-        context: Context for error messages
-
-    Raises:
-        DataValidationError: If DataFrame is empty
-    """
-    if data.empty:
-        raise DataValidationError(f"{context} is empty")
-
 
 def convert_bins(bins: list[float]) -> list[float]:
     """
-    Convert bin values, replacing float('inf') with numpy constants.
-
-    Args:
-        bins: List of bin edge values
-
-    Returns:
-        List with inf values replaced by numpy constants
+    Convert bin values. 
+    Note: Pydantic handles infinite conversions but we keep this for compatibility 
+    if config dictionary is accessed directly or for display.
     """
     if not bins:
         return bins
-    return [np.inf if x == float("inf") else -np.inf if x == float("-inf") else x for x in bins]
+    # For now, pydantic model should return floats, including inf.
+    # The original implementation replaced inf strings with np.inf constants.
+    # Since pydantic validation allows floats, we might not strictly need this if the model is robust.
+    # We will keep it but as a pass-through if they are already floats.
+    return bins
 
 
-def load_config(config_path: str = "config.toml") -> dict[str, Any]:
-    """Load configuration from TOML file."""
-    with open(config_path, "rb") as f:
-        config_data = tomllib.load(f)
-    return config_data["preprocessing"]
-
-
-def load_data(df_path: str) -> pd.DataFrame:
-    """Load data from SAS file."""
-    df = pd.read_sas(df_path, format="sas7bdat", encoding="utf-8")
-    return df
-
-
-def main(
-    config_path: str = "config.toml",
-    model_path: str = None,
-    training_only: bool = False,
-    skip_dq_checks: bool = False,
-    preloaded_data: pd.DataFrame = None,
-):
-    """
-    Load and preprocess SAS data using configuration.
+def load_and_validate_config(config_path: str) -> tuple[PreprocessingSettings, pd.Timestamp, pd.Timestamp, float]:
+    """Load TOML config, validate it using Pydantic, parse dates, and compute annual coefficient.
 
     Args:
-        config_path: Path to the configuration TOML file (default: config.toml)
-        model_path: Optional path to a pre-trained model directory. If provided,
-                   skips inference training and loads the existing model.
-                   Used for supersegment workflows where model is trained on
-                   combined data and optimization runs on individual segments.
-        training_only: If True, only runs data preprocessing and model training,
-                      skipping optimization and scenario analysis. Used for
-                      supersegment model training.
-        skip_dq_checks: If True, skip data quality checks (not recommended for
-                       production runs).
-        preloaded_data: Optional pre-loaded and standardized DataFrame. If provided,
-                       skips loading data from file. Used by batch processing to
-                       avoid loading the same data file multiple times.
+        config_path: Path to the configuration TOML file
 
     Returns:
-        Tuple of processed DataFrames, or None if processing fails
+        Tuple of (settings, date_ini, date_fin, annual_coef)
+
+    Raises:
+        ValidationError: If configuration validation fails
     """
+    settings = PreprocessingSettings.from_toml(config_path)
+    logger.debug(f"Configuration loaded from {config_path}")
 
-    # =========================================================================
-    # STEP 1: Load and validate configuration
-    # =========================================================================
-    logger.info(f"Loading configuration from {config_path}...")
-    try:
-        config_data = load_config(config_path)
-        logger.info("Configuration loaded successfully.")
+    # Dates are already validated by Pydantic model
+    date_ini = settings.get_date("date_ini_book_obs")
+    date_fin = settings.get_date("date_fin_book_obs")
+    
+    annual_coef = calculate_annual_coef(date_ini, date_fin)
 
-        # Ensure cz_config keys are integers (TOML keys are always strings)
-        if "cz_config" in config_data:
-            config_data["cz_config"] = {int(k): v for k, v in config_data["cz_config"].items()}
+    segment = settings.segment_filter
+    logger.info(
+        f"Config validated | segment={segment} | "
+        f"period={date_ini.date()} to {date_fin.date()} | annual_coef={annual_coef:.2f}"
+    )
 
-        # Validate configuration
-        warnings = validate_config(config_data)
-        for warning in warnings:
-            logger.warning(warning)
+    return settings, date_ini, date_fin, annual_coef
 
-    except ConfigValidationError as e:
-        logger.error(f"Configuration validation failed: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Error loading configuration: {e}")
-        return None
 
-    # =========================================================================
-    # STEP 2: Validate and parse dates
-    # =========================================================================
-    logger.info("Validating dates...")
-    try:
-        date_ini = validate_date_string(config_data["date_ini_book_obs"], "date_ini_book_obs")
-        date_fin = validate_date_string(config_data["date_fin_book_obs"], "date_fin_book_obs")
-        validate_date_range(date_ini, date_fin, "main observation period")
-        annual_coef = calculate_annual_coef(date_ini, date_fin)
-        logger.info(f"Observation period: {date_ini.date()} to {date_fin.date()} (annual_coef: {annual_coef:.2f})")
-    except ConfigValidationError as e:
-        logger.error(f"Date validation failed: {e}")
-        return None
+def run_preprocessing_phase(
+    data: pd.DataFrame, settings: PreprocessingSettings, skip_dq_checks: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, float, float]:
+    """Run data quality checks, preprocessing pipeline, and compute derived metrics.
 
-    # =========================================================================
-    # STEP 3: Load and validate data
-    # =========================================================================
-    if preloaded_data is not None:
-        logger.info("Using pre-loaded data (skipping file load)...")
-        data = preloaded_data.copy()
-        logger.info(f"Pre-loaded data: {data.shape[0]:,} rows × {data.shape[1]} columns")
-    else:
-        logger.info("Loading data...")
-        try:
-            data_path = config_data.get("data_path", "data/demanda_direct_out.sas7bdat")
-            data = load_data(data_path)
-            validate_data_not_empty(data, "Input data")
-            logger.info(f"Data loaded successfully: {data.shape[0]:,} rows × {data.shape[1]} columns")
-        except FileNotFoundError:
-            logger.error(f"Error: Data file not found at {data_path}")
-            return None
-        except DataValidationError as e:
-            logger.error(f"Data validation failed: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Error loading data: {e}")
-            return None
+    Args:
+        data: Input DataFrame
+        settings: Configuration settings object
+        skip_dq_checks: If True, skip data quality checks
 
-        # Standardize column names (only when loading fresh data)
-        logger.info("Standardizing column names...")
-        data.columns = data.columns.str.lower().str.replace(" ", "_")
-        logger.debug("Column names standardized")
+    Returns:
+        Tuple of (data_clean, data_booked, data_demand, stress_factor, tasa_fin)
+        Returns None if data quality checks fail.
+    """
+    t0 = time.perf_counter()
+    segment = settings.segment_filter
 
-        # Standardize categorical values (only when loading fresh data)
-        logger.info("Standardizing categorical values...")
-        for col in data.select_dtypes(include=["object", "category", "string"]).columns:
-            data[col] = data[col].astype("string").str.lower().str.replace(" ", "_").astype("category")
-        logger.debug("Categorical values standardized")
+    # Convert settings to dict for compatibility with existing functions that expect a dict
+    # This is a temporary bridge until all downstream functions are updated to use the Settings object
+    config_dict = settings.model_dump()
 
-    # Validate required columns exist after standardization
-    try:
-        required_cols = config_data["keep_vars"] + config_data["indicators"]
-        validate_data_columns(data, required_cols, "input data")
-        logger.info("All required columns present in data")
-    except DataValidationError as e:
-        logger.error(f"Data validation failed: {e}")
-        return None
-
-    # Display summary
-    logger.info("DATA SUMMARY")
-    logger.info(f"Shape: {data.shape[0]:,} rows × {data.shape[1]} columns")
-
-    # =========================================================================
-    # STEP 4: Data Quality Checks
-    # =========================================================================
+    # Data Quality Checks
     if skip_dq_checks:
-        logger.warning("Skipping data quality checks (--skip-dq-checks flag set)")
+        logger.warning(f"[{segment}] Skipping data quality checks (--skip-dq-checks flag set)")
     else:
-        logger.info("Running data quality checks...")
-        dq_report = run_data_quality_checks(data, config_data, verbose=True)
+        dq_report = run_data_quality_checks(data, config_dict, verbose=True)
 
         if not dq_report.is_valid:
-            logger.error("Data quality validation failed. Fix issues before proceeding.")
-            logger.error("Use --skip-dq-checks to bypass (not recommended).")
+            logger.error(f"[{segment}] Data quality validation failed. Use --skip-dq-checks to bypass.")
             return None
 
         if dq_report.warnings:
-            logger.warning(f"Data quality warnings: {len(dq_report.warnings)}. Proceeding with caution.")
+            logger.warning(f"[{segment}] {len(dq_report.warnings)} data quality warnings. Proceeding with caution.")
 
-    # =========================================================================
-    # STEP 5: Preprocessing
-    # =========================================================================
-    logger.info("Preprocessing data...")
-
-    # Parse bins to replace -inf/inf with numpy constants
-    octroi_bins = convert_bins(config_data.get("octroi_bins"))
-    efx_bins = convert_bins(config_data.get("efx_bins"))
+    # Preprocessing
+    # Pydantic model already ensures bins are lists of floats
+    octroi_bins = settings.octroi_bins
+    efx_bins = settings.efx_bins
 
     config = PreprocessingConfig(
-        keep_vars=config_data["keep_vars"],
-        indicators=config_data["indicators"],
-        segment_filter=config_data["segment_filter"],
+        keep_vars=settings.keep_vars,
+        indicators=settings.indicators,
+        segment_filter=settings.segment_filter,
         octroi_bins=octroi_bins,
         efx_bins=efx_bins,
-        date_ini_book_obs=config_data.get("date_ini_book_obs"),
-        date_fin_book_obs=config_data.get("date_fin_book_obs"),
-        score_measures=config_data.get("score_measures"),
-        log_level=config_data.get("log_level", "INFO"),
+        date_ini_book_obs=settings.date_ini_book_obs,
+        date_fin_book_obs=settings.date_fin_book_obs,
+        score_measures=settings.score_measures,
+        log_level=settings.log_level,
     )
 
     data_clean, data_booked, data_demand = complete_preprocessing_pipeline(data, config)
 
-    # Saving risk vs production plot
-    logger.info("Saving risk vs production plot...")
-    fig = plot_risk_vs_production(data_clean, config_data.get("indicators"), config_data.get("cz_config"), data_booked)
+    # Risk vs production plot
+    fig = plot_risk_vs_production(data_clean, settings.indicators, settings.cz_config, data_booked)
     fig.write_html("images/risk_vs_production.html")
-    logger.info("Risk vs production plot saved successfully into images folder")
+    logger.debug(f"[{segment}] Risk vs production plot saved to images/risk_vs_production.html")
 
-    # Calculating stress factor
-    logger.info("Calculating stress factor...")
+    # Stress factor & transformation rate
     stress_factor = calculate_stress_factor(data_booked)
-    logger.info(f"Stress factor: {stress_factor}")
-
-    # Calculating transformation rate
-    logger.info("Calculating transformation rate...")
     result = calculate_and_plot_transformation_rate(
-        data_clean, date_col="mis_date", amount_col="oa_amt", n_months=config_data.get("n_months")
+        data_clean, date_col="mis_date", amount_col="oa_amt", n_months=settings.n_months
     )
     result["figure"].write_html("images/transformation_rate.html")
-    logger.info(f"Finance Rate (last {config_data.get('n_months')} months): {result['overall_rate']:.2%}")
+    tasa_fin = result["overall_rate"]
 
-    # Risk Inference
+    elapsed = time.perf_counter() - t0
+    logger.info(
+        f"[{segment}] Preprocessing done | "
+        f"clean={len(data_clean):,} booked={len(data_booked):,} demand={len(data_demand):,} | "
+        f"stress={stress_factor:.4f} tasa_fin={tasa_fin:.2%} | {elapsed:.1f}s"
+    )
+
+    return data_clean, data_booked, data_demand, stress_factor, tasa_fin
+
+
+def run_inference_phase(
+    data_clean: pd.DataFrame, settings: PreprocessingSettings, model_path: str = None,
+) -> tuple[dict, Any]:
+    """Run risk inference: either load a pre-trained model or train a new one.
+
+    Args:
+        data_clean: Cleaned DataFrame from preprocessing
+        settings: Configuration settings object
+        model_path: Optional path to a pre-trained model directory
+
+    Returns:
+        Tuple of (risk_inference, reg_todu_amt_pile)
+
+    Raises:
+        Exception: If model loading or training fails
+    """
+    t0 = time.perf_counter()
+    segment = settings.segment_filter
+
     if model_path:
         # Load pre-trained model from supersegment
-        logger.info(f"Loading pre-trained model from {model_path}...")
-        try:
-            model, metadata, features = load_model_for_prediction(model_path)
-            # Support both old (test_r2) and new (cv_mean_r2) metric formats
-            if "cv_mean_r2" in metadata:
-                r2_metric = metadata.get("cv_mean_r2", 0.0)
-                r2_std = metadata.get("cv_std_r2", 0.0)
-                r2_display = f"{r2_metric:.4f} ± {r2_std:.4f}"
-            else:
-                r2_metric = metadata.get("test_r2", 0.0)
-                r2_display = f"{r2_metric:.4f}"
-            risk_inference = {
-                "best_model_info": {
-                    "model": model,
-                    "name": metadata.get("model_type", "Unknown"),
-                    "cv_mean_r2": metadata.get("cv_mean_r2", metadata.get("test_r2", 0.0)),
-                    "cv_std_r2": metadata.get("cv_std_r2", 0.0),
-                },
-                "features": features,
-                "model_path": model_path,
-            }
-            logger.info(f"Loaded model: {risk_inference['best_model_info']['name']}")
-            logger.info(f"Original R²: {r2_display}")
+        model, metadata, features = load_model_for_prediction(model_path)
+        # Support both old (test_r2) and new (cv_mean_r2) metric formats
+        if "cv_mean_r2" in metadata:
+            r2_display = f"{metadata['cv_mean_r2']:.4f} +/- {metadata.get('cv_std_r2', 0.0):.4f}"
+        else:
+            r2_display = f"{metadata.get('test_r2', 0.0):.4f}"
+        risk_inference = {
+            "best_model_info": {
+                "model": model,
+                "name": metadata.get("model_type", "Unknown"),
+                "cv_mean_r2": metadata.get("cv_mean_r2", metadata.get("test_r2", 0.0)),
+                "cv_std_r2": metadata.get("cv_std_r2", 0.0),
+            },
+            "features": features,
+            "model_path": model_path,
+        }
 
-            # Load todu model from the models directory (sibling to model subdirectory)
-            todu_model_path = Path(model_path).parent / "todu_model.joblib"
-            if not todu_model_path.exists():
-                # Also check parent's parent (models/ directory)
-                todu_model_path = Path(model_path).parent.parent / "todu_model.joblib"
-            if todu_model_path.exists():
-                reg_todu_amt_pile = joblib.load(todu_model_path)
-                logger.info(f"Loaded todu model from {todu_model_path}")
-            else:
-                # Fallback: train todu model on current segment data
-                logger.warning(f"Todu model not found at {todu_model_path}, training on current data...")
-                _, reg_todu_amt_pile, _ = todu_average_inference(
-                    data=data_clean,
-                    variables=config_data.get("variables"),
-                    indicators=config_data.get("indicators"),
-                    feature_col="oa_amt",
-                    target_col="todu_amt_pile_h6",
-                    z_threshold=config_data.get("z_threshold", 3.0),
-                    plot_output_path="models/todu_avg_inference.html",
-                    model_output_path=None,  # Don't save, it's a fallback
-                )
-        except Exception as e:
-            logger.error(f"Failed to load pre-trained model: {e}")
-            return None
+        # Load todu model from the models directory (sibling to model subdirectory)
+        todu_model_path = Path(model_path).parent / "todu_model.joblib"
+        if not todu_model_path.exists():
+            # Also check parent's parent (models/ directory)
+            todu_model_path = Path(model_path).parent.parent / "todu_model.joblib"
+        if todu_model_path.exists():
+            reg_todu_amt_pile = joblib.load(todu_model_path)
+            logger.debug(f"[{segment}] Loaded todu model from {todu_model_path}")
+        else:
+            # Fallback: train todu model on current segment data
+            logger.warning(f"[{segment}] Todu model not found at {todu_model_path}, training on current data")
+            _, reg_todu_amt_pile, _ = todu_average_inference(
+                data=data_clean,
+                variables=settings.variables,
+                indicators=settings.indicators,
+                feature_col="oa_amt",
+                target_col="todu_amt_pile_h6",
+                z_threshold=settings.z_threshold,
+                plot_output_path="models/todu_avg_inference.html",
+                model_output_path=None,  # Don't save, it's a fallback
+            )
+
+        elapsed = time.perf_counter() - t0
+        model_name = risk_inference["best_model_info"]["name"]
+        logger.info(f"[{segment}] Model loaded | {model_name} | R2={r2_display} | from {model_path} | {elapsed:.1f}s")
     else:
         # Train new model with feature selection
-        logger.info("Calculating risk inference with feature selection...")
-        risk_inference = inference_pipeline_with_feature_selection(
+        risk_inference = inference_pipeline(
             data=data_clean,
-            bins=(config_data.get("octroi_bins"), config_data.get("efx_bins")),
-            variables=config_data.get("variables"),
-            indicators=config_data.get("indicators"),
-            target_var="todu_30ever_h6",
-            multiplier=config_data.get("multiplier", 7),
+            bins=(settings.octroi_bins, settings.efx_bins),
+            variables=settings.variables,
+            indicators=settings.indicators,
+            target_var="b2_ever_h6",
+            multiplier=settings.multiplier,
             test_size=0.4,
             include_hurdle=True,
             save_model=True,
             model_base_path="models",
             create_visualizations=True,
         )
-        logger.info(f"Best model: {risk_inference['best_model_info']['name']}")
-        logger.info(f"Model type: {risk_inference['best_model_info'].get('model_type', 'N/A')}")
-        logger.info(f"Feature set: {risk_inference['best_model_info'].get('feature_set', 'N/A')}")
-        cv_r2 = risk_inference['best_model_info'].get('cv_mean_r2')
-        cv_std = risk_inference['best_model_info'].get('cv_std_r2', 0)
-        logger.info(f"CV R²: {cv_r2:.4f} ± {cv_std:.4f}")
 
         # Todu Average Inference
         _, reg_todu_amt_pile, _ = todu_average_inference(
             data=data_clean,
-            variables=config_data.get("variables"),
-            indicators=config_data.get("indicators"),
+            variables=settings.variables,
+            indicators=settings.indicators,
             feature_col="oa_amt",
             target_col="todu_amt_pile_h6",
-            z_threshold=config_data.get("z_threshold", 3.0),
+            z_threshold=settings.z_threshold,
             plot_output_path="models/todu_avg_inference.html",
             model_output_path="models/todu_model.joblib",
         )
 
-    # Early return for training_only mode (supersegment training)
-    if training_only:
-        logger.info("=" * 80)
-        logger.info("TRAINING ONLY MODE - Skipping optimization")
-        logger.info("=" * 80)
-        logger.info(f"Model trained and saved. Path: {risk_inference.get('model_path', 'models/')}")
-        return data_clean, data_booked, data_demand, risk_inference, reg_todu_amt_pile
+        elapsed = time.perf_counter() - t0
+        info = risk_inference["best_model_info"]
+        cv_r2 = info.get("cv_mean_r2", 0)
+        cv_std = info.get("cv_std_r2", 0)
+        logger.info(
+            f"[{segment}] Inference done | {info['name']} ({info.get('model_type', 'N/A')}) | "
+            f"features={info.get('feature_set', 'N/A')} | CV R2={cv_r2:.4f} +/- {cv_std:.4f} | {elapsed:.1f}s"
+        )
 
-    # Apply inference model and Optimization Pipeline
-    # Using the new refactored function
+    return risk_inference, reg_todu_amt_pile
+
+
+def run_optimization_phase(
+    data_booked: pd.DataFrame,
+    data_demand: pd.DataFrame,
+    risk_inference: dict,
+    reg_todu_amt_pile: Any,
+    stress_factor: float,
+    tasa_fin: float,
+    settings: PreprocessingSettings,
+    annual_coef: float,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list, list]:
+    """Run the optimization pipeline: generate summary, find optimal cutoffs.
+
+    Args:
+        data_booked: Booked applications DataFrame
+        data_demand: Demand applications DataFrame
+        risk_inference: Risk inference results dictionary
+        reg_todu_amt_pile: Trained todu regression model
+        stress_factor: Calculated stress factor
+        tasa_fin: Financing/transformation rate
+        settings: Configuration settings object
+        annual_coef: Annual coefficient for the observation period
+
+    Returns:
+        Tuple of (data_summary_desagregado, data_summary, data_summary_sample_no_opt,
+                  values_var0, values_var1)
+    """
+    t0 = time.perf_counter()
+    segment = settings.segment_filter
+    config_dict = settings.model_dump()
 
     data_summary_desagregado = run_optimization_pipeline(
         data_booked=data_booked,
@@ -515,33 +296,31 @@ def main(
         risk_inference=risk_inference,
         reg_todu_amt_pile=reg_todu_amt_pile,
         stressor=stress_factor,
-        tasa_fin=result["overall_rate"],
-        config_data=config_data,
+        tasa_fin=tasa_fin,
+        config_data=config_dict,
         annual_coef=annual_coef,
     )
 
     # Cutoff optimization
-    values_var0 = sorted(data_summary_desagregado[config_data.get("variables")[0]].unique())
-    values_var1 = sorted(data_summary_desagregado[config_data.get("variables")[1]].unique())
+    values_var0 = sorted(data_summary_desagregado[settings.variables[0]].unique())
+    values_var1 = sorted(data_summary_desagregado[settings.variables[1]].unique())
 
     # Check for fixed cutoffs (skip optimization if provided)
-    fixed_cutoffs = config_data.get("fixed_cutoffs")
+    fixed_cutoffs = settings.fixed_cutoffs
     use_fixed_cutoffs = fixed_cutoffs is not None and len(fixed_cutoffs) > 0
 
     if use_fixed_cutoffs:
-        logger.info("=" * 80)
-        logger.info("USING FIXED CUTOFFS (skipping optimization)")
-        logger.info("=" * 80)
-        logger.info(f"Fixed cutoffs: {fixed_cutoffs}")
+        logger.info(f"[{segment}] Using fixed cutoffs (skipping optimization)")
+        logger.debug(f"[{segment}] Fixed cutoffs: {fixed_cutoffs}")
 
         # Get validation settings from config
         strict_validation = fixed_cutoffs.get("strict_validation", False)
-        inv_var1 = config_data.get("inv_var1", False)
+        inv_var1 = settings.inv_var1
 
         # Create single solution from fixed cutoffs with enhanced validation
         df_v = create_fixed_cutoff_solution(
             fixed_cutoffs=fixed_cutoffs,
-            variables=config_data.get("variables"),
+            variables=settings.variables,
             values_var0=values_var0,
             values_var1=values_var1,
             strict_validation=strict_validation,
@@ -553,8 +332,8 @@ def main(
             df_v=df_v,
             values_var0=values_var0,
             data_sumary_desagregado=data_summary_desagregado,
-            variables=config_data.get("variables"),
-            indicadores=config_data.get("indicators"),
+            variables=settings.variables,
+            indicadores=settings.indicators,
             chunk_size=100000,
         )
 
@@ -569,55 +348,53 @@ def main(
             production = row.get("oa_amt_h0", 0)
             total_demand = data_summary_desagregado["oa_amt_h0"].sum() if "oa_amt_h0" in data_summary_desagregado.columns else 0
             acceptance_rate = (production / total_demand * 100) if total_demand > 0 else 0
-            logger.info("=" * 60)
-            logger.info("FIXED CUTOFF METRICS PREVIEW")
-            logger.info(f"  Production (oa_amt_h0): {production:,.0f}")
-            logger.info(f"  Total Demand: {total_demand:,.0f}")
-            logger.info(f"  Acceptance Rate: {acceptance_rate:.2f}%")
+            risk_str = ""
             if "todu_30ever_h6" in row and "todu_amt_pile_h6" in row:
-                multiplier = config_data.get("multiplier", 7)
+                multiplier = settings.multiplier
                 risk = calculate_b2_ever_h6(row["todu_30ever_h6"], row["todu_amt_pile_h6"], multiplier=multiplier, as_percentage=True)
-                logger.info(f"  Risk (b2_ever_h6): {risk:.4f}%")
-            logger.info("=" * 60)
+                risk_str = f" | risk={risk:.4f}%"
+            logger.info(
+                f"[{segment}] Fixed cutoff preview | "
+                f"production={production:,.0f} | demand={total_demand:,.0f} | "
+                f"acceptance={acceptance_rate:.2f}%{risk_str}"
+            )
 
         # For fixed cutoffs, there's only one solution (no sampling needed)
         data_summary_sample_no_opt = data_summary.copy()
 
         # Save the fixed cutoff solution as the only Pareto solution
         data_summary.to_csv("data/pareto_optimal_solutions.csv", index=False)
-        logger.info("Fixed cutoff solution saved as pareto_optimal_solutions.csv")
+        logger.debug(f"[{segment}] Fixed cutoff solution saved to data/pareto_optimal_solutions.csv")
 
     else:
-        logger.info("Optimizing cutoff...")
-
         # Get feasible solutions
         df_v = get_fact_sol(values_var0=values_var0, values_var1=values_var1, chunk_size=10000)
 
-        # Obtener KPIs de las soluciones factibles
+        # Calculate KPIs for feasible solutions
         data_summary = kpi_of_fact_sol(
             df_v=df_v,
             values_var0=values_var0,
             data_sumary_desagregado=data_summary_desagregado,
-            variables=config_data.get("variables"),
-            indicadores=config_data.get("indicators"),
-            chunk_size=100000,  # Adjust based on available memory
+            variables=settings.variables,
+            indicadores=settings.indicators,
+            chunk_size=100000,
         )
 
-        # display not optimal solutions
+        # Sample non-optimal solutions for visualization
         data_summary_sample_no_opt = data_summary.sample(min(10000, len(data_summary)))
 
         # Find optimal solutions
         data_summary = get_optimal_solutions(
             df_v=df_v,
             data_sumary=data_summary,
-            chunk_size=100000,  # Adjust based on available memory
+            chunk_size=100000,
         )
 
         # Save all Pareto-optimal solutions (for Cutoff Explorer risk slider)
         data_summary.to_csv("data/pareto_optimal_solutions.csv", index=False)
-        logger.info(f"Pareto-optimal solutions saved ({len(data_summary)} solutions)")
+        logger.debug(f"[{segment}] Pareto solutions saved to data/pareto_optimal_solutions.csv")
 
-    multiplier = config_data.get("multiplier", 7)
+    multiplier = settings.multiplier
     data_summary_desagregado["b2_ever_h6"] = calculate_b2_ever_h6(
         data_summary_desagregado["todu_30ever_h6"],
         data_summary_desagregado["todu_amt_pile_h6"],
@@ -629,19 +406,197 @@ def main(
         axis=1,
     )
 
-    # Scenario Analysis
-    base_optimum_risk = config_data.get("optimum_risk", 1.1)
-    scenario_step = config_data.get("scenario_step", 0.1)
+    elapsed = time.perf_counter() - t0
+    mode = "fixed_cutoffs" if use_fixed_cutoffs else "pareto"
+    logger.info(
+        f"[{segment}] Optimization done | mode={mode} | "
+        f"{len(data_summary)} solutions | {len(values_var0)}x{len(values_var1)} grid | {elapsed:.1f}s"
+    )
 
-    # Calculate MR coefficients before loop
-    date_ini_mr = pd.to_datetime(config_data.get("date_ini_book_obs_mr"))
-    date_fin_mr = pd.to_datetime(config_data.get("date_fin_book_obs_mr"))
-    annual_coef_mr = calculate_annual_coef(date_ini_book_obs=date_ini_mr, date_fin_book_obs=date_fin_mr)
-    logger.info(f"Annual Coef MR: {annual_coef_mr}")
+    return data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_var0, values_var1
 
-    # Scenarios: pessimistic (lower risk threshold), base (optimum), optimistic (higher risk threshold)
-    # When using fixed cutoffs, default to base scenario only unless run_all_scenarios is enabled
+
+def run_scenario_analysis(
+    scenario_risk: float,
+    scenario_name: str,
+    *,
+    data_summary: pd.DataFrame,
+    data_summary_desagregado: pd.DataFrame,
+    data_summary_sample_no_opt: pd.DataFrame,
+    data_clean: pd.DataFrame,
+    data_booked: pd.DataFrame,
+    settings: PreprocessingSettings,
+    risk_inference: dict,
+    reg_todu_amt_pile: Any,
+    stress_factor: float,
+    tasa_fin: float,
+    annual_coef_mr: float,
+    values_var0: list,
+    values_var1: list,
+) -> pd.DataFrame:
+    """Run scenario analysis for a single risk threshold: visualization, MR processing, audit.
+
+    Args:
+        scenario_risk: Risk threshold for this scenario
+        scenario_name: Name of the scenario (e.g., "base", "pessimistic", "optimistic")
+        data_summary: Pareto-optimal solutions DataFrame
+        data_summary_desagregado: Disaggregated summary DataFrame
+        data_summary_sample_no_opt: Sample of non-optimal solutions for visualization
+        data_clean: Cleaned data DataFrame
+        data_booked: Booked applications DataFrame
+        settings: Configuration settings object
+        risk_inference: Risk inference results dictionary
+        reg_todu_amt_pile: Trained todu regression model
+        stress_factor: Calculated stress factor
+        tasa_fin: Financing/transformation rate
+        annual_coef_mr: Annual coefficient for the MR period
+        values_var0: Sorted unique values for variable 0
+        values_var1: Sorted unique values for variable 1
+
+    Returns:
+        Cutoff summary DataFrame for this scenario
+    """
+    t0 = time.perf_counter()
+    segment = settings.segment_filter
+    current_risk = float(round(scenario_risk, 1))
+    config_dict = settings.model_dump()
+
+    visualizer = RiskProductionVisualizer(
+        data_summary=data_summary,
+        data_summary_disaggregated=data_summary_desagregado,
+        data_summary_sample_no_opt=data_summary_sample_no_opt,
+        variables=settings.variables,
+        values_var0=values_var0,
+        values_var1=values_var1,
+        optimum_risk=current_risk,
+        tasa_fin=tasa_fin,
+    )
+
+    suffix = f"_{scenario_name}"
+
+    # Save outputs
+    visualizer.save_html(f"images/risk_production_visualizer{suffix}.html")
+    summary_table = visualizer.get_summary_table()
+    summary_table.to_csv(f"data/risk_production_summary_table{suffix}.csv", index=False)
+    data_summary_desagregado.to_csv(f"data/data_summary_desagregado{suffix}.csv", index=False)
+    opt_sol = visualizer.get_selected_solution()
+    opt_sol.to_csv(f"data/optimal_solution{suffix}.csv", index=False)
+    logger.debug(f"[{segment}] Scenario {scenario_name} outputs saved with suffix '{suffix}'")
+
+    # Extract risk and production values from summary table for cutoff summary
+    optimum_row = summary_table[summary_table["Metric"] == "Optimum selected"]
+    risk_pct = optimum_row["Risk (%)"].values[0] if not optimum_row.empty else None
+    production = optimum_row["Production (€)"].values[0] if not optimum_row.empty else None
+
+    # Generate cutoff summary for this scenario
+    cutoff_summary = generate_cutoff_summary(
+        optimal_solution_df=opt_sol,
+        variables=settings.variables,
+        segment_name=segment,
+        scenario_name=scenario_name,
+        risk_value=risk_pct,
+        production_value=production,
+    )
+
+    if scenario_name == "base":
+        # Also save as default filenames for backward compatibility
+        visualizer.save_html("images/risk_production_visualizer.html")
+        summary_table.to_csv("data/risk_production_summary_table.csv", index=False)
+        opt_sol.to_csv("data/optimal_solution.csv", index=False)
+        data_summary_desagregado.to_csv("data/data_summary_desagregado.csv", index=False)
+        logger.debug(f"[{segment}] Base scenario outputs also saved to default filenames")
+
+        # Base Scenario MR Processing (Default filenames)
+        process_mr_period(
+            data_clean=data_clean,
+            data_booked=data_booked,
+            config_data=config_dict,
+            risk_inference=risk_inference,
+            reg_todu_amt_pile=reg_todu_amt_pile,
+            stress_factor=stress_factor,
+            tasa_fin=tasa_fin,
+            annual_coef=annual_coef_mr,
+            optimal_solution_df=opt_sol,
+            file_suffix="",
+        )
+
+    # Scenario MR Processing
+    process_mr_period(
+        data_clean=data_clean,
+        data_booked=data_booked,
+        config_data=config_dict,
+        risk_inference=risk_inference,
+        reg_todu_amt_pile=reg_todu_amt_pile,
+        stress_factor=stress_factor,
+        tasa_fin=tasa_fin,
+        annual_coef=annual_coef_mr,
+        optimal_solution_df=opt_sol,
+        file_suffix=suffix,
+    )
+
+    # Generate audit tables for this scenario
+    data_main_period = filter_by_date(
+        data_clean,
+        "mis_date",
+        settings.date_ini_book_obs,
+        settings.date_fin_book_obs,
+    )
+    data_mr_period = filter_by_date(
+        data_clean,
+        "mis_date",
+        settings.date_ini_book_obs_mr,
+        settings.date_fin_book_obs_mr,
+    )
+
+    inv_var1 = settings.inv_var1
+
+    # Calculate n_months for each period (for annualization)
+    date_ini_main = settings.get_date("date_ini_book_obs")
+    date_fin_main = settings.get_date("date_fin_book_obs")
+    n_months_main = (
+        (date_fin_main.year - date_ini_main.year) * 12
+        + (date_fin_main.month - date_ini_main.month)
+        + 1
+    )
+
+    date_ini_mr = settings.get_date("date_ini_book_obs_mr")
+    date_fin_mr = settings.get_date("date_fin_book_obs_mr")
+    n_months_mr = (
+        (date_fin_mr.year - date_ini_mr.year) * 12
+        + (date_fin_mr.month - date_ini_mr.month)
+        + 1
+    )
+
+    save_audit_tables(
+        data_main=data_main_period,
+        data_mr=data_mr_period,
+        optimal_solution_df=opt_sol,
+        variables=settings.variables,
+        scenario_name=scenario_name,
+        output_dir="data",
+        inv_var1=inv_var1,
+        financing_rate=tasa_fin,
+        n_months_main=n_months_main,
+        n_months_mr=n_months_mr,
+    )
+
+    elapsed = time.perf_counter() - t0
+    logger.info(
+        f"[{segment}] Scenario {scenario_name} done | risk={current_risk} | "
+        f"main={n_months_main}mo MR={n_months_mr}mo | {elapsed:.1f}s"
+    )
+
+    return cutoff_summary
+
+
+def _build_scenario_list(settings: PreprocessingSettings, use_fixed_cutoffs: bool) -> list[tuple[float, str]]:
+    """Build the list of (risk_threshold, name) scenarios to run."""
+    base_optimum_risk = settings.optimum_risk
+    scenario_step = settings.scenario_step
+    segment = settings.segment_filter
+
     if use_fixed_cutoffs:
+        fixed_cutoffs = settings.fixed_cutoffs or {}
         run_all_scenarios = fixed_cutoffs.get("run_all_scenarios", False)
         if run_all_scenarios:
             scenarios = [
@@ -649,10 +604,10 @@ def main(
                 (base_optimum_risk, "base"),
                 (base_optimum_risk + scenario_step, "optimistic"),
             ]
-            logger.info("Fixed cutoffs mode: running all scenarios (same solution, different risk thresholds)")
+            logger.debug(f"[{segment}] Fixed cutoffs: running all scenarios")
         else:
             scenarios = [(base_optimum_risk, "base")]
-            logger.info("Fixed cutoffs mode: running only base scenario (set run_all_scenarios=true for all)")
+            logger.debug(f"[{segment}] Fixed cutoffs: running base scenario only")
     else:
         scenarios = [
             (base_optimum_risk - scenario_step, "pessimistic"),
@@ -660,171 +615,140 @@ def main(
             (base_optimum_risk + scenario_step, "optimistic"),
         ]
 
-    cutoff_summaries = []  # Collect cutoff summaries for all scenarios
-    segment_name = config_data.get("segment_filter", "unknown_segment")
+    return scenarios
 
-    for scenario_risk, scenario_name in scenarios:
-        current_risk = float(round(scenario_risk, 1))
-        logger.info(f"Running scenario: {scenario_name} (optimum_risk = {current_risk})")
 
-        visualizer = RiskProductionVisualizer(
-            data_summary=data_summary,
-            data_summary_disaggregated=data_summary_desagregado,
-            data_summary_sample_no_opt=data_summary_sample_no_opt,
-            variables=config_data.get("variables"),
-            values_var0=values_var0,
-            values_var1=values_var1,
-            optimum_risk=current_risk,
-            tasa_fin=result["overall_rate"],
-        )
+def _compute_mr_annual_coef(settings: PreprocessingSettings) -> float:
+    """Compute the annual coefficient for the MR period."""
+    date_ini_mr = settings.get_date("date_ini_book_obs_mr")
+    date_fin_mr = settings.get_date("date_fin_book_obs_mr")
+    annual_coef_mr = calculate_annual_coef(date_ini_book_obs=date_ini_mr, date_fin_book_obs=date_fin_mr)
+    logger.debug(f"MR annual_coef={annual_coef_mr:.2f} ({date_ini_mr.date()} to {date_fin_mr.date()})")
+    return annual_coef_mr
 
-        suffix = f"_{scenario_name}"
 
-        # Save HTML
-        visualizer.save_html(f"images/risk_production_visualizer{suffix}.html")
-
-        # Save summary table
-        summary_table = visualizer.get_summary_table()
-        summary_table.to_csv(f"data/risk_production_summary_table{suffix}.csv", index=False)
-        logger.info(f"Risk production summary table saved to data/risk_production_summary_table{suffix}.csv")
-
-        # Save disaggregated data (for Cutoff Explorer)
-        data_summary_desagregado.to_csv(f"data/data_summary_desagregado{suffix}.csv", index=False)
-        logger.info(f"Disaggregated summary data saved to data/data_summary_desagregado{suffix}.csv")
-
-        # Save optimal solution
-        opt_sol = visualizer.get_selected_solution()
-        opt_sol.to_csv(f"data/optimal_solution{suffix}.csv", index=False)
-        logger.info(f"Optimal solution saved to data/optimal_solution{suffix}.csv")
-
-        # Extract risk and production values from summary table for cutoff summary
-        optimum_row = summary_table[summary_table["Metric"] == "Optimum selected"]
-        risk_pct = optimum_row["Risk (%)"].values[0] if not optimum_row.empty else None
-        production = optimum_row["Production (€)"].values[0] if not optimum_row.empty else None
-
-        # Generate cutoff summary for this scenario
-        cutoff_summary = generate_cutoff_summary(
-            optimal_solution_df=opt_sol,
-            variables=config_data.get("variables"),
-            segment_name=segment_name,
-            scenario_name=scenario_name,
-            risk_value=risk_pct,
-            production_value=production,
-        )
-        cutoff_summaries.append(cutoff_summary)
-
-        if scenario_name == "base":
-            # Also save as default filenames for backward compatibility
-            visualizer.save_html("images/risk_production_visualizer.html")
-            summary_table.to_csv("data/risk_production_summary_table.csv", index=False)
-            opt_sol.to_csv("data/optimal_solution.csv", index=False)
-            data_summary_desagregado.to_csv("data/data_summary_desagregado.csv", index=False)
-            logger.info("Base scenario outputs saved to default filenames.")
-
-            # Base Scenario MR Processing (Default filenames)
-            process_mr_period(
-                data_clean=data_clean,
-                data_booked=data_booked,
-                config_data=config_data,
-                risk_inference=risk_inference,
-                reg_todu_amt_pile=reg_todu_amt_pile,
-                stress_factor=stress_factor,
-                tasa_fin=result["overall_rate"],
-                annual_coef=annual_coef_mr,
-                optimal_solution_df=opt_sol,
-                file_suffix="",
-            )
-
-        # Scenario MR Processing
-        process_mr_period(
-            data_clean=data_clean,
-            data_booked=data_booked,
-            config_data=config_data,
-            risk_inference=risk_inference,
-            reg_todu_amt_pile=reg_todu_amt_pile,
-            stress_factor=stress_factor,
-            tasa_fin=result["overall_rate"],
-            annual_coef=annual_coef_mr,
-            optimal_solution_df=opt_sol,
-            file_suffix=suffix,
-        )
-
-        # Generate audit tables for this scenario
-        logger.info(f"Generating audit tables for scenario: {scenario_name}")
-
-        # Filter data for main period
-        data_main_period = filter_by_date(
-            data_clean,
-            "mis_date",
-            config_data.get("date_ini_book_obs"),
-            config_data.get("date_fin_book_obs"),
-        )
-
-        # Filter data for MR period
-        data_mr_period = filter_by_date(
-            data_clean,
-            "mis_date",
-            config_data.get("date_ini_book_obs_mr"),
-            config_data.get("date_fin_book_obs_mr"),
-        )
-
-        # Generate and save audit tables
-        inv_var1 = config_data.get("inv_var1", False)
-        financing_rate = result["overall_rate"]  # tasa_fin from transformation rate
-
-        # Calculate n_months for each period (for annualization)
-        date_ini_main = pd.Timestamp(config_data.get("date_ini_book_obs"))
-        date_fin_main = pd.Timestamp(config_data.get("date_fin_book_obs"))
-        n_months_main = (
-            (date_fin_main.year - date_ini_main.year) * 12
-            + (date_fin_main.month - date_ini_main.month)
-            + 1
-        )
-
-        date_ini_mr = pd.Timestamp(config_data.get("date_ini_book_obs_mr"))
-        date_fin_mr = pd.Timestamp(config_data.get("date_fin_book_obs_mr"))
-        n_months_mr = (
-            (date_fin_mr.year - date_ini_mr.year) * 12
-            + (date_fin_mr.month - date_ini_mr.month)
-            + 1
-        )
-
-        logger.info(f"Main period: {n_months_main} months, MR period: {n_months_mr} months")
-
-        save_audit_tables(
-            data_main=data_main_period,
-            data_mr=data_mr_period,
-            optimal_solution_df=opt_sol,
-            variables=config_data.get("variables"),
-            scenario_name=scenario_name,
-            output_dir="data",
-            inv_var1=inv_var1,
-            financing_rate=financing_rate,
-            n_months_main=n_months_main,
-            n_months_mr=n_months_mr,
-        )
-
-    # Consolidate and save cutoff summaries
-    logger.info("=" * 80)
-    logger.info("CUTOFF SUMMARY BY SEGMENT")
-    logger.info("=" * 80)
+def _save_cutoff_summaries(cutoff_summaries: list[pd.DataFrame], settings: PreprocessingSettings) -> None:
+    """Consolidate and save cutoff summaries across scenarios."""
+    segment = settings.segment_filter
 
     consolidated_cutoffs = consolidate_cutoff_summaries(
         summaries=cutoff_summaries, output_path="data/cutoff_summary_by_segment.csv"
     )
 
-    # Also create a wide-format summary for easier reading
     if not consolidated_cutoffs.empty:
         wide_cutoffs = format_cutoff_summary_table(
             cutoff_summary=consolidated_cutoffs,
-            variables=config_data.get("variables"),
+            variables=settings.variables,
         )
         wide_cutoffs.to_csv("data/cutoff_summary_wide.csv", index=False)
-        logger.info("Cutoff summary (wide format) saved to data/cutoff_summary_wide.csv")
+        logger.debug(f"[{segment}] Cutoff summaries saved to data/cutoff_summary_*.csv")
 
-        # Log the cutoff summary table
-        logger.info(f"\nCutoff Summary for segment '{segment_name}':")
-        logger.info(f"\n{wide_cutoffs.to_string()}")
+        logger.info(f"[{segment}] Cutoff summary:\n{wide_cutoffs.to_string()}")
+
+
+def main(
+    config_path: str = "config.toml",
+    model_path: str = None,
+    training_only: bool = False,
+    skip_dq_checks: bool = False,
+    preloaded_data: pd.DataFrame = None,
+):
+    """
+    Load and preprocess SAS data using configuration.
+
+    Args:
+        config_path: Path to the configuration TOML file (default: config.toml)
+        model_path: Optional path to a pre-trained model directory.
+        training_only: If True, only runs data preprocessing and model training.
+        skip_dq_checks: If True, skip data quality checks.
+        preloaded_data: Optional pre-loaded and standardized DataFrame.
+
+    Returns:
+        Tuple of processed DataFrames, or None if processing fails
+    """
+    t0_total = time.perf_counter()
+
+    # Step 1: Load and validate configuration
+    try:
+        settings, date_ini, date_fin, annual_coef = load_and_validate_config(config_path)
+    except ValidationError as e:
+        logger.error(f"Configuration validation failed: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error loading configuration: {e}")
+        return None
+
+    segment = settings.segment_filter
+
+    # Step 2: Load and prepare data
+    try:
+        data = load_and_prepare_data(settings, preloaded_data)
+    except (DataValidationError, FileNotFoundError) as e:
+        logger.error(f"[{segment}] Data error: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"[{segment}] Error loading data: {e}")
+        return None
+
+    # Step 3: Preprocessing (DQ checks, binning, stress factor, transformation rate)
+    result = run_preprocessing_phase(data, settings, skip_dq_checks)
+    if result is None:
+        return None
+    data_clean, data_booked, data_demand, stress_factor, tasa_fin = result
+
+    # Step 4: Risk inference (model training or loading)
+    try:
+        risk_inference, reg_todu_amt_pile = run_inference_phase(data_clean, settings, model_path)
+    except Exception as e:
+        logger.error(f"[{segment}] Inference error: {e}")
+        # import traceback; logger.error(traceback.format_exc()) # Debugging aid
+        return None
+
+    # Early return for training_only mode (supersegment training)
+    if training_only:
+        elapsed = time.perf_counter() - t0_total
+        logger.info(
+            f"[{segment}] Training only complete | "
+            f"model={risk_inference.get('model_path', 'models/')} | {elapsed:.1f}s total"
+        )
+        return data_clean, data_booked, data_demand, risk_inference, reg_todu_amt_pile
+
+    # Step 5: Optimization (feasible solutions, KPIs, Pareto front)
+    (data_summary_desagregado, data_summary, data_summary_sample_no_opt,
+     values_var0, values_var1) = run_optimization_phase(
+        data_booked, data_demand, risk_inference, reg_todu_amt_pile,
+        stress_factor, tasa_fin, settings, annual_coef,
+    )
+
+    # Step 6: Scenario analysis loop
+    use_fixed_cutoffs = settings.fixed_cutoffs is not None and len(settings.fixed_cutoffs) > 0
+    scenarios = _build_scenario_list(settings, use_fixed_cutoffs)
+    annual_coef_mr = _compute_mr_annual_coef(settings)
+
+    cutoff_summaries = []
+    for scenario_risk, scenario_name in scenarios:
+        summary = run_scenario_analysis(
+            scenario_risk, scenario_name,
+            data_summary=data_summary,
+            data_summary_desagregado=data_summary_desagregado,
+            data_summary_sample_no_opt=data_summary_sample_no_opt,
+            data_clean=data_clean,
+            data_booked=data_booked,
+            settings=settings,
+            risk_inference=risk_inference,
+            reg_todu_amt_pile=reg_todu_amt_pile,
+            stress_factor=stress_factor,
+            tasa_fin=tasa_fin,
+            annual_coef_mr=annual_coef_mr,
+            values_var0=values_var0,
+            values_var1=values_var1,
+        )
+        cutoff_summaries.append(summary)
+
+    _save_cutoff_summaries(cutoff_summaries, settings)
+
+    elapsed_total = time.perf_counter() - t0_total
+    logger.info(f"[{segment}] Pipeline complete | {len(scenarios)} scenarios | {elapsed_total:.1f}s total")
 
     return data_clean, data_booked, data_demand, data_summary_desagregado, data_summary
 

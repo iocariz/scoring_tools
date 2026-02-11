@@ -24,6 +24,7 @@ dependencies = [
     "tomli-w>=1.2.0",
     "ruff>=0.14.14",
     "pytest-cov>=4.1.0",
+    "pydantic>=2.0.0",
 ]
 
 [tool.ruff]

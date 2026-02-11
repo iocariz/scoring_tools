@@ -12,7 +12,7 @@ This module provides functions for evaluating credit risk model performance:
 Key functions:
 - compute_metrics: Calculate Gini, AUC, KS, and CAP curve
 - bootstrap_confidence_interval: Compute CI for Gini and KS via bootstrap
-- calculate_psi: Population Stability Index with visualization
+- calculate_psi_by_period: Population Stability Index with visualization (date-based)
 - model_summary: Generate comprehensive model performance report
 - calc_iv: Calculate Information Value for feature selection
 """
@@ -114,7 +114,7 @@ def calculate_rejection_thresholds(y_true: np.ndarray, scores: np.ndarray, thres
     return results
 
 
-def calculate_psi(
+def calculate_psi_by_period(
     data: pd.DataFrame,
     date_column: str,
     score_column: str,
