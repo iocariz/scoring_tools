@@ -10,24 +10,24 @@ Two methods are available:
 """
 
 import warnings
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass, field
 from loguru import logger
-from scipy.optimize import milp, LinearConstraint, Bounds
+from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import csc_array
-from typing import Dict, Optional, Tuple
+
 
 @dataclass
 class AllocationResult:
     global_risk: float
     global_production: float
-    allocations: Dict[str, int]  # segment_name -> solution_id (sol_fac)
-    segment_metrics: Dict[str, Dict[str, float]] # segment_name -> {risk, production}
+    allocations: dict[str, int]  # segment_name -> solution_id (sol_fac)
+    segment_metrics: dict[str, dict[str, float]] # segment_name -> {risk, production}
     method: str = ""
-    target: Optional[float] = None
-    segment_details: Dict[str, Dict] = field(default_factory=dict)  # full frontier row per segment
+    target: float | None = None
+    segment_details: dict[str, dict] = field(default_factory=dict)  # full frontier row per segment
 
     def to_dataframe(self) -> pd.DataFrame:
         """Return a DataFrame with allocation summary and swap details per segment."""
@@ -115,7 +115,7 @@ class AllocationResult:
 
 class GlobalAllocator:
     def __init__(self):
-        self.frontiers: Dict[str, pd.DataFrame] = {}
+        self.frontiers: dict[str, pd.DataFrame] = {}
 
     def load_frontier(self, segment_name: str, frontier_df: pd.DataFrame):
         """
@@ -146,7 +146,7 @@ class GlobalAllocator:
         else:
             logger.info(f"Loaded frontier for {segment_name}: {len(sorted_df)} points")
 
-    def _warn_unknown_constraints(self, risk_constraints: Optional[Dict]) -> None:
+    def _warn_unknown_constraints(self, risk_constraints: dict | None) -> None:
         if risk_constraints:
             unknown = set(risk_constraints) - set(self.frontiers)
             if unknown:
@@ -155,7 +155,7 @@ class GlobalAllocator:
     def optimize(
         self,
         global_risk_target: float,
-        risk_constraints: Optional[Dict[str, Tuple[float, float]]] = None,
+        risk_constraints: dict[str, tuple[float, float]] | None = None,
         method: str = "exact",
     ) -> AllocationResult:
         """
@@ -177,6 +177,7 @@ class GlobalAllocator:
                 warnings.warn(
                     f"Exact solver failed ({e}), falling back to greedy.",
                     RuntimeWarning,
+                    stacklevel=2,
                 )
                 return self.optimize_greedy(global_risk_target, risk_constraints)
         elif method == "greedy":
@@ -190,7 +191,7 @@ class GlobalAllocator:
     def optimize_exact(
         self,
         global_risk_target: float,
-        risk_constraints: Optional[Dict[str, Tuple[float, float]]] = None,
+        risk_constraints: dict[str, tuple[float, float]] | None = None,
     ) -> AllocationResult:
         """
         Solve allocation as a Mixed-Integer Linear Program.
@@ -209,7 +210,7 @@ class GlobalAllocator:
 
         segments = sorted(self.frontiers.keys())
         # Build variable index map: var_offset[s] is the starting index for segment s
-        var_offset: Dict[str, int] = {}
+        var_offset: dict[str, int] = {}
         n_vars = 0
         for seg in segments:
             var_offset[seg] = n_vars
@@ -340,7 +341,7 @@ class GlobalAllocator:
     def optimize_greedy(
         self,
         global_risk_target: float,
-        risk_constraints: Optional[Dict[str, Tuple[float, float]]] = None,
+        risk_constraints: dict[str, tuple[float, float]] | None = None,
         max_iterations: int = 10_000,
     ) -> AllocationResult:
         """
@@ -352,11 +353,11 @@ class GlobalAllocator:
         self._warn_unknown_constraints(risk_constraints)
 
         # 1. Initialize with minimum viable solution for each segment
-        current_indices = {seg: 0 for seg in self.frontiers}
+        current_indices = dict.fromkeys(self.frontiers, 0)
 
         # Apply min_risk constraints
         if risk_constraints:
-            for seg, (min_r, max_r) in risk_constraints.items():
+            for seg, (min_r, _max_r) in risk_constraints.items():
                 if seg in self.frontiers:
                     # Find first solution >= min_r
                     df = self.frontiers[seg]

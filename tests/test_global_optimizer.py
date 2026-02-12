@@ -3,12 +3,12 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import numpy as np
-import pandas as pd
-import pytest
 import warnings
 
-from src.global_optimizer import GlobalAllocator, AllocationResult
+import pandas as pd
+import pytest
+
+from src.global_optimizer import AllocationResult, GlobalAllocator
 
 
 def _make_frontier(points: list[tuple[int, float, float]]) -> pd.DataFrame:

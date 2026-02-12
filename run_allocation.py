@@ -13,12 +13,12 @@ Usage:
 """
 
 import argparse
-import tomllib
-import pandas as pd
-from pathlib import Path
-from loguru import logger
 import sys
-from typing import Dict, Tuple
+import tomllib
+from pathlib import Path
+
+import pandas as pd
+from loguru import logger
 
 # Ensure src is in path
 sys.path.append(".")
@@ -26,7 +26,7 @@ sys.path.append(".")
 from src.global_optimizer import GlobalAllocator
 
 
-def load_risk_constraints(segments_path: str = "segments.toml") -> Dict[str, Tuple[float, float]]:
+def load_risk_constraints(segments_path: str = "segments.toml") -> dict[str, tuple[float, float]]:
     """Load per-segment risk constraints (min_risk, max_risk) from segments.toml."""
     path = Path(segments_path)
     if not path.exists():
