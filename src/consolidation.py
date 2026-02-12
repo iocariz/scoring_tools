@@ -47,7 +47,14 @@ class ConsolidatedMetrics:
     swap_in_todu_30ever_h6: float = 0.0
     swap_in_todu_amt_pile_h6: float = 0.0
     swap_out_todu_30ever_h6: float = 0.0
+    swap_out_todu_30ever_h6: float = 0.0
     swap_out_todu_amt_pile_h6: float = 0.0
+
+    # Confidence Intervals (for optimum solution)
+    optimum_production_ci_lower: float = 0.0
+    optimum_production_ci_upper: float = 0.0
+    optimum_risk_ci_lower: float = 0.0
+    optimum_risk_ci_upper: float = 0.0
 
     # Calculated risk properties
     @property
@@ -107,6 +114,10 @@ class ConsolidatedMetrics:
             "production_delta": self.production_delta,
             "production_delta_pct": self.production_delta_pct * 100,
             "risk_delta_pct": self.risk_delta * 100,
+            "production_ci_lower": self.optimum_production_ci_lower,
+            "production_ci_upper": self.optimum_production_ci_upper,
+            "risk_ci_lower": self.optimum_risk_ci_lower,
+            "risk_ci_upper": self.optimum_risk_ci_upper,
         }
 
 
@@ -337,6 +348,19 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
                 metrics[key]["todu_amt_pile_h6"] = float(row[todu_amt_col]) if pd.notna(row[todu_amt_col]) else 0
             except (ValueError, TypeError):
                 pass
+        
+        # Extract CI values (only for optimum)
+        if key == "optimum":
+            for col in df.columns:
+                col_lower = col.lower()
+                if "production_ci_lower" in col_lower:
+                    metrics["optimum"]["production_ci_lower"] = float(row[col]) if pd.notna(row[col]) else 0
+                elif "production_ci_upper" in col_lower:
+                    metrics["optimum"]["production_ci_upper"] = float(row[col]) if pd.notna(row[col]) else 0
+                elif "risk_ci_lower" in col_lower:
+                    metrics["optimum"]["risk_ci_lower"] = float(row[col]) if pd.notna(row[col]) else 0
+                elif "risk_ci_upper" in col_lower:
+                    metrics["optimum"]["risk_ci_upper"] = float(row[col]) if pd.notna(row[col]) else 0
 
     return metrics
 
@@ -360,6 +384,17 @@ def aggregate_metrics(metrics_list: list[dict[str, dict[str, float]]]) -> dict[s
             aggregated[key]["production"] += metrics[key]["production"]
             aggregated[key]["todu_30ever_h6"] += metrics[key]["todu_30ever_h6"]
             aggregated[key]["todu_amt_pile_h6"] += metrics[key]["todu_amt_pile_h6"]
+            
+            # Aggregate CIs for optimum (Production only - simple sum assumption)
+            if key == "optimum":
+                if "production_ci_lower" not in aggregated[key]:
+                    aggregated[key]["production_ci_lower"] = 0
+                    aggregated[key]["production_ci_upper"] = 0
+                
+                aggregated[key]["production_ci_lower"] += metrics[key].get("production_ci_lower", 0)
+                aggregated[key]["production_ci_upper"] += metrics[key].get("production_ci_upper", 0)
+                # Risk CIs cannot be simply summed or averaged without variance/covariance
+                # So we leave them as 0 for aggregated groups
 
     return aggregated
 
@@ -476,39 +511,48 @@ def consolidate_segments(
                         swap_out_production=agg["swap_out"]["production"],
                         swap_out_todu_30ever_h6=agg["swap_out"]["todu_30ever_h6"],
                         swap_out_todu_amt_pile_h6=agg["swap_out"]["todu_amt_pile_h6"],
-                    )
-                    results.append(consolidated.to_dict())
-                    supersegment_data[ss_name] = agg
-
-            # Add all individual segments (including those in supersegments)
-            for seg_name, metrics in segment_metrics.items():
-                agg = aggregate_metrics([metrics])
-                # Determine group name based on supersegment membership
-                if seg_name in segment_to_supersegment:
-                    ss_name = segment_to_supersegment[seg_name]
-                    group_name = f"{ss_name}/{seg_name}"
-                else:
-                    group_name = f"segment_{seg_name}"
-
-                consolidated = ConsolidatedMetrics(
-                    group_name=group_name,
-                    period=period,
-                    scenario=scenario_name,
-                    segments=[seg_name],
-                    actual_production=agg["actual"]["production"],
-                    actual_todu_30ever_h6=agg["actual"]["todu_30ever_h6"],
-                    actual_todu_amt_pile_h6=agg["actual"]["todu_amt_pile_h6"],
-                    optimum_production=agg["optimum"]["production"],
-                    optimum_todu_30ever_h6=agg["optimum"]["todu_30ever_h6"],
-                    optimum_todu_amt_pile_h6=agg["optimum"]["todu_amt_pile_h6"],
-                    swap_in_production=agg["swap_in"]["production"],
-                    swap_in_todu_30ever_h6=agg["swap_in"]["todu_30ever_h6"],
-                    swap_in_todu_amt_pile_h6=agg["swap_in"]["todu_amt_pile_h6"],
-                    swap_out_production=agg["swap_out"]["production"],
-                    swap_out_todu_30ever_h6=agg["swap_out"]["todu_30ever_h6"],
-                    swap_out_todu_amt_pile_h6=agg["swap_out"]["todu_amt_pile_h6"],
+                    # Pass aggregated CIs (Production only)
+                    optimum_production_ci_lower=agg["optimum"].get("production_ci_lower", 0),
+                    optimum_production_ci_upper=agg["optimum"].get("production_ci_upper", 0),
+                    # Risk CIs are 0 for aggregated
                 )
                 results.append(consolidated.to_dict())
+                supersegment_data[ss_name] = agg
+
+        # Add all individual segments (including those in supersegments)
+        for seg_name, metrics in segment_metrics.items():
+            agg = aggregate_metrics([metrics])
+            # Determine group name based on supersegment membership
+            if seg_name in segment_to_supersegment:
+                ss_name = segment_to_supersegment[seg_name]
+                group_name = f"{ss_name}/{seg_name}"
+            else:
+                group_name = f"segment_{seg_name}"
+
+            consolidated = ConsolidatedMetrics(
+                group_name=group_name,
+                period=period,
+                scenario=scenario_name,
+                segments=[seg_name],
+                actual_production=agg["actual"]["production"],
+                actual_todu_30ever_h6=agg["actual"]["todu_30ever_h6"],
+                actual_todu_amt_pile_h6=agg["actual"]["todu_amt_pile_h6"],
+                optimum_production=agg["optimum"]["production"],
+                optimum_todu_30ever_h6=agg["optimum"]["todu_30ever_h6"],
+                optimum_todu_amt_pile_h6=agg["optimum"]["todu_amt_pile_h6"],
+                swap_in_production=agg["swap_in"]["production"],
+                swap_in_todu_30ever_h6=agg["swap_in"]["todu_30ever_h6"],
+                swap_in_todu_amt_pile_h6=agg["swap_in"]["todu_amt_pile_h6"],
+                swap_out_production=agg["swap_out"]["production"],
+                swap_out_todu_30ever_h6=agg["swap_out"]["todu_30ever_h6"],
+                swap_out_todu_amt_pile_h6=agg["swap_out"]["todu_amt_pile_h6"],
+                # Pass segment-level CIs (fully available)
+                optimum_production_ci_lower=metrics["optimum"].get("production_ci_lower", 0),
+                optimum_production_ci_upper=metrics["optimum"].get("production_ci_upper", 0),
+                optimum_risk_ci_lower=metrics["optimum"].get("risk_ci_lower", 0),
+                optimum_risk_ci_upper=metrics["optimum"].get("risk_ci_upper", 0),
+            )
+            results.append(consolidated.to_dict())
 
             # Aggregate total across all segments
             all_metrics_list = list(segment_metrics.values())
@@ -531,6 +575,10 @@ def consolidate_segments(
                     swap_out_production=total_agg["swap_out"]["production"],
                     swap_out_todu_30ever_h6=total_agg["swap_out"]["todu_30ever_h6"],
                     swap_out_todu_amt_pile_h6=total_agg["swap_out"]["todu_amt_pile_h6"],
+                    # Pass aggregated CIs (Production only)
+                    optimum_production_ci_lower=total_agg["optimum"].get("production_ci_lower", 0),
+                    optimum_production_ci_upper=total_agg["optimum"].get("production_ci_upper", 0),
+                    # Risk CIs are 0 for aggregated
                 )
                 results.append(total_consolidated.to_dict())
 
@@ -562,6 +610,10 @@ def consolidate_segments(
         "swap_out_risk_pct",
         "swap_out_todu_30ever_h6",
         "swap_out_todu_amt_pile_h6",
+        "production_ci_lower",
+        "production_ci_upper",
+        "risk_ci_lower",
+        "risk_ci_upper",
     ]
     df = df[[c for c in column_order if c in df.columns]]
 

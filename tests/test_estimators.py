@@ -4,7 +4,6 @@ from sklearn.linear_model import LogisticRegression, Ridge
 
 from src.estimators import HurdleRegressor
 
-
 # =============================================================================
 # HurdleRegressor Tests
 # =============================================================================
@@ -147,3 +146,51 @@ class TestHurdleRegressorParams:
         params = model.get_params()
         assert params["classifier"] is clf
         assert params["regressor"] is reg
+
+
+# =============================================================================
+# TweedieGLM Tests
+# =============================================================================
+
+
+class TestTweedieGLM:
+    """Tests for the TweedieGLM estimator."""
+
+    def test_init(self):
+        from src.estimators import TweedieGLM
+
+        model = TweedieGLM(power=1.6, alpha=0.1)
+        assert model.power == 1.6
+        assert model.alpha == 0.1
+        assert model.link == "log"
+
+    def test_fit_mixed_data(self):
+        from src.estimators import TweedieGLM
+
+        np.random.seed(42)
+        n = 100
+        X = np.abs(np.random.randn(n, 3))  # ensuring non-negative inputs is safer for log link in some impls?
+        # Actually sklearn's Tweedie handles X normally, but y must be non-negative
+        y = np.abs(np.random.randn(n))
+        # Add zeros
+        y[:20] = 0.0
+
+        model = TweedieGLM(power=1.5, alpha=0.5)
+        model.fit(X, y)
+        assert hasattr(model, "regressor_")
+
+        preds = model.predict(X)
+        assert len(preds) == n
+        # Log link ensures non-negative predictions
+        assert (preds >= 0).all()
+
+    def test_fit_sample_weights(self):
+        from src.estimators import TweedieGLM
+
+        X = np.array([[1], [2], [3]])
+        y = np.array([0, 10, 20])
+        w = np.array([1, 2, 1])
+
+        model = TweedieGLM()
+        model.fit(X, y, sample_weight=w)
+        assert hasattr(model, "regressor_")

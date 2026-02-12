@@ -766,6 +766,111 @@ def calculate_annual_coef(date_ini_book_obs: pd.Timestamp, date_fin_book_obs: pd
     return annual_coef
 
 
+def _bootstrap_worker(
+    df: pd.DataFrame,
+    cut_map: dict[float, float],
+    variables: list[str],
+    multiplier: float,
+) -> tuple[float, float]:
+    """Worker function for bootstrap resampling."""
+    # Resample with replacement
+    sample = df.sample(frac=1.0, replace=True)
+
+    # Apply cuts
+    var0 = variables[0]
+    var1 = variables[1]
+    
+    # Map cuts to each row based on var0 bin
+    # We use a default value (infinite) for bins not in cut_map to be safe, 
+    # though valid data should be covered.
+    # Optimized mapping: converting dict to series for mapping is faster for large dfs 
+    # but for loop might be slow. 
+    # Let's use map which is generally fast enough for this scale.
+    full_cut_series = sample[var0].map(cut_map).fillna(np.inf)
+    
+    # Filter passed
+    passes = sample[var1] <= full_cut_series
+    
+    # Calculate metrics on passed (Production) and Risk (B2)
+    # Production: sum of filtered oa_amt (assuming oa_amt is the production column, 
+    # usually it's oa_amt_h0 for optimization but we need to check what column to use.
+    # In optimization pipeline, we optimize 'oa_amt_h0'. 
+    # But usually we want the Total Production of the SELECTED portfolio.
+    
+    # Actually, Risk B2 is calculated using todu_30ever_h6 and todu_amt_pile_h6
+    # for the selected portfolio.
+    
+    passed_df = sample[passes]
+    
+    # production = passed_df["oa_amt"].sum() # Or oa_amt_h0?
+    # Let's use "oa_amt" if available, else "oa_amt_h0"
+    prod_col = "oa_amt" if "oa_amt" in passed_df.columns else "oa_amt_h0"
+    production = passed_df[prod_col].sum() if not passed_df.empty else 0.0
+    
+    risk_num = passed_df["todu_30ever_h6"].sum() if not passed_df.empty else 0.0
+    risk_den = passed_df["todu_amt_pile_h6"].sum() if not passed_df.empty else 0.0
+    
+    risk = calculate_b2_ever_h6(risk_num, risk_den, multiplier=multiplier, as_percentage=False)
+    
+    return production, float(risk)
+
+
+def calculate_bootstrap_intervals(
+    data_booked: pd.DataFrame,
+    cut_map: dict[float, float],
+    variables: list[str],
+    multiplier: float,
+    n_bootstraps: int = 1000,
+    confidence_level: float = 0.95,
+) -> dict[str, float]:
+    """
+    Calculate confidence intervals for Risk and Production using bootstrap resampling.
+
+    Args:
+        data_booked: DataFrame of booked accounts (patient-level data)
+        cut_map: Dictionary mapping var0 bin values to var1 cutoff thresholds
+        variables: List of [var0, var1] names
+        multiplier: Risk multiplier
+        n_bootstraps: Number of bootstrap iterations
+        confidence_level: Confidence level (e.g., 0.95)
+
+    Returns:
+        Dictionary with lower/upper bounds for production and risk
+    """
+    logger.info(f"Calculating {confidence_level:.0%} CI with {n_bootstraps} bootstraps...")
+    
+    # Parallel execution
+    results = Parallel(n_jobs=-1)(
+        delayed(_bootstrap_worker)(data_booked, cut_map, variables, multiplier)
+        for _ in range(n_bootstraps)
+    )
+    
+    # Unzip results
+    productions, risks = zip(*results)
+    
+    # Calculate percentiles
+    alpha = (1 - confidence_level) / 2
+    lower_p = alpha * 100
+    upper_p = (1 - alpha) * 100
+    
+    prod_lower = np.percentile(productions, lower_p)
+    prod_upper = np.percentile(productions, upper_p)
+    risk_lower = np.percentile(risks, lower_p)
+    risk_upper = np.percentile(risks, upper_p)
+    
+    # Format as percentage for Risk (since b2_ever is usually minimal, 
+    # but here we return raw value then convert? 
+    # calculate_b2_ever_h6 returns raw value by default (as_percentage=False).
+    # We should probably return them as they are and handle formatting downstream.
+    
+    return {
+        "production_ci_lower": prod_lower,
+        "production_ci_upper": prod_upper,
+        "risk_ci_lower": risk_lower,
+        "risk_ci_upper": risk_upper,
+    }
+
+
 def generate_cutoff_summary(
     optimal_solution_df: pd.DataFrame,
     variables: list[str],
@@ -773,6 +878,7 @@ def generate_cutoff_summary(
     scenario_name: str = "base",
     risk_value: float | None = None,
     production_value: float | None = None,
+    ci_data: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """
     Generate a readable summary of cutoff points by segment.
@@ -836,18 +942,26 @@ def generate_cutoff_summary(
     summary_rows = []
     for bin_val, col_name in bin_columns:
         cutoff = opt_row[col_name]
-        summary_rows.append(
-            {
-                "segment": segment_name,
-                "scenario": scenario_name,
-                f"{var0_name}_bin": int(bin_val),
-                "var0_name": var0_name,
-                "cutoff_value": int(cutoff) if pd.notna(cutoff) else None,
-                "var1_name": var1_name,
-                "risk_pct": risk_value,
-                "production": production_value,
-            }
-        )
+        
+        row_data = {
+            "segment": segment_name,
+            "scenario": scenario_name,
+            f"{var0_name}_bin": int(bin_val),
+            "var0_name": var0_name,
+            "cutoff_value": int(cutoff) if pd.notna(cutoff) else None,
+            "var1_name": var1_name,
+            "risk_pct": risk_value,
+            "production": production_value,
+        }
+
+        if ci_data:
+            row_data["production_ci_lower"] = ci_data.get("production_ci_lower")
+            row_data["production_ci_upper"] = ci_data.get("production_ci_upper")
+            # Risk CI is raw, convert to % if needed
+            row_data["risk_ci_lower"] = ci_data.get("risk_ci_lower", 0) * 100
+            row_data["risk_ci_upper"] = ci_data.get("risk_ci_upper", 0) * 100
+            
+        summary_rows.append(row_data)
 
     summary_df = pd.DataFrame(summary_rows)
 

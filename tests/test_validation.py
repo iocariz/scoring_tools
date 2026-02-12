@@ -1,8 +1,10 @@
+import pandas as pd
 import pytest
 from pydantic import ValidationError
-import pandas as pd
+
 from src.config import PreprocessingSettings
-from src.data_manager import validate_data_columns, validate_data_not_empty, DataValidationError
+from src.data_manager import DataValidationError, validate_data_columns, validate_data_not_empty
+
 
 class TestPreprocessorSettings:
     """Test configuration validation using Pydantic Settings model."""

@@ -8,7 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import pandas as pd
 import pytest
 
-from src.audit import classify_record, generate_audit_table, generate_audit_summary
+from src.audit import classify_record, generate_audit_summary, generate_audit_table
 
 
 class TestClassifyRecord:

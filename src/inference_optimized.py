@@ -34,7 +34,7 @@ from src.constants import (
     StatusName,
     Suffixes,
 )
-from src.estimators import HurdleRegressor
+from src.estimators import HurdleRegressor, TweedieGLM
 
 # Project imports
 from src.models import transform_variables
@@ -344,6 +344,10 @@ def _select_model_type_cv(
         "Lasso": [0.01, 0.05, 0.1],
         "ElasticNet": [(0.05, 0.5), (0.1, 0.5)],
     }
+    tweedie_params = {
+        "power": [1.1, 1.5, 1.9],
+        "alpha": [0.1, 0.5, 1.0],
+    }
 
     models = {"Linear Regression": LinearRegression(fit_intercept=False)}
 
@@ -357,6 +361,13 @@ def _select_model_type_cv(
         models[f"ElasticNet (α={alpha}, l1={l1_ratio})"] = ElasticNet(
             alpha=alpha, l1_ratio=l1_ratio, fit_intercept=False
         )
+    
+    # Add TweedieGLM models
+    for power in tweedie_params["power"]:
+        for alpha in tweedie_params["alpha"]:
+            models[f"Tweedie (p={power}, α={alpha})"] = TweedieGLM(
+                power=power, alpha=alpha, link="log"
+            )
 
     if include_hurdle:
         for alpha in [0.3, 0.5, 0.8]:

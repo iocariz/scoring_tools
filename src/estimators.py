@@ -139,3 +139,71 @@ class HurdleRegressor(BaseEstimator, RegressorMixin):
         for key, value in params.items():
             setattr(self, key, value)
         return self
+
+
+class TweedieGLM(BaseEstimator, RegressorMixin):
+    """
+    Tweedie Generalized Linear Model (GLM) for zero-inflated data.
+
+    This model uses the Tweedie distribution with a log-link function, which is
+    particularly effective for modeling semi-continuous data with a mass at zero
+    (e.g., insurance claims, credit risk exposure).
+
+    Parameters:
+    -----------
+    power : float, default=1.5
+        Power parameter for the Tweedie distribution.
+        - 1 < power < 2: Compound Poisson-Gamma (zero-inflated continuous).
+        - power = 0: Normal distribution.
+        - power = 1: Poisson distribution.
+        - power = 2: Gamma distribution.
+        - power = 3: Inverse Gaussian distribution.
+    alpha : float, default=0.5
+        Constant that multiplies the penalty terms (regularization).
+    link : str, default='log'
+        Link function to use. 'log' ensures non-negative predictions.
+    max_iter : int, default=100
+        Maximum number of iterations.
+
+    Attributes:
+    -----------
+    regressor_ : fitted TweedieRegressor from sklearn
+    """
+
+    def __init__(self, power=1.5, alpha=0.5, link="log", max_iter=100):
+        self.power = power
+        self.alpha = alpha
+        self.link = link
+        self.max_iter = max_iter
+
+    def fit(self, X, y, sample_weight=None):
+        """
+        Fit the Tweedie GLM model.
+
+        Args:
+            X: Features
+            y: Target variable
+            sample_weight: Optional sample weights
+
+        Returns:
+            self
+        """
+        from sklearn.linear_model import TweedieRegressor
+
+        self.regressor_ = TweedieRegressor(
+            power=self.power, alpha=self.alpha, link=self.link, max_iter=self.max_iter
+        )
+        self.regressor_.fit(X, y, sample_weight=sample_weight)
+        return self
+
+    def predict(self, X):
+        """
+        Predict using the Tweedie GLM model.
+
+        Args:
+            X: Features
+
+        Returns:
+            predictions: Array of predictions
+        """
+        return self.regressor_.predict(X)

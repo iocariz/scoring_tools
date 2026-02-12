@@ -1,19 +1,17 @@
 import numpy as np
 import pandas as pd
-import pytest
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.tree import DecisionTreeClassifier
 
 from src.models import (
     calculate_B2,
-    calculate_RV,
     calculate_risk_values,
+    calculate_RV,
     extract_splits_from_tree,
     optimal_splits_using_tree,
     preprocess_data,
     transform_variables,
 )
-
 
 # =============================================================================
 # extract_splits_from_tree Tests
@@ -184,7 +182,8 @@ class TestCalculateRV:
     def test_basic_rv(self):
         df = pd.DataFrame({"oa_amt": [100, 200, 300]})
         model = LinearRegression()
-        model.fit(np.array([[100], [200], [300]]), np.array([110, 220, 330]))
+        # Fit with DataFrame to preserve feature names, matching usage in calculate_RV
+        model.fit(pd.DataFrame({"oa_amt": [100, 200, 300]}), np.array([110, 220, 330]))
         result = calculate_RV(df, model)
         assert "todu_amt_pile_h6" in result.columns
         assert len(result) == 3
@@ -202,7 +201,8 @@ class TestCalculateRiskValues:
 
         # Create RV model
         model_rv = LinearRegression()
-        model_rv.fit(np.array([[100], [200], [300]]), np.array([1000, 2000, 3000]))
+        # Fit with DataFrame to preserve feature names
+        model_rv.fit(pd.DataFrame({"oa_amt": [100, 200, 300]}), np.array([1000, 2000, 3000]))
 
         # Create risk model
         from src.models import transform_variables as tv
