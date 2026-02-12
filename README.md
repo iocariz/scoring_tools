@@ -66,6 +66,7 @@ uv run python run_batch.py --parallel --workers 4
 | `src/utils.py` | Optimization algorithms (Pareto frontier, solution generation). |
 | `src/mr_pipeline.py` | Recent Monitoring (MR) validation logic. |
 | `src/stability.py` | PSI/CSI stability metrics calculation. |
+| `src/global_optimizer.py` | Global portfolio allocation (MILP & greedy solvers). |
 | `src/plots.py` | Interactive Plotly dashboards. |
 
 ## Configuration
@@ -165,6 +166,29 @@ Automatically compares the distribution of key variables between the **Main** pe
 - **PSI > 0.25**: Significant drift (Unstable)
 
 ## Outputs
+
+### 4. Global Portfolio Optimization
+
+After running the batch process, you can optimize the **global portfolio** to allocate risk targets dynamically across segments (Capital Allocation).
+
+```bash
+# MILP solver (default) — globally optimal
+uv run python run_allocation.py --target 1.0
+
+# Greedy hill-climbing — faster, approximate
+uv run python run_allocation.py --target 1.0 --method greedy
+```
+
+**Arguments:**
+
+- `--target`: Global risk target in % (e.g., `1.0`).
+- `--method`: Optimization method — `exact` (MILP, default) or `greedy`.
+- `--output`: Output CSV file (default: `allocation_results.csv`).
+- `--scenario`: Scenario to use (default: `base`).
+
+The optimizer selects one point from each segment's efficient frontier to maximize total production subject to a weighted-average risk constraint. The **exact** method formulates this as a Mixed-Integer Linear Program (via `scipy.optimize.milp`) and finds the globally optimal allocation. The **greedy** method uses hill-climbing and is faster but can get stuck at local optima. If the exact solver fails (e.g., infeasible target), it automatically falls back to greedy with a warning.
+
+Dominated frontier points (higher risk without higher production) are automatically pruned on load.
 
 Artifacts are saved in `output/SEGMENT_NAME/`:
 

@@ -481,6 +481,8 @@ def run_scenario_analysis(
     data_summary_desagregado.to_csv(f"data/data_summary_desagregado{suffix}.csv", index=False)
     opt_sol = visualizer.get_selected_solution()
     opt_sol.to_csv(f"data/optimal_solution{suffix}.csv", index=False)
+    # Export full efficient frontier for global optimization
+    data_summary.to_csv(f"data/efficient_frontier{suffix}.csv", index=False)
     logger.debug(f"[{segment}] Scenario {scenario_name} outputs saved with suffix '{suffix}'")
 
     # Extract risk and production values from summary table for cutoff summary

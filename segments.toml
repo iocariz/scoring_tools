@@ -25,6 +25,8 @@ segment_filter = "personal_loans,_fusion_and_tj_direct-no_premium-a-b"
 optimum_risk = 1.1
 risk_step = 0.1
 supersegment = "no_premium"  # Use shared model from supersegment
+# min_risk = 0.8  # Optional: minimum risk for global allocation
+# max_risk = 1.4  # Optional: maximum risk for global allocation
 
 [segments.no_premium_ab.fixed_cutoffs]
 sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]  # var0 bins
