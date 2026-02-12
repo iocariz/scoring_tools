@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -25,13 +26,15 @@ import dash_bootstrap_components as dbc
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from dash import Input, Output, State, callback_context, dcc, html
+from dash import Input, Output, State, callback_context, dash_table, dcc, html
+from dash.dependencies import MATCH
 from flask import send_from_directory
 from loguru import logger
 
 from src.styles import (
     COLOR_BAD,
     COLOR_GOOD,
+    COLOR_NEUTRAL,
     COLOR_PRIMARY,
     COLOR_PRODUCTION,
     COLOR_RISK,
@@ -46,7 +49,6 @@ IFRAME_STYLE: dict[str, Any] = {"width": "100%", "height": "800px", "border": "n
 TABLE_STYLE: dict[str, Any] = {
     "fontSize": "0.9rem",
 }
-
 
 # --- Global State ---
 # These will be set at startup based on CLI args or auto-detection
@@ -316,6 +318,15 @@ def create_comparison_charts(df_comp: pd.DataFrame) -> html.Div:
     # Sort by scenario order
     df_comp = df_comp.sort_values("Scenario_Order")
 
+    # Compute delta columns (Main vs MR)
+    has_mr_risk = "MR_Risk" in df_comp.columns and df_comp["MR_Risk"].notna().any()
+    has_mr_prod = "MR_Prod_Pct" in df_comp.columns and df_comp["MR_Prod_Pct"].notna().any()
+
+    if has_mr_risk:
+        df_comp["Risk_Delta"] = df_comp["Main_Risk"] - df_comp["MR_Risk"]
+    if has_mr_prod:
+        df_comp["Prod_Delta"] = df_comp["Main_Prod_Pct"] - df_comp["MR_Prod_Pct"]
+
     # Risk vs Production scatter
     fig_risk_prod = px.scatter(df_comp, x="Main_Risk", y="Main_Prod_Pct", text="Scenario", size_max=15)
     fig_risk_prod.update_traces(textposition="top center", marker=dict(size=14, color=COLOR_PRIMARY))
@@ -323,34 +334,62 @@ def create_comparison_charts(df_comp: pd.DataFrame) -> html.Div:
     fig_risk_prod.update_xaxes(title="Risk (%)")
     fig_risk_prod.update_yaxes(title="Production (%)")
 
-    # Risk comparison bar chart
+    # Risk comparison bar chart with delta annotations
     fig_sensitivity = go.Figure()
 
     fig_sensitivity.add_trace(
         go.Bar(name="Main Period", x=df_comp["Scenario"], y=df_comp["Main_Risk"], marker_color=COLOR_PRIMARY)
     )
 
-    if "MR_Risk" in df_comp.columns and df_comp["MR_Risk"].notna().any():
+    if has_mr_risk:
         fig_sensitivity.add_trace(
             go.Bar(name="MR Period", x=df_comp["Scenario"], y=df_comp["MR_Risk"], marker_color=COLOR_RISK)
         )
+        # Add delta annotations
+        for _i, row in df_comp.iterrows():
+            if pd.notna(row.get("Risk_Delta")):
+                delta = row["Risk_Delta"]
+                color = COLOR_GOOD if delta <= 0 else COLOR_BAD
+                y_pos = max(row["Main_Risk"], row["MR_Risk"])
+                fig_sensitivity.add_annotation(
+                    x=row["Scenario"],
+                    y=y_pos,
+                    text=f"\u0394 {delta:+.2%}",
+                    showarrow=False,
+                    yshift=15,
+                    font=dict(size=10, color=color, weight="bold"),
+                )
 
     fig_sensitivity.update_layout(barmode="group")
     apply_plotly_style(fig_sensitivity, title="Risk by Scenario (Main & MR Periods)", height=400)
     fig_sensitivity.update_xaxes(title="Scenario")
     fig_sensitivity.update_yaxes(title="Risk (%)")
 
-    # Production comparison
+    # Production comparison with delta annotations
     fig_production = go.Figure()
 
     fig_production.add_trace(
         go.Bar(name="Main Period", x=df_comp["Scenario"], y=df_comp["Main_Prod_Pct"], marker_color=COLOR_PRODUCTION)
     )
 
-    if "MR_Prod_Pct" in df_comp.columns and df_comp["MR_Prod_Pct"].notna().any():
+    if has_mr_prod:
         fig_production.add_trace(
             go.Bar(name="MR Period", x=df_comp["Scenario"], y=df_comp["MR_Prod_Pct"], marker_color=COLOR_PRIMARY)
         )
+        # Add delta annotations
+        for _i, row in df_comp.iterrows():
+            if pd.notna(row.get("Prod_Delta")):
+                delta = row["Prod_Delta"]
+                color = COLOR_GOOD if delta >= 0 else COLOR_BAD
+                y_pos = max(row["Main_Prod_Pct"], row["MR_Prod_Pct"])
+                fig_production.add_annotation(
+                    x=row["Scenario"],
+                    y=y_pos,
+                    text=f"\u0394 {delta:+.1%}",
+                    showarrow=False,
+                    yshift=15,
+                    font=dict(size=10, color=color, weight="bold"),
+                )
 
     fig_production.update_layout(barmode="group")
     apply_plotly_style(fig_production, title="Production by Scenario (Main & MR Periods)", height=400)
@@ -365,6 +404,9 @@ def create_comparison_charts(df_comp: pd.DataFrame) -> html.Div:
     for col in ["Main_Prod_Pct", "MR_Prod_Pct"]:
         if col in display_df.columns:
             display_df[col] = display_df[col].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "-")
+    for col in ["Risk_Delta", "Prod_Delta"]:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:+.2%}" if pd.notna(x) else "-")
 
     return html.Div(
         [
@@ -411,6 +453,544 @@ def create_empty_state() -> html.Div:
         ],
         color="info",
         className="mt-3",
+    )
+
+
+# --- KPI & UI Helper Functions ---
+
+
+def create_kpi_card(
+    title: str, value: str, delta: str = "", fmt: str = "", color_border: str = COLOR_PRIMARY
+) -> dbc.Col:
+    """Create a single KPI card with label, value, and colored delta."""
+    delta_class = "neutral"
+    if delta:
+        if delta.startswith("+") or delta.startswith("-"):
+            # For risk: negative is good. For production: positive is good.
+            if "risk" in title.lower():
+                delta_class = "positive" if delta.startswith("-") else "negative"
+            else:
+                delta_class = "positive" if delta.startswith("+") else "negative"
+
+    return dbc.Col(
+        html.Div(
+            [
+                html.Div(title, className="kpi-label"),
+                html.Div(value, className="kpi-value"),
+                html.Div(delta, className=f"kpi-delta {delta_class}") if delta else html.Div(),
+            ],
+            className="kpi-card",
+            style={"borderLeftColor": color_border},
+        ),
+        md=3,
+        className="mb-3",
+    )
+
+
+def create_kpi_row(main_csv_path: Path, mr_csv_path: Path) -> dbc.Row:
+    """Create a row of 4 KPI cards from main and MR CSV data."""
+    main_risk, main_prod_pct, main_prod_eur = None, None, None
+    mr_risk, mr_prod_pct = None, None
+
+    try:
+        if main_csv_path.exists():
+            df = pd.read_csv(main_csv_path)
+            opt = df[df["Metric"] == "Optimum selected"]
+            if not opt.empty:
+                main_risk = opt["Risk (%)"].values[0]
+                main_prod_pct = opt["Production (%)"].values[0]
+                if "Production (€)" in df.columns:
+                    main_prod_eur = opt["Production (€)"].values[0]
+
+        if mr_csv_path.exists():
+            df_mr = pd.read_csv(mr_csv_path)
+            opt_mr = df_mr[df_mr["Metric"] == "Optimum selected"]
+            if not opt_mr.empty:
+                mr_risk = opt_mr["Risk (%)"].values[0]
+                mr_prod_pct = opt_mr["Production (%)"].values[0]
+    except Exception as e:
+        logger.warning(f"Error loading KPI data: {e}")
+
+    # Build cards
+    risk_val = f"{main_risk:.2%}" if main_risk is not None else "N/A"
+    risk_delta = f"{main_risk - mr_risk:+.2%} vs MR" if main_risk is not None and mr_risk is not None else ""
+
+    prod_pct_val = f"{main_prod_pct:.1%}" if main_prod_pct is not None else "N/A"
+    prod_pct_delta = (
+        f"{main_prod_pct - mr_prod_pct:+.1%} vs MR" if main_prod_pct is not None and mr_prod_pct is not None else ""
+    )
+
+    prod_eur_val = f"EUR {main_prod_eur:,.0f}" if main_prod_eur is not None else "N/A"
+
+    risk_delta_val = f"{main_risk - mr_risk:+.2%}" if main_risk is not None and mr_risk is not None else "N/A"
+    risk_delta_suffix = "vs MR" if main_risk is not None and mr_risk is not None else ""
+
+    return dbc.Row(
+        [
+            create_kpi_card("Risk", risk_val, risk_delta, color_border=COLOR_RISK),
+            create_kpi_card("Production (%)", prod_pct_val, prod_pct_delta, color_border=COLOR_PRODUCTION),
+            create_kpi_card("Production (EUR)", prod_eur_val, color_border=COLOR_PRIMARY),
+            create_kpi_card("Risk Delta", risk_delta_val, risk_delta_suffix, color_border=COLOR_NEUTRAL),
+        ],
+        className="mb-4",
+    )
+
+
+def load_table_with_formatting(csv_path: Path) -> html.Div:
+    """Enhanced table with per-cell CSS: red for high risk, green for low."""
+    if not csv_path.exists():
+        return html.Div(f"Data file not found: {csv_path.name}", className="text-warning p-3 bg-light rounded")
+
+    try:
+        df = pd.read_csv(csv_path)
+
+        # Identify risk columns for conditional formatting
+        style_data_conditional = []
+        for col in df.columns:
+            if "Risk" in col or "%" in col:
+                # Values > 2% get red highlight
+                style_data_conditional.append(
+                    {
+                        "if": {"column_id": col, "filter_query": f"{{{col}}} > 0.02"},
+                        "className": "cell-high-risk",
+                    }
+                )
+                # Values < 1% get green highlight
+                style_data_conditional.append(
+                    {
+                        "if": {"column_id": col, "filter_query": f"{{{col}}} < 0.01"},
+                        "className": "cell-low-risk",
+                    }
+                )
+
+        # Format display values
+        columns = [{"name": c, "id": c, "type": "numeric"} for c in df.columns]
+        data = df.to_dict("records")
+
+        return dash_table.DataTable(
+            columns=columns,
+            data=data,
+            style_table={"overflowX": "auto"},
+            style_cell={"textAlign": "right", "padding": "8px", "fontSize": "0.85rem"},
+            style_header={"backgroundColor": "#f8f9fa", "fontWeight": "600", "borderBottom": "2px solid #dee2e6"},
+            style_data_conditional=style_data_conditional,
+            page_size=20,
+        )
+    except Exception as e:
+        logger.error(f"Error loading table from {csv_path}: {e}")
+        return html.Div(f"Error loading data: {e}", className="text-danger p-3")
+
+
+def create_download_button(button_id: str, label: str = "Download CSV") -> html.Div:
+    """Create a dbc.Button + dcc.Download pair."""
+    return html.Div(
+        [
+            dbc.Button(
+                [html.I(className="fas fa-download me-1"), label],
+                id={"type": "download-btn", "index": button_id},
+                color="secondary",
+                size="sm",
+                outline=True,
+                className="mb-3",
+            ),
+            dcc.Download(id={"type": "download-sink", "index": button_id}),
+        ],
+        className="d-inline-block",
+    )
+
+
+def create_collapsible_section(
+    header: str, children: list, section_id: str, is_open: bool = True
+) -> html.Div:
+    """Pattern-matching collapsible wrapper."""
+    return html.Div(
+        [
+            html.Div(
+                dbc.Button(
+                    [
+                        html.Span(header, className="fw-bold"),
+                        html.I(className="fas fa-chevron-down ms-2"),
+                    ],
+                    id={"type": "collapse-btn", "index": section_id},
+                    color="link",
+                    className="collapse-header text-decoration-none text-dark p-2 w-100 text-start",
+                ),
+            ),
+            dbc.Collapse(
+                html.Div(children, className="p-2"),
+                id={"type": "collapse-section", "index": section_id},
+                is_open=is_open,
+            ),
+        ],
+        className="border rounded mb-3",
+    )
+
+
+# --- Audit Trail Functions ---
+
+
+def get_audit_paths(scenario: str, segment: str | None = None) -> dict[str, Path]:
+    """Return paths for audit CSVs (main and MR)."""
+    data_dir = get_data_dir(segment)
+    return {
+        "main": data_dir / f"audit_{scenario}.csv",
+        "mr": data_dir / f"audit_{scenario}_mr.csv",
+    }
+
+
+def load_audit_summary(path: Path) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """Load audit CSV, group by classification, return (df, summary_df)."""
+    if not path.exists():
+        return None, None
+
+    try:
+        df = pd.read_csv(path)
+
+        # Group by classification for summary
+        classifications = ["keep", "swap_in", "swap_out", "rejected", "rejected_other"]
+        summary_rows = []
+        for cls in classifications:
+            subset = df[df["classification"] == cls]
+            count = len(subset)
+            total_amt = subset["oa_amt"].sum() if "oa_amt" in subset.columns else 0
+            total_adj = subset["oa_amt_adjusted"].sum() if "oa_amt_adjusted" in subset.columns else 0
+            summary_rows.append(
+                {"classification": cls, "count": count, "total_oa_amt": total_amt, "total_oa_amt_adjusted": total_adj}
+            )
+
+        summary_df = pd.DataFrame(summary_rows)
+        return df, summary_df
+    except Exception as e:
+        logger.error(f"Error loading audit from {path}: {e}")
+        return None, None
+
+
+def create_audit_tab_content(scenario: str, segment: str | None = None, period: str = "main") -> html.Div:
+    """Full Audit Trail tab: KPI cards + donut chart + filterable DataTable."""
+    paths = get_audit_paths(scenario, segment)
+    path = paths.get(period, paths["main"])
+    df, summary_df = load_audit_summary(path)
+
+    if df is None:
+        return dbc.Alert(
+            [
+                html.H4("Audit Trail Not Available", className="alert-heading"),
+                html.P(f"No audit data found for scenario '{scenario}' ({period} period)."),
+                html.P(f"Expected file: {path.name}"),
+            ],
+            color="warning",
+        )
+
+    scenario_display = scenario.capitalize()
+    segment_display = f" - {segment}" if segment else ""
+    period_display = "Main" if period == "main" else "MR"
+
+    # KPI cards from summary
+    classification_colors = {
+        "keep": COLOR_PRODUCTION,
+        "swap_in": "#27AE60",
+        "swap_out": COLOR_RISK,
+        "rejected": "#E67E22",
+        "rejected_other": COLOR_NEUTRAL,
+    }
+
+    kpi_cards = []
+    for _, row in summary_df.iterrows():
+        cls = row["classification"]
+        kpi_cards.append(
+            create_kpi_card(
+                title=cls.replace("_", " ").title(),
+                value=f"{row['count']:,}",
+                delta=f"EUR {row['total_oa_amt_adjusted']:,.0f}",
+                color_border=classification_colors.get(cls, COLOR_PRIMARY),
+            )
+        )
+
+    # Donut chart
+    fig_donut = px.pie(
+        summary_df,
+        values="count",
+        names="classification",
+        hole=0.4,
+        color="classification",
+        color_discrete_map=classification_colors,
+    )
+    fig_donut.update_traces(textposition="inside", textinfo="percent+label")
+    apply_plotly_style(fig_donut, title="Classification Breakdown", height=350)
+
+    # Filterable DataTable
+    display_cols = ["authorization_id", "status_name", "classification", "oa_amt", "oa_amt_adjusted", "cut_limit"]
+    available_cols = [c for c in display_cols if c in df.columns]
+    table_df = df[available_cols].copy()
+
+    # Conditional row styling
+    style_data_conditional = [
+        {"if": {"filter_query": '{classification} = "swap_in"'}, "backgroundColor": "rgba(46,204,113,0.08)"},
+        {"if": {"filter_query": '{classification} = "swap_out"'}, "backgroundColor": "rgba(231,76,60,0.08)"},
+    ]
+
+    audit_table = dash_table.DataTable(
+        columns=[{"name": c, "id": c} for c in available_cols],
+        data=table_df.to_dict("records"),
+        page_size=20,
+        filter_action="native",
+        sort_action="native",
+        style_table={"overflowX": "auto"},
+        style_cell={"textAlign": "right", "padding": "6px 10px", "fontSize": "0.83rem"},
+        style_header={"backgroundColor": "#f8f9fa", "fontWeight": "600", "borderBottom": "2px solid #dee2e6"},
+        style_data_conditional=style_data_conditional,
+    )
+
+    return html.Div(
+        [
+            html.H4(f"Audit Trail ({scenario_display}{segment_display} - {period_display})", className="mb-4"),
+            # Period toggle
+            dbc.RadioItems(
+                id="audit-period-toggle",
+                options=[
+                    {"label": "Main Period", "value": "main"},
+                    {"label": "MR Period", "value": "mr"},
+                ],
+                value=period,
+                inline=True,
+                className="mb-3",
+            ),
+            # KPI row (up to 5 cards)
+            dbc.Row(kpi_cards[:4], className="mb-3"),
+            dbc.Row(kpi_cards[4:], className="mb-3") if len(kpi_cards) > 4 else html.Div(),
+            # Charts + Table
+            dbc.Row(
+                [
+                    dbc.Col(dcc.Graph(figure=fig_donut), md=5),
+                    dbc.Col(
+                        [
+                            html.H5("Detail Records", className="mb-2"),
+                            audit_table,
+                        ],
+                        md=7,
+                    ),
+                ]
+            ),
+        ]
+    )
+
+
+# --- Model Details Functions ---
+
+
+def get_models_dir(segment: str | None = None) -> Path:
+    """Resolve model directory (handles supersegment fallback)."""
+    if segment:
+        direct = OUTPUT_BASE / segment / "models"
+        if direct.exists() and any(direct.iterdir()):
+            return direct
+        # Try supersegment fallback (e.g., _supersegment_no_premium for no_premium_*)
+        if "_" in segment:
+            prefix = segment.rsplit("_", 1)[0]
+        else:
+            prefix = segment
+        for item in OUTPUT_BASE.iterdir():
+            if item.is_dir() and item.name.startswith("_supersegment") and prefix in item.name:
+                models_dir = item / "models"
+                if models_dir.exists():
+                    return models_dir
+        return direct
+    # Single-run mode
+    if (OUTPUT_BASE / "models").exists():
+        return OUTPUT_BASE / "models"
+    return Path("models")
+
+
+def get_latest_model(segment: str | None = None) -> dict | None:
+    """Find newest model_*/metadata.json, return parsed dict."""
+    models_dir = get_models_dir(segment)
+    if not models_dir.exists():
+        return None
+
+    model_dirs = sorted(models_dir.glob("model_*"), reverse=True)
+    for md in model_dirs:
+        meta_path = md / "metadata.json"
+        if meta_path.exists():
+            try:
+                with open(meta_path) as f:
+                    metadata = json.load(f)
+                metadata["_model_dir"] = str(md)
+                return metadata
+            except Exception as e:
+                logger.warning(f"Error reading {meta_path}: {e}")
+    return None
+
+
+def parse_coefficients(model_dir: str) -> list[dict[str, Any]]:
+    """Parse model_summary.txt for feature coefficients."""
+    summary_path = Path(model_dir) / "model_summary.txt"
+    if not summary_path.exists():
+        return []
+
+    coefficients = []
+    in_coef_section = False
+    try:
+        text = summary_path.read_text()
+        for line in text.splitlines():
+            line = line.strip()
+            if "MODEL COEFFICIENTS" in line:
+                in_coef_section = True
+                continue
+            if in_coef_section:
+                if line.startswith("---") or not line:
+                    continue
+                # New section starts
+                if line.isupper() and ":" not in line:
+                    break
+                # Parse "feature_name: value"
+                if ":" in line:
+                    parts = line.rsplit(":", 1)
+                    if len(parts) == 2:
+                        try:
+                            name = parts[0].strip()
+                            value = float(parts[1].strip())
+                            coefficients.append({"feature": name, "coefficient": value})
+                        except ValueError:
+                            continue
+    except Exception as e:
+        logger.warning(f"Error parsing coefficients from {summary_path}: {e}")
+
+    return coefficients
+
+
+def create_model_details_content(segment: str | None = None) -> html.Div:
+    """Full Model Details tab: info card + R2 progress bars + coef chart + params table."""
+    metadata = get_latest_model(segment)
+
+    if metadata is None:
+        return dbc.Alert(
+            [
+                html.H4("Model Details Not Available", className="alert-heading"),
+                html.P("No trained model found. Run the pipeline first to generate a model."),
+            ],
+            color="warning",
+        )
+
+    model_dir = metadata.get("_model_dir", "")
+    segment_display = f" - {segment}" if segment else ""
+
+    # Model info card (3-column layout)
+    info_items = [
+        ("Model Type", metadata.get("model_type", "N/A")),
+        ("Features", str(metadata.get("num_features", "N/A"))),
+        ("Date", metadata.get("timestamp", "N/A")),
+        ("Samples", f"{metadata.get('total_samples', 'N/A'):,}" if isinstance(metadata.get("total_samples"), int) else "N/A"),
+        ("CV Folds", str(metadata.get("cv_folds", "N/A"))),
+        ("Is Hurdle", str(metadata.get("is_hurdle", "N/A"))),
+        ("Zero Proportion", f"{metadata.get('zero_proportion', 0):.1%}" if metadata.get("zero_proportion") is not None else "N/A"),
+        ("Weighted", str(metadata.get("weighted_regression", "N/A"))),
+    ]
+
+    info_cols = []
+    for label, value in info_items:
+        info_cols.append(
+            dbc.Col(
+                [html.Small(label, className="text-muted d-block"), html.Strong(value)],
+                md=3,
+                className="mb-2",
+            )
+        )
+
+    info_card = dbc.Card(
+        [
+            dbc.CardHeader("Model Information"),
+            dbc.CardBody(dbc.Row(info_cols)),
+        ],
+        className="mb-4",
+    )
+
+    # Performance: R2 progress bars
+    r2_metrics = [
+        ("CV Mean R\u00b2", metadata.get("cv_mean_r2")),
+        ("Full R\u00b2", metadata.get("full_r2")),
+        ("Step 1 CV R\u00b2", metadata.get("step1_cv_r2")),
+        ("Step 2 CV R\u00b2", metadata.get("step2_cv_r2")),
+    ]
+
+    progress_items = []
+    for label, val in r2_metrics:
+        if val is not None:
+            pct = max(0, min(100, val * 100))
+            color = "success" if pct >= 50 else "warning" if pct >= 20 else "danger"
+            progress_items.append(
+                html.Div(
+                    [
+                        html.Div(
+                            [html.Span(label, className="small"), html.Span(f"{val:.4f}", className="small float-end")],
+                            className="mb-1",
+                        ),
+                        dbc.Progress(value=pct, color=color, style={"height": "8px"}, className="mb-3"),
+                    ]
+                )
+            )
+
+    performance_card = dbc.Card(
+        [dbc.CardHeader("Performance Metrics"), dbc.CardBody(progress_items if progress_items else "No metrics available")],
+        className="mb-4",
+    )
+
+    # Coefficient chart
+    coefficients = parse_coefficients(model_dir)
+    coef_chart = html.Div()
+    if coefficients:
+        coef_df = pd.DataFrame(coefficients)
+        coef_df = coef_df.sort_values("coefficient")
+        colors = [COLOR_PRODUCTION if v >= 0 else COLOR_RISK for v in coef_df["coefficient"]]
+
+        fig_coef = go.Figure(
+            go.Bar(
+                x=coef_df["coefficient"],
+                y=coef_df["feature"],
+                orientation="h",
+                marker_color=colors,
+            )
+        )
+        apply_plotly_style(fig_coef, title="Feature Coefficients", height=max(250, len(coefficients) * 40))
+        fig_coef.update_layout(margin=dict(l=200))
+
+        coef_chart = dbc.Card(
+            [dbc.CardHeader("Feature Coefficients"), dbc.CardBody(dcc.Graph(figure=fig_coef))],
+            className="mb-4",
+        )
+
+    # Parameters table
+    model_params = metadata.get("model_params", {})
+    params_table = html.Div()
+    if model_params:
+        params_rows = [html.Tr([html.Td(k, className="fw-bold"), html.Td(str(v))]) for k, v in model_params.items()]
+        params_table = dbc.Card(
+            [
+                dbc.CardHeader("Model Parameters"),
+                dbc.CardBody(
+                    dbc.Table(
+                        [html.Thead(html.Tr([html.Th("Parameter"), html.Th("Value")])), html.Tbody(params_rows)],
+                        striped=True,
+                        bordered=True,
+                        hover=True,
+                        size="sm",
+                    )
+                ),
+            ],
+            className="mb-4",
+        )
+
+    return html.Div(
+        [
+            html.H4(f"Model Details{segment_display}", className="mb-4"),
+            info_card,
+            dbc.Row(
+                [
+                    dbc.Col(performance_card, md=5),
+                    dbc.Col(coef_chart, md=7),
+                ]
+            ),
+            params_table,
+        ]
     )
 
 
@@ -751,7 +1331,7 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
 # --- Initialize Dash App ---
 app = dash.Dash(
     __name__,
-    external_stylesheets=[dbc.themes.BOOTSTRAP],
+    external_stylesheets=[dbc.themes.FLATLY],
     title="Risk Scoring Dashboard",
     suppress_callback_exceptions=True,
 )
@@ -846,13 +1426,19 @@ def create_layout():
                     dbc.Tab(label="MR Period (Recent)", tab_id="tab-mr", disabled=not has_data),
                     dbc.Tab(label="Cutoff Explorer", tab_id="tab-cutoff", disabled=not has_data),
                     dbc.Tab(label="Stability Analysis", tab_id="tab-stability", disabled=not has_data),
+                    dbc.Tab(label="Audit Trail", tab_id="tab-audit", disabled=not has_data),
+                    dbc.Tab(label="Model Details", tab_id="tab-model", disabled=not has_data),
                 ],
                 id="tabs",
                 active_tab="tab-comp",
                 className="mb-3",
             ),
-            # Content area
-            html.Div(id="tab-content", className="mt-3"),
+            # Content area with loading spinner
+            dcc.Loading(
+                html.Div(id="tab-content", className="mt-3"),
+                type="default",
+                className="dash-loading",
+            ),
             # Footer
             html.Hr(className="mt-5"),
             html.Footer(
@@ -894,6 +1480,8 @@ def update_scenarios_on_segment_change(segment: str | None):
         dbc.Tab(label="MR Period (Recent)", tab_id="tab-mr", disabled=not has_data),
         dbc.Tab(label="Cutoff Explorer", tab_id="tab-cutoff", disabled=not has_data),
         dbc.Tab(label="Stability Analysis", tab_id="tab-stability", disabled=not has_data),
+        dbc.Tab(label="Audit Trail", tab_id="tab-audit", disabled=not has_data),
+        dbc.Tab(label="Model Details", tab_id="tab-model", disabled=not has_data),
     ]
 
     return options, value, not has_data, tabs
@@ -932,6 +1520,8 @@ def render_content(active_tab: str, scenario: str | None, segment: str | None) -
         return html.Div(
             [
                 html.H4(f"Main Period Results ({scenario_display}{segment_display})", className="mb-4"),
+                create_kpi_row(paths["main_csv"], paths["mr_csv"]),
+                create_download_button("main", "Download Main CSV"),
                 dbc.Card(
                     [dbc.CardHeader("Summary Metrics"), dbc.CardBody(load_table(paths["main_csv"]))], className="mb-4"
                 ),
@@ -954,6 +1544,8 @@ def render_content(active_tab: str, scenario: str | None, segment: str | None) -
         return html.Div(
             [
                 html.H4(f"MR Period Results ({scenario_display}{segment_display})", className="mb-4"),
+                create_kpi_row(paths["mr_csv"], paths["main_csv"]),
+                create_download_button("mr", "Download MR CSV"),
                 dbc.Card(
                     [dbc.CardHeader("Summary Metrics"), dbc.CardBody(load_table(paths["mr_csv"]))], className="mb-4"
                 ),
@@ -993,6 +1585,12 @@ def render_content(active_tab: str, scenario: str | None, segment: str | None) -
                 ),
             ]
         )
+
+    elif active_tab == "tab-audit":
+        return html.Div(id="audit-content", children=create_audit_tab_content(scenario, segment, "main"))
+
+    elif active_tab == "tab-model":
+        return create_model_details_content(segment)
 
     return html.Div("Select a tab", className="text-muted")
 
@@ -1248,6 +1846,74 @@ def update_risk_info(risk_value, store_data):
             html.Span(f"({len(pareto_solutions)} Pareto-optimal solutions available)", className="text-muted"),
         ]
     )
+
+
+# --- New Callbacks: Collapsible, Download, Audit Period ---
+
+
+@app.callback(
+    Output({"type": "collapse-section", "index": MATCH}, "is_open"),
+    [Input({"type": "collapse-btn", "index": MATCH}, "n_clicks")],
+    [State({"type": "collapse-section", "index": MATCH}, "is_open")],
+    prevent_initial_call=True,
+)
+def toggle_collapse(n_clicks, is_open):
+    """Toggle collapsible section open/closed."""
+    if n_clicks:
+        return not is_open
+    return is_open
+
+
+@app.callback(
+    Output({"type": "download-sink", "index": MATCH}, "data"),
+    [Input({"type": "download-btn", "index": MATCH}, "n_clicks")],
+    [State("scenario-selector", "value"), State("segment-selector", "value")],
+    prevent_initial_call=True,
+)
+def download_table(n_clicks, scenario, segment):
+    """Send CSV download for the matching table."""
+    if not n_clicks or not scenario:
+        return dash.no_update
+
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update
+
+    # Extract index from trigger to determine which file
+    trigger = ctx.triggered_id
+    index = trigger["index"] if isinstance(trigger, dict) else "main"
+
+    paths = get_scenario_paths(scenario, segment)
+    file_map = {
+        "main": paths["main_csv"],
+        "mr": paths["mr_csv"],
+    }
+
+    # Also handle audit downloads
+    if index in ("audit_main", "audit_mr"):
+        audit_paths = get_audit_paths(scenario, segment)
+        period = "main" if index == "audit_main" else "mr"
+        file_map[index] = audit_paths[period]
+
+    csv_path = file_map.get(index)
+    if csv_path is None or not csv_path.exists():
+        return dash.no_update
+
+    df = pd.read_csv(csv_path)
+    return dcc.send_data_frame(df.to_csv, csv_path.name, index=False)
+
+
+@app.callback(
+    Output("audit-content", "children"),
+    [Input("audit-period-toggle", "value")],
+    [State("scenario-selector", "value"), State("segment-selector", "value")],
+    prevent_initial_call=True,
+)
+def update_audit_period(period, scenario, segment):
+    """Re-render audit content for selected period."""
+    if not scenario:
+        return html.Div("No scenario selected", className="text-muted")
+    return create_audit_tab_content(scenario, segment, period)
 
 
 def parse_args():
