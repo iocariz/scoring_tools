@@ -361,7 +361,7 @@ def _select_model_type_cv(
         models[f"ElasticNet (α={alpha}, l1={l1_ratio})"] = ElasticNet(
             alpha=alpha, l1_ratio=l1_ratio, fit_intercept=False
         )
-    
+
     # Add TweedieGLM models
     for power in tweedie_params["power"]:
         for alpha in tweedie_params["alpha"]:
@@ -534,6 +534,180 @@ def _select_feature_set_cv(
     return results_df, best_feature_info
 
 
+def _prepare_pipeline_data(
+    data: pd.DataFrame,
+    bins: tuple,
+    variables: list[str],
+    indicators: list[str],
+    target_var: str,
+    multiplier: float,
+) -> tuple[pd.DataFrame, list[str], dict[str, list[str]], pd.Series | None, float]:
+    """Filter booked records, process dataset, compute features/weights/zero_prop."""
+    var_reg, feature_sets = _generate_regression_variables(variables)
+
+    booked_data = data[data[Columns.STATUS_NAME] == StatusName.BOOKED.value]
+    logger.info(f"Booked records: {len(booked_data):,} of {len(data):,} total")
+
+    all_data = process_dataset(
+        data=booked_data,
+        bins=bins,
+        variables=variables,
+        indicators=indicators,
+        target_var=target_var,
+        multiplier=multiplier,
+        var_reg=var_reg,
+    )
+
+    weights = all_data["n_observations"] if "n_observations" in all_data.columns else None
+    zero_prop = (np.abs(all_data[target_var]) < 1e-10).mean()
+
+    logger.info(f"Processed data: {all_data.shape[0]} groups, {all_data.shape[1]} columns")
+    logger.info(f"Base features (var_reg): {var_reg}")
+    logger.info(f"Zero proportion: {zero_prop:.1%}")
+    if weights is not None:
+        logger.info(f"Weight range: [{weights.min():.0f}, {weights.max():.0f}]")
+
+    return all_data, var_reg, feature_sets, weights, zero_prop
+
+
+def _select_best_model_and_features(
+    all_data: pd.DataFrame,
+    var_reg: list[str],
+    feature_sets: dict[str, list[str]],
+    target_var: str,
+    cv_folds: int,
+    include_hurdle: bool,
+    weights: pd.Series | None,
+) -> tuple[pd.DataFrame, dict, pd.DataFrame, dict]:
+    """Run model type CV + feature set CV, return best model template + feature info."""
+    results_step1, best_model_type = _select_model_type_cv(
+        data=all_data,
+        var_reg=var_reg,
+        target_var=target_var,
+        cv_folds=cv_folds,
+        include_hurdle=include_hurdle,
+        weights=weights,
+    )
+
+    best_model_name = best_model_type["name"]
+    best_model_template = best_model_type["model_template"]
+
+    logger.info("-" * 40)
+    logger.info(f"STEP 3: FEATURE SET SELECTION ({best_model_name}, {cv_folds}-fold CV)")
+    logger.info("-" * 40)
+
+    results_step2, best_feature_info = _select_feature_set_cv(
+        data=all_data,
+        feature_sets=feature_sets,
+        target_var=target_var,
+        model_template=best_model_template,
+        cv_folds=cv_folds,
+        weights=weights,
+    )
+
+    return results_step1, best_model_type, results_step2, best_feature_info
+
+
+def _train_and_evaluate_final_model(
+    best_model_template,
+    all_data: pd.DataFrame,
+    final_features: list[str],
+    target_var: str,
+    weights: pd.Series | None,
+) -> tuple[Any, float]:
+    """Clone, fit, predict, compute R², return model + full_r2."""
+    from sklearn.base import clone
+
+    final_model = clone(best_model_template)
+    y_all = all_data[target_var]
+    final_model.fit(all_data[final_features], y_all, sample_weight=weights)
+
+    y_all_pred = final_model.predict(all_data[final_features])
+    full_r2 = r2_score(y_all, y_all_pred, sample_weight=weights)
+
+    return final_model, full_r2
+
+
+def _save_model_to_disk(
+    final_model,
+    final_features: list[str],
+    best_model_info: dict,
+    best_model_type: dict,
+    best_feature_info: dict,
+    all_data: pd.DataFrame,
+    target_var: str,
+    multiplier: float,
+    cv_folds: int,
+    zero_prop: float,
+    weights: pd.Series | None,
+    model_base_path: str,
+) -> str:
+    """Build metadata, save model with metadata, return path."""
+    model_metadata = {
+        "cv_mean_r2": best_model_info["cv_mean_r2"],
+        "cv_std_r2": best_model_info["cv_std_r2"],
+        "full_r2": best_model_info["full_r2"],
+        "cv_folds": cv_folds,
+        "total_samples": len(all_data),
+        "target_variable": target_var,
+        "multiplier": multiplier,
+        "model_type_selected": best_model_info["model_type"],
+        "feature_set_selected": best_model_info["feature_set"],
+        "weighted_regression": best_model_info["weighted"],
+        "is_hurdle": best_model_info["is_hurdle"],
+        "zero_proportion": float(zero_prop),
+        "step1_cv_r2": best_model_type["cv_mean_r2"],
+        "step2_cv_r2": best_feature_info["cv_mean_r2"],
+    }
+
+    if weights is not None:
+        model_metadata["weight_stats"] = {
+            "min": float(weights.min()),
+            "max": float(weights.max()),
+            "mean": float(weights.mean()),
+        }
+
+    model_path = save_model_with_metadata(
+        model=final_model, features=final_features, metadata=model_metadata, base_path=model_base_path
+    )
+    logger.info(f"Model saved to: {model_path}")
+
+    return model_path
+
+
+def _create_pipeline_visualization(
+    final_model,
+    all_data: pd.DataFrame,
+    variables: list[str],
+    target_var: str,
+    final_features: list[str],
+    model_path: str | None,
+) -> go.Figure | None:
+    """Create 3D surface plot and save HTML."""
+    try:
+        fig = plot_3d_surface(
+            model=final_model,
+            train_data=all_data,
+            test_data=all_data,
+            variables=variables,
+            target_var=target_var,
+            features=final_features,
+            n_points=20,
+        )
+
+        if fig is not None:
+            logger.info("3D surface plot created")
+            if model_path:
+                plot_path = Path(model_path) / "prediction_surface.html"
+                fig.write_html(str(plot_path))
+                logger.info(f"  Plot saved to: {plot_path}")
+
+        return fig
+    except Exception as e:
+        logger.error(f"Visualization failed: {str(e)}")
+        return None
+
+
 def inference_pipeline(
     data: pd.DataFrame,
     bins: tuple,
@@ -593,8 +767,6 @@ def inference_pipeline(
         - model_path: Path to saved model (if save_model=True)
         - visualization: Plotly figure (if create_visualizations=True)
     """
-    from sklearn.base import clone
-
     if test_size != 0.4:
         logger.warning(
             "test_size parameter is deprecated and ignored. "
@@ -607,95 +779,40 @@ def inference_pipeline(
     logger.info("=" * 80)
     logger.info(f"Target: {target_var} | CV folds: {cv_folds} | Hurdle: {include_hurdle}")
 
-    # ========================================================================
-    # STEP 1: DATA PREPARATION (no train/test split)
-    # ========================================================================
+    # STEP 1: DATA PREPARATION
     logger.info("-" * 40)
     logger.info("STEP 1: DATA PREPARATION")
     logger.info("-" * 40)
 
-    var_reg, feature_sets = _generate_regression_variables(variables)
-
-    # Filter to booked records before processing
-    booked_data = data[data[Columns.STATUS_NAME] == StatusName.BOOKED.value]
-    logger.info(f"Booked records: {len(booked_data):,} of {len(data):,} total")
-
-    all_data = process_dataset(
-        data=booked_data,
-        bins=bins,
-        variables=variables,
-        indicators=indicators,
-        target_var=target_var,
-        multiplier=multiplier,
-        var_reg=var_reg,
+    all_data, var_reg, feature_sets, weights_all, zero_prop = _prepare_pipeline_data(
+        data, bins, variables, indicators, target_var, multiplier
     )
 
-    y_all = all_data[target_var]
-    weights_all = all_data["n_observations"] if "n_observations" in all_data.columns else None
-
-    zero_prop = (np.abs(y_all) < 1e-10).mean()
-
-    logger.info(f"Processed data: {all_data.shape[0]} groups, {all_data.shape[1]} columns")
-    logger.info(f"Base features (var_reg): {var_reg}")
-    logger.info(f"Zero proportion: {zero_prop:.1%}")
-    if weights_all is not None:
-        logger.info(f"Weight range: [{weights_all.min():.0f}, {weights_all.max():.0f}]")
-
-    # ========================================================================
-    # STEP 2: MODEL TYPE SELECTION (CV on base features)
-    # ========================================================================
+    # STEPS 2-3: MODEL TYPE + FEATURE SET SELECTION
     logger.info("-" * 40)
     logger.info("STEP 2: MODEL TYPE SELECTION (CV on var_reg)")
     logger.info("-" * 40)
 
-    results_step1, best_model_type = _select_model_type_cv(
-        data=all_data,
-        var_reg=var_reg,
-        target_var=target_var,
-        cv_folds=cv_folds,
-        include_hurdle=include_hurdle,
-        weights=weights_all,
+    results_step1, best_model_type, results_step2, best_feature_info = _select_best_model_and_features(
+        all_data, var_reg, feature_sets, target_var, cv_folds, include_hurdle, weights_all
     )
 
     best_model_name = best_model_type["name"]
-    best_model_template = best_model_type["model_template"]
-
-    # ========================================================================
-    # STEP 3: FEATURE SET SELECTION (CV with best model type)
-    # ========================================================================
-    logger.info("-" * 40)
-    logger.info(f"STEP 3: FEATURE SET SELECTION ({best_model_name}, {cv_folds}-fold CV)")
-    logger.info("-" * 40)
-
-    results_step2, best_feature_info = _select_feature_set_cv(
-        data=all_data,
-        feature_sets=feature_sets,
-        target_var=target_var,
-        model_template=best_model_template,
-        cv_folds=cv_folds,
-        weights=weights_all,
-    )
-
     final_features = best_feature_info["features"]
 
-    # ========================================================================
-    # STEP 4: TRAIN FINAL MODEL ON ALL DATA
-    # ========================================================================
+    # STEP 4: TRAIN FINAL MODEL
     logger.info("-" * 40)
     logger.info("STEP 4: FINAL MODEL TRAINING (all data)")
     logger.info("-" * 40)
 
-    final_model = clone(best_model_template)
-    final_model.fit(all_data[final_features], y_all, sample_weight=weights_all)
-
-    y_all_pred = final_model.predict(all_data[final_features])
-    full_r2 = r2_score(y_all, y_all_pred, sample_weight=weights_all)
+    final_model, full_r2 = _train_and_evaluate_final_model(
+        best_model_type["model_template"], all_data, final_features, target_var, weights_all
+    )
 
     logger.info(f"Final model: {best_model_name} + {best_feature_info['feature_set_name']}")
     logger.info(f"  CV R²: {best_feature_info['cv_mean_r2']:.4f} ± {best_feature_info['cv_std_r2']:.4f}")
     logger.info(f"  Full-data R² (refit): {full_r2:.4f}")
 
-    # Log coefficients
     if hasattr(final_model, "coef_"):
         logger.debug("Model Coefficients:")
         for feature, coef in zip(final_features, final_model.coef_):
@@ -717,76 +834,31 @@ def inference_pipeline(
         "is_hurdle": isinstance(final_model, HurdleRegressor),
     }
 
-    # ========================================================================
     # STEP 5: MODEL SAVING
-    # ========================================================================
     model_path = None
     if save_model:
         logger.info("-" * 40)
         logger.info("STEP 5: MODEL SAVING")
         logger.info("-" * 40)
 
-        model_metadata = {
-            "cv_mean_r2": best_model_info["cv_mean_r2"],
-            "cv_std_r2": best_model_info["cv_std_r2"],
-            "full_r2": best_model_info["full_r2"],
-            "cv_folds": cv_folds,
-            "total_samples": len(all_data),
-            "target_variable": target_var,
-            "multiplier": multiplier,
-            "model_type_selected": best_model_name,
-            "feature_set_selected": best_feature_info["feature_set_name"],
-            "weighted_regression": best_model_info["weighted"],
-            "is_hurdle": best_model_info["is_hurdle"],
-            "zero_proportion": float(zero_prop),
-            "step1_cv_r2": best_model_type["cv_mean_r2"],
-            "step2_cv_r2": best_feature_info["cv_mean_r2"],
-        }
-
-        if weights_all is not None:
-            model_metadata["weight_stats"] = {
-                "min": float(weights_all.min()),
-                "max": float(weights_all.max()),
-                "mean": float(weights_all.mean()),
-            }
-
-        model_path = save_model_with_metadata(
-            model=final_model, features=final_features, metadata=model_metadata, base_path=model_base_path
+        model_path = _save_model_to_disk(
+            final_model, final_features, best_model_info, best_model_type,
+            best_feature_info, all_data, target_var, multiplier, cv_folds,
+            zero_prop, weights_all, model_base_path,
         )
-        logger.info(f"Model saved to: {model_path}")
 
-    # ========================================================================
     # STEP 6: VISUALIZATION
-    # ========================================================================
     fig = None
     if create_visualizations and len(variables) == 2:
         logger.info("-" * 40)
         logger.info("STEP 6: 3D VISUALIZATION")
         logger.info("-" * 40)
 
-        try:
-            fig = plot_3d_surface(
-                model=final_model,
-                train_data=all_data,
-                test_data=all_data,
-                variables=variables,
-                target_var=target_var,
-                features=final_features,
-                n_points=20,
-            )
+        fig = _create_pipeline_visualization(
+            final_model, all_data, variables, target_var, final_features, model_path
+        )
 
-            if fig is not None:
-                logger.info("3D surface plot created")
-                if model_path:
-                    plot_path = Path(model_path) / "prediction_surface.html"
-                    fig.write_html(str(plot_path))
-                    logger.info(f"  Plot saved to: {plot_path}")
-        except Exception as e:
-            logger.error(f"Visualization failed: {str(e)}")
-
-    # ========================================================================
     # PIPELINE SUMMARY
-    # ========================================================================
     logger.info("=" * 80)
     logger.info("PIPELINE SUMMARY")
     logger.info(f"  Model type (Step 1): {best_model_name} "

@@ -47,7 +47,6 @@ class ConsolidatedMetrics:
     swap_in_todu_30ever_h6: float = 0.0
     swap_in_todu_amt_pile_h6: float = 0.0
     swap_out_todu_30ever_h6: float = 0.0
-    swap_out_todu_30ever_h6: float = 0.0
     swap_out_todu_amt_pile_h6: float = 0.0
 
     # Confidence Intervals (for optimum solution)
@@ -519,40 +518,40 @@ def consolidate_segments(
                 results.append(consolidated.to_dict())
                 supersegment_data[ss_name] = agg
 
-        # Add all individual segments (including those in supersegments)
-        for seg_name, metrics in segment_metrics.items():
-            agg = aggregate_metrics([metrics])
-            # Determine group name based on supersegment membership
-            if seg_name in segment_to_supersegment:
-                ss_name = segment_to_supersegment[seg_name]
-                group_name = f"{ss_name}/{seg_name}"
-            else:
-                group_name = f"segment_{seg_name}"
+            # Add all individual segments (including those in supersegments)
+            for seg_name, metrics in segment_metrics.items():
+                agg = aggregate_metrics([metrics])
+                # Determine group name based on supersegment membership
+                if seg_name in segment_to_supersegment:
+                    ss_name = segment_to_supersegment[seg_name]
+                    group_name = f"{ss_name}/{seg_name}"
+                else:
+                    group_name = f"segment_{seg_name}"
 
-            consolidated = ConsolidatedMetrics(
-                group_name=group_name,
-                period=period,
-                scenario=scenario_name,
-                segments=[seg_name],
-                actual_production=agg["actual"]["production"],
-                actual_todu_30ever_h6=agg["actual"]["todu_30ever_h6"],
-                actual_todu_amt_pile_h6=agg["actual"]["todu_amt_pile_h6"],
-                optimum_production=agg["optimum"]["production"],
-                optimum_todu_30ever_h6=agg["optimum"]["todu_30ever_h6"],
-                optimum_todu_amt_pile_h6=agg["optimum"]["todu_amt_pile_h6"],
-                swap_in_production=agg["swap_in"]["production"],
-                swap_in_todu_30ever_h6=agg["swap_in"]["todu_30ever_h6"],
-                swap_in_todu_amt_pile_h6=agg["swap_in"]["todu_amt_pile_h6"],
-                swap_out_production=agg["swap_out"]["production"],
-                swap_out_todu_30ever_h6=agg["swap_out"]["todu_30ever_h6"],
-                swap_out_todu_amt_pile_h6=agg["swap_out"]["todu_amt_pile_h6"],
-                # Pass segment-level CIs (fully available)
-                optimum_production_ci_lower=metrics["optimum"].get("production_ci_lower", 0),
-                optimum_production_ci_upper=metrics["optimum"].get("production_ci_upper", 0),
-                optimum_risk_ci_lower=metrics["optimum"].get("risk_ci_lower", 0),
-                optimum_risk_ci_upper=metrics["optimum"].get("risk_ci_upper", 0),
-            )
-            results.append(consolidated.to_dict())
+                consolidated = ConsolidatedMetrics(
+                    group_name=group_name,
+                    period=period,
+                    scenario=scenario_name,
+                    segments=[seg_name],
+                    actual_production=agg["actual"]["production"],
+                    actual_todu_30ever_h6=agg["actual"]["todu_30ever_h6"],
+                    actual_todu_amt_pile_h6=agg["actual"]["todu_amt_pile_h6"],
+                    optimum_production=agg["optimum"]["production"],
+                    optimum_todu_30ever_h6=agg["optimum"]["todu_30ever_h6"],
+                    optimum_todu_amt_pile_h6=agg["optimum"]["todu_amt_pile_h6"],
+                    swap_in_production=agg["swap_in"]["production"],
+                    swap_in_todu_30ever_h6=agg["swap_in"]["todu_30ever_h6"],
+                    swap_in_todu_amt_pile_h6=agg["swap_in"]["todu_amt_pile_h6"],
+                    swap_out_production=agg["swap_out"]["production"],
+                    swap_out_todu_30ever_h6=agg["swap_out"]["todu_30ever_h6"],
+                    swap_out_todu_amt_pile_h6=agg["swap_out"]["todu_amt_pile_h6"],
+                    # Pass segment-level CIs (fully available)
+                    optimum_production_ci_lower=metrics["optimum"].get("production_ci_lower", 0),
+                    optimum_production_ci_upper=metrics["optimum"].get("production_ci_upper", 0),
+                    optimum_risk_ci_lower=metrics["optimum"].get("risk_ci_lower", 0),
+                    optimum_risk_ci_upper=metrics["optimum"].get("risk_ci_upper", 0),
+                )
+                results.append(consolidated.to_dict())
 
             # Aggregate total across all segments
             all_metrics_list = list(segment_metrics.values())

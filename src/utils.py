@@ -279,6 +279,123 @@ def get_fact_sol(
         raise
 
 
+def _validate_cutoff_dict_structure(
+    fixed_cutoffs: dict[str, list[int | float]],
+    variables: list[str],
+) -> tuple[list, list]:
+    """Validate fixed_cutoffs has correct keys and matching lengths."""
+    var0_name = variables[0]
+    var1_name = variables[1]
+
+    if var0_name not in fixed_cutoffs or var1_name not in fixed_cutoffs:
+        raise ValueError(f"fixed_cutoffs must contain both variables: {variables}. Got: {list(fixed_cutoffs.keys())}")
+
+    var0_bins = fixed_cutoffs[var0_name]
+    var1_cutoffs = fixed_cutoffs[var1_name]
+
+    if len(var0_bins) != len(var1_cutoffs):
+        raise ValueError(
+            f"Length mismatch: {var0_name} has {len(var0_bins)} bins, "
+            f"but {var1_name} has {len(var1_cutoffs)} cutoffs. They must match."
+        )
+
+    return var0_bins, var1_cutoffs
+
+
+def _validate_bins_match_data(
+    var0_bins: list,
+    values_var0: list | np.ndarray,
+    strict_validation: bool,
+) -> None:
+    """Verify config bins exist in data bins."""
+    values_var0_set = {float(v) for v in values_var0}
+    var0_bins_set = {float(v) for v in var0_bins}
+
+    if var0_bins_set != values_var0_set:
+        msg = (
+            f"Fixed cutoff bins {sorted(var0_bins_set)} don't exactly match data bins {sorted(values_var0_set)}. "
+        )
+        if strict_validation:
+            raise ValueError(msg + "Enable strict_validation=False to proceed anyway.")
+        logger.warning(msg + "Proceeding with provided cutoffs.")
+
+
+def _validate_cutoff_monotonicity(
+    var0_bins: list,
+    var1_cutoffs: list,
+    inv_var1: bool,
+    strict_validation: bool,
+) -> None:
+    """Check non-decreasing/non-increasing pattern of cutoffs."""
+    sorted_pairs = sorted(zip(var0_bins, var1_cutoffs), key=lambda x: float(x[0]))
+    monotonicity_issues = []
+    for i in range(1, len(sorted_pairs)):
+        prev_bin, prev_cutoff = sorted_pairs[i - 1]
+        curr_bin, curr_cutoff = sorted_pairs[i]
+        if inv_var1:
+            if curr_cutoff > prev_cutoff:
+                monotonicity_issues.append(
+                    f"bin {prev_bin} (cutoff={prev_cutoff}) -> bin {curr_bin} (cutoff={curr_cutoff})"
+                )
+        else:
+            if curr_cutoff < prev_cutoff:
+                monotonicity_issues.append(
+                    f"bin {prev_bin} (cutoff={prev_cutoff}) -> bin {curr_bin} (cutoff={curr_cutoff})"
+                )
+
+    if monotonicity_issues:
+        direction = "non-increasing" if inv_var1 else "non-decreasing"
+        msg = (
+            f"Non-monotonic cutoffs detected. Expected {direction} cutoffs for ascending bins. "
+            f"Issues: {monotonicity_issues}. This may indicate a configuration error."
+        )
+        if strict_validation:
+            raise ValueError(msg)
+        logger.warning(msg)
+
+
+def _validate_cutoff_range(
+    var1_cutoffs: list,
+    values_var1: list | np.ndarray | None,
+    strict_validation: bool,
+) -> None:
+    """Verify cutoff values are within data min/max."""
+    if values_var1 is None or len(values_var1) == 0:
+        return
+
+    min_var1, max_var1 = min(values_var1), max(values_var1)
+    out_of_range = [cutoff for cutoff in var1_cutoffs if cutoff < min_var1 or cutoff > max_var1]
+    if out_of_range:
+        msg = (
+            f"Cutoff values {out_of_range} are outside data range [{min_var1}, {max_var1}]. "
+            f"This may result in unexpected acceptance rates."
+        )
+        if strict_validation:
+            raise ValueError(msg)
+        logger.warning(msg)
+
+
+def _build_cutoff_dataframe(
+    var0_bins: list,
+    var1_cutoffs: list,
+    values_var0: list | np.ndarray,
+) -> pd.DataFrame:
+    """Construct single-row DataFrame with sol_fac + bin columns."""
+    solution_data = {"sol_fac": [0]}
+    bin_to_cutoff = {float(b): c for b, c in zip(var0_bins, var1_cutoffs)}
+
+    for bin_val in values_var0:
+        cutoff_val = bin_to_cutoff.get(float(bin_val))
+        if cutoff_val is None:
+            raise ValueError(
+                f"No cutoff defined for bin {bin_val}. "
+                f"Fixed cutoffs must cover all data bins: {list(values_var0)}"
+            )
+        solution_data[bin_val] = [cutoff_val]
+
+    return pd.DataFrame(solution_data)
+
+
 def create_fixed_cutoff_solution(
     fixed_cutoffs: dict[str, list[int | float]],
     variables: list[str],
@@ -329,99 +446,12 @@ def create_fixed_cutoff_solution(
         >>> # Result: DataFrame with columns [sol_fac, 1.0, 2.0, 3.0, 4.0]
         >>> #         Values:                [0,       2,   2,   3,   4]
     """
-    var0_name = variables[0]
-    var1_name = variables[1]
+    var0_bins, var1_cutoffs = _validate_cutoff_dict_structure(fixed_cutoffs, variables)
+    _validate_bins_match_data(var0_bins, values_var0, strict_validation)
+    _validate_cutoff_monotonicity(var0_bins, var1_cutoffs, inv_var1, strict_validation)
+    _validate_cutoff_range(var1_cutoffs, values_var1, strict_validation)
 
-    # Validate fixed_cutoffs structure
-    if var0_name not in fixed_cutoffs or var1_name not in fixed_cutoffs:
-        raise ValueError(f"fixed_cutoffs must contain both variables: {variables}. Got: {list(fixed_cutoffs.keys())}")
-
-    var0_bins = fixed_cutoffs[var0_name]
-    var1_cutoffs = fixed_cutoffs[var1_name]
-
-    if len(var0_bins) != len(var1_cutoffs):
-        raise ValueError(
-            f"Length mismatch: {var0_name} has {len(var0_bins)} bins, "
-            f"but {var1_name} has {len(var1_cutoffs)} cutoffs. They must match."
-        )
-
-    # Validate that var0_bins match the actual data bins
-    values_var0_set = {float(v) for v in values_var0}
-    var0_bins_set = {float(v) for v in var0_bins}
-
-    if var0_bins_set != values_var0_set:
-        msg = (
-            f"Fixed cutoff bins {sorted(var0_bins_set)} don't exactly match data bins {sorted(values_var0_set)}. "
-        )
-        if strict_validation:
-            raise ValueError(msg + "Enable strict_validation=False to proceed anyway.")
-        logger.warning(msg + "Proceeding with provided cutoffs.")
-
-    # Validate monotonicity of cutoffs (cutoffs should be non-decreasing for ascending bins)
-    # For inv_var1=True, cutoffs should be non-increasing (lower cutoff = more restrictive)
-    sorted_pairs = sorted(zip(var0_bins, var1_cutoffs), key=lambda x: float(x[0]))
-    monotonicity_issues = []
-    for i in range(1, len(sorted_pairs)):
-        prev_bin, prev_cutoff = sorted_pairs[i - 1]
-        curr_bin, curr_cutoff = sorted_pairs[i]
-        if inv_var1:
-            # Inverted: cutoffs should be non-increasing (higher bin = lower or equal cutoff)
-            if curr_cutoff > prev_cutoff:
-                monotonicity_issues.append(
-                    f"bin {prev_bin} (cutoff={prev_cutoff}) -> bin {curr_bin} (cutoff={curr_cutoff})"
-                )
-        else:
-            # Normal: cutoffs should be non-decreasing (higher bin = higher or equal cutoff)
-            if curr_cutoff < prev_cutoff:
-                monotonicity_issues.append(
-                    f"bin {prev_bin} (cutoff={prev_cutoff}) -> bin {curr_bin} (cutoff={curr_cutoff})"
-                )
-
-    if monotonicity_issues:
-        direction = "non-increasing" if inv_var1 else "non-decreasing"
-        msg = (
-            f"Non-monotonic cutoffs detected. Expected {direction} cutoffs for ascending bins. "
-            f"Issues: {monotonicity_issues}. This may indicate a configuration error."
-        )
-        if strict_validation:
-            raise ValueError(msg)
-        logger.warning(msg)
-
-    # Validate cutoffs are within data range (if values_var1 provided)
-    if values_var1 is not None and len(values_var1) > 0:
-        min_var1, max_var1 = min(values_var1), max(values_var1)
-        out_of_range = []
-        for cutoff in var1_cutoffs:
-            if cutoff < min_var1 or cutoff > max_var1:
-                out_of_range.append(cutoff)
-        if out_of_range:
-            msg = (
-                f"Cutoff values {out_of_range} are outside data range [{min_var1}, {max_var1}]. "
-                f"This may result in unexpected acceptance rates."
-            )
-            if strict_validation:
-                raise ValueError(msg)
-            logger.warning(msg)
-
-    # Create solution DataFrame
-    # Columns are the var0 bin values, values are the var1 cutoff limits
-    # Use values_var0 elements as column names to ensure type consistency with get_fact_sol
-    solution_data = {"sol_fac": [0]}
-
-    # Build a mapping from var0_bins to cutoffs
-    bin_to_cutoff = {float(b): c for b, c in zip(var0_bins, var1_cutoffs)}
-
-    # Use values_var0 directly as column names (preserves original type: int or float)
-    for bin_val in values_var0:
-        cutoff_val = bin_to_cutoff.get(float(bin_val))
-        if cutoff_val is None:
-            raise ValueError(
-                f"No cutoff defined for bin {bin_val}. "
-                f"Fixed cutoffs must cover all data bins: {list(values_var0)}"
-            )
-        solution_data[bin_val] = [cutoff_val]
-
-    df = pd.DataFrame(solution_data)
+    df = _build_cutoff_dataframe(var0_bins, var1_cutoffs, values_var0)
     logger.info(f"Created fixed cutoff solution: {dict(zip(var0_bins, var1_cutoffs))}")
 
     return df
@@ -615,6 +645,119 @@ def calculate_stress_factor(
     return float(stress_factor)
 
 
+def _prepare_transformation_data(
+    data: pd.DataFrame,
+    date_col: str,
+    n_months: int | None,
+) -> pd.DataFrame:
+    """Copy data, convert dates, filter last N months, filter eligible, mark booked."""
+    df = data.copy()
+    if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
+        df[date_col] = pd.to_datetime(df[date_col])
+
+    if n_months is not None:
+        max_date = df[date_col].max()
+        cutoff_date = max_date - pd.DateOffset(months=n_months)
+        df = df[df[date_col] >= cutoff_date]
+
+    eligible_mask = df["se_decision_id"].isin(["ok", "rv"])
+    df_eligible = df[eligible_mask].copy()
+    df_eligible["is_booked"] = df_eligible[Columns.STATUS_NAME] == StatusName.BOOKED.value
+
+    return df_eligible
+
+
+def _calculate_monthly_rates(
+    df_eligible: pd.DataFrame,
+    amount_col: str,
+    date_col: str,
+) -> tuple[float, float, float, pd.DataFrame]:
+    """Compute overall rate and monthly aggregation."""
+    total_eligible = df_eligible[amount_col].sum()
+    total_booked = df_eligible.loc[df_eligible["is_booked"], amount_col].sum()
+    overall_rate = (total_booked / total_eligible) if total_eligible > 0 else 0
+
+    df_eligible["period"] = df_eligible[date_col].dt.to_period("M")
+
+    monthly = (
+        df_eligible.groupby("period")
+        .agg(
+            eligible_amt=(amount_col, "sum"),
+            booked_amt=(amount_col, lambda x: x[df_eligible.loc[x.index, "is_booked"]].sum()),
+        )
+        .reset_index()
+    )
+
+    monthly["rate"] = monthly["booked_amt"] / monthly["eligible_amt"]
+    monthly["rate"] = monthly["rate"].fillna(0)
+    monthly["plot_date"] = monthly["period"].dt.to_timestamp()
+
+    return overall_rate, total_booked, total_eligible, monthly
+
+
+def _create_transformation_plot(
+    monthly: pd.DataFrame,
+    overall_rate: float,
+    plot_width: int,
+    plot_height: int,
+) -> go.Figure:
+    """Create dual-axis Plotly figure with bars + line + avg line + layout."""
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    fig.add_trace(
+        go.Bar(
+            x=monthly["plot_date"],
+            y=monthly["eligible_amt"],
+            name="Eligible Volume (€)",
+            opacity=0.3,
+            marker_color=styles.COLOR_SECONDARY,
+            hovertemplate="Volume: %{y:,.0f} €<extra></extra>",
+        ),
+        secondary_y=True,
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=monthly["plot_date"],
+            y=monthly["rate"],
+            name="Transformation Rate",
+            mode="lines+markers",
+            line=dict(color=styles.COLOR_ACCENT, width=3),
+            marker=dict(size=8),
+            hovertemplate="Rate: %{y:.1%}<extra></extra>",
+        ),
+        secondary_y=False,
+    )
+
+    fig.add_hline(
+        y=overall_rate,
+        line_dash="dot",
+        line_color=styles.COLOR_RISK,
+        annotation_text=f"Avg: {overall_rate:.1%}",
+        annotation_position="top left",
+        secondary_y=False,
+    )
+
+    styles.apply_plotly_style(fig, width=plot_width, height=plot_height)
+    fig.update_layout(
+        title="<b>Monthly Transformation Rate</b><br><sup>(Booked / [OK + RV]) by Amount</sup>",
+        plot_bgcolor="white",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        yaxis=dict(
+            title="Transformation Rate",
+            tickformat=".0%",
+            range=[0, max(monthly["rate"].max() * 1.1, overall_rate * 1.1)],
+            showgrid=True,
+            gridcolor="lightgrey",
+        ),
+        yaxis2=dict(title="Eligible Volume (€)", showgrid=False, zeroline=False),
+        xaxis=dict(title="Month", showgrid=False),
+    )
+
+    return fig
+
+
 def calculate_and_plot_transformation_rate(
     data: pd.DataFrame,
     date_col: str,
@@ -636,121 +779,17 @@ def calculate_and_plot_transformation_rate(
       - 'figure': Plotly go.Figure object
     """
 
-    # 1. Data Preparation
-    # ---------------------------------------------------------
-    df = data.copy()
-    # Ensure date is datetime
-    if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
-        df[date_col] = pd.to_datetime(df[date_col])
-
-    # Filter for last n months
-    if n_months is not None:
-        max_date = df[date_col].max()
-        cutoff_date = max_date - pd.DateOffset(months=n_months)
-        df = df[df[date_col] >= cutoff_date]
-
-    # Filter eligible (Denominator: Decision OK or RV)
-    eligible_mask = df["se_decision_id"].isin(["ok", "rv"])
-    df_eligible = df[eligible_mask].copy()
-
-    # Identify booked (Numerator: Status Booked AND Eligible)
-    # Note: We rely on the row being in the eligible set first
-    df_eligible["is_booked"] = df_eligible[Columns.STATUS_NAME] == StatusName.BOOKED.value
-
-    # 2. Calculation
-    # ---------------------------------------------------------
-    # Overall Stats
-    total_eligible = df_eligible[amount_col].sum()
-    total_booked = df_eligible.loc[df_eligible["is_booked"], amount_col].sum()
-    overall_rate = (total_booked / total_eligible) if total_eligible > 0 else 0
-
-    # Monthly Aggregation
-    # We use to_period('M') for grouping, but convert back to timestamp for plotting
-    df_eligible["period"] = df_eligible[date_col].dt.to_period("M")
-
-    monthly = (
-        df_eligible.groupby("period")
-        .agg(
-            eligible_amt=(amount_col, "sum"),
-            booked_amt=(amount_col, lambda x: x[df_eligible.loc[x.index, "is_booked"]].sum()),
-        )
-        .reset_index()
+    df_eligible = _prepare_transformation_data(data, date_col, n_months)
+    overall_rate, total_booked, total_eligible, monthly = _calculate_monthly_rates(
+        df_eligible, amount_col, date_col
     )
-
-    monthly["rate"] = monthly["booked_amt"] / monthly["eligible_amt"]
-    monthly["rate"] = monthly["rate"].fillna(0)
-
-    # Convert period back to timestamp for Plotly (uses start of month)
-    monthly["plot_date"] = monthly["period"].dt.to_timestamp()
-
-    # 3. Plotting
-    # ---------------------------------------------------------
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-
-    # Trace 1: Volume (Bars) - Plotted on Secondary Y (Right)
-    # We plot this first so it stays in the background
-    fig.add_trace(
-        go.Bar(
-            x=monthly["plot_date"],
-            y=monthly["eligible_amt"],
-            name="Eligible Volume (€)",
-            opacity=0.3,
-            marker_color=styles.COLOR_SECONDARY,
-            hovertemplate="Volume: %{y:,.0f} €<extra></extra>",
-        ),
-        secondary_y=True,
-    )
-
-    # Trace 2: Transformation Rate (Line) - Plotted on Primary Y (Left)
-    fig.add_trace(
-        go.Scatter(
-            x=monthly["plot_date"],
-            y=monthly["rate"],
-            name="Transformation Rate",
-            mode="lines+markers",
-            line=dict(color=styles.COLOR_ACCENT, width=3),
-            marker=dict(size=8),
-            hovertemplate="Rate: %{y:.1%}<extra></extra>",
-        ),
-        secondary_y=False,
-    )
-
-    # Add Overall Average Line
-    fig.add_hline(
-        y=overall_rate,
-        line_dash="dot",
-        line_color=styles.COLOR_RISK,
-        annotation_text=f"Avg: {overall_rate:.1%}",
-        annotation_position="top left",
-        secondary_y=False,
-    )
-
-    # 4. Layout Improvements
-    # ---------------------------------------------------------
-    styles.apply_plotly_style(fig, width=plot_width, height=plot_height)
-    fig.update_layout(
-        title="<b>Monthly Transformation Rate</b><br><sup>(Booked / [OK + RV]) by Amount</sup>",
-        plot_bgcolor="white",
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        # Left Axis (Rate)
-        yaxis=dict(
-            title="Transformation Rate",
-            tickformat=".0%",  # Displays 0.5 as 50%
-            range=[0, max(monthly["rate"].max() * 1.1, overall_rate * 1.1)],
-            showgrid=True,
-            gridcolor="lightgrey",
-        ),
-        # Right Axis (Volume)
-        yaxis2=dict(title="Eligible Volume (€)", showgrid=False, zeroline=False),
-        xaxis=dict(title="Month", showgrid=False),
-    )
+    fig = _create_transformation_plot(monthly, overall_rate, plot_width, plot_height)
 
     return {
         "overall_rate": overall_rate,
         "overall_booked_amt": total_booked,
         "overall_eligible_amt": total_eligible,
-        "monthly_amounts": monthly.drop(columns=["plot_date"]),  # Return clean DF
+        "monthly_amounts": monthly.drop(columns=["plot_date"]),
         "figure": fig,
     }
 
@@ -779,39 +818,39 @@ def _bootstrap_worker(
     # Apply cuts
     var0 = variables[0]
     var1 = variables[1]
-    
+
     # Map cuts to each row based on var0 bin
-    # We use a default value (infinite) for bins not in cut_map to be safe, 
+    # We use a default value (infinite) for bins not in cut_map to be safe,
     # though valid data should be covered.
-    # Optimized mapping: converting dict to series for mapping is faster for large dfs 
-    # but for loop might be slow. 
+    # Optimized mapping: converting dict to series for mapping is faster for large dfs
+    # but for loop might be slow.
     # Let's use map which is generally fast enough for this scale.
     full_cut_series = sample[var0].map(cut_map).fillna(np.inf)
-    
+
     # Filter passed
     passes = sample[var1] <= full_cut_series
-    
+
     # Calculate metrics on passed (Production) and Risk (B2)
-    # Production: sum of filtered oa_amt (assuming oa_amt is the production column, 
+    # Production: sum of filtered oa_amt (assuming oa_amt is the production column,
     # usually it's oa_amt_h0 for optimization but we need to check what column to use.
-    # In optimization pipeline, we optimize 'oa_amt_h0'. 
+    # In optimization pipeline, we optimize 'oa_amt_h0'.
     # But usually we want the Total Production of the SELECTED portfolio.
-    
+
     # Actually, Risk B2 is calculated using todu_30ever_h6 and todu_amt_pile_h6
     # for the selected portfolio.
-    
+
     passed_df = sample[passes]
-    
+
     # production = passed_df["oa_amt"].sum() # Or oa_amt_h0?
     # Let's use "oa_amt" if available, else "oa_amt_h0"
     prod_col = "oa_amt" if "oa_amt" in passed_df.columns else "oa_amt_h0"
     production = passed_df[prod_col].sum() if not passed_df.empty else 0.0
-    
+
     risk_num = passed_df["todu_30ever_h6"].sum() if not passed_df.empty else 0.0
     risk_den = passed_df["todu_amt_pile_h6"].sum() if not passed_df.empty else 0.0
-    
+
     risk = calculate_b2_ever_h6(risk_num, risk_den, multiplier=multiplier, as_percentage=False)
-    
+
     return production, float(risk)
 
 
@@ -838,31 +877,31 @@ def calculate_bootstrap_intervals(
         Dictionary with lower/upper bounds for production and risk
     """
     logger.info(f"Calculating {confidence_level:.0%} CI with {n_bootstraps} bootstraps...")
-    
+
     # Parallel execution
     results = Parallel(n_jobs=-1)(
         delayed(_bootstrap_worker)(data_booked, cut_map, variables, multiplier)
         for _ in range(n_bootstraps)
     )
-    
+
     # Unzip results
     productions, risks = zip(*results)
-    
+
     # Calculate percentiles
     alpha = (1 - confidence_level) / 2
     lower_p = alpha * 100
     upper_p = (1 - alpha) * 100
-    
+
     prod_lower = np.percentile(productions, lower_p)
     prod_upper = np.percentile(productions, upper_p)
     risk_lower = np.percentile(risks, lower_p)
     risk_upper = np.percentile(risks, upper_p)
-    
-    # Format as percentage for Risk (since b2_ever is usually minimal, 
-    # but here we return raw value then convert? 
+
+    # Format as percentage for Risk (since b2_ever is usually minimal,
+    # but here we return raw value then convert?
     # calculate_b2_ever_h6 returns raw value by default (as_percentage=False).
     # We should probably return them as they are and handle formatting downstream.
-    
+
     return {
         "production_ci_lower": prod_lower,
         "production_ci_upper": prod_upper,
@@ -942,7 +981,7 @@ def generate_cutoff_summary(
     summary_rows = []
     for bin_val, col_name in bin_columns:
         cutoff = opt_row[col_name]
-        
+
         row_data = {
             "segment": segment_name,
             "scenario": scenario_name,
@@ -960,7 +999,7 @@ def generate_cutoff_summary(
             # Risk CI is raw, convert to % if needed
             row_data["risk_ci_lower"] = ci_data.get("risk_ci_lower", 0) * 100
             row_data["risk_ci_upper"] = ci_data.get("risk_ci_upper", 0) * 100
-            
+
         summary_rows.append(row_data)
 
     summary_df = pd.DataFrame(summary_rows)
