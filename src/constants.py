@@ -25,7 +25,7 @@ class StatusName(str, Enum):
 
     BOOKED = "booked"
     REJECTED = "rejected"
-    PENDING = "pending"
+    CANCELED = "canceled"
 
 
 class RejectReason(str, Enum):
