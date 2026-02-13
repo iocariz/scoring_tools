@@ -875,6 +875,20 @@ def inference_pipeline(
         best_model_info["shap_feature_names"] = shap_result["feature_names"]
         best_model_info["mean_abs_shap"] = shap_result["mean_abs_shap"]
 
+        # Export SHAP summary plot (non-blocking)
+        try:
+            from src.plots import plot_shap_summary
+
+            shap_plot_path = str(Path(model_base_path) / "shap_summary.html")
+            plot_shap_summary(
+                shap_result["shap_values"],
+                shap_result["feature_names"],
+                output_path=shap_plot_path,
+            )
+            logger.info(f"SHAP summary plot saved to {shap_plot_path}")
+        except Exception as e:
+            logger.warning(f"SHAP plot export failed (non-blocking): {e}")
+
     # STEP 5: MODEL SAVING
     model_path = None
     if save_model:
