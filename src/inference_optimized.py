@@ -628,6 +628,40 @@ def _train_and_evaluate_final_model(
     return final_model, full_r2
 
 
+def _compute_shap_values(
+    model,
+    X: pd.DataFrame,
+    feature_names: list[str],
+) -> dict | None:
+    """Compute SHAP values for the trained model. Returns dict or None on failure."""
+    try:
+        import shap
+
+        if hasattr(model, "coef_"):
+            # Linear models: exact and fast
+            explainer = shap.LinearExplainer(model, X)
+            shap_values = explainer.shap_values(X)
+        else:
+            # Non-linear models (Hurdle, Tweedie): use sampling-based explainer
+            # Use a small background sample for efficiency
+            background = shap.sample(X, min(50, len(X)))
+            explainer = shap.KernelExplainer(model.predict, background)
+            shap_values = explainer.shap_values(X, nsamples=100)
+
+        mean_abs_shap = np.abs(shap_values).mean(axis=0)
+        logger.info(f"SHAP values computed: {shap_values.shape}")
+
+        return {
+            "shap_values": shap_values,
+            "feature_names": feature_names,
+            "mean_abs_shap": mean_abs_shap,
+        }
+
+    except Exception as e:
+        logger.warning(f"SHAP computation failed (non-blocking): {e}")
+        return None
+
+
 def _save_model_to_disk(
     final_model,
     final_features: list[str],
@@ -833,6 +867,13 @@ def inference_pipeline(
         "weighted": weights_all is not None,
         "is_hurdle": isinstance(final_model, HurdleRegressor),
     }
+
+    # SHAP interpretability (non-blocking)
+    shap_result = _compute_shap_values(final_model, all_data[final_features], final_features)
+    if shap_result is not None:
+        best_model_info["shap_values"] = shap_result["shap_values"]
+        best_model_info["shap_feature_names"] = shap_result["feature_names"]
+        best_model_info["mean_abs_shap"] = shap_result["mean_abs_shap"]
 
     # STEP 5: MODEL SAVING
     model_path = None

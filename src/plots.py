@@ -777,3 +777,49 @@ def plot_risk_vs_production(
     )
 
     return fig
+
+
+def plot_shap_summary(
+    shap_values: np.ndarray,
+    feature_names: list[str],
+    output_path: str | None = None,
+) -> go.Figure:
+    """
+    Create a horizontal bar chart of mean |SHAP| values per feature.
+
+    Args:
+        shap_values: SHAP values array (n_samples, n_features).
+        feature_names: List of feature names.
+        output_path: Optional path to save HTML file.
+
+    Returns:
+        Plotly Figure.
+    """
+    mean_abs = np.abs(shap_values).mean(axis=0)
+
+    # Sort by importance
+    sorted_idx = np.argsort(mean_abs)
+    sorted_names = [feature_names[i] for i in sorted_idx]
+    sorted_values = mean_abs[sorted_idx]
+
+    fig = go.Figure(
+        go.Bar(
+            x=sorted_values,
+            y=sorted_names,
+            orientation="h",
+            marker_color="steelblue",
+        )
+    )
+
+    fig.update_layout(
+        title="Feature Importance (Mean |SHAP| Value)",
+        xaxis_title="Mean |SHAP| Value",
+        yaxis_title="Feature",
+        template="plotly_white",
+        height=max(300, len(feature_names) * 30),
+    )
+
+    if output_path:
+        fig.write_html(output_path)
+
+    return fig

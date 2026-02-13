@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from src.data_manager import DataValidationError
-from src.schema import RAW_DATA_SCHEMA, validate_raw_data
+from src.schema import validate_raw_data
 
 
 def _make_valid_df(n: int = 20) -> pd.DataFrame:
@@ -11,18 +11,12 @@ def _make_valid_df(n: int = 20) -> pd.DataFrame:
     rng = np.random.RandomState(42)
     return pd.DataFrame(
         {
-            "status_name": pd.Categorical(
-                rng.choice(["booked", "rejected", "pending"], size=n)
-            ),
+            "status_name": pd.Categorical(rng.choice(["booked", "rejected", "pending"], size=n)),
             "segment_cut_off": pd.Categorical(["seg_a"] * n),
             "mis_date": pd.date_range("2024-01-01", periods=n, freq="D"),
             "oa_amt_h0": rng.uniform(1000, 50000, size=n),
-            "todu_30ever_h6": np.where(
-                rng.random(n) > 0.5, rng.uniform(0, 10, size=n), np.nan
-            ),
-            "todu_amt_pile_h6": np.where(
-                rng.random(n) > 0.5, rng.uniform(0, 1000, size=n), np.nan
-            ),
+            "todu_30ever_h6": np.where(rng.random(n) > 0.5, rng.uniform(0, 10, size=n), np.nan),
+            "todu_amt_pile_h6": np.where(rng.random(n) > 0.5, rng.uniform(0, 1000, size=n), np.nan),
         }
     )
 

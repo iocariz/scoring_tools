@@ -810,10 +810,11 @@ def _bootstrap_worker(
     cut_map: dict[float, float],
     variables: list[str],
     multiplier: float,
+    random_state: int | None = None,
 ) -> tuple[float, float]:
     """Worker function for bootstrap resampling."""
     # Resample with replacement
-    sample = df.sample(frac=1.0, replace=True)
+    sample = df.sample(frac=1.0, replace=True, random_state=random_state)
 
     # Apply cuts
     var0 = variables[0]
@@ -861,6 +862,7 @@ def calculate_bootstrap_intervals(
     multiplier: float,
     n_bootstraps: int = 1000,
     confidence_level: float = 0.95,
+    random_state: int | None = 42,
 ) -> dict[str, float]:
     """
     Calculate confidence intervals for Risk and Production using bootstrap resampling.
@@ -872,16 +874,24 @@ def calculate_bootstrap_intervals(
         multiplier: Risk multiplier
         n_bootstraps: Number of bootstrap iterations
         confidence_level: Confidence level (e.g., 0.95)
+        random_state: Seed for reproducibility (default: 42)
 
     Returns:
         Dictionary with lower/upper bounds for production and risk
     """
     logger.info(f"Calculating {confidence_level:.0%} CI with {n_bootstraps} bootstraps...")
 
+    # Generate per-iteration seeds for reproducibility
+    if random_state is not None:
+        rng = np.random.RandomState(random_state)
+        seeds = rng.randint(0, 2**31, size=n_bootstraps)
+    else:
+        seeds = [None] * n_bootstraps
+
     # Parallel execution
     results = Parallel(n_jobs=-1)(
-        delayed(_bootstrap_worker)(data_booked, cut_map, variables, multiplier)
-        for _ in range(n_bootstraps)
+        delayed(_bootstrap_worker)(data_booked, cut_map, variables, multiplier, random_state=int(seed) if seed is not None else None)
+        for seed in seeds
     )
 
     # Unzip results

@@ -420,6 +420,21 @@ def process_mr_period(
                 stability_df.to_csv(stability_csv_path, index=False)
                 logger.info(f"Stability metrics saved to {stability_csv_path}")
 
+                # Generate structured drift alerts
+                try:
+                    from src.alerts import generate_drift_alerts
+
+                    alert_report = generate_drift_alerts(
+                        stability_report,
+                        segment=config_data.get("segment_filter", ""),
+                        period="MR",
+                    )
+                    alert_json_path = f"data/drift_alerts{file_suffix}.json"
+                    alert_report.to_json(alert_json_path)
+                    logger.info(f"Drift alerts saved to {alert_json_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to generate drift alerts: {e}")
+
                 # Log summary
                 if stability_report.unstable_vars:
                     logger.warning(
