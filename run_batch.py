@@ -954,6 +954,29 @@ def main():
         else:
             print("\nNo successful segments to consolidate.")
 
+    # Generate score discriminance report
+    if not args.no_consolidation and preloaded_data is not None:
+        print(f"\n{'=' * 60}")
+        print("Generating Score Discriminance Report")
+        print(f"{'=' * 60}")
+        try:
+            from run_score_metrics import generate_score_discriminance_report
+
+            disc_df = generate_score_discriminance_report(
+                preloaded_data=preloaded_data,
+                segments=segments,
+                supersegments=all_supersegments,
+                base_config=base_config,
+                output_path=args.output,
+            )
+            if not disc_df.empty:
+                print(f"\nScore discriminance report saved to: {args.output}/score_discriminance.csv")
+            else:
+                print("\nNo score discriminance metrics computed.")
+        except Exception as e:
+            logger.error(f"Error generating score discriminance report: {e}")
+            logger.exception("Full traceback:")
+
     # Return exit code based on results
     return 0 if all(results.values()) else 1
 

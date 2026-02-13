@@ -339,6 +339,62 @@ def model_summary(
     return summary_df
 
 
+def compute_score_discriminance(
+    df: pd.DataFrame,
+    target_column: str,
+    score_columns: dict[str, dict],
+    combined_columns: dict[str, list] | None = None,
+) -> pd.DataFrame:
+    """
+    Compute AUROC, Gini, and KS for each score on a given population.
+
+    This is a lightweight alternative to ``model_summary`` — no plots, no
+    bootstrap CIs, no rejection-threshold analysis.
+
+    Args:
+        df: DataFrame containing the target and score columns.
+        target_column: Binary target column (1 = bad, 0 = good).
+        score_columns: Score configurations, e.g.
+            ``{"Score RF": {"column": "score_rf", "negate": True}}``.
+        combined_columns: Optional logistic-regression combinations, e.g.
+            ``{"Combined": ["score_rf", "risk_score_rf"]}``.
+
+    Returns:
+        DataFrame with columns:
+        ``[score, auroc, gini, ks, n_records, n_bads, bad_rate]``.
+    """
+    y_true = df[target_column]
+    n_records = len(y_true)
+    n_bads = int(y_true.sum())
+    bad_rate = n_bads / n_records if n_records > 0 else 0.0
+
+    scores_dict: dict[str, np.ndarray] = {}
+    for name, info in score_columns.items():
+        scores_dict[name] = (-1 if info.get("negate") else 1) * df[info["column"]].values
+
+    if combined_columns:
+        for name, columns in combined_columns.items():
+            log_reg, X_std = train_logistic_regression(df[list(columns)], y_true)
+            scores_dict[name] = (log_reg.coef_[0] * X_std).sum(axis=1)
+
+    rows = []
+    for name, scores in scores_dict.items():
+        gini, roc_auc, ks, _ = compute_metrics(y_true, scores)
+        rows.append(
+            {
+                "score": name,
+                "auroc": round(roc_auc, 4),
+                "gini": round(gini, 4),
+                "ks": round(ks, 4),
+                "n_records": n_records,
+                "n_bads": n_bads,
+                "bad_rate": round(bad_rate, 4),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
 def calc_iv(df: pd.DataFrame, var: str, target: str) -> float:
     """
     Calculate Information Value (IV) for a categorical variable.
