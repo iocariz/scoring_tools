@@ -247,7 +247,7 @@ def load_risk_production_table(
     try:
         df = pd.read_csv(filepath)
         return df
-    except Exception as e:
+    except (pd.errors.ParserError, OSError, ValueError) as e:
         logger.warning(f"Error loading {filepath}: {e}")
         return None
 

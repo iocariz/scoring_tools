@@ -3,6 +3,7 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.tree import DecisionTreeClassifier
 
+from src.constants import SCORE_SCALE_MAX
 from src.models import (
     calculate_B2,
     calculate_risk_values,
@@ -217,3 +218,47 @@ class TestCalculateRiskValues:
         assert "todu_amt_pile_h6" in result.columns
         assert "b2_ever_h6" in result.columns
         assert "todu_30ever_h6" in result.columns
+
+
+# =============================================================================
+# transform_variables Edge Case Tests
+# =============================================================================
+
+
+class TestTransformVariablesEdgeCases:
+    def test_zero_values_complement(self):
+        """When var0 values are all 0, the complement column should equal SCORE_SCALE_MAX."""
+        df = pd.DataFrame({"var0": [0, 0, 0], "var1": [0, 0, 0]})
+        result = transform_variables(df, ["var0", "var1"])
+        expected_col = f"{SCORE_SCALE_MAX}-var0"
+        assert (result[expected_col] == SCORE_SCALE_MAX).all()
+
+    def test_max_values_complement(self):
+        """When var0 values are all SCORE_SCALE_MAX, the complement should be 0."""
+        df = pd.DataFrame({"var0": [SCORE_SCALE_MAX] * 3, "var1": [SCORE_SCALE_MAX] * 3})
+        result = transform_variables(df, ["var0", "var1"])
+        expected_col = f"{SCORE_SCALE_MAX}-var0"
+        assert (result[expected_col] == 0).all()
+
+    def test_all_columns_created(self):
+        """Verify all expected columns are created by transform_variables."""
+        df = pd.DataFrame({"var0": [1, 2], "var1": [3, 4]})
+        result = transform_variables(df, ["var0", "var1"])
+        s = SCORE_SCALE_MAX
+        expected_new_columns = [
+            "var0_var1",
+            "var0^2",
+            "var1^2",
+            "var0^3",
+            "var1^3",
+            f"{s}-var0",
+            f"{s}-var1",
+            f"({s}-var0) x var1",
+            f"({s}-var0)^2 x var1",
+            f"({s}-var0) x var1^2",
+            f"({s}-var0)^2",
+            f"({s}-var1)^2",
+            f"({s}-var0)^3",
+        ]
+        for col in expected_new_columns:
+            assert col in result.columns, f"Missing expected column: {col}"

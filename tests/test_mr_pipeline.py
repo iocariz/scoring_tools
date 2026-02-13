@@ -257,3 +257,42 @@ class TestRiskCalculationIntegration:
 
         result = calculate_b2_ever_h6(100, 0)
         assert np.isnan(result)
+
+
+# =============================================================================
+# calculate_metrics_from_cuts Edge Cases
+# =============================================================================
+
+
+class TestCalculateMetricsFromCutsEdgeCases:
+    """Edge case tests for calculate_metrics_from_cuts with degenerate inputs."""
+
+    def test_returns_none_on_empty_data(self):
+        """Pass empty DataFrames and verify it returns None or handles gracefully without crashing."""
+        empty_data = pd.DataFrame()
+        solution = pd.DataFrame({"1": [5.0]})
+        variables = ["sc_octroi_new_clus", "new_efx_clus"]
+
+        result = calculate_metrics_from_cuts(empty_data, solution, variables)
+
+        assert result is None
+
+    def test_returns_none_on_none_optimal_solution(self):
+        """Pass None as optimal_solution_df and verify it returns None."""
+        data = pd.DataFrame(
+            {
+                "sc_octroi_new_clus": [1, 2],
+                "new_efx_clus": [3, 4],
+                "todu_30ever_h6_boo": [10, 20],
+                "todu_amt_pile_h6_boo": [100, 200],
+                "oa_amt_h0_boo": [1000, 2000],
+                "todu_30ever_h6_rep": [1, 2],
+                "todu_amt_pile_h6_rep": [10, 20],
+                "oa_amt_h0_rep": [100, 200],
+            }
+        )
+        variables = ["sc_octroi_new_clus", "new_efx_clus"]
+
+        result = calculate_metrics_from_cuts(data, None, variables)
+
+        assert result is None

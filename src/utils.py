@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 from loguru import logger
 
 
@@ -39,7 +40,9 @@ def calculate_b2_ever_h6(
         decimals: Number of decimal places to round to
 
     Returns:
-        Calculated b2_ever_h6 values, with division-by-zero handled as NaN
+        Calculated b2_ever_h6 values, with division-by-zero handled as NaN.
+        Callers that need 0 instead of NaN should apply np.nan_to_num() at the
+        display/output boundary.
     """
     # Handle division by zero
     if isinstance(denominator, (pd.Series, np.ndarray)):
@@ -53,6 +56,28 @@ def calculate_b2_ever_h6(
         result = result * 100
 
     return np.round(result, decimals)
+
+
+def calculate_todu_30ever_from_b2(
+    b2_ever_h6: pd.Series | np.ndarray | float,
+    todu_amt_pile_h6: pd.Series | np.ndarray | float,
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
+) -> pd.Series | np.ndarray | float:
+    """
+    Calculate todu_30ever_h6 from b2_ever_h6 and todu_amt_pile_h6.
+
+    This is the inverse of calculate_b2_ever_h6:
+        todu_30ever_h6 = b2_ever_h6 * todu_amt_pile_h6 / multiplier
+
+    Args:
+        b2_ever_h6: Risk metric values
+        todu_amt_pile_h6: Exposure values
+        multiplier: Risk multiplier (default: 7)
+
+    Returns:
+        Calculated todu_30ever_h6 values
+    """
+    return b2_ever_h6 * todu_amt_pile_h6 / multiplier
 
 
 def get_data_information(df: pd.DataFrame) -> pd.DataFrame:
@@ -131,7 +156,7 @@ def calculate_stress_factor(
     total_num = df_target[num_col].sum()
     total_den = df_target[den_col].sum()
 
-    overall_bad_rate = (total_num / total_den * 7) if total_den > 0 else bad_rate
+    overall_bad_rate = (total_num / total_den * DEFAULT_RISK_MULTIPLIER) if total_den > 0 else bad_rate
 
     # Calculate cutoff using quantile from the known population
     cutoff_score = df_target[score_col].quantile(frac)
@@ -149,7 +174,7 @@ def calculate_stress_factor(
     worst_num = df_worst[num_col].sum()
     worst_den = df_worst[den_col].sum()
 
-    worst_bad_rate = (worst_num / worst_den * 7) if worst_den > 0 else 0.0
+    worst_bad_rate = (worst_num / worst_den * DEFAULT_RISK_MULTIPLIER) if worst_den > 0 else 0.0
 
     # Calculate stress factor
     if overall_bad_rate > 0:

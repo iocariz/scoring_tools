@@ -161,7 +161,7 @@ def preprocess_data(
         else:
             # Exact match for single segment
             data_filtered = data_filtered[data_filtered["segment_cut_off"] == segment_filter]
-    except Exception as e:
+    except (KeyError, pd.errors.UndefinedVariableError) as e:
         logger.error(f"Error applying filters: {e}")
         raise
 
@@ -274,7 +274,7 @@ def apply_binning_transformations(data: pd.DataFrame, octroi_bins: list[float], 
         # Adjust bins to 1-indexed
         transformed_data["sc_octroi_new_clus"] = transformed_data["sc_octroi_new_clus"] + 1
 
-    except Exception as e:
+    except (ValueError, KeyError) as e:
         logger.error(f"Error in octroi binning: {e}")
         raise
 
@@ -299,7 +299,7 @@ def apply_binning_transformations(data: pd.DataFrame, octroi_bins: list[float], 
         # Invert efx_clus (higher is better)
         transformed_data["new_efx_clus"] = len(efx_bins) - transformed_data["new_efx_clus"]
 
-    except Exception as e:
+    except (ValueError, KeyError) as e:
         logger.error(f"Error in efx binning: {e}")
         raise
 
@@ -413,7 +413,7 @@ def filter_by_date(data: pd.DataFrame, date_field: str, start_date: str, end_dat
         logger.info(f"Converting {date_field} to datetime")
         try:
             result[date_field] = pd.to_datetime(result[date_field])
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.error(f"Error converting {date_field} to datetime: {e}")
             raise ValueError(f"Cannot convert {date_field} to datetime: {e}") from e
 
@@ -421,7 +421,7 @@ def filter_by_date(data: pd.DataFrame, date_field: str, start_date: str, end_dat
     try:
         start_date_dt = pd.to_datetime(start_date)
         end_date_dt = pd.to_datetime(end_date)
-    except Exception as e:
+    except (ValueError, TypeError) as e:
         raise ValueError(f"Invalid date format: {e}") from e
 
     if start_date_dt > end_date_dt:

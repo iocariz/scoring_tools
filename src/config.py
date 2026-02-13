@@ -67,7 +67,7 @@ class PreprocessingSettings(BaseModel):
         try:
             # Enforce dayfirst=False to match original implicit behavior but be explicit to suppress warning
             pd.to_datetime(v, dayfirst=False)
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid date format: {v}. Error: {e}")
         return v
 
@@ -79,7 +79,7 @@ class PreprocessingSettings(BaseModel):
         try:
             start = pd.to_datetime(self.date_ini_book_obs, dayfirst=False)
             end = pd.to_datetime(self.date_fin_book_obs, dayfirst=False)
-        except Exception:
+        except (ValueError, TypeError):
             # Should not happen if field validators pass, but if it does,
             # we can't validate the range, so we rely on field validators to have caught format errors.
             return self

@@ -19,6 +19,8 @@ import plotly.graph_objects as go
 from loguru import logger
 from plotly.subplots import make_subplots
 
+from .constants import PSI_STABLE_THRESHOLD, PSI_UNSTABLE_THRESHOLD
+
 
 class StabilityStatus(Enum):
     """Stability status based on PSI/CSI value."""
@@ -107,9 +109,9 @@ class StabilityReport:
 
         # Group by status
         for status, label, _color in [
-            (StabilityStatus.UNSTABLE, "UNSTABLE (PSI ≥ 0.25)", "red"),
-            (StabilityStatus.MODERATE, "MODERATE (0.1 ≤ PSI < 0.25)", "yellow"),
-            (StabilityStatus.STABLE, "STABLE (PSI < 0.1)", "green"),
+            (StabilityStatus.UNSTABLE, f"UNSTABLE (PSI >= {PSI_UNSTABLE_THRESHOLD})", "red"),
+            (StabilityStatus.MODERATE, f"MODERATE ({PSI_STABLE_THRESHOLD} <= PSI < {PSI_UNSTABLE_THRESHOLD})", "yellow"),
+            (StabilityStatus.STABLE, f"STABLE (PSI < {PSI_STABLE_THRESHOLD})", "green"),
         ]:
             results = [r for r in self.psi_results if r.status == status]
             if results:
@@ -124,9 +126,9 @@ class StabilityReport:
 
 def get_psi_status(psi_value: float) -> StabilityStatus:
     """Determine stability status from PSI value."""
-    if psi_value < 0.1:
+    if psi_value < PSI_STABLE_THRESHOLD:
         return StabilityStatus.STABLE
-    elif psi_value < 0.25:
+    elif psi_value < PSI_UNSTABLE_THRESHOLD:
         return StabilityStatus.MODERATE
     else:
         return StabilityStatus.UNSTABLE
@@ -289,7 +291,7 @@ def calculate_stability_report(
             result = calculate_psi_for_variable(baseline_df, comparison_df, var, bins=var_bins)
             report.add(result)
             logger.debug(f"  {result}")
-        except Exception as e:
+        except (ValueError, KeyError) as e:
             logger.warning(f"Failed to calculate PSI for '{var}': {e}")
 
     # Calculate overall PSI if score variable provided
@@ -301,7 +303,7 @@ def calculate_stability_report(
                 bins=20,  # More bins for overall score
             )
             report.overall_psi = overall_psi
-        except Exception as e:
+        except (ValueError, KeyError) as e:
             logger.warning(f"Failed to calculate overall PSI: {e}")
 
     logger.info(report.summary())
