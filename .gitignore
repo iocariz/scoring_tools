@@ -20,3 +20,4 @@ env/
 # Logs and Caches
 error_log.txt
 .pytest_cache/
+.claude/
