@@ -118,6 +118,37 @@ def main(
 
     _save_cutoff_summaries(cutoff_summaries, settings)
 
+    # Step 7: Temporal trend analysis (non-blocking)
+    try:
+        from src.trends import compute_monthly_metrics, detect_trend_changes, plot_metric_trends
+
+        monthly = compute_monthly_metrics(data_clean, date_column="mis_date", segment_filter=segment)
+        if not monthly.empty:
+            # Save monthly metrics
+            monthly.to_csv(f"data/monthly_metrics_{segment}.csv")
+
+            # Plot key metrics
+            plot_metric_trends(
+                monthly,
+                ["approval_rate", "total_records", "mean_production"],
+                output_path=f"images/metric_trends_{segment}.html",
+            )
+
+            # Detect anomalies in approval rate
+            anomalies = detect_trend_changes(monthly, "approval_rate", window=3)
+            anomaly_months = anomalies[anomalies["is_anomaly"]]
+            if not anomaly_months.empty:
+                anomalies.to_csv(f"data/trend_anomalies_{segment}.csv")
+                logger.warning(
+                    f"[{segment}] Trend anomalies detected in {len(anomaly_months)} month(s)"
+                )
+            else:
+                logger.info(f"[{segment}] No trend anomalies detected")
+        else:
+            logger.info(f"[{segment}] Insufficient data for trend analysis")
+    except Exception as e:
+        logger.warning(f"[{segment}] Trend analysis failed (non-blocking): {e}")
+
     elapsed_total = time.perf_counter() - t0_total
     logger.info(f"[{segment}] Pipeline complete | {len(scenarios)} scenarios | {elapsed_total:.1f}s total")
 
@@ -152,6 +183,9 @@ Output files:
   data/cutoff_summary_by_segment.csv   - Cutoff points summary (long format)
   data/cutoff_summary_wide.csv         - Cutoff points summary (wide format)
   images/risk_production_*.html        - Interactive visualizations
+  data/monthly_metrics_*.csv           - Monthly aggregated metrics
+  data/trend_anomalies_*.csv           - Detected trend anomalies
+  images/metric_trends_*.html          - Monthly metric trend charts
         """,
     )
 
