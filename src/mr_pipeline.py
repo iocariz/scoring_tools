@@ -75,7 +75,7 @@ def calculate_metrics_from_cuts(
             prod = subset[f"oa_amt_h0{suffix}"].sum()
             risk_num = subset[f"todu_30ever_h6{suffix}"].sum()
             risk_den = subset[f"todu_amt_pile_h6{suffix}"].sum()
-            b2_ever = (risk_num / risk_den * 7) if risk_den > 0 else 0.0
+            b2_ever = float(np.nan_to_num(calculate_b2_ever_h6(risk_num, risk_den)))
             return prod, b2_ever, risk_num, risk_den
 
         # Actual (All Booked)
@@ -123,7 +123,7 @@ def calculate_metrics_from_cuts(
         opt_prod = (actual_prod - so_prod) + si_prod
         opt_rn = (actual_rn - so_rn) + si_rn
         opt_rd = (actual_rd - so_rd) + si_rd
-        opt_risk = (opt_rn / opt_rd * 7) if opt_rd > 0 else 0.0
+        opt_risk = float(np.nan_to_num(calculate_b2_ever_h6(opt_rn, opt_rd)))
 
         summary_data.append(
             {

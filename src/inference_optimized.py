@@ -9,7 +9,6 @@ Key improvements:
 """
 
 # Standard library imports
-import warnings
 from pathlib import Path
 from typing import Any
 
@@ -23,20 +22,19 @@ from scipy.stats import zscore
 
 # Scikit-learn imports
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, LogisticRegression, Ridge
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score
+from sklearn.model_selection import KFold
 
 from src import styles
 from src.constants import (
     DEFAULT_N_POINTS_3D,
     DEFAULT_RANDOM_STATE,
-    DEFAULT_TEST_SIZE,
     DEFAULT_Z_THRESHOLD,
     Columns,
     StatusName,
     Suffixes,
 )
-from src.estimators import HurdleRegressor
+from src.estimators import HurdleRegressor, TweedieGLM
 
 # Project imports
 from src.models import transform_variables
@@ -63,71 +61,63 @@ def calculate_target_metric(df: pd.DataFrame, multiplier: float, numerator: str,
     return np.round(result, 2)
 
 
-def _generate_regression_variables(variables: list[str]) -> tuple[list[str], list[str]]:
+def _generate_regression_variables(variables: list[str]) -> tuple[list[str], dict[str, list[str]]]:
     """
     Generate regression variable names dynamically.
 
     Args:
-        variables: List of base variable names
+        variables: List of base variable names [var0, var1]
 
     Returns:
-        Tuple of (var_reg, var_reg_extended)
+        Tuple of (var_reg, feature_sets) where:
+        - var_reg: Base feature set (3 features)
+        - feature_sets: Dictionary of named feature sets for comparison
     """
-    var_reg = [f"{variables[1]}", f"9-{variables[0]}", f"(9-{variables[0]}) x {variables[1]}"]
+    var0, var1 = variables
 
-    var_reg_extended = [
-        f"{variables[1]}^2",
-        f"(9-{variables[0]})^2",
-        f"{variables[1]}",
-        f"9-{variables[0]}",
-        f"(9-{variables[0]}) x {variables[1]}",
+    # Base features (3 features)
+    var_reg = [
+        f"{var1}",
+        f"9-{var0}",
+        f"(9-{var0}) x {var1}",
     ]
 
-    return var_reg, var_reg_extended
+    # Squared terms
+    squared_terms = [
+        f"{var1}^2",
+        f"(9-{var0})^2",
+    ]
 
+    # Cubic terms
+    cubic_terms = [
+        f"{var1}^3",
+        f"(9-{var0})^3",
+    ]
 
-def split_and_prepare_data(
-    data: pd.DataFrame,
-    bins: tuple,
-    variables: list[str],
-    indicators: list[str],
-    target_var: str,
-    multiplier: float,
-    test_size: float = DEFAULT_TEST_SIZE,
-) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[str]]:
-    """
-    Split data into train/test sets and preprocess each separately to avoid data leakage.
+    # Additional interaction terms (created by transform_variables)
+    extra_interactions = [
+        f"(9-{var0})^2 x {var1}",
+        f"(9-{var0}) x {var1}^2",
+    ]
 
-    Args:
-        data: Input DataFrame
-        bins: Tuple of (octroi_bins, efx_bins) for variable binning
-        variables: List of variables to use in modeling
-        indicators: Indicator columns for calculations
-        target_var: Name of the target variable to compute
-        multiplier: Multiplier for the target calculation
-        test_size: Proportion of data to use for testing
+    # Simple two-variable set (no interaction)
+    var_simple = [
+        f"{var1}",
+        f"9-{var0}",
+    ]
 
-    Returns:
-        Tuple of (train_data, test_data, var_reg, var_reg_extended)
-    """
-    # Filter to booked data only
-    booked_data = data[data[Columns.STATUS_NAME] == StatusName.BOOKED.value].copy()
+    # Define distinct feature sets for comparison
+    feature_sets = {
+        "simple": var_simple,
+        "base": var_reg,
+        "base + squared": var_reg + squared_terms,
+        "base + cubic": var_reg + cubic_terms,
+        "base + all_poly": var_reg + squared_terms + cubic_terms,
+        "base + interactions": var_reg + extra_interactions,
+        "full": var_reg + squared_terms + cubic_terms + extra_interactions,
+    }
 
-    # Split at record level before grouping
-    train_raw, test_raw = train_test_split(booked_data, test_size=test_size, random_state=DEFAULT_RANDOM_STATE)
-
-    logger.info(f"Training set: {len(train_raw):,} records")
-    logger.info(f"Test set: {len(test_raw):,} records")
-
-    # Generate regression variables
-    var_reg, var_reg_extended = _generate_regression_variables(variables)
-
-    # Process datasets separately
-    train_processed = process_dataset(train_raw, bins, variables, indicators, target_var, multiplier, var_reg)
-
-    test_processed = process_dataset(test_raw, bins, variables, indicators, target_var, multiplier, var_reg)
-
-    return train_processed, test_processed, var_reg, var_reg_extended
+    return var_reg, feature_sets
 
 
 def process_dataset(
@@ -141,261 +131,88 @@ def process_dataset(
     z_threshold: float = DEFAULT_Z_THRESHOLD,
 ) -> pd.DataFrame:
     """
-    Process a single dataset with proper outlier handling.
+    Aggregate raw records by bin groups and compute regression features.
+
+    Aggregates indicator columns (sum) by the grouping variables, then
+    computes polynomial/interaction features on the aggregated group values.
+    Features are computed *after* aggregation so that each group's feature
+    values reflect the group's bin coordinates, not a sum of per-record
+    polynomial terms.
 
     Args:
-        data: Dataset to process
-        bins: Tuple of (octroi_bins, efx_bins) for variable binning
-        variables: List of variables to use in modeling
-        indicators: Indicator columns for calculations
-        target_var: Name of the target variable to compute
-        multiplier: Multiplier for the target calculation
-        var_reg: Regression variables to use for grouping
-        z_threshold: Z-score threshold for outlier detection
+        data: Dataset to process (caller must pre-filter to booked records).
+        bins: Tuple of (octroi_bins, efx_bins) for variable binning.
+        variables: List of two grouping variable names (bin columns).
+        indicators: Indicator columns to aggregate (summed per group).
+        target_var: Name of the target variable to compute from aggregated indicators.
+        multiplier: Multiplier for the target calculation.
+        var_reg: Regression variable names (used only for documentation; features
+            are generated by transform_variables after aggregation).
+        z_threshold: Z-score threshold for outlier removal.
 
     Returns:
-        Processed data ready for modeling with 'n_observations' column for weighting
+        Processed DataFrame with one row per bin group, containing:
+        - grouping variables
+        - summed indicator columns
+        - polynomial/interaction features (from transform_variables)
+        - n_observations (group size for weighted regression)
+        - target_var (computed risk metric)
     """
-    octroi_bins, efx_bins = bins
+    # ---- 1. Aggregate indicator columns by bin groups ----
+    # Only sum the indicator columns; polynomial features will be computed
+    # on the group-level bin values afterwards.
+    agg_dict = {col: "sum" for col in indicators if col in data.columns}
+    grouped = data.groupby(variables, observed=True)
 
-    # Preprocess data - Use direct transformation instead of grid merge to preserve data
-    # Filter to relevant columns + variables + indicators
-    # Note: data is already filtered to 'booked' in split_and_prepare_data but we ensure variables exist
-    processed_data = data.copy()
-
-    # Transform variables to create regression features
-    processed_data = transform_variables(processed_data, variables)
-
-    # Aggregate data - combine variables for groupby to avoid duplication
-    groupby_vars = list(set(variables + var_reg))
-
-    # Track number of observations per group for weighted regression
-    # Perform groupby
-    grouped = processed_data.groupby(groupby_vars, observed=True)
-
-    # Aggregate sums
-    # Filter to numeric columns only for summation
-    numeric_cols = processed_data.select_dtypes(include=[np.number]).columns
-    agg_dict = {col: "sum" for col in numeric_cols if col not in groupby_vars}
     processed_data = grouped.agg(agg_dict)
-
-    # Add n_observations (size of each group)
     processed_data["n_observations"] = grouped.size()
-
-    # Reset index and sort
     processed_data = processed_data.reset_index().sort_values(by=variables)
 
-    # Calculate target variable
+    # ---- 2. Compute polynomial/interaction features on aggregated bin values ----
+    # Each row now represents a unique bin combination; (9-var0), var1^2, etc.
+    # are computed on the bin coordinate values, not summed per-record values.
+    processed_data = transform_variables(processed_data, variables)
+
+    # ---- 3. Calculate target variable from aggregated indicators ----
     processed_data[target_var] = calculate_target_metric(
         processed_data, multiplier, "todu_30ever_h6", "todu_amt_pile_h6"
     )
 
-    # Clean data with method chaining
+    # ---- 4. Remove outliers and NaNs ----
     processed_data = (
         processed_data.dropna()
         .loc[lambda df: np.abs(zscore(df[target_var])) < z_threshold]
-        .copy()  # Create a copy to avoid SettingWithCopyWarning
+        .copy()
     )
 
     return processed_data
 
 
-def evaluate_models_for_aggregated_data(
-    X_train: pd.DataFrame,
-    X_test: pd.DataFrame,
-    y_train: pd.Series,
-    y_test: pd.Series,
-    var_reg: list[str],
-    weights_train: pd.Series | None = None,
-    weights_test: pd.Series | None = None,
-    include_hurdle: bool = True,
-) -> tuple[pd.DataFrame, dict]:
-    """
-    Evaluate multiple regression models optimized for aggregated datasets.
-    Uses Test R² as primary metric with optional sample weighting.
-
-    Args:
-        X_train: Training features
-        X_test: Test features
-        y_train: Training target
-        y_test: Test target
-        var_reg: Regression variables used
-        weights_train: Optional weights for training samples (e.g., n_observations)
-        weights_test: Optional weights for test samples (e.g., n_observations)
-        include_hurdle: Whether to include Hurdle models for zero-inflated data
-
-    Returns:
-        Tuple of (results_df, best_model_dict)
-    """
-    # Calculate zero proportion for information
-    zero_prop_train = (np.abs(y_train) < 1e-10).mean()
-    zero_prop_test = (np.abs(y_test) < 1e-10).mean()
-
-    logger.info("Data characteristics:")
-    logger.info(f"  Zero proportion - Train: {zero_prop_train:.1%}, Test: {zero_prop_test:.1%}")
-
-    if zero_prop_train > 0.1 and include_hurdle:
-        logger.warning("High zero proportion detected - Hurdle models recommended!")
-
-    # Define models with better organization
-    alpha_values = {"Ridge": [0.3, 0.5, 0.8, 1.2], "Lasso": [0.01, 0.05, 0.1], "ElasticNet": [(0.05, 0.5), (0.1, 0.5)]}
-
-    models = {"Linear Regression": LinearRegression(fit_intercept=False)}
-
-    # Add Ridge models
-    for alpha in alpha_values["Ridge"]:
-        models[f"Ridge (α={alpha})"] = Ridge(alpha=alpha, fit_intercept=False)
-
-    # Add Lasso models
-    for alpha in alpha_values["Lasso"]:
-        models[f"Lasso (α={alpha})"] = Lasso(alpha=alpha, fit_intercept=False)
-
-    # Add ElasticNet models
-    for alpha, l1_ratio in alpha_values["ElasticNet"]:
-        models[f"ElasticNet (α={alpha}, l1={l1_ratio})"] = ElasticNet(
-            alpha=alpha, l1_ratio=l1_ratio, fit_intercept=False
-        )
-
-    # Add Hurdle models if requested
-    if include_hurdle:
-        logger.info("Including Hurdle models for zero-inflated data")
-
-        # Hurdle with different regression backbones
-        for alpha in [0.3, 0.5, 0.8]:
-            models[f"Hurdle-Ridge (α={alpha})"] = HurdleRegressor(
-                classifier=LogisticRegression(max_iter=1000, random_state=DEFAULT_RANDOM_STATE),
-                regressor=Ridge(alpha=alpha, fit_intercept=False),
-            )
-
-        for alpha in [0.01, 0.05]:
-            models[f"Hurdle-Lasso (α={alpha})"] = HurdleRegressor(
-                classifier=LogisticRegression(max_iter=1000, random_state=DEFAULT_RANDOM_STATE),
-                regressor=Lasso(alpha=alpha, fit_intercept=False),
-            )
-
-    # Evaluate models
-    results = []
-
-    logger.info("Evaluating models...")
-    if weights_train is not None:
-        logger.info("Using weighted regression with sample weights")
-        logger.info(
-            f"Weight range - Train: [{weights_train.min():.0f}, {weights_train.max():.0f}], "
-            f"Test: [{weights_test.min():.0f}, {weights_test.max():.0f}]"
-        )
-    logger.info("-" * 80)
-
-    for name, model in models.items():
-        try:
-            # Train model with optional weights
-            model.fit(X_train, y_train, sample_weight=weights_train)
-
-            # Make predictions
-            y_train_pred = model.predict(X_train)
-            y_test_pred = model.predict(X_test)
-
-            # Calculate metrics (weighted if weights provided)
-            train_r2 = r2_score(y_train, y_train_pred, sample_weight=weights_train)
-            test_r2 = r2_score(y_test, y_test_pred, sample_weight=weights_test)
-            test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred, sample_weight=weights_test))
-            test_mae = mean_absolute_error(y_test, y_test_pred, sample_weight=weights_test)
-
-            # Additional metrics for hurdle models
-            if isinstance(model, HurdleRegressor):
-                # Classification accuracy on zero vs non-zero
-                y_test_binary = (np.abs(y_test) > 1e-10).astype(int)
-                binary_acc = (model.predict_binary(X_test) == y_test_binary).mean()
-            else:
-                binary_acc = None
-
-            # Store results
-            results.append(
-                {
-                    "Model": name,
-                    "Train R²": train_r2,
-                    "Test R²": test_r2,
-                    "Test RMSE": test_rmse,
-                    "Test MAE": test_mae,
-                    "Overfit": train_r2 - test_r2,
-                    "Zero/NonZero Acc": binary_acc,
-                    "model_object": model,
-                }
-            )
-        except Exception:
-            logger.error(f"Failed to train {name}:")
-            logger.exception("Training failed")
-            continue
-
-    if not results:
-        raise RuntimeError(
-            "All models failed to train. Check your data for NaNs, infinite values, or shape mismatches."
-        )
-
-    # Create results DataFrame
-    results_df = pd.DataFrame(results).sort_values("Test R²", ascending=False)
-
-    # Display top models
-    display_cols = ["Model", "Train R²", "Test R²", "Test RMSE", "Overfit"]
-    if include_hurdle:
-        display_cols.append("Zero/NonZero Acc")
-
-    logger.info("Top 10 Models by Test R²:" if len(results_df) > 10 else "All Models by Test R²:")
-    logger.info(f"\n{results_df[display_cols].head(10).to_string()}")
-
-    # Get best model
-    best_idx = results_df["Test R²"].idxmax()
-    best_model_info = {
-        "model": results_df.loc[best_idx, "model_object"],
-        "name": results_df.loc[best_idx, "Model"],
-        "test_r2": results_df.loc[best_idx, "Test R²"],
-        "train_r2": results_df.loc[best_idx, "Train R²"],
-        "test_rmse": results_df.loc[best_idx, "Test RMSE"],
-        "test_mae": results_df.loc[best_idx, "Test MAE"],
-        "weighted": weights_train is not None,
-        "is_hurdle": isinstance(results_df.loc[best_idx, "model_object"], HurdleRegressor),
-    }
-
-    logger.info(f"Best Model: {best_model_info['name']}")
-    logger.info(f"   Test R²: {best_model_info['test_r2']:.4f}")
-    if weights_train is not None:
-        logger.info("   (Weighted by sample size)")
-    if best_model_info["is_hurdle"]:
-        logger.info("   (Hurdle model - handles zero-inflation)")
-
-    return results_df.drop("model_object", axis=1), best_model_info
-
-
 def _create_feature_dataframe(mesh_df: pd.DataFrame, features: list[str], var0: str, var1: str) -> pd.DataFrame:
     """
-    Create feature DataFrame for predictions.
+    Create feature DataFrame for model predictions on a mesh grid.
+
+    Uses the same ``transform_variables`` function that generates training
+    features, ensuring the prediction surface is consistent with the model's
+    training data regardless of which feature set was selected.
 
     Args:
-        mesh_df: DataFrame with mesh grid points
-        features: List of feature names
-        var0: First variable name
-        var1: Second variable name
+        mesh_df: DataFrame with mesh grid points (columns: var0, var1).
+        features: List of feature column names the model expects.
+        var0: First variable name.
+        var1: Second variable name.
 
     Returns:
-        DataFrame with computed features
+        DataFrame containing only the requested feature columns, in order.
     """
-    feature_df = pd.DataFrame(index=mesh_df.index)
-
-    # Feature computation mapping
-    feature_rules = {
-        f"{var1}": lambda df: df[var1],
-        f"9-{var0}": lambda df: 9 - df[var0],
-        f"(9-{var0}) x {var1}": lambda df: (9 - df[var0]) * df[var1],
-        f"{var1}^2": lambda df: df[var1] ** 2,
-        f"(9-{var0})^2": lambda df: (9 - df[var0]) ** 2,
-    }
-
-    for feature in features:
-        if feature in feature_rules:
-            feature_df[feature] = feature_rules[feature](mesh_df)
-        else:
-            warnings.warn(f"No rule defined for feature: {feature}", stacklevel=2)
-
-    return feature_df
+    transformed = transform_variables(mesh_df.copy(), [var0, var1])
+    missing = [f for f in features if f not in transformed.columns]
+    if missing:
+        raise ValueError(
+            f"transform_variables did not produce expected features: {missing}. "
+            f"Available columns: {sorted(transformed.columns.tolist())}"
+        )
+    return transformed[features]
 
 
 def plot_3d_surface(
@@ -489,22 +306,406 @@ def plot_3d_surface(
         return None
 
 
-"""
-Complete End-to-End Pipeline Example
-=====================================
+def _select_model_type_cv(
+    data: pd.DataFrame,
+    var_reg: list[str],
+    target_var: str,
+    cv_folds: int,
+    include_hurdle: bool,
+    weights: pd.Series | None,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Select the best model type using k-fold cross-validation on base features.
 
-This script demonstrates the full workflow from raw data to a deployed model,
-including:
-- Data preparation with train/test split
-- Feature engineering with weighted observations
-- Model evaluation (standard + hurdle models)
-- Model saving with metadata
-- Model loading and prediction
-- 3D visualization
+    Evaluates all candidate model types (Linear, Ridge, Lasso, ElasticNet,
+    and optionally Hurdle variants) using CV on var_reg features, and returns
+    the best model type based on mean CV R².
 
-Author: Your Name
-Date: 2024
-"""
+    Args:
+        data: Processed dataset with features and target.
+        var_reg: Base feature column names.
+        target_var: Target column name.
+        cv_folds: Number of cross-validation folds.
+        include_hurdle: Whether to include Hurdle model variants.
+        weights: Optional sample weights (e.g., n_observations).
+
+    Returns:
+        Tuple of (results_df, best_model_info) where best_model_info contains
+        the unfitted model object, name, and CV scores.
+    """
+    from sklearn.base import clone
+
+    X = data[var_reg]
+    y = data[target_var]
+
+    # Build candidate models
+    alpha_values = {
+        "Ridge": [0.3, 0.5, 0.8, 1.2],
+        "Lasso": [0.01, 0.05, 0.1],
+        "ElasticNet": [(0.05, 0.5), (0.1, 0.5)],
+    }
+    tweedie_params = {
+        "power": [1.1, 1.5, 1.9],
+        "alpha": [0.1, 0.5, 1.0],
+    }
+
+    models = {"Linear Regression": LinearRegression(fit_intercept=False)}
+
+    for alpha in alpha_values["Ridge"]:
+        models[f"Ridge (α={alpha})"] = Ridge(alpha=alpha, fit_intercept=False)
+
+    for alpha in alpha_values["Lasso"]:
+        models[f"Lasso (α={alpha})"] = Lasso(alpha=alpha, fit_intercept=False)
+
+    for alpha, l1_ratio in alpha_values["ElasticNet"]:
+        models[f"ElasticNet (α={alpha}, l1={l1_ratio})"] = ElasticNet(
+            alpha=alpha, l1_ratio=l1_ratio, fit_intercept=False
+        )
+
+    # Add TweedieGLM models
+    for power in tweedie_params["power"]:
+        for alpha in tweedie_params["alpha"]:
+            models[f"Tweedie (p={power}, α={alpha})"] = TweedieGLM(
+                power=power, alpha=alpha, link="log"
+            )
+
+    if include_hurdle:
+        for alpha in [0.3, 0.5, 0.8]:
+            models[f"Hurdle-Ridge (α={alpha})"] = HurdleRegressor(
+                classifier=LogisticRegression(max_iter=1000, random_state=DEFAULT_RANDOM_STATE),
+                regressor=Ridge(alpha=alpha, fit_intercept=False),
+            )
+        for alpha in [0.01, 0.05]:
+            models[f"Hurdle-Lasso (α={alpha})"] = HurdleRegressor(
+                classifier=LogisticRegression(max_iter=1000, random_state=DEFAULT_RANDOM_STATE),
+                regressor=Lasso(alpha=alpha, fit_intercept=False),
+            )
+
+    kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=DEFAULT_RANDOM_STATE)
+    results = []
+
+    for name, model_template in models.items():
+        try:
+            cv_scores = []
+            for train_idx, val_idx in kfold.split(X):
+                X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+                y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+                w_train = weights.iloc[train_idx] if weights is not None else None
+                w_val = weights.iloc[val_idx] if weights is not None else None
+
+                model_clone = clone(model_template)
+                model_clone.fit(X_train, y_train, sample_weight=w_train)
+                y_pred = model_clone.predict(X_val)
+                fold_r2 = r2_score(y_val, y_pred, sample_weight=w_val)
+                cv_scores.append(fold_r2)
+
+            cv_mean = np.mean(cv_scores)
+            cv_std = np.std(cv_scores)
+
+            results.append(
+                {
+                    "Model": name,
+                    "CV Mean R²": cv_mean,
+                    "CV Std R²": cv_std,
+                    "model_template": model_template,
+                }
+            )
+        except Exception:
+            logger.error(f"Failed to evaluate {name}:")
+            logger.exception("CV evaluation failed")
+            continue
+
+    if not results:
+        raise RuntimeError(
+            "All models failed during cross-validation. "
+            "Check your data for NaNs, infinite values, or shape mismatches."
+        )
+
+    results_df = pd.DataFrame(results).sort_values("CV Mean R²", ascending=False)
+
+    # Log top results
+    display_cols = ["Model", "CV Mean R²", "CV Std R²"]
+    logger.info("Model type CV results:")
+    logger.info(f"\n{results_df[display_cols].head(10).to_string()}")
+
+    best_idx = results_df["CV Mean R²"].idxmax()
+    best_row = results_df.loc[best_idx]
+
+    best_model_info = {
+        "model_template": best_row["model_template"],
+        "name": best_row["Model"],
+        "cv_mean_r2": best_row["CV Mean R²"],
+        "cv_std_r2": best_row["CV Std R²"],
+    }
+
+    logger.info(f"Best model type: {best_model_info['name']}")
+    logger.info(f"  CV R²: {best_model_info['cv_mean_r2']:.4f} ± {best_model_info['cv_std_r2']:.4f}")
+
+    return results_df.drop("model_template", axis=1), best_model_info
+
+
+def _select_feature_set_cv(
+    data: pd.DataFrame,
+    feature_sets: dict[str, list[str]],
+    target_var: str,
+    model_template,
+    cv_folds: int,
+    weights: pd.Series | None,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Select the best feature set using k-fold cross-validation with a fixed model type.
+
+    Args:
+        data: Processed dataset with all feature columns.
+        feature_sets: Dict mapping feature set names to lists of column names.
+        target_var: Target column name.
+        model_template: Unfitted model object to clone for each evaluation.
+        cv_folds: Number of cross-validation folds.
+        weights: Optional sample weights.
+
+    Returns:
+        Tuple of (results_df, best_feature_info) where best_feature_info contains
+        the feature set name, features list, and CV scores.
+    """
+    from sklearn.base import clone
+
+    y = data[target_var]
+    kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=DEFAULT_RANDOM_STATE)
+
+    feature_results = []
+
+    for feature_name, features in feature_sets.items():
+        missing = [f for f in features if f not in data.columns]
+        if missing:
+            logger.warning(f"Skipping {feature_name}: missing columns {missing}")
+            continue
+
+        X = data[features]
+
+        cv_scores = []
+        for train_idx, val_idx in kfold.split(X):
+            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+            w_train = weights.iloc[train_idx] if weights is not None else None
+            w_val = weights.iloc[val_idx] if weights is not None else None
+
+            model_clone = clone(model_template)
+            model_clone.fit(X_train, y_train, sample_weight=w_train)
+            y_pred = model_clone.predict(X_val)
+            fold_r2 = r2_score(y_val, y_pred, sample_weight=w_val)
+            cv_scores.append(fold_r2)
+
+        cv_mean = np.mean(cv_scores)
+        cv_std = np.std(cv_scores)
+
+        feature_results.append(
+            {
+                "Feature Set": feature_name,
+                "Num Features": len(features),
+                "Features": features,
+                "CV Mean R²": cv_mean,
+                "CV Std R²": cv_std,
+            }
+        )
+
+        logger.info(f"  {feature_name} ({len(features)} features): CV R² = {cv_mean:.4f} ± {cv_std:.4f}")
+
+    if not feature_results:
+        raise RuntimeError("All feature sets failed or were skipped. Check data columns.")
+
+    results_df = pd.DataFrame(feature_results)
+    best_idx = results_df["CV Mean R²"].idxmax()
+    best_row = results_df.loc[best_idx]
+
+    best_feature_info = {
+        "feature_set_name": best_row["Feature Set"],
+        "features": best_row["Features"],
+        "cv_mean_r2": best_row["CV Mean R²"],
+        "cv_std_r2": best_row["CV Std R²"],
+    }
+
+    # Log results table
+    display_cols = ["Feature Set", "Num Features", "CV Mean R²", "CV Std R²"]
+    logger.info("Feature set CV results:")
+    logger.info(f"\n{results_df[display_cols].to_string()}")
+    logger.info(f"Best feature set: {best_feature_info['feature_set_name']}")
+    logger.info(f"  CV R²: {best_feature_info['cv_mean_r2']:.4f} ± {best_feature_info['cv_std_r2']:.4f}")
+
+    return results_df, best_feature_info
+
+
+def _prepare_pipeline_data(
+    data: pd.DataFrame,
+    bins: tuple,
+    variables: list[str],
+    indicators: list[str],
+    target_var: str,
+    multiplier: float,
+) -> tuple[pd.DataFrame, list[str], dict[str, list[str]], pd.Series | None, float]:
+    """Filter booked records, process dataset, compute features/weights/zero_prop."""
+    var_reg, feature_sets = _generate_regression_variables(variables)
+
+    booked_data = data[data[Columns.STATUS_NAME] == StatusName.BOOKED.value]
+    logger.info(f"Booked records: {len(booked_data):,} of {len(data):,} total")
+
+    all_data = process_dataset(
+        data=booked_data,
+        bins=bins,
+        variables=variables,
+        indicators=indicators,
+        target_var=target_var,
+        multiplier=multiplier,
+        var_reg=var_reg,
+    )
+
+    weights = all_data["n_observations"] if "n_observations" in all_data.columns else None
+    zero_prop = (np.abs(all_data[target_var]) < 1e-10).mean()
+
+    logger.info(f"Processed data: {all_data.shape[0]} groups, {all_data.shape[1]} columns")
+    logger.info(f"Base features (var_reg): {var_reg}")
+    logger.info(f"Zero proportion: {zero_prop:.1%}")
+    if weights is not None:
+        logger.info(f"Weight range: [{weights.min():.0f}, {weights.max():.0f}]")
+
+    return all_data, var_reg, feature_sets, weights, zero_prop
+
+
+def _select_best_model_and_features(
+    all_data: pd.DataFrame,
+    var_reg: list[str],
+    feature_sets: dict[str, list[str]],
+    target_var: str,
+    cv_folds: int,
+    include_hurdle: bool,
+    weights: pd.Series | None,
+) -> tuple[pd.DataFrame, dict, pd.DataFrame, dict]:
+    """Run model type CV + feature set CV, return best model template + feature info."""
+    results_step1, best_model_type = _select_model_type_cv(
+        data=all_data,
+        var_reg=var_reg,
+        target_var=target_var,
+        cv_folds=cv_folds,
+        include_hurdle=include_hurdle,
+        weights=weights,
+    )
+
+    best_model_name = best_model_type["name"]
+    best_model_template = best_model_type["model_template"]
+
+    logger.info("-" * 40)
+    logger.info(f"STEP 3: FEATURE SET SELECTION ({best_model_name}, {cv_folds}-fold CV)")
+    logger.info("-" * 40)
+
+    results_step2, best_feature_info = _select_feature_set_cv(
+        data=all_data,
+        feature_sets=feature_sets,
+        target_var=target_var,
+        model_template=best_model_template,
+        cv_folds=cv_folds,
+        weights=weights,
+    )
+
+    return results_step1, best_model_type, results_step2, best_feature_info
+
+
+def _train_and_evaluate_final_model(
+    best_model_template,
+    all_data: pd.DataFrame,
+    final_features: list[str],
+    target_var: str,
+    weights: pd.Series | None,
+) -> tuple[Any, float]:
+    """Clone, fit, predict, compute R², return model + full_r2."""
+    from sklearn.base import clone
+
+    final_model = clone(best_model_template)
+    y_all = all_data[target_var]
+    final_model.fit(all_data[final_features], y_all, sample_weight=weights)
+
+    y_all_pred = final_model.predict(all_data[final_features])
+    full_r2 = r2_score(y_all, y_all_pred, sample_weight=weights)
+
+    return final_model, full_r2
+
+
+def _save_model_to_disk(
+    final_model,
+    final_features: list[str],
+    best_model_info: dict,
+    best_model_type: dict,
+    best_feature_info: dict,
+    all_data: pd.DataFrame,
+    target_var: str,
+    multiplier: float,
+    cv_folds: int,
+    zero_prop: float,
+    weights: pd.Series | None,
+    model_base_path: str,
+) -> str:
+    """Build metadata, save model with metadata, return path."""
+    model_metadata = {
+        "cv_mean_r2": best_model_info["cv_mean_r2"],
+        "cv_std_r2": best_model_info["cv_std_r2"],
+        "full_r2": best_model_info["full_r2"],
+        "cv_folds": cv_folds,
+        "total_samples": len(all_data),
+        "target_variable": target_var,
+        "multiplier": multiplier,
+        "model_type_selected": best_model_info["model_type"],
+        "feature_set_selected": best_model_info["feature_set"],
+        "weighted_regression": best_model_info["weighted"],
+        "is_hurdle": best_model_info["is_hurdle"],
+        "zero_proportion": float(zero_prop),
+        "step1_cv_r2": best_model_type["cv_mean_r2"],
+        "step2_cv_r2": best_feature_info["cv_mean_r2"],
+    }
+
+    if weights is not None:
+        model_metadata["weight_stats"] = {
+            "min": float(weights.min()),
+            "max": float(weights.max()),
+            "mean": float(weights.mean()),
+        }
+
+    model_path = save_model_with_metadata(
+        model=final_model, features=final_features, metadata=model_metadata, base_path=model_base_path
+    )
+    logger.info(f"Model saved to: {model_path}")
+
+    return model_path
+
+
+def _create_pipeline_visualization(
+    final_model,
+    all_data: pd.DataFrame,
+    variables: list[str],
+    target_var: str,
+    final_features: list[str],
+    model_path: str | None,
+) -> go.Figure | None:
+    """Create 3D surface plot and save HTML."""
+    try:
+        fig = plot_3d_surface(
+            model=final_model,
+            train_data=all_data,
+            test_data=all_data,
+            variables=variables,
+            target_var=target_var,
+            features=final_features,
+            n_points=20,
+        )
+
+        if fig is not None:
+            logger.info("3D surface plot created")
+            if model_path:
+                plot_path = Path(model_path) / "prediction_surface.html"
+                fig.write_html(str(plot_path))
+                logger.info(f"  Plot saved to: {plot_path}")
+
+        return fig
+    except Exception as e:
+        logger.error(f"Visualization failed: {str(e)}")
+        return None
 
 
 def inference_pipeline(
@@ -515,659 +716,167 @@ def inference_pipeline(
     target_var: str,
     multiplier: float,
     test_size: float = 0.4,
+    cv_folds: int = 5,
     include_hurdle: bool = True,
     save_model: bool = True,
     model_base_path: str = "models",
     create_visualizations: bool = True,
 ):
     """
-    Execute complete modeling pipeline from data to deployed model.
+    Two-step inference pipeline using cross-validation throughout.
 
-    Parameters:
-    -----------
-    data : pd.DataFrame
-        Raw input data containing all records
-    bins : tuple
-        Tuple of (octroi_bins, efx_bins) for variable binning
-    variables : list
-        List of variable names for modeling (e.g., ['octroi_binned', 'efx_binned'])
-    indicators : list
-        List of indicator column names for calculations
-    target_var : str
-        Name of the target variable to predict
-    multiplier : float
-        Multiplier for target variable calculation
-    test_size : float, optional
-        Proportion of data for testing (default: 0.4)
-    include_hurdle : bool, optional
-        Whether to include Hurdle models (default: True)
-    save_model : bool, optional
-        Whether to save the best model (default: True)
-    model_base_path : str, optional
-        Base path for saving models (default: 'models')
-    create_visualizations : bool, optional
-        Whether to create 3D plots (default: True)
+    Both model type selection and feature set selection are done via k-fold
+    cross-validation on the full dataset, avoiding data leakage. The final
+    model is retrained on all data with the best model type + feature set.
 
-    Returns:
-    --------
-    dict
-        Dictionary containing all pipeline outputs:
-        - train_data: Processed training data
-        - test_data: Processed test data
-        - features: List of feature names
-        - results_df: DataFrame with all model results
-        - best_model_info: Dictionary with best model details
-        - model_path: Path to saved model (if save_model=True)
-        - visualization: Plotly figure (if create_visualizations=True)
+    Steps:
+        1. Prepare data: filter booked records, aggregate by bin groups,
+           compute target metric and regression features.
+        2. Select model type: evaluate all candidate model types (Linear,
+           Ridge, Lasso, ElasticNet, Hurdle variants) via k-fold CV on
+           base features (var_reg). Pick the best by mean CV R².
+        3. Select feature set: using the best model type, evaluate 7
+           feature sets via k-fold CV. Pick the best by mean CV R².
+        4. Train final model on all data with best type + features.
+        5. Optionally save model and create 3D visualization.
 
-    Example:
-    --------
-    >>> # Load your data
-    >>> data = pd.read_feather('your_data.feather')
-    >>>
-    >>> # Define parameters
-    >>> bins = (octroi_bins, efx_bins)
-    >>> variables = ['octroi_binned', 'efx_binned']
-    >>> indicators = ['indicator1', 'indicator2']
-    >>>
-    >>> # Run full pipeline
-    >>> results = run_full_pipeline(
-    ...     data=data,
-    ...     bins=bins,
-    ...     variables=variables,
-    ...     indicators=indicators,
-    ...     target_var='tpr_30ever',
-    ...     multiplier=100
-    ... )
-    >>>
-    >>> # Access results
-    >>> best_model = results['best_model_info']['model']
-    >>> model_path = results['model_path']
-    """
-
-    logger.info("=" * 80)
-    logger.info("FULL MODELING PIPELINE")
-    logger.info("=" * 80)
-    logger.info(f"Target variable: {target_var}")
-    logger.info(f"Test size: {test_size:.1%}")
-    logger.info(f"Include Hurdle models: {include_hurdle}")
-    logger.info("=" * 80)
-
-    # ========================================================================
-    # STEP 1: DATA PREPARATION
-    # ========================================================================
-    logger.info("=" * 80)
-    logger.info("STEP 1: DATA PREPARATION")
-    logger.info("=" * 80)
-
-    train_data, test_data, var_reg, var_reg_extended = split_and_prepare_data(
-        data=data,
-        bins=bins,
-        variables=variables,
-        indicators=indicators,
-        target_var=target_var,
-        multiplier=multiplier,
-        test_size=test_size,
-    )
-
-    logger.info(f"Training data shape: {train_data.shape}")
-    logger.info(f"Test data shape: {test_data.shape}")
-    logger.info(f"Features (var_reg): {var_reg}")
-
-    # Check for n_observations column
-    if "n_observations" in train_data.columns:
-        logger.info("Weights available for weighted regression")
-        logger.info(
-            f"  Train weights: [{train_data['n_observations'].min():.0f}, {train_data['n_observations'].max():.0f}]"
-        )
-        logger.info(
-            f"  Test weights: [{test_data['n_observations'].min():.0f}, {test_data['n_observations'].max():.0f}]"
-        )
-
-    # ========================================================================
-    # STEP 2: FEATURE EXTRACTION
-    # ========================================================================
-    logger.info("=" * 80)
-    logger.info("STEP 2: FEATURE EXTRACTION")
-    logger.info("=" * 80)
-
-    # Extract features and target
-    X_train = train_data[var_reg]
-    X_test = test_data[var_reg]
-    y_train = train_data[target_var]
-    y_test = test_data[target_var]
-
-    # Extract weights if available
-    weights_train = train_data["n_observations"] if "n_observations" in train_data.columns else None
-    weights_test = test_data["n_observations"] if "n_observations" in test_data.columns else None
-
-    logger.info(f"X_train shape: {X_train.shape}")
-    logger.info(f"X_test shape: {X_test.shape}")
-    logger.info(f"y_train shape: {y_train.shape}")
-    logger.info(f"y_test shape: {y_test.shape}")
-
-    # Display target statistics
-    # Display target statistics
-    logger.info("Target variable statistics:")
-    logger.info(f"  Train - Mean: {y_train.mean():.4f}, Std: {y_train.std():.4f}")
-    logger.info(f"  Train - Min: {y_train.min():.4f}, Max: {y_train.max():.4f}")
-    logger.info(f"  Test  - Mean: {y_test.mean():.4f}, Std: {y_test.std():.4f}")
-    logger.info(f"  Test  - Min: {y_test.min():.4f}, Max: {y_test.max():.4f}")
-
-    # Check zero proportion
-    zero_prop_train = (np.abs(y_train) < 1e-10).mean()
-    zero_prop_test = (np.abs(y_test) < 1e-10).mean()
-    logger.info("Zero proportion:")
-    logger.info(f"  Train: {zero_prop_train:.1%}")
-    logger.info(f"  Test: {zero_prop_test:.1%}")
-
-    if zero_prop_train > 0.1:
-        logger.warning("High zero proportion - Hurdle models recommended!")
-
-    # ========================================================================
-    # STEP 3: MODEL EVALUATION
-    # ========================================================================
-    logger.info("=" * 80)
-    logger.info("STEP 3: MODEL EVALUATION")
-    logger.info("=" * 80)
-
-    results_df, best_model_info = evaluate_models_for_aggregated_data(
-        X_train=X_train,
-        X_test=X_test,
-        y_train=y_train,
-        y_test=y_test,
-        var_reg=var_reg,
-        weights_train=weights_train,
-        weights_test=weights_test,
-        include_hurdle=include_hurdle,
-    )
-
-    # ========================================================================
-    # STEP 4: MODEL ANALYSIS
-    # ========================================================================
-    logger.info("=" * 80)
-    logger.info("STEP 4: MODEL ANALYSIS")
-    logger.info("=" * 80)
-
-    # Display detailed results for best model
-    # Display detailed results for best model
-    logger.info("Best Model Details:")
-    logger.info(f"  Name: {best_model_info['name']}")
-    logger.info(f"  Test R²: {best_model_info['test_r2']:.4f}")
-    logger.info(f"  Train R²: {best_model_info['train_r2']:.4f}")
-    logger.info(f"  Test RMSE: {best_model_info['test_rmse']:.4f}")
-    logger.info(f"  Test MAE: {best_model_info['test_mae']:.4f}")
-    logger.info(f"  Overfit: {best_model_info['train_r2'] - best_model_info['test_r2']:.4f}")
-
-    if best_model_info.get("weighted", False):
-        logger.info("  Weighted: Yes")
-
-    if best_model_info.get("is_hurdle", False):
-        logger.info("  Type: Hurdle Model (handles zero-inflation)")
-
-    # Display model coefficients if available
-    best_model = best_model_info["model"]
-    if hasattr(best_model, "coef_"):
-        logger.info("Model Coefficients:")
-        for feature, coef in zip(var_reg, best_model.coef_):
-            logger.info(f"  {feature}: {coef:.6f}")
-    elif hasattr(best_model, "regressor_") and hasattr(best_model.regressor_, "coef_"):
-        # Hurdle model
-        logger.info("Hurdle Model - Regression Stage Coefficients:")
-        for feature, coef in zip(var_reg, best_model.regressor_.coef_):
-            logger.info(f"  {feature}: {coef:.6f}")
-
-    # Compare top models
-    logger.info("Top 5 Models Comparison:")
-    display_cols = ["Model", "Test R²", "Test RMSE", "Overfit"]
-    if "Zero/NonZero Acc" in results_df.columns:
-        display_cols.append("Zero/NonZero Acc")
-    logger.info(f"\n{results_df[display_cols].head().to_string()}")
-
-    # ========================================================================
-    # STEP 5: MODEL SAVING
-    # ========================================================================
-    model_path = None
-    if save_model:
-        logger.info("=" * 80)
-        logger.info("STEP 5: MODEL SAVING")
-        logger.info("=" * 80)
-
-        # Prepare metadata
-        model_metadata = {
-            "test_r2": best_model_info["test_r2"],
-            "train_r2": best_model_info["train_r2"],
-            "test_rmse": best_model_info["test_rmse"],
-            "test_mae": best_model_info["test_mae"],
-            "train_samples": len(X_train),
-            "test_samples": len(X_test),
-            "target_variable": target_var,
-            "multiplier": multiplier,
-            "weighted_regression": best_model_info.get("weighted", False),
-            "is_hurdle": best_model_info.get("is_hurdle", False),
-            "zero_proportion_train": float(zero_prop_train),
-            "zero_proportion_test": float(zero_prop_test),
-        }
-
-        # Add weight statistics if weighted
-        if weights_train is not None:
-            model_metadata["weight_stats"] = {
-                "train_min": float(weights_train.min()),
-                "train_max": float(weights_train.max()),
-                "train_mean": float(weights_train.mean()),
-                "train_median": float(weights_train.median()),
-                "test_min": float(weights_test.min()),
-                "test_max": float(weights_test.max()),
-                "test_mean": float(weights_test.mean()),
-                "test_median": float(weights_test.median()),
-            }
-
-        # Add hurdle-specific metadata
-        if best_model_info.get("is_hurdle", False):
-            model_metadata["hurdle_classifier"] = type(best_model.classifier_).__name__
-            model_metadata["hurdle_regressor"] = type(best_model.regressor_).__name__
-            model_metadata["zero_threshold"] = best_model.zero_threshold
-
-        # Save model
-        model_path = save_model_with_metadata(
-            model=best_model, features=var_reg, metadata=model_metadata, base_path=model_base_path
-        )
-
-        logger.info("Model saved successfully")
-        logger.info(f"  Path: {model_path}")
-
-    # ========================================================================
-    # STEP 6: VISUALIZATION
-    # ========================================================================
-    fig = None
-    if create_visualizations and len(variables) == 2:
-        logger.info("=" * 80)
-        logger.info("STEP 6: 3D VISUALIZATION")
-        logger.info("=" * 80)
-
-        try:
-            fig = plot_3d_surface(
-                model=best_model,
-                train_data=train_data,
-                test_data=test_data,
-                variables=variables,
-                target_var=target_var,
-                features=var_reg,
-                n_points=20,
-            )
-
-            if fig is not None:
-                logger.info("3D surface plot created")
-                # Optionally save the plot
-                if model_path:
-                    plot_path = Path(model_path) / "prediction_surface.html"
-                    fig.write_html(str(plot_path))
-                    logger.info(f"  Plot saved to: {plot_path}")
-            else:
-                logger.warning("Could not create 3D plot")
-        except Exception as e:
-            logger.error(f"Visualization failed: {str(e)}")
-
-    # ========================================================================
-    # STEP 7: PIPELINE SUMMARY
-    # ========================================================================
-    logger.info("=" * 80)
-    logger.info("PIPELINE SUMMARY")
-    logger.info("=" * 80)
-
-    logger.info("Pipeline completed successfully!")
-    logger.info("Key Results:")
-    logger.info(f"  - Best Model: {best_model_info['name']}")
-    logger.info(f"  - Test R²: {best_model_info['test_r2']:.4f}")
-    logger.info(f"  - Test RMSE: {best_model_info['test_rmse']:.4f}")
-    logger.info(f"  - Training samples: {len(X_train):,}")
-    logger.info(f"  - Test samples: {len(X_test):,}")
-
-    if model_path:
-        logger.info(f"  - Model saved: {model_path}")
-
-    logger.info("=" * 80)
-
-    # ========================================================================
-    # RETURN ALL RESULTS
-    # ========================================================================
-    return {
-        "train_data": train_data,
-        "test_data": test_data,
-        "X_train": X_train,
-        "X_test": X_test,
-        "y_train": y_train,
-        "y_test": y_test,
-        "weights_train": weights_train,
-        "weights_test": weights_test,
-        "features": var_reg,
-        "features_extended": var_reg_extended,
-        "results_df": results_df,
-        "best_model_info": best_model_info,
-        "model_path": model_path,
-        "visualization": fig,
-    }
-
-
-def inference_pipeline_with_feature_selection(
-    data: pd.DataFrame,
-    bins: tuple,
-    variables: list,
-    indicators: list,
-    target_var: str,
-    multiplier: float,
-    test_size: float = 0.4,
-    include_hurdle: bool = True,
-    save_model: bool = True,
-    model_base_path: str = "models",
-    create_visualizations: bool = True,
-):
-    """
-    Two-step inference pipeline:
-    1. Select best model type using var_reg
-    2. Select best feature set using the chosen model type
-
-    Parameters:
-    -----------
-    data : pd.DataFrame
-        Raw input data containing all records
-    bins : tuple
-        Tuple of (octroi_bins, efx_bins) for variable binning
-    variables : list
-        List of variable names for modeling (e.g., ['octroi_binned', 'efx_binned'])
-    indicators : list
-        List of indicator column names for calculations
-    target_var : str
-        Name of the target variable to predict
-    multiplier : float
-        Multiplier for target variable calculation
-    test_size : float, optional
-        Proportion of data for testing (default: 0.4)
-    include_hurdle : bool, optional
-        Whether to include Hurdle models (default: True)
-    save_model : bool, optional
-        Whether to save the best model (default: True)
-    model_base_path : str, optional
-        Base path for saving models (default: 'models')
-    create_visualizations : bool, optional
-        Whether to create 3D plots (default: True)
+    Args:
+        data: Raw input data containing all records.
+        bins: Tuple of (octroi_bins, efx_bins) for variable binning.
+        variables: List of variable names for modeling.
+        indicators: List of indicator column names for calculations.
+        target_var: Name of the target variable to predict.
+        multiplier: Multiplier for target variable calculation.
+        test_size: Unused, kept for backward compatibility. Will be removed.
+        cv_folds: Number of cross-validation folds (default: 5).
+        include_hurdle: Whether to include Hurdle models (default: True).
+        save_model: Whether to save the best model (default: True).
+        model_base_path: Base path for saving models (default: 'models').
+        create_visualizations: Whether to create 3D plots (default: True).
 
     Returns:
-    --------
-    dict
         Dictionary containing all pipeline outputs:
-        - train_data, test_data: Processed datasets
+        - all_data: Processed dataset used for training
         - features: Best feature set selected
-        - var_reg, var_reg_extended: Available feature sets
-        - step1_results: Model type comparison results
-        - step2_results: Feature set comparison results
-        - best_model_info: Final model details
+        - var_reg: Base feature set
+        - feature_sets: Dictionary of all available feature sets
+        - step1_results: Model type CV comparison results
+        - step2_results: Feature set CV comparison results
+        - best_model_info: Final model details (model, name, cv_mean_r2,
+          cv_std_r2, full_r2, model_type, feature_set, weighted, is_hurdle)
         - model_path: Path to saved model (if save_model=True)
         - visualization: Plotly figure (if create_visualizations=True)
     """
-    from sklearn.base import clone
+    if test_size != 0.4:
+        logger.warning(
+            "test_size parameter is deprecated and ignored. "
+            "All evaluation is done via cross-validation. "
+            "Use cv_folds to control validation."
+        )
 
     logger.info("=" * 80)
-    logger.info("INFERENCE PIPELINE WITH FEATURE SELECTION")
+    logger.info("INFERENCE PIPELINE (CV-based)")
     logger.info("=" * 80)
-    logger.info(f"Target variable: {target_var}")
-    logger.info(f"Test size: {test_size:.1%}")
-    logger.info("=" * 80)
+    logger.info(f"Target: {target_var} | CV folds: {cv_folds} | Hurdle: {include_hurdle}")
 
-    # ========================================================================
-    # DATA PREPARATION
-    # ========================================================================
-    logger.info("DATA PREPARATION")
+    # STEP 1: DATA PREPARATION
+    logger.info("-" * 40)
+    logger.info("STEP 1: DATA PREPARATION")
     logger.info("-" * 40)
 
-    train_data, test_data, var_reg, var_reg_extended = split_and_prepare_data(
-        data=data,
-        bins=bins,
-        variables=variables,
-        indicators=indicators,
-        target_var=target_var,
-        multiplier=multiplier,
-        test_size=test_size,
+    all_data, var_reg, feature_sets, weights_all, zero_prop = _prepare_pipeline_data(
+        data, bins, variables, indicators, target_var, multiplier
     )
 
-    # Extract targets and weights
-    y_train = train_data[target_var]
-    y_test = test_data[target_var]
-    weights_train = train_data["n_observations"] if "n_observations" in train_data.columns else None
-    weights_test = test_data["n_observations"] if "n_observations" in test_data.columns else None
+    # STEPS 2-3: MODEL TYPE + FEATURE SET SELECTION
+    logger.info("-" * 40)
+    logger.info("STEP 2: MODEL TYPE SELECTION (CV on var_reg)")
+    logger.info("-" * 40)
 
-    logger.info(f"Training data shape: {train_data.shape}")
-    logger.info(f"Test data shape: {test_data.shape}")
-    logger.info(f"var_reg features: {var_reg}")
-    logger.info(f"var_reg_extended features: {var_reg_extended}")
-
-    # ========================================================================
-    # STEP 1: MODEL TYPE SELECTION (using var_reg)
-    # ========================================================================
-    logger.info("=" * 80)
-    logger.info("STEP 1: MODEL TYPE SELECTION (using var_reg)")
-    logger.info("=" * 80)
-
-    X_train_base = train_data[var_reg]
-    X_test_base = test_data[var_reg]
-
-    results_step1, best_model_step1 = evaluate_models_for_aggregated_data(
-        X_train=X_train_base,
-        X_test=X_test_base,
-        y_train=y_train,
-        y_test=y_test,
-        var_reg=var_reg,
-        weights_train=weights_train,
-        weights_test=weights_test,
-        include_hurdle=include_hurdle,
+    results_step1, best_model_type, results_step2, best_feature_info = _select_best_model_and_features(
+        all_data, var_reg, feature_sets, target_var, cv_folds, include_hurdle, weights_all
     )
 
-    best_model_name = best_model_step1["name"]
-    logger.info(f"Best model type selected: {best_model_name}")
-    logger.info(f"Test R² with var_reg: {best_model_step1['test_r2']:.4f}")
+    best_model_name = best_model_type["name"]
+    final_features = best_feature_info["features"]
 
-    # ========================================================================
-    # STEP 2: FEATURE SET SELECTION
-    # ========================================================================
-    logger.info("=" * 80)
-    logger.info(f"STEP 2: FEATURE SET SELECTION (using {best_model_name})")
-    logger.info("=" * 80)
+    # STEP 4: TRAIN FINAL MODEL
+    logger.info("-" * 40)
+    logger.info("STEP 4: FINAL MODEL TRAINING (all data)")
+    logger.info("-" * 40)
 
-    # Define feature sets to compare
-    feature_sets = {
-        "var_reg": var_reg,
-        "var_reg_extended": var_reg_extended,
-    }
+    final_model, full_r2 = _train_and_evaluate_final_model(
+        best_model_type["model_template"], all_data, final_features, target_var, weights_all
+    )
 
-    # Add subset: var_reg + only squared terms
-    squared_terms = [f for f in var_reg_extended if "^2" in f and f not in var_reg]
-    if squared_terms:
-        feature_sets["var_reg + squared"] = var_reg + squared_terms
+    logger.info(f"Final model: {best_model_name} + {best_feature_info['feature_set_name']}")
+    logger.info(f"  CV R²: {best_feature_info['cv_mean_r2']:.4f} ± {best_feature_info['cv_std_r2']:.4f}")
+    logger.info(f"  Full-data R² (refit): {full_r2:.4f}")
 
-    # Get the model object to clone
-    best_model_obj = best_model_step1["model"]
-
-    feature_results = []
-
-    for feature_name, features in feature_sets.items():
-        # Check all features exist in data
-        missing = [f for f in features if f not in train_data.columns]
-        if missing:
-            logger.warning(f"Skipping {feature_name}: missing columns {missing}")
-            continue
-
-        X_train_feat = train_data[features]
-        X_test_feat = test_data[features]
-
-        # Clone and fit the same model type
-        model_clone = clone(best_model_obj)
-        model_clone.fit(X_train_feat, y_train, sample_weight=weights_train)
-
-        # Evaluate
-        y_train_pred = model_clone.predict(X_train_feat)
-        y_test_pred = model_clone.predict(X_test_feat)
-
-        train_r2 = r2_score(y_train, y_train_pred, sample_weight=weights_train)
-        test_r2 = r2_score(y_test, y_test_pred, sample_weight=weights_test)
-        test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred, sample_weight=weights_test))
-        test_mae = mean_absolute_error(y_test, y_test_pred, sample_weight=weights_test)
-
-        feature_results.append(
-            {
-                "Feature Set": feature_name,
-                "Num Features": len(features),
-                "Features": features,
-                "Train R²": train_r2,
-                "Test R²": test_r2,
-                "Test RMSE": test_rmse,
-                "Test MAE": test_mae,
-                "Overfit": train_r2 - test_r2,
-                "model": model_clone,
-            }
-        )
-
-        logger.info(f"{feature_name}: Test R² = {test_r2:.4f}, RMSE = {test_rmse:.4f}")
-
-    # Find best feature set
-    feature_results_df = pd.DataFrame(feature_results)
-    best_idx = feature_results_df["Test R²"].idxmax()
-    best_feature_set = feature_results_df.loc[best_idx]
-
-    logger.info("=" * 80)
-    logger.info("FEATURE SELECTION RESULTS")
-    logger.info("=" * 80)
-    display_cols = ["Feature Set", "Num Features", "Train R²", "Test R²", "Test RMSE", "Overfit"]
-    logger.info(f"\n{feature_results_df[display_cols].to_string()}")
-    logger.info(f"\nBest feature set: {best_feature_set['Feature Set']}")
-    logger.info(f"Best features: {best_feature_set['Features']}")
-
-    # Final model and features
-    final_model = best_feature_set["model"]
-    final_features = best_feature_set["Features"]
+    if hasattr(final_model, "coef_"):
+        logger.debug("Model Coefficients:")
+        for feature, coef in zip(final_features, final_model.coef_):
+            logger.debug(f"  {feature}: {coef:.6f}")
+    elif hasattr(final_model, "regressor_") and hasattr(final_model.regressor_, "coef_"):
+        logger.debug("Hurdle Model - Regression Stage Coefficients:")
+        for feature, coef in zip(final_features, final_model.regressor_.coef_):
+            logger.debug(f"  {feature}: {coef:.6f}")
 
     best_model_info = {
         "model": final_model,
-        "name": f"{best_model_name} + {best_feature_set['Feature Set']}",
-        "test_r2": best_feature_set["Test R²"],
-        "train_r2": best_feature_set["Train R²"],
-        "test_rmse": best_feature_set["Test RMSE"],
-        "test_mae": best_feature_set["Test MAE"],
+        "name": f"{best_model_name} + {best_feature_info['feature_set_name']}",
+        "cv_mean_r2": best_feature_info["cv_mean_r2"],
+        "cv_std_r2": best_feature_info["cv_std_r2"],
+        "full_r2": full_r2,
         "model_type": best_model_name,
-        "feature_set": best_feature_set["Feature Set"],
-        "weighted": weights_train is not None,
+        "feature_set": best_feature_info["feature_set_name"],
+        "weighted": weights_all is not None,
         "is_hurdle": isinstance(final_model, HurdleRegressor),
     }
 
-    # ========================================================================
-    # STEP 3: MODEL SAVING
-    # ========================================================================
+    # STEP 5: MODEL SAVING
     model_path = None
     if save_model:
-        logger.info("=" * 80)
-        logger.info("STEP 3: MODEL SAVING")
-        logger.info("=" * 80)
+        logger.info("-" * 40)
+        logger.info("STEP 5: MODEL SAVING")
+        logger.info("-" * 40)
 
-        # Calculate zero proportions
-        zero_prop_train = (np.abs(y_train) < 1e-10).mean()
-        zero_prop_test = (np.abs(y_test) < 1e-10).mean()
-
-        # Prepare metadata
-        model_metadata = {
-            "test_r2": best_model_info["test_r2"],
-            "train_r2": best_model_info["train_r2"],
-            "test_rmse": best_model_info["test_rmse"],
-            "test_mae": best_model_info["test_mae"],
-            "train_samples": len(train_data),
-            "test_samples": len(test_data),
-            "target_variable": target_var,
-            "multiplier": multiplier,
-            "model_type_selected": best_model_name,
-            "feature_set_selected": best_feature_set["Feature Set"],
-            "weighted_regression": best_model_info.get("weighted", False),
-            "is_hurdle": best_model_info.get("is_hurdle", False),
-            "zero_proportion_train": float(zero_prop_train),
-            "zero_proportion_test": float(zero_prop_test),
-            "step1_best_test_r2": best_model_step1["test_r2"],
-            "step2_improvement": best_model_info["test_r2"] - best_model_step1["test_r2"],
-        }
-
-        # Add weight statistics if weighted
-        if weights_train is not None:
-            model_metadata["weight_stats"] = {
-                "train_min": float(weights_train.min()),
-                "train_max": float(weights_train.max()),
-                "train_mean": float(weights_train.mean()),
-                "test_min": float(weights_test.min()),
-                "test_max": float(weights_test.max()),
-                "test_mean": float(weights_test.mean()),
-            }
-
-        # Save model
-        model_path = save_model_with_metadata(
-            model=final_model, features=final_features, metadata=model_metadata, base_path=model_base_path
+        model_path = _save_model_to_disk(
+            final_model, final_features, best_model_info, best_model_type,
+            best_feature_info, all_data, target_var, multiplier, cv_folds,
+            zero_prop, weights_all, model_base_path,
         )
 
-    # ========================================================================
-    # STEP 4: VISUALIZATION
-    # ========================================================================
+    # STEP 6: VISUALIZATION
     fig = None
     if create_visualizations and len(variables) == 2:
-        logger.info("=" * 80)
-        logger.info("STEP 4: 3D VISUALIZATION")
-        logger.info("=" * 80)
+        logger.info("-" * 40)
+        logger.info("STEP 6: 3D VISUALIZATION")
+        logger.info("-" * 40)
 
-        try:
-            fig = plot_3d_surface(
-                model=final_model,
-                train_data=train_data,
-                test_data=test_data,
-                variables=variables,
-                target_var=target_var,
-                features=final_features,
-                n_points=20,
-            )
+        fig = _create_pipeline_visualization(
+            final_model, all_data, variables, target_var, final_features, model_path
+        )
 
-            if fig is not None:
-                logger.info("3D surface plot created")
-                if model_path:
-                    plot_path = Path(model_path) / "prediction_surface.html"
-                    fig.write_html(str(plot_path))
-                    logger.info(f"Plot saved to: {plot_path}")
-        except Exception as e:
-            logger.error(f"Visualization failed: {str(e)}")
-
-    # ========================================================================
     # PIPELINE SUMMARY
-    # ========================================================================
     logger.info("=" * 80)
     logger.info("PIPELINE SUMMARY")
-    logger.info("=" * 80)
-    logger.info(f"Step 1 - Best model type: {best_model_name}")
-    logger.info(f"Step 1 - Test R² (var_reg): {best_model_step1['test_r2']:.4f}")
-    logger.info(f"Step 2 - Best feature set: {best_feature_set['Feature Set']}")
-    logger.info(f"Step 2 - Final Test R²: {best_model_info['test_r2']:.4f}")
-    logger.info(f"Improvement from feature selection: {best_model_info['test_r2'] - best_model_step1['test_r2']:+.4f}")
+    logger.info(f"  Model type (Step 1): {best_model_name} "
+                f"(CV R²: {best_model_type['cv_mean_r2']:.4f})")
+    logger.info(f"  Feature set (Step 2): {best_feature_info['feature_set_name']} "
+                f"(CV R²: {best_feature_info['cv_mean_r2']:.4f} ± {best_feature_info['cv_std_r2']:.4f})")
+    logger.info(f"  Final full-data R²: {full_r2:.4f}")
     if model_path:
-        logger.info(f"Model saved: {model_path}")
+        logger.info(f"  Model saved: {model_path}")
     logger.info("=" * 80)
 
-    # ========================================================================
-    # RETURN ALL RESULTS
-    # ========================================================================
     return {
-        "train_data": train_data,
-        "test_data": test_data,
-        "X_train": train_data[final_features],
-        "X_test": test_data[final_features],
-        "y_train": y_train,
-        "y_test": y_test,
-        "weights_train": weights_train,
-        "weights_test": weights_test,
+        "all_data": all_data,
         "features": final_features,
         "var_reg": var_reg,
-        "var_reg_extended": var_reg_extended,
+        "feature_sets": feature_sets,
         "step1_results": results_step1,
-        "step2_results": feature_results_df.drop("model", axis=1),
+        "step2_results": results_step2,
         "best_model_info": best_model_info,
         "model_path": model_path,
         "visualization": fig,

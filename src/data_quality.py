@@ -438,11 +438,15 @@ def run_data_quality_checks(df: pd.DataFrame, config: dict[str, Any], verbose: b
 
     required_columns = keep_vars + indicators + ["segment_cut_off", "status_name", "mis_date"]
 
+    # Columns that naturally have missing values (only populated for booked records)
+    missing_exempt = {"reject_reason", "early_bad", "acct_booked_h0", "todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"}
+    missing_check_columns = [c for c in required_columns if c not in missing_exempt]
+
     logger.info("Running data quality checks...")
 
     # Run checks
     report.add(check_required_columns(df, required_columns))
-    report.add(check_missing_values(df, required_columns))
+    report.add(check_missing_values(df, missing_check_columns))
     report.add(check_segment_exists(df, segment_filter))
     report.add(check_segment_size(df, segment_filter))
     report.add(check_date_range(df, "mis_date", date_ini, date_fin))

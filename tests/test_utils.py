@@ -5,8 +5,21 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from src.utils import DEFAULT_RISK_MULTIPLIER, calculate_b2_ever_h6
+from src.utils import (
+    DEFAULT_RISK_MULTIPLIER,
+    calculate_annual_coef,
+    calculate_b2_ever_h6,
+    calculate_stress_factor,
+    consolidate_cutoff_summaries,
+    create_fixed_cutoff_solution,
+    format_cutoff_summary_table,
+    generate_cutoff_summary,
+    get_data_information,
+    get_fact_sol,
+    optimize_dtypes,
+)
 
 # =============================================================================
 # calculate_b2_ever_h6 Tests
@@ -180,3 +193,558 @@ class TestB2EverH6Integration:
 
         assert "b2_ever_h6" in df.columns
         assert not df["b2_ever_h6"].isna().any()
+
+
+# =============================================================================
+# create_fixed_cutoff_solution Tests
+# =============================================================================
+
+
+class TestCreateFixedCutoffSolution:
+    """Tests for the create_fixed_cutoff_solution utility function."""
+
+    def test_basic_fixed_cutoff(self):
+        """Test creating a fixed cutoff solution."""
+        fixed_cutoffs = {
+            "sc_octroi_new_clus": [1.0, 2.0, 3.0, 4.0],
+            "new_efx_clus": [2, 2, 3, 4],
+        }
+        variables = ["sc_octroi_new_clus", "new_efx_clus"]
+        values_var0 = [1.0, 2.0, 3.0, 4.0]
+
+        result = create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0)
+
+        # Check structure
+        assert "sol_fac" in result.columns
+        assert result["sol_fac"].iloc[0] == 0
+        assert len(result) == 1
+
+        # Check cutoff values
+        assert result[1.0].iloc[0] == 2
+        assert result[2.0].iloc[0] == 2
+        assert result[3.0].iloc[0] == 3
+        assert result[4.0].iloc[0] == 4
+
+    def test_fixed_cutoff_with_integers(self):
+        """Test with integer bin values."""
+        fixed_cutoffs = {
+            "var0": [1, 2, 3],
+            "var1": [5, 6, 7],
+        }
+        variables = ["var0", "var1"]
+        values_var0 = [1, 2, 3]
+
+        result = create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0)
+
+        assert len(result) == 1
+        assert result[1.0].iloc[0] == 5
+        assert result[2.0].iloc[0] == 6
+        assert result[3.0].iloc[0] == 7
+
+    def test_missing_variable_raises_error(self):
+        """Test that missing variable raises ValueError."""
+        fixed_cutoffs = {
+            "sc_octroi_new_clus": [1.0, 2.0, 3.0],
+            # missing new_efx_clus
+        }
+        variables = ["sc_octroi_new_clus", "new_efx_clus"]
+        values_var0 = [1.0, 2.0, 3.0]
+
+        with pytest.raises(ValueError, match="must contain both variables"):
+            create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0)
+
+    def test_length_mismatch_raises_error(self):
+        """Test that mismatched lengths raise ValueError."""
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0, 3.0],
+            "var1": [2, 3],  # Wrong length
+        }
+        variables = ["var0", "var1"]
+        values_var0 = [1.0, 2.0, 3.0]
+
+        with pytest.raises(ValueError, match="Length mismatch"):
+            create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0)
+
+    def test_single_bin(self):
+        """Test with single bin."""
+        fixed_cutoffs = {
+            "var0": [1.0],
+            "var1": [5],
+        }
+        variables = ["var0", "var1"]
+        values_var0 = [1.0]
+
+        result = create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0)
+
+        assert len(result) == 1
+        assert result[1.0].iloc[0] == 5
+
+    def test_monotonicity_warning(self):
+        """Test that non-monotonic cutoffs trigger warning (captured via loguru sink)."""
+        from io import StringIO
+
+        from loguru import logger
+
+        # Add a temporary sink to capture logs
+        log_capture = StringIO()
+        handler_id = logger.add(log_capture, format="{message}", level="WARNING")
+
+        try:
+            fixed_cutoffs = {
+                "var0": [1.0, 2.0, 3.0, 4.0],
+                "var1": [5, 3, 4, 6],  # Non-monotonic: 5 -> 3 decreases
+            }
+            variables = ["var0", "var1"]
+            values_var0 = [1.0, 2.0, 3.0, 4.0]
+
+            result = create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0)
+
+            # Should succeed but log warning
+            assert len(result) == 1
+            log_output = log_capture.getvalue()
+            assert "Non-monotonic cutoffs detected" in log_output
+        finally:
+            logger.remove(handler_id)
+
+    def test_monotonicity_strict_raises_error(self):
+        """Test that non-monotonic cutoffs raise error in strict mode."""
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0, 3.0],
+            "var1": [5, 3, 4],  # Non-monotonic
+        }
+        variables = ["var0", "var1"]
+        values_var0 = [1.0, 2.0, 3.0]
+
+        with pytest.raises(ValueError, match="Non-monotonic cutoffs"):
+            create_fixed_cutoff_solution(
+                fixed_cutoffs, variables, values_var0, strict_validation=True
+            )
+
+    def test_monotonicity_inverted(self):
+        """Test monotonicity with inv_var1=True (cutoffs should decrease)."""
+        from io import StringIO
+
+        from loguru import logger
+
+        log_capture = StringIO()
+        handler_id = logger.add(log_capture, format="{message}", level="WARNING")
+
+        try:
+            # For inv_var1=True, cutoffs should be non-increasing
+            fixed_cutoffs = {
+                "var0": [1.0, 2.0, 3.0],
+                "var1": [5, 6, 7],  # Increasing - wrong for inv_var1
+            }
+            variables = ["var0", "var1"]
+            values_var0 = [1.0, 2.0, 3.0]
+
+            result = create_fixed_cutoff_solution(
+                fixed_cutoffs, variables, values_var0, inv_var1=True
+            )
+
+            assert len(result) == 1
+            log_output = log_capture.getvalue()
+            assert "Non-monotonic cutoffs detected" in log_output
+            assert "non-increasing" in log_output
+        finally:
+            logger.remove(handler_id)
+
+    def test_monotonicity_inverted_valid(self):
+        """Test valid monotonicity with inv_var1=True."""
+        from io import StringIO
+
+        from loguru import logger
+
+        log_capture = StringIO()
+        handler_id = logger.add(log_capture, format="{message}", level="WARNING")
+
+        try:
+            # For inv_var1=True, cutoffs should be non-increasing (valid case)
+            fixed_cutoffs = {
+                "var0": [1.0, 2.0, 3.0],
+                "var1": [7, 5, 3],  # Decreasing - correct for inv_var1
+            }
+            variables = ["var0", "var1"]
+            values_var0 = [1.0, 2.0, 3.0]
+
+            result = create_fixed_cutoff_solution(
+                fixed_cutoffs, variables, values_var0, inv_var1=True
+            )
+
+            assert len(result) == 1
+            log_output = log_capture.getvalue()
+            assert "Non-monotonic" not in log_output
+        finally:
+            logger.remove(handler_id)
+
+    def test_data_bounds_warning(self):
+        """Test warning when cutoffs are outside data range."""
+        from io import StringIO
+
+        from loguru import logger
+
+        log_capture = StringIO()
+        handler_id = logger.add(log_capture, format="{message}", level="WARNING")
+
+        try:
+            fixed_cutoffs = {
+                "var0": [1.0, 2.0, 3.0],
+                "var1": [5, 6, 15],  # 15 is outside range [1, 10]
+            }
+            variables = ["var0", "var1"]
+            values_var0 = [1.0, 2.0, 3.0]
+            values_var1 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+            result = create_fixed_cutoff_solution(
+                fixed_cutoffs, variables, values_var0, values_var1=values_var1
+            )
+
+            assert len(result) == 1
+            log_output = log_capture.getvalue()
+            assert "outside data range" in log_output
+            assert "[15]" in log_output
+        finally:
+            logger.remove(handler_id)
+
+    def test_data_bounds_strict_raises_error(self):
+        """Test that out-of-bounds cutoffs raise error in strict mode."""
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0],
+            "var1": [5, 20],  # 20 is outside range
+        }
+        variables = ["var0", "var1"]
+        values_var0 = [1.0, 2.0]
+        values_var1 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+        with pytest.raises(ValueError, match="outside data range"):
+            create_fixed_cutoff_solution(
+                fixed_cutoffs,
+                variables,
+                values_var0,
+                values_var1=values_var1,
+                strict_validation=True,
+            )
+
+    def test_bin_mismatch_strict_raises_error(self):
+        """Test that bin mismatch raises error in strict mode."""
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0, 3.0],
+            "var1": [5, 6, 7],
+        }
+        variables = ["var0", "var1"]
+        values_var0 = [1.0, 2.0, 4.0]  # 4.0 instead of 3.0
+
+        with pytest.raises(ValueError, match="don't exactly match"):
+            create_fixed_cutoff_solution(
+                fixed_cutoffs, variables, values_var0, strict_validation=True
+            )
+
+    def test_valid_monotonic_cutoffs(self):
+        """Test that valid monotonic cutoffs don't trigger warnings."""
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0, 3.0, 4.0],
+            "var1": [2, 3, 3, 5],  # Non-decreasing (equal is OK)
+        }
+        variables = ["var0", "var1"]
+        values_var0 = [1.0, 2.0, 3.0, 4.0]
+
+        # Should not raise or warn
+        result = create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0)
+
+        assert len(result) == 1
+        assert result[1.0].iloc[0] == 2
+        assert result[2.0].iloc[0] == 3
+        assert result[3.0].iloc[0] == 3
+        assert result[4.0].iloc[0] == 5
+
+
+# =============================================================================
+# optimize_dtypes Tests
+# =============================================================================
+
+
+class TestOptimizeDtypes:
+    def test_int64_small_positive(self):
+        df = pd.DataFrame({"a": pd.array([1, 2, 100], dtype="int64")})
+        result = optimize_dtypes(df)
+        assert result["a"].dtype == np.uint8
+
+    def test_int64_medium_positive(self):
+        df = pd.DataFrame({"a": pd.array([1, 2, 500], dtype="int64")})
+        result = optimize_dtypes(df)
+        assert result["a"].dtype == np.uint16
+
+    def test_int64_large_positive(self):
+        df = pd.DataFrame({"a": pd.array([1, 2, 100000], dtype="int64")})
+        result = optimize_dtypes(df)
+        assert result["a"].dtype == np.uint32
+
+    def test_int64_negative_small(self):
+        df = pd.DataFrame({"a": pd.array([-10, 0, 50], dtype="int64")})
+        result = optimize_dtypes(df)
+        assert result["a"].dtype == np.int8
+
+    def test_int64_negative_medium(self):
+        df = pd.DataFrame({"a": pd.array([-200, 0, 200], dtype="int64")})
+        result = optimize_dtypes(df)
+        assert result["a"].dtype == np.int16
+
+    def test_int64_negative_large(self):
+        df = pd.DataFrame({"a": pd.array([-50000, 0, 50000], dtype="int64")})
+        result = optimize_dtypes(df)
+        assert result["a"].dtype == np.int32
+
+    def test_float64_to_float32(self):
+        df = pd.DataFrame({"a": pd.array([1.1, 2.2, 3.3], dtype="float64")})
+        result = optimize_dtypes(df)
+        assert result["a"].dtype == np.float32
+
+    def test_preserves_string_columns(self):
+        df = pd.DataFrame({"a": ["x", "y", "z"]})
+        result = optimize_dtypes(df)
+        # String columns should not be converted to numeric
+        assert not pd.api.types.is_numeric_dtype(result["a"])
+
+
+# =============================================================================
+# get_data_information Tests
+# =============================================================================
+
+
+class TestGetDataInformation:
+    def test_returns_dataframe(self):
+        df = pd.DataFrame({"a": [1, 2, 3], "b": [4, None, 6]})
+        result = get_data_information(df)
+        assert isinstance(result, pd.DataFrame)
+        assert "Variable" in result.columns
+        assert "Number of missing values" in result.columns
+
+    def test_missing_values_reported(self):
+        df = pd.DataFrame({"a": [1, None, 3], "b": [4, 5, 6]})
+        result = get_data_information(df)
+        a_row = result[result["Variable"] == "a"]
+        assert a_row["Number of missing values"].values[0] == 1
+
+
+# =============================================================================
+# get_fact_sol Tests
+# =============================================================================
+
+
+class TestGetFactSol:
+    def test_basic_generation(self):
+        values_var0 = [0.0, 1.0, 2.0]
+        values_var1 = [1.0, 2.0, 3.0]
+        result = get_fact_sol(values_var0, values_var1)
+        assert "sol_fac" in result.columns
+        assert len(result) > 0
+
+    def test_includes_zero_cut(self):
+        """0 should always be included as a possible cut value."""
+        values_var0 = [0.0, 1.0]
+        values_var1 = [1.0, 2.0]
+        result = get_fact_sol(values_var0, values_var1)
+        # Check that some solutions have 0 as a cut value
+        bin_cols = [c for c in result.columns if c != "sol_fac"]
+        has_zero = (result[bin_cols] == 0).any().any()
+        assert has_zero
+
+    def test_monotonicity_non_decreasing(self):
+        """All solutions should be monotonically non-decreasing."""
+        values_var0 = [0.0, 1.0, 2.0]
+        values_var1 = [1.0, 2.0, 3.0]
+        result = get_fact_sol(values_var0, values_var1, inv_var1=False)
+        bin_cols = [c for c in result.columns if c != "sol_fac"]
+        for _, row in result.iterrows():
+            vals = [row[c] for c in bin_cols]
+            assert vals == sorted(vals)
+
+    def test_monotonicity_non_increasing_inverted(self):
+        """With inv_var1=True, solutions should be non-increasing."""
+        values_var0 = [0.0, 1.0, 2.0]
+        values_var1 = [1.0, 2.0, 3.0]
+        result = get_fact_sol(values_var0, values_var1, inv_var1=True)
+        bin_cols = [c for c in result.columns if c != "sol_fac"]
+        for _, row in result.iterrows():
+            vals = [row[c] for c in bin_cols]
+            assert vals == sorted(vals, reverse=True)
+
+    def test_solution_count(self):
+        """Number of solutions should be C(n+k-1, k) where n=cut_values, k=n_bins."""
+        from math import comb
+
+        values_var0 = [0.0, 1.0]  # 2 bins
+        values_var1 = [1.0, 2.0]  # + 0 = 3 cut values
+        result = get_fact_sol(values_var0, values_var1)
+        # C(3+2-1, 2) = C(4,2) = 6
+        assert len(result) == comb(3 + 2 - 1, 2)
+
+
+# =============================================================================
+# calculate_stress_factor Tests
+# =============================================================================
+
+
+class TestCalculateStressFactor:
+    def test_basic_stress(self):
+        np.random.seed(42)
+        df = pd.DataFrame(
+            {
+                "status_name": ["booked"] * 100,
+                "risk_score_rf": np.random.rand(100),
+                "todu_30ever_h6": np.random.rand(100) * 10,
+                "todu_amt_pile_h6": np.random.rand(100) * 1000 + 100,
+            }
+        )
+        stress = calculate_stress_factor(df)
+        assert isinstance(stress, float)
+        assert stress >= 0
+
+    def test_empty_target_status(self):
+        df = pd.DataFrame(
+            {
+                "status_name": ["rejected"] * 10,
+                "risk_score_rf": np.random.rand(10),
+                "todu_30ever_h6": np.random.rand(10),
+                "todu_amt_pile_h6": np.random.rand(10),
+            }
+        )
+        stress = calculate_stress_factor(df)
+        assert stress == 0.0
+
+    def test_stress_factor_greater_than_1(self):
+        """Worst fraction should typically have higher risk than overall."""
+        np.random.seed(42)
+        n = 1000
+        scores = np.random.rand(n)
+        # Lower scores = higher risk
+        risk = np.where(scores < 0.1, 50, 5)
+        df = pd.DataFrame(
+            {
+                "status_name": ["booked"] * n,
+                "risk_score_rf": scores,
+                "todu_30ever_h6": risk,
+                "todu_amt_pile_h6": np.ones(n) * 100,
+            }
+        )
+        stress = calculate_stress_factor(df, frac=0.10)
+        assert stress > 1.0
+
+
+# =============================================================================
+# calculate_annual_coef Tests
+# =============================================================================
+
+
+class TestCalculateAnnualCoef:
+    def test_12_months(self):
+        start = pd.Timestamp("2023-01-01")
+        end = pd.Timestamp("2023-12-01")
+        coef = calculate_annual_coef(start, end)
+        assert coef == pytest.approx(1.0)
+
+    def test_6_months(self):
+        start = pd.Timestamp("2023-01-01")
+        end = pd.Timestamp("2023-06-01")
+        coef = calculate_annual_coef(start, end)
+        assert coef == pytest.approx(2.0)
+
+    def test_24_months(self):
+        start = pd.Timestamp("2023-01-01")
+        end = pd.Timestamp("2024-12-01")
+        coef = calculate_annual_coef(start, end)
+        assert coef == pytest.approx(0.5)
+
+
+# =============================================================================
+# generate_cutoff_summary Tests
+# =============================================================================
+
+
+class TestGenerateCutoffSummary:
+    def test_basic_summary(self):
+        opt_df = pd.DataFrame({"sol_fac": [0], 1: [2], 2: [3], 3: [4]})
+        result = generate_cutoff_summary(opt_df, ["var0", "var1"], "segment_a")
+        assert len(result) == 3
+        assert "segment" in result.columns
+        assert "cutoff_value" in result.columns
+
+    def test_empty_solution(self):
+        result = generate_cutoff_summary(pd.DataFrame(), ["var0", "var1"], "seg")
+        assert result.empty
+
+    def test_none_solution(self):
+        result = generate_cutoff_summary(None, ["var0", "var1"], "seg")
+        assert result.empty
+
+    def test_scenario_and_risk_values(self):
+        opt_df = pd.DataFrame({"sol_fac": [0], 1: [5], 2: [6]})
+        result = generate_cutoff_summary(
+            opt_df, ["var0", "var1"], "seg", scenario_name="optimistic", risk_value=2.5, production_value=1000
+        )
+        assert result["scenario"].iloc[0] == "optimistic"
+        assert result["risk_pct"].iloc[0] == 2.5
+        assert result["production"].iloc[0] == 1000
+
+
+# =============================================================================
+# format_cutoff_summary_table Tests
+# =============================================================================
+
+
+class TestFormatCutoffSummaryTable:
+    def test_basic_format(self):
+        summary = pd.DataFrame(
+            {
+                "segment": ["seg_a", "seg_a"],
+                "scenario": ["base", "base"],
+                "var0_bin": [1, 2],
+                "var0_name": ["var0", "var0"],
+                "cutoff_value": [3, 5],
+                "var1_name": ["var1", "var1"],
+                "risk_pct": [2.0, 2.0],
+                "production": [1000, 1000],
+            }
+        )
+        result = format_cutoff_summary_table(summary, ["var0", "var1"])
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 1  # One row per segment+scenario
+
+    def test_empty_input(self):
+        result = format_cutoff_summary_table(pd.DataFrame(), ["var0", "var1"])
+        assert result.empty
+
+
+# =============================================================================
+# consolidate_cutoff_summaries Tests
+# =============================================================================
+
+
+class TestConsolidateCutoffSummaries:
+    def test_basic_consolidation(self):
+        s1 = pd.DataFrame({"segment": ["a"], "cutoff": [1]})
+        s2 = pd.DataFrame({"segment": ["b"], "cutoff": [2]})
+        result = consolidate_cutoff_summaries([s1, s2])
+        assert len(result) == 2
+
+    def test_empty_list(self):
+        result = consolidate_cutoff_summaries([])
+        assert result.empty
+
+    def test_all_empty_summaries(self):
+        result = consolidate_cutoff_summaries([pd.DataFrame(), pd.DataFrame()])
+        assert result.empty
+
+    def test_mixed_empty_and_valid(self):
+        valid = pd.DataFrame({"segment": ["a"], "cutoff": [1]})
+        result = consolidate_cutoff_summaries([pd.DataFrame(), valid])
+        assert len(result) == 1
+
+    def test_save_to_csv(self, tmp_path):
+        s1 = pd.DataFrame({"segment": ["a"], "cutoff": [1]})
+        output_path = str(tmp_path / "consolidated.csv")
+        result = consolidate_cutoff_summaries([s1], output_path=output_path)
+        assert len(result) == 1
+        # Verify file was created
+        saved = pd.read_csv(output_path)
+        assert len(saved) == 1

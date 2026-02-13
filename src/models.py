@@ -2,14 +2,12 @@
 Machine learning models and data transformation functions for credit risk scoring.
 
 This module provides model training, data transformation, and risk calculation functions:
-- Logistic regression training with standardization
 - Decision tree-based optimal binning
 - Variable transformations for risk modeling
 - Risk value calculations (B2, RV, TODU)
 - Financing rate calculations
 
 Key functions:
-- train_logistic_regression: Train standardized logistic regression
 - optimal_splits_using_tree: Find optimal variable splits using decision trees
 - transform_variables: Apply polynomial transformations for regression
 - calculate_risk_values: Calculate inferred risk values using trained models
@@ -20,19 +18,9 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from sklearn import tree as sktree
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 
 from .constants import Columns, StatusName
-
-
-def train_logistic_regression(X, y):
-    """Train logistic regression on standardized data."""
-    scaler = StandardScaler()
-    X_standardized = scaler.fit_transform(X)
-    log_reg = LogisticRegression().fit(X_standardized, y)
-    return log_reg, X_standardized
 
 
 def extract_splits_from_tree(tree, feature_names):

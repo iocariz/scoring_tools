@@ -188,6 +188,34 @@ def preprocess_data(
     return data_clean
 
 
+def _generate_bin_summary(data: pd.DataFrame, bin_col: str, source_col: str) -> pd.DataFrame:
+    """
+    Generate a summary table showing bin statistics.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Data with binned column
+    bin_col : str
+        Name of the binned column (e.g., 'sc_octroi_new_clus')
+    source_col : str
+        Name of the source column used for binning (e.g., 'score_rf')
+
+    Returns
+    -------
+    pd.DataFrame
+        Summary with columns: bin, min, max, count
+    """
+    summary = (
+        data.groupby(bin_col)[source_col]
+        .agg(["min", "max", "count"])
+        .reset_index()
+    )
+    summary.columns = ["bin", "min", "max", "count"]
+    summary = summary.sort_values("bin")
+    return summary
+
+
 def apply_binning_transformations(data: pd.DataFrame, octroi_bins: list[float], efx_bins: list[float]) -> pd.DataFrame:
     """
     Apply binning transformations to the data.
@@ -275,11 +303,22 @@ def apply_binning_transformations(data: pd.DataFrame, octroi_bins: list[float], 
         logger.error(f"Error in efx binning: {e}")
         raise
 
-    # Log distribution of binned variables
-    logger.info(
-        f"sc_octroi_new_clus distribution:\n{transformed_data['sc_octroi_new_clus'].value_counts().sort_index()}"
+    # Generate and log bin summaries
+    logger.info("=" * 60)
+    logger.info("BIN SUMMARY: sc_octroi_new_clus (from score_rf)")
+    logger.info("=" * 60)
+    octroi_summary = _generate_bin_summary(
+        transformed_data, bin_col="sc_octroi_new_clus", source_col="score_rf"
     )
-    logger.info(f"new_efx_clus distribution:\n{transformed_data['new_efx_clus'].value_counts().sort_index()}")
+    logger.info(f"\n{octroi_summary.to_string(index=False)}")
+
+    logger.info("=" * 60)
+    logger.info("BIN SUMMARY: new_efx_clus (from risk_score_rf)")
+    logger.info("=" * 60)
+    efx_summary = _generate_bin_summary(
+        transformed_data, bin_col="new_efx_clus", source_col="risk_score_rf"
+    )
+    logger.info(f"\n{efx_summary.to_string(index=False)}")
 
     # Log completion
     elapsed_time = time.time() - start_time
@@ -495,6 +534,81 @@ def update_status_and_reject_reason(data: pd.DataFrame, score_measures: list[str
     return result
 
 
+def _configure_pipeline_logging(log_level: str, log_file: str | None) -> None:
+    """Remove default handler and add configured one."""
+    logger.remove()
+    logger.add(sys.stdout, level=log_level)
+    if log_file:
+        logger.add(log_file, level=log_level, rotation="10 MB")
+
+
+def _run_data_transformations(df: pd.DataFrame, config: PreprocessingConfig) -> pd.DataFrame:
+    """Run preprocess_data, apply_binning, update_oa_amt_h0, update_status."""
+    logger.info("\n" + "=" * 80)
+    logger.info("Step 1: Basic filtering")
+    logger.info("=" * 80)
+    data_clean = preprocess_data(df, config.keep_vars, config.indicators, config.segment_filter)
+
+    if config.octroi_bins and config.efx_bins:
+        logger.info("\n" + "=" * 80)
+        logger.info("Step 2: Binning transformations")
+        logger.info("=" * 80)
+        data_clean = apply_binning_transformations(data_clean, config.octroi_bins, config.efx_bins)
+    else:
+        logger.warning("Skipping binning transformations (bins not provided)")
+
+    logger.info("\n" + "=" * 80)
+    logger.info("Step 3: Update oa_amt_h0")
+    logger.info("=" * 80)
+    data_clean = update_oa_amt_h0(data_clean)
+
+    logger.info("\n" + "=" * 80)
+    logger.info("Step 4: Update status and reject reasons")
+    logger.info("=" * 80)
+    data_clean = update_status_and_reject_reason(data_clean, config.score_measures)
+
+    return data_clean
+
+
+def _filter_booked_for_period(
+    data_clean: pd.DataFrame,
+    date_ini: str | None,
+    date_fin: str | None,
+) -> pd.DataFrame:
+    """Filter booked status and date range."""
+    logger.info("\n" + "=" * 80)
+    logger.info("Step 5: Filter booked data by date")
+    logger.info("=" * 80)
+    data_booked = data_clean[data_clean["status_name"] == StatusName.BOOKED.value].copy()
+    logger.info(f"Found {data_booked.shape[0]:,} records with status_name='booked'")
+
+    if date_ini and date_fin:
+        data_booked = filter_by_date(data_booked, "mis_date", date_ini, date_fin)
+    else:
+        logger.warning("Date filtering skipped for booked data (dates not provided)")
+
+    return data_booked
+
+
+def _filter_demand_for_period(
+    data_clean: pd.DataFrame,
+    date_ini: str | None,
+    date_fin: str | None,
+) -> pd.DataFrame:
+    """Filter demand data by date range."""
+    logger.info("\n" + "=" * 80)
+    logger.info("Step 6: Filter demand data by date")
+    logger.info("=" * 80)
+
+    if date_ini and date_fin:
+        data_demand = filter_by_date(data_clean.copy(), "mis_date", date_ini, date_fin)
+    else:
+        logger.warning("Date filtering skipped for demand data (dates not provided)")
+        data_demand = data_clean.copy()
+
+    return data_demand
+
+
 def complete_preprocessing_pipeline(
     df: pd.DataFrame, config: PreprocessingConfig
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -518,14 +632,8 @@ def complete_preprocessing_pipeline(
     ValueError
         If configuration is invalid or processing fails
     """
-    # Validate configuration
     config.validate()
-
-    # Configure logging based on parameters
-    logger.remove()  # Remove default handler
-    logger.add(sys.stdout, level=config.log_level)
-    if config.log_file:
-        logger.add(config.log_file, level=config.log_level, rotation="10 MB")
+    _configure_pipeline_logging(config.log_level, config.log_file)
 
     total_start_time = time.time()
     logger.info("=" * 80)
@@ -535,57 +643,13 @@ def complete_preprocessing_pipeline(
     logger.info(f"Observation period: {config.date_ini_book_obs} to {config.date_fin_book_obs}")
 
     try:
-        # Step 1: Basic filtering
-        logger.info("\n" + "=" * 80)
-        logger.info("Step 1: Basic filtering")
-        logger.info("=" * 80)
-        data_clean = preprocess_data(df, config.keep_vars, config.indicators, config.segment_filter)
-
-        # Step 2: Apply binning transformations (if bins are provided)
-        if config.octroi_bins and config.efx_bins:
-            logger.info("\n" + "=" * 80)
-            logger.info("Step 2: Binning transformations")
-            logger.info("=" * 80)
-            data_clean = apply_binning_transformations(data_clean, config.octroi_bins, config.efx_bins)
-        else:
-            logger.warning("Skipping binning transformations (bins not provided)")
-
-        # Step 3: Update oa_amt_h0 for non-booked records
-        logger.info("\n" + "=" * 80)
-        logger.info("Step 3: Update oa_amt_h0")
-        logger.info("=" * 80)
-        data_clean = update_oa_amt_h0(data_clean)
-
-        # Step 4: Update status and reject reasons
-        logger.info("\n" + "=" * 80)
-        logger.info("Step 4: Update status and reject reasons")
-        logger.info("=" * 80)
-        data_clean = update_status_and_reject_reason(data_clean, config.score_measures)
-
-        # Step 5: Filter booked data by date
-        logger.info("\n" + "=" * 80)
-        logger.info("Step 5: Filter booked data by date")
-        logger.info("=" * 80)
-        data_booked = data_clean[data_clean["status_name"] == StatusName.BOOKED.value].copy()
-        logger.info(f"Found {data_booked.shape[0]:,} records with status_name='booked'")
-
-        if config.date_ini_book_obs and config.date_fin_book_obs:
-            data_booked = filter_by_date(data_booked, "mis_date", config.date_ini_book_obs, config.date_fin_book_obs)
-        else:
-            logger.warning("Date filtering skipped for booked data (dates not provided)")
-
-        # Step 6: Filter demand data by date
-        logger.info("\n" + "=" * 80)
-        logger.info("Step 6: Filter demand data by date")
-        logger.info("=" * 80)
-
-        if config.date_ini_book_obs and config.date_fin_book_obs:
-            data_demand = filter_by_date(
-                data_clean.copy(), "mis_date", config.date_ini_book_obs, config.date_fin_book_obs
-            )
-        else:
-            logger.warning("Date filtering skipped for demand data (dates not provided)")
-            data_demand = data_clean.copy()
+        data_clean = _run_data_transformations(df, config)
+        data_booked = _filter_booked_for_period(
+            data_clean, config.date_ini_book_obs, config.date_fin_book_obs
+        )
+        data_demand = _filter_demand_for_period(
+            data_clean, config.date_ini_book_obs, config.date_fin_book_obs
+        )
 
         # Log final statistics
         logger.info("\n" + "=" * 80)
@@ -595,7 +659,6 @@ def complete_preprocessing_pipeline(
         logger.info(f"Final data_booked shape: {data_booked.shape}")
         logger.info(f"Final data_demand shape: {data_demand.shape}")
 
-        # Log total time
         total_elapsed_time = time.time() - total_start_time
         logger.info(
             f"Total preprocessing time: {total_elapsed_time:.2f} seconds ({total_elapsed_time / 60:.2f} minutes)"
