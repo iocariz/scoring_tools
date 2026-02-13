@@ -10,17 +10,19 @@ from src.inference_optimized import run_optimization_pipeline
 from src.mr_pipeline import process_mr_period
 from src.plots import RiskProductionVisualizer
 from src.preprocess_improved import filter_by_date
+from src.optimization_utils import (
+    create_fixed_cutoff_solution,
+    get_fact_sol,
+    get_optimal_solutions,
+    kpi_of_fact_sol,
+)
 from src.utils import (
     calculate_annual_coef,
     calculate_b2_ever_h6,
     calculate_bootstrap_intervals,
     consolidate_cutoff_summaries,
-    create_fixed_cutoff_solution,
     format_cutoff_summary_table,
     generate_cutoff_summary,
-    get_fact_sol,
-    get_optimal_solutions,
-    kpi_of_fact_sol,
 )
 
 

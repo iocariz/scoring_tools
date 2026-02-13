@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from typing import Any
 import seaborn as sns
 from plotly.subplots import make_subplots
 from sklearn.metrics import auc, roc_curve
@@ -799,27 +800,171 @@ def plot_shap_summary(
 
     # Sort by importance
     sorted_idx = np.argsort(mean_abs)
-    sorted_names = [feature_names[i] for i in sorted_idx]
-    sorted_values = mean_abs[sorted_idx]
+    sorted_feature = [feature_names[i] for i in sorted_idx]
+    sorted_shap = mean_abs[sorted_idx]
 
     fig = go.Figure(
         go.Bar(
-            x=sorted_values,
-            y=sorted_names,
+            x=sorted_shap,
+            y=sorted_feature,
             orientation="h",
-            marker_color="steelblue",
+            marker=dict(color=styles.COLOR_ACCENT, line=dict(color=styles.COLOR_PRIMARY, width=1)),
         )
     )
 
-    fig.update_layout(
-        title="Feature Importance (Mean |SHAP| Value)",
-        xaxis_title="Mean |SHAP| Value",
-        yaxis_title="Feature",
-        template="plotly_white",
-        height=max(300, len(feature_names) * 30),
-    )
+    styles.apply_plotly_style(fig, title="Feature Importance (SHAP)", width=1000, height=max(500, len(feature_names) * 25))
+    fig.update_layout(xaxis_title="mean(|SHAP value|)", yaxis_title="Feature")
 
     if output_path:
         fig.write_html(output_path)
 
     return fig
+
+
+def _prepare_transformation_data(
+    data: pd.DataFrame,
+    date_col: str,
+    n_months: int | None,
+) -> pd.DataFrame:
+    """Copy data, convert dates, filter last N months, filter eligible, mark booked."""
+    df = data.copy()
+    if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
+        df[date_col] = pd.to_datetime(df[date_col])
+
+    if n_months is not None:
+        max_date = df[date_col].max()
+        cutoff_date = max_date - pd.DateOffset(months=n_months)
+        df = df[df[date_col] >= cutoff_date]
+
+    eligible_mask = df["se_decision_id"].isin(["ok", "rv"])
+    df_eligible = df[eligible_mask].copy()
+    df_eligible["is_booked"] = df_eligible[Columns.STATUS_NAME] == StatusName.BOOKED.value
+
+    return df_eligible
+
+
+def _calculate_monthly_rates(
+    df_eligible: pd.DataFrame,
+    amount_col: str,
+    date_col: str,
+) -> tuple[float, float, float, pd.DataFrame]:
+    """Compute overall rate and monthly aggregation."""
+    total_eligible = df_eligible[amount_col].sum()
+    total_booked = df_eligible.loc[df_eligible["is_booked"], amount_col].sum()
+    overall_rate = (total_booked / total_eligible) if total_eligible > 0 else 0
+
+    df_eligible["period"] = df_eligible[date_col].dt.to_period("M")
+
+    monthly = (
+        df_eligible.groupby("period")
+        .agg(
+            eligible_amt=(amount_col, "sum"),
+            booked_amt=(amount_col, lambda x: x[df_eligible.loc[x.index, "is_booked"]].sum()),
+        )
+        .reset_index()
+    )
+
+    monthly["rate"] = monthly["booked_amt"] / monthly["eligible_amt"]
+    monthly["rate"] = monthly["rate"].fillna(0)
+    monthly["plot_date"] = monthly["period"].dt.to_timestamp()
+
+    return overall_rate, total_booked, total_eligible, monthly
+
+
+def create_transformation_plot(
+    monthly: pd.DataFrame,
+    overall_rate: float,
+    plot_width: int,
+    plot_height: int,
+) -> go.Figure:
+    """Create dual-axis Plotly figure with bars + line + avg line + layout."""
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    fig.add_trace(
+        go.Bar(
+            x=monthly["plot_date"],
+            y=monthly["eligible_amt"],
+            name="Eligible Volume (€)",
+            opacity=0.3,
+            marker_color=styles.COLOR_SECONDARY,
+            hovertemplate="Volume: %{y:,.0f} €<extra></extra>",
+        ),
+        secondary_y=True,
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=monthly["plot_date"],
+            y=monthly["rate"],
+            name="Transformation Rate",
+            mode="lines+markers",
+            line=dict(color=styles.COLOR_ACCENT, width=3),
+            marker=dict(size=8),
+            hovertemplate="Rate: %{y:.1%}<extra></extra>",
+        ),
+        secondary_y=False,
+    )
+
+    fig.add_hline(
+        y=overall_rate,
+        line_dash="dot",
+        line_color=styles.COLOR_RISK,
+        annotation_text=f"Avg: {overall_rate:.1%}",
+        annotation_position="top left",
+        secondary_y=False,
+    )
+
+    styles.apply_plotly_style(fig, width=plot_width, height=plot_height)
+    fig.update_layout(
+        title="<b>Monthly Transformation Rate</b><br><sup>(Booked / [OK + RV]) by Amount</sup>",
+        plot_bgcolor="white",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        yaxis=dict(
+            title="Transformation Rate",
+            tickformat=".0%",
+            range=[0, max(monthly["rate"].max() * 1.1, overall_rate * 1.1)],
+            showgrid=True,
+            gridcolor="lightgrey",
+        ),
+        yaxis2=dict(title="Eligible Volume (€)", showgrid=False, zeroline=False),
+        xaxis=dict(title="Month", showgrid=False),
+    )
+
+    return fig
+
+
+def calculate_and_plot_transformation_rate(
+    data: pd.DataFrame,
+    date_col: str,
+    amount_col: str = "oa_amt",
+    n_months: int | None = None,
+    plot_width: int = 1200,
+    plot_height: int = 500,
+) -> dict[str, Any]:
+    """
+    Calculates transformation rate and generates a dual-axis plot.
+
+    Transformation Rate = Booked Amount / Eligible Amount (Decision in OK/RV)
+
+    Returns:
+    --------
+    dict containing:
+      - 'stats': Dictionary of overall stats
+      - 'monthly_data': DataFrame of monthly breakdown
+      - 'figure': Plotly go.Figure object
+    """
+
+    df_eligible = _prepare_transformation_data(data, date_col, n_months)
+    overall_rate, total_booked, total_eligible, monthly = _calculate_monthly_rates(
+        df_eligible, amount_col, date_col
+    )
+    fig = create_transformation_plot(monthly, overall_rate, plot_width, plot_height)
+
+    return {
+        "overall_rate": overall_rate,
+        "overall_booked_amt": total_booked,
+        "overall_eligible_amt": total_eligible,
+        "monthly_amounts": monthly.drop(columns=["plot_date"]),
+        "figure": fig,
+    }

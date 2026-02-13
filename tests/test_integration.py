@@ -40,7 +40,7 @@ def valid_df():
     dates = pd.date_range("2023-01-01", periods=n, freq="D")
     return pd.DataFrame(
         {
-            "status_name": pd.Categorical(rng.choice(["booked", "rejected", "pending"], size=n, p=[0.5, 0.3, 0.2])),
+            "status_name": pd.Categorical(rng.choice(["booked", "rejected"], size=n, p=[0.6, 0.4])),
             "segment_cut_off": "consumer",
             "mis_date": dates,
             "oa_amt": rng.uniform(1000, 50000, size=n),

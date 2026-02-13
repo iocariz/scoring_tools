@@ -11,7 +11,7 @@ def _make_valid_df(n: int = 20) -> pd.DataFrame:
     rng = np.random.RandomState(42)
     return pd.DataFrame(
         {
-            "status_name": pd.Categorical(rng.choice(["booked", "rejected", "pending"], size=n)),
+            "status_name": pd.Categorical(rng.choice(["booked", "rejected"], size=n)),
             "segment_cut_off": pd.Categorical(["seg_a"] * n),
             "mis_date": pd.date_range("2024-01-01", periods=n, freq="D"),
             "oa_amt_h0": rng.uniform(1000, 50000, size=n),
