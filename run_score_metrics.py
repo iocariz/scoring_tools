@@ -16,6 +16,8 @@ import sys
 import warnings
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -122,6 +124,105 @@ def _compute_for_period(
 
 
 # ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+METRIC_NAMES = ["auroc", "gini", "ks"]
+METRIC_LABELS = {"auroc": "AUROC", "gini": "Gini", "ks": "KS"}
+
+SCORE_COLORS = {
+    "Score RF": "#3498DB",       # Accent blue
+    "Risk Score RF": "#E74C3C",  # Risk red
+    "Combined": "#2ECC71",       # Production green
+}
+
+
+def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
+    """
+    Create a grouped-bar chart of AUROC / Gini / KS per segment and period.
+
+    One subplot per metric.  Within each subplot the x-axis shows
+    ``name (period)`` and bars are grouped by score.
+
+    Args:
+        df: The results DataFrame produced by ``generate_score_discriminance_report``.
+        output_dir: Directory where the PNG is saved.
+
+    Returns:
+        Path to the saved figure.
+    """
+    from src.styles import COLOR_PRIMARY, COLOR_SECONDARY, apply_matplotlib_style
+
+    apply_matplotlib_style()
+
+    # Build a combined label for x-axis: "name (period)" with level prefix for supersegments
+    df = df.copy()
+    df["x_label"] = df.apply(
+        lambda r: f"[SS] {r['name']} ({r['period']})" if r["level"] == "supersegment" else f"{r['name']} ({r['period']})",
+        axis=1,
+    )
+
+    # Deterministic ordering: segments first (alphabetical), then supersegments
+    label_order = (
+        df.sort_values(["level", "name", "period"], ascending=[False, True, True])["x_label"]
+        .drop_duplicates()
+        .tolist()
+    )
+    scores = df["score"].unique().tolist()
+
+    n_labels = len(label_order)
+    n_scores = len(scores)
+    bar_width = 0.8 / n_scores
+    x = np.arange(n_labels)
+
+    fig, axes = plt.subplots(1, 3, figsize=(6 + 2.5 * n_labels, 6), sharey=False)
+
+    for ax, metric in zip(axes, METRIC_NAMES):
+        for i, score in enumerate(scores):
+            subset = df[df["score"] == score]
+            vals = []
+            for lbl in label_order:
+                row = subset[subset["x_label"] == lbl]
+                vals.append(row[metric].values[0] if len(row) else 0)
+
+            color = SCORE_COLORS.get(score, "#95A5A6")
+            bars = ax.bar(x + i * bar_width, vals, bar_width, label=score, color=color, edgecolor="white", linewidth=0.5)
+
+            # Value labels on bars
+            for bar, v in zip(bars, vals):
+                if v != 0:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.005,
+                        f"{v:.2f}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=8,
+                        color=COLOR_PRIMARY,
+                    )
+
+        ax.set_title(METRIC_LABELS[metric])
+        ax.set_xticks(x + bar_width * (n_scores - 1) / 2)
+        ax.set_xticklabels(label_order, rotation=35, ha="right", fontsize=9)
+        ax.set_ylabel(METRIC_LABELS[metric])
+        ax.axhline(0.5, color=COLOR_SECONDARY, linestyle="--", linewidth=0.8, alpha=0.6)
+
+    # Single legend at the top
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=n_scores, frameon=True, fontsize=10, bbox_to_anchor=(0.5, 1.02))
+
+    fig.suptitle("Score Discriminance Metrics", fontsize=18, fontweight="bold", color=COLOR_PRIMARY, y=1.06)
+    fig.tight_layout()
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fig_path = output_dir / "score_discriminance.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Score discriminance plot saved to {fig_path}")
+    return fig_path
+
+
+# ---------------------------------------------------------------------------
 # Main report function (also used by run_batch.py)
 # ---------------------------------------------------------------------------
 def generate_score_discriminance_report(
@@ -221,6 +322,9 @@ def generate_score_discriminance_report(
     final_df.to_csv(csv_path, index=False)
     logger.info(f"Score discriminance report saved to {csv_path}")
 
+    # Generate plot
+    plot_score_discriminance(final_df, out_dir)
+
     return final_df
 
 
@@ -287,7 +391,9 @@ def main():
     print("SCORE DISCRIMINANCE SUMMARY")
     print(f"{'=' * 90}")
     print(final_df.to_string(index=False))
-    print(f"\nResults saved to: {args.output}/score_discriminance.csv")
+    print(f"\nResults saved to:")
+    print(f"  - {args.output}/score_discriminance.csv")
+    print(f"  - {args.output}/score_discriminance.png")
 
     return 0
 
