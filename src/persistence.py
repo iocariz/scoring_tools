@@ -48,6 +48,17 @@ def save_model_with_metadata(model, features: list[str], metadata: dict, base_pa
     model_path = version_path / "model.pkl"
     joblib.dump(model, model_path, compress=3)  # Add compression
 
+    # Collect environment info for reproducibility
+    import importlib.metadata
+    import sys
+
+    package_versions = {}
+    for pkg in ("pandas", "scikit-learn", "scipy", "numpy", "joblib"):
+        try:
+            package_versions[pkg] = importlib.metadata.version(pkg)
+        except importlib.metadata.PackageNotFoundError:
+            pass
+
     # Enhance metadata
     metadata_enhanced = {
         "timestamp": timestamp,
@@ -56,6 +67,8 @@ def save_model_with_metadata(model, features: list[str], metadata: dict, base_pa
         "features": features,
         "num_features": len(features),
         "aggregated_data": True,
+        "python_version": sys.version,
+        "package_versions": package_versions,
         **metadata,
     }
 
@@ -80,6 +93,12 @@ def save_model_with_metadata(model, features: list[str], metadata: dict, base_pa
 
     # Save model summary
     _save_model_summary(version_path, model, features, metadata, timestamp)
+
+    # Save SHAP values if provided
+    if "shap_values" in metadata and metadata["shap_values"] is not None:
+        shap_path = version_path / "shap_values.npy"
+        np.save(shap_path, metadata["shap_values"])
+        logger.info(f"   - SHAP values: shap_values.npy ({metadata['shap_values'].shape})")
 
     logger.info("=" * 60)
     logger.info("MODEL SAVED SUCCESSFULLY")
