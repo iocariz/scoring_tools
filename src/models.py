@@ -20,7 +20,8 @@ from loguru import logger
 from sklearn import tree as sktree
 from sklearn.tree import DecisionTreeClassifier
 
-from .constants import Columns, StatusName
+from .constants import Columns, DEFAULT_MIN_SAMPLES_LEAF, DEFAULT_RISK_MULTIPLIER, SCORE_SCALE_MAX, StatusName
+from .utils import calculate_todu_30ever_from_b2
 
 
 def extract_splits_from_tree(tree, feature_names):
@@ -46,7 +47,7 @@ def optimal_splits_using_tree(data_frame, numeric_variable, binary_outcome, num_
     X = data_frame[[numeric_variable]]
     y = data_frame[binary_outcome]
 
-    tree = DecisionTreeClassifier(max_leaf_nodes=num_groups, min_samples_leaf=500)
+    tree = DecisionTreeClassifier(max_leaf_nodes=num_groups, min_samples_leaf=DEFAULT_MIN_SAMPLES_LEAF)
     tree.fit(X, y)
 
     splits = extract_splits_from_tree(tree, [numeric_variable])
@@ -132,8 +133,8 @@ def transform_variables(df: pd.DataFrame, variables: list[str]) -> pd.DataFrame:
         DataFrame with original columns plus all transformed features.
 
     Note:
-        The complement (9 - var) is used because risk scores typically range 0-9,
-        where 9 represents the best credit quality.
+        The complement (SCORE_SCALE_MAX - var) is used because risk scores typically
+        range 0-SCORE_SCALE_MAX, where SCORE_SCALE_MAX represents the best credit quality.
     """
     # Destructure the variables for clarity
     var0, var1 = variables
@@ -145,15 +146,16 @@ def transform_variables(df: pd.DataFrame, variables: list[str]) -> pd.DataFrame:
     df[f"{var0}^3"] = df[var0] ** 3
     df[f"{var1}^3"] = df[var1] ** 3
 
-    # Computing transformations related to (9 - var0)
-    df[f"9-{var0}"] = 9 - df[var0]
-    df[f"9-{var1}"] = 9 - df[var1]
-    df[f"(9-{var0}) x {var1}"] = df[f"9-{var0}"] * df[var1]
-    df[f"(9-{var0})^2 x {var1}"] = df[f"9-{var0}"] ** 2 * df[var1]
-    df[f"(9-{var0}) x {var1}^2"] = df[f"9-{var0}"] * df[var1] ** 2
-    df[f"(9-{var0})^2"] = df[f"9-{var0}"] ** 2
-    df[f"(9-{var1})^2"] = df[f"9-{var1}"] ** 2
-    df[f"(9-{var0})^3"] = df[f"9-{var0}"] ** 3
+    # Computing transformations related to (SCORE_SCALE_MAX - var0)
+    s = SCORE_SCALE_MAX
+    df[f"{s}-{var0}"] = s - df[var0]
+    df[f"{s}-{var1}"] = s - df[var1]
+    df[f"({s}-{var0}) x {var1}"] = df[f"{s}-{var0}"] * df[var1]
+    df[f"({s}-{var0})^2 x {var1}"] = df[f"{s}-{var0}"] ** 2 * df[var1]
+    df[f"({s}-{var0}) x {var1}^2"] = df[f"{s}-{var0}"] * df[var1] ** 2
+    df[f"({s}-{var0})^2"] = df[f"{s}-{var0}"] ** 2
+    df[f"({s}-{var1})^2"] = df[f"{s}-{var1}"] ** 2
+    df[f"({s}-{var0})^3"] = df[f"{s}-{var0}"] ** 3
 
     return df
 
@@ -269,5 +271,5 @@ def calculate_risk_values(
     """
     df = calculate_RV(df, model_rv)
     df = calculate_B2(df, model_risk, variables, stressor, var_reg)
-    df["todu_30ever_h6"] = df["b2_ever_h6"] * df["todu_amt_pile_h6"] / 7
+    df["todu_30ever_h6"] = calculate_todu_30ever_from_b2(df["b2_ever_h6"], df["todu_amt_pile_h6"])
     return df

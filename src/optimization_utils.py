@@ -246,7 +246,7 @@ def get_fact_sol(
 
         return df_v
 
-    except Exception as e:
+    except (ValueError, MemoryError) as e:
         logger.error(f"Error in get_fact_sol: {str(e)}")
         raise
 
@@ -408,7 +408,7 @@ def kpi_of_fact_sol(
 
         return final_result.sort_values(["b2_ever_h6", "oa_amt_h0"])
 
-    except Exception as e:
+    except (ValueError, KeyError) as e:
         logger.error(f"Error in kpi_of_fact_sol: {str(e)}")
         raise
 
@@ -472,6 +472,6 @@ def get_optimal_solutions(
         logger.info(f"Number of optimal solutions: {len(final_result):,}")
         return final_result.sort_values(by=["b2_ever_h6", "oa_amt_h0"])
 
-    except Exception as e:
+    except (ValueError, KeyError) as e:
         logger.error(f"Error in get_optimal_solutions: {str(e)}")
         raise

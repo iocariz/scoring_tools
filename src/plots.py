@@ -27,7 +27,7 @@ from plotly.subplots import make_subplots
 from sklearn.metrics import auc, roc_curve
 
 from . import styles
-from .constants import Columns, StatusName
+from .constants import Columns, DEFAULT_RISK_MULTIPLIER, StatusName
 from .metrics import ks_statistic
 from .utils import calculate_b2_ever_h6
 
@@ -345,7 +345,7 @@ class RiskProductionVisualizer:
         self.actual_todu_30 = tudu_30_ever
         self.actual_todu_amt = tudu_amt_pile
 
-        self.B2_0 = np.round(100 * 7 * tudu_30_ever / tudu_amt_pile, 2)
+        self.B2_0 = np.round(100 * DEFAULT_RISK_MULTIPLIER * tudu_30_ever / tudu_amt_pile, 2)
 
         # Calculate OA_0
         self.OA_0 = self.data_summary_disaggregated["oa_amt_h0_boo"].sum()

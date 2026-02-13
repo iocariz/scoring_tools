@@ -96,6 +96,17 @@ DEFAULT_RANDOM_STATE: Final[int] = 42
 DEFAULT_N_POINTS_3D: Final[int] = 20
 DEFAULT_ZERO_THRESHOLD: Final[float] = 1e-10
 
+# PSI/CSI stability thresholds
+PSI_STABLE_THRESHOLD: Final[float] = 0.1
+PSI_UNSTABLE_THRESHOLD: Final[float] = 0.25
+
+# Score scale: risk scores range from 0 to this value,
+# where this value represents the best credit quality.
+SCORE_SCALE_MAX: Final[int] = 9
+
+# Decision tree default min samples per leaf
+DEFAULT_MIN_SAMPLES_LEAF: Final[int] = 500
+
 
 # =============================================================================
 # HELPER FUNCTIONS

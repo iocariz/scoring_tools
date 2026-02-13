@@ -349,7 +349,7 @@ def validate_audit_against_summary(
             logger.info("Audit validation passed: totals match summary table")
             return True
 
-    except Exception as e:
+    except (KeyError, ValueError) as e:
         logger.warning(f"Could not validate audit against summary: {e}")
 
     return True  # Don't fail if validation can't be performed

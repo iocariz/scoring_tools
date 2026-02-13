@@ -173,7 +173,7 @@ class GlobalAllocator:
         if method == "exact":
             try:
                 return self.optimize_exact(global_risk_target, risk_constraints)
-            except Exception as e:
+            except (ValueError, RuntimeError) as e:
                 warnings.warn(
                     f"Exact solver failed ({e}), falling back to greedy.",
                     RuntimeWarning,

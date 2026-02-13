@@ -20,12 +20,12 @@ import plotly.graph_objects as go
 from loguru import logger
 
 from src import styles
-from src.constants import StatusName
+from src.constants import DEFAULT_RISK_MULTIPLIER, PSI_UNSTABLE_THRESHOLD, StatusName
 from src.inference_optimized import run_optimization_pipeline
 from src.models import calculate_B2
 from src.preprocess_improved import filter_by_date
 from src.stability import compare_main_vs_mr
-from src.utils import calculate_b2_ever_h6
+from src.utils import calculate_b2_ever_h6, calculate_todu_30ever_from_b2
 
 
 def calculate_metrics_from_cuts(
@@ -138,7 +138,7 @@ def calculate_metrics_from_cuts(
 
         return pd.DataFrame(summary_data)
 
-    except Exception as e:
+    except (KeyError, IndexError, ValueError) as e:
         logger.error(f"Error calculating metrics from cuts: {e}")
         import traceback
 
@@ -263,7 +263,7 @@ def process_mr_period(
                         f"across {len(missing_bins)} bin combinations using risk model"
                     )
 
-                except Exception as e:
+                except (ValueError, KeyError, RuntimeError) as e:
                     logger.error(f"Error inferring b2_ever_h6 for missing bins: {e}")
                     raise ValueError(
                         f"Data integrity error: {null_count:,} booked accounts in MR period "
@@ -288,7 +288,7 @@ def process_mr_period(
             try:
                 preds = reg_todu_amt_pile.predict(X_pred)
                 data_demand_mr.loc[booked_mask, "todu_amt_pile_h6"] = preds
-            except Exception as e:
+            except (ValueError, KeyError) as e:
                 logger.error(f"Error predicting todu_amt_pile_h6: {e}")
         else:
             logger.warning("No booked accounts with valid oa_amt found for prediction.")
@@ -300,9 +300,10 @@ def process_mr_period(
         calc_mask = data_demand_mr["todu_amt_pile_h6"].notna() & data_demand_mr["b2_ever_h6_tmp"].notna()
 
         if calc_mask.any():
-            data_demand_mr.loc[calc_mask, "todu_30ever_h6"] = (
-                data_demand_mr.loc[calc_mask, "todu_amt_pile_h6"] * data_demand_mr.loc[calc_mask, "b2_ever_h6_tmp"]
-            ) / 7
+            data_demand_mr.loc[calc_mask, "todu_30ever_h6"] = calculate_todu_30ever_from_b2(
+                data_demand_mr.loc[calc_mask, "b2_ever_h6_tmp"],
+                data_demand_mr.loc[calc_mask, "todu_amt_pile_h6"],
+            )
 
         # Create data_booked_mr
         data_booked_mr = data_demand_mr[data_demand_mr["status_name"] == StatusName.BOOKED.value].copy()
@@ -432,26 +433,26 @@ def process_mr_period(
                     alert_json_path = f"data/drift_alerts{file_suffix}.json"
                     alert_report.to_json(alert_json_path)
                     logger.info(f"Drift alerts saved to {alert_json_path}")
-                except Exception as e:
+                except (ImportError, ValueError) as e:
                     logger.warning(f"Failed to generate drift alerts: {e}")
 
                 # Log summary
                 if stability_report.unstable_vars:
                     logger.warning(
                         f"STABILITY WARNING: {len(stability_report.unstable_vars)} variables "
-                        f"show significant drift (PSI >= 0.25): "
+                        f"show significant drift (PSI >= {PSI_UNSTABLE_THRESHOLD}): "
                         f"{[r.variable for r in stability_report.unstable_vars]}"
                     )
             else:
                 logger.warning("No numeric variables found for stability analysis")
 
-        except Exception as e:
+        except (ValueError, KeyError) as e:
             logger.error(f"Error calculating stability metrics: {e}")
             import traceback
 
             logger.debug(traceback.format_exc())
 
-    except Exception as e:
+    except (ValueError, KeyError, RuntimeError) as e:
         logger.error(f"Error processing MR period: {e}")
         import traceback
 

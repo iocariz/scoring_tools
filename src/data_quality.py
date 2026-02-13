@@ -264,7 +264,7 @@ def check_date_range(df: pd.DataFrame, date_column: str, expected_start: str, ex
             return CheckResult(
                 name="Date Range", status=CheckStatus.PASSED, message="Data covers expected date range", details=details
             )
-    except Exception as e:
+    except (ValueError, TypeError) as e:
         return CheckResult(name="Date Range", status=CheckStatus.WARNING, message=f"Could not parse dates: {e}")
 
 

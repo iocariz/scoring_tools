@@ -13,6 +13,7 @@ from src.utils import (
     calculate_annual_coef,
     calculate_b2_ever_h6,
     calculate_stress_factor,
+    calculate_todu_30ever_from_b2,
     consolidate_cutoff_summaries,
     format_cutoff_summary_table,
     generate_cutoff_summary,
@@ -436,3 +437,142 @@ class TestConsolidateCutoffSummaries:
         # Verify file was created
         saved = pd.read_csv(output_path)
         assert len(saved) == 1
+
+
+# =============================================================================
+# calculate_b2_ever_h6 Edge Case Tests
+# =============================================================================
+
+
+class TestCalculateB2EverH6EdgeCases:
+    """Additional edge case tests for calculate_b2_ever_h6."""
+
+    def test_all_nan_numerator(self):
+        """All-NaN numerator should produce all-NaN result."""
+        numerator = pd.Series([np.nan, np.nan, np.nan])
+        denominator = pd.Series([1000, 2000, 3000])
+
+        result = calculate_b2_ever_h6(numerator, denominator)
+
+        assert len(result) == 3
+        assert np.isnan(result[0])
+        assert np.isnan(result[1])
+        assert np.isnan(result[2])
+
+    def test_all_zero_denominator_series(self):
+        """All-zero denominator Series should produce all-NaN result."""
+        numerator = pd.Series([100, 200, 300])
+        denominator = pd.Series([0, 0, 0])
+
+        result = calculate_b2_ever_h6(numerator, denominator)
+
+        assert len(result) == 3
+        assert np.isnan(result[0])
+        assert np.isnan(result[1])
+        assert np.isnan(result[2])
+
+    def test_very_large_values_no_overflow(self):
+        """Very large values (1e15) should not overflow."""
+        numerator = pd.Series([1e15, 2e15])
+        denominator = pd.Series([1e15, 1e15])
+
+        result = calculate_b2_ever_h6(numerator, denominator)
+
+        assert np.isfinite(result[0])
+        assert np.isfinite(result[1])
+        assert np.isclose(result[0], 7.0)
+        assert np.isclose(result[1], 14.0)
+
+    def test_empty_series_inputs(self):
+        """Empty Series inputs should return an empty result."""
+        numerator = pd.Series([], dtype=float)
+        denominator = pd.Series([], dtype=float)
+
+        result = calculate_b2_ever_h6(numerator, denominator)
+
+        assert len(result) == 0
+
+
+# =============================================================================
+# calculate_todu_30ever_from_b2 Tests
+# =============================================================================
+
+
+class TestCalculateTodu30everFromB2:
+    """Tests for the calculate_todu_30ever_from_b2 inverse function."""
+
+    def test_basic_calculation(self):
+        """Test basic inverse calculation: 0.7 * 1000 / 7 = 100.0."""
+        result = calculate_todu_30ever_from_b2(0.7, 1000)
+        expected = 0.7 * 1000 / 7  # 100.0
+        assert np.isclose(result, expected)
+
+    def test_with_custom_multiplier(self):
+        """Test calculation with a custom multiplier."""
+        result = calculate_todu_30ever_from_b2(1.0, 1000, multiplier=10)
+        expected = 1.0 * 1000 / 10  # 100.0
+        assert np.isclose(result, expected)
+
+    def test_with_pandas_series(self):
+        """Test calculation with pandas Series inputs."""
+        b2 = pd.Series([0.7, 1.4, 2.1])
+        pile = pd.Series([1000, 1000, 1000])
+
+        result = calculate_todu_30ever_from_b2(b2, pile)
+
+        assert isinstance(result, pd.Series)
+        assert len(result) == 3
+        assert np.isclose(result[0], 100.0)
+        assert np.isclose(result[1], 200.0)
+        assert np.isclose(result[2], 300.0)
+
+    def test_inverse_of_b2_ever_h6(self):
+        """Verify round-trip: calculate_b2_ever_h6(calculate_todu_30ever_from_b2(b2, pile), pile) == b2."""
+        b2_values = pd.Series([0.5, 1.0, 1.5, 2.0])
+        pile_values = pd.Series([1000, 2000, 3000, 4000])
+
+        todu = calculate_todu_30ever_from_b2(b2_values, pile_values)
+        recovered_b2 = calculate_b2_ever_h6(todu, pile_values)
+
+        np.testing.assert_array_almost_equal(recovered_b2, b2_values, decimal=2)
+
+
+# =============================================================================
+# calculate_stress_factor Edge Case Tests
+# =============================================================================
+
+
+class TestCalculateStressFactorEdgeCases:
+    """Additional edge case tests for calculate_stress_factor."""
+
+    def test_all_zero_denominators(self):
+        """All-zero denominators in both overall and worst populations."""
+        df = pd.DataFrame(
+            {
+                "status_name": ["booked"] * 20,
+                "risk_score_rf": np.linspace(0, 1, 20),
+                "todu_30ever_h6": np.ones(20) * 10,
+                "todu_amt_pile_h6": np.zeros(20),
+            }
+        )
+
+        stress = calculate_stress_factor(df)
+
+        # With zero denominators, the function should fall back gracefully
+        assert isinstance(stress, float)
+        assert np.isfinite(stress)
+
+    def test_empty_dataframe_after_filtering(self):
+        """DataFrame with no matching status should return 0.0."""
+        df = pd.DataFrame(
+            {
+                "status_name": ["rejected"] * 10 + ["cancelled"] * 5,
+                "risk_score_rf": np.random.rand(15),
+                "todu_30ever_h6": np.random.rand(15) * 10,
+                "todu_amt_pile_h6": np.random.rand(15) * 1000 + 100,
+            }
+        )
+
+        stress = calculate_stress_factor(df, target_status="booked")
+
+        assert stress == 0.0

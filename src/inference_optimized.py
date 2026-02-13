@@ -30,6 +30,7 @@ from src.constants import (
     DEFAULT_N_POINTS_3D,
     DEFAULT_RANDOM_STATE,
     DEFAULT_Z_THRESHOLD,
+    SCORE_SCALE_MAX,
     Columns,
     StatusName,
     Suffixes,
@@ -48,6 +49,8 @@ def calculate_target_metric(df: pd.DataFrame, multiplier: float, numerator: str,
     """
     Calculate target metric with proper handling of edge cases.
 
+    Delegates to calculate_b2_ever_h6 for consistent division-by-zero handling.
+
     Args:
         df: DataFrame containing the data
         multiplier: Multiplier for the target calculation
@@ -55,10 +58,9 @@ def calculate_target_metric(df: pd.DataFrame, multiplier: float, numerator: str,
         denominator: Column name for denominator
 
     Returns:
-        Calculated metric rounded to 2 decimals
+        Calculated metric rounded to 2 decimals as ndarray
     """
-    result = multiplier * df[numerator] / df[denominator].replace(0, np.nan)
-    return np.round(result, 2)
+    return calculate_b2_ever_h6(df[numerator], df[denominator], multiplier=multiplier).values
 
 
 def _generate_regression_variables(variables: list[str]) -> tuple[list[str], dict[str, list[str]]]:
@@ -74,36 +76,37 @@ def _generate_regression_variables(variables: list[str]) -> tuple[list[str], dic
         - feature_sets: Dictionary of named feature sets for comparison
     """
     var0, var1 = variables
+    s = SCORE_SCALE_MAX
 
     # Base features (3 features)
     var_reg = [
         f"{var1}",
-        f"9-{var0}",
-        f"(9-{var0}) x {var1}",
+        f"{s}-{var0}",
+        f"({s}-{var0}) x {var1}",
     ]
 
     # Squared terms
     squared_terms = [
         f"{var1}^2",
-        f"(9-{var0})^2",
+        f"({s}-{var0})^2",
     ]
 
     # Cubic terms
     cubic_terms = [
         f"{var1}^3",
-        f"(9-{var0})^3",
+        f"({s}-{var0})^3",
     ]
 
     # Additional interaction terms (created by transform_variables)
     extra_interactions = [
-        f"(9-{var0})^2 x {var1}",
-        f"(9-{var0}) x {var1}^2",
+        f"({s}-{var0})^2 x {var1}",
+        f"({s}-{var0}) x {var1}^2",
     ]
 
     # Simple two-variable set (no interaction)
     var_simple = [
         f"{var1}",
-        f"9-{var0}",
+        f"{s}-{var0}",
     ]
 
     # Define distinct feature sets for comparison
@@ -300,7 +303,7 @@ def plot_3d_surface(
 
         return fig
 
-    except Exception as e:
+    except (ValueError, KeyError, ImportError) as e:
         logger.error(f"Error creating 3D plot: {str(e)}")
         logger.exception("3D Plot generation failed")
         return None
@@ -410,7 +413,7 @@ def _select_model_type_cv(
                     "model_template": model_template,
                 }
             )
-        except Exception:
+        except (ValueError, np.linalg.LinAlgError, RuntimeError):
             logger.error(f"Failed to evaluate {name}:")
             logger.exception("CV evaluation failed")
             continue
@@ -657,7 +660,7 @@ def _compute_shap_values(
             "mean_abs_shap": mean_abs_shap,
         }
 
-    except Exception as e:
+    except (ImportError, ValueError, TypeError, AttributeError) as e:
         logger.warning(f"SHAP computation failed (non-blocking): {e}")
         return None
 
@@ -737,7 +740,7 @@ def _create_pipeline_visualization(
                 logger.info(f"  Plot saved to: {plot_path}")
 
         return fig
-    except Exception as e:
+    except (ValueError, KeyError, OSError) as e:
         logger.error(f"Visualization failed: {str(e)}")
         return None
 
@@ -886,7 +889,7 @@ def inference_pipeline(
                 output_path=shap_plot_path,
             )
             logger.info(f"SHAP summary plot saved to {shap_plot_path}")
-        except Exception as e:
+        except (ImportError, ValueError, OSError) as e:
             logger.warning(f"SHAP plot export failed (non-blocking): {e}")
 
     # STEP 5: MODEL SAVING
@@ -1030,7 +1033,7 @@ def todu_average_inference(
         try:
             joblib.dump(model, model_output_path)
             logger.info(f"Trained model saved successfully to: {model_output_path}")
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Failed to save model to {model_output_path}: {e}")
     # --------------------------------
 
@@ -1096,7 +1099,7 @@ def todu_average_inference(
         try:
             fig.write_html(plot_output_path)
             logger.info(f"Todu average inference plot saved to {plot_output_path}")
-        except Exception as e:
+        except (ValueError, OSError) as e:
             logger.error(f"Failed to save Todu average inference plot: {e}")
 
     return fig, model, r_sq
