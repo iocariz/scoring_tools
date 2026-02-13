@@ -88,6 +88,11 @@ def load_and_prepare_data(settings: PreprocessingSettings, preloaded_data: pd.Da
     required_cols = settings.keep_vars + settings.indicators
     validate_data_columns(data, required_cols, "input data")
 
+    # Schema validation: check types, value ranges, and categorical constraints
+    from src.schema import validate_raw_data
+
+    validate_raw_data(data, raise_on_error=True)
+
     elapsed = time.perf_counter() - t0
     source = "preloaded" if preloaded_data is not None else settings.data_path
     logger.info(f"Data ready | {data.shape[0]:,} rows x {data.shape[1]} cols | source={source} | {elapsed:.1f}s")
