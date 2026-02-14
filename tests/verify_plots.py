@@ -72,7 +72,7 @@ def verify_transformation_rate():
             "oa_amt": np.random.randint(1000, 5000, 10),
         }
     )
-    result = utils.calculate_and_plot_transformation_rate(df, "date")
+    result = plots.calculate_and_plot_transformation_rate(df, "date")
     result["figure"].write_html("images/verification/test_transformation_rate.html")
     print("  Saved images/verification/test_transformation_rate.html")
 

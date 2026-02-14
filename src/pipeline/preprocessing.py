@@ -7,7 +7,8 @@ from src.config import PreprocessingSettings
 from src.data_quality import run_data_quality_checks
 from src.plots import plot_risk_vs_production
 from src.preprocess_improved import PreprocessingConfig, complete_preprocessing_pipeline
-from src.utils import calculate_and_plot_transformation_rate, calculate_stress_factor
+from src.plots import calculate_and_plot_transformation_rate
+from src.utils import calculate_stress_factor
 
 
 def convert_bins(bins: list[float]) -> list[float]:

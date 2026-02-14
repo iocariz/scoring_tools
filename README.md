@@ -63,11 +63,13 @@ uv run python run_batch.py --parallel --workers 4
 | `src/config.py` | Pydantic settings definition and validation. |
 | `src/data_manager.py` | Centralized data loading and column validation. |
 | `src/inference_optimized.py` | Training/inference logic for risk models. |
-| `src/utils.py` | Optimization algorithms (Pareto frontier, solution generation). |
+| `src/inference_optimized.py` | Training/inference logic for risk models. |
+| `src/optimization_utils.py` | Optimization algorithms (Pareto frontier, solution generation). |
+| `src/utils.py` | Core utilities, risk metrics, and memory management. |
 | `src/mr_pipeline.py` | Recent Monitoring (MR) validation logic. |
 | `src/stability.py` | PSI/CSI stability metrics calculation. |
 | `src/global_optimizer.py` | Global portfolio allocation (MILP & greedy solvers). |
-| `src/plots.py` | Interactive Plotly dashboards. |
+| `src/plots.py` | Interactive Plotly dashboards and visualization logic. |
 
 ## Configuration
 
