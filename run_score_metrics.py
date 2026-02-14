@@ -157,9 +157,9 @@ def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
     # Build a combined label for x-axis: "name (period)" with level prefix for supersegments
     df = df.copy()
     df["x_label"] = df.apply(
-        lambda r: f"[SS] {r['name']} ({r['period']})"
-        if r["level"] == "supersegment"
-        else f"{r['name']} ({r['period']})",
+        lambda r: (
+            f"[SS] {r['name']} ({r['period']})" if r["level"] == "supersegment" else f"{r['name']} ({r['period']})"
+        ),
         axis=1,
     )
 
