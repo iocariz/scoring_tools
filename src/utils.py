@@ -7,17 +7,12 @@ This module provides core utility functions used throughout the scoring tools:
 
 """
 
-import gc
-from typing import Any
-
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 from loguru import logger
 
-
-from . import styles
-from .constants import DEFAULT_RISK_MULTIPLIER, Columns, StatusName
+from .constants import DEFAULT_RISK_MULTIPLIER
 
 
 def calculate_b2_ever_h6(
@@ -134,7 +129,6 @@ def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-
 def calculate_stress_factor(
     df: pd.DataFrame,
     status_col: str = "status_name",
@@ -183,7 +177,6 @@ def calculate_stress_factor(
         stress_factor = 0.0
 
     return float(stress_factor)
-
 
 
 def calculate_annual_coef(date_ini_book_obs: pd.Timestamp, date_fin_book_obs: pd.Timestamp) -> float:
@@ -282,7 +275,9 @@ def calculate_bootstrap_intervals(
 
     # Parallel execution
     results = Parallel(n_jobs=-1)(
-        delayed(_bootstrap_worker)(data_booked, cut_map, variables, multiplier, random_state=int(seed) if seed is not None else None)
+        delayed(_bootstrap_worker)(
+            data_booked, cut_map, variables, multiplier, random_state=int(seed) if seed is not None else None
+        )
         for seed in seeds
     )
 

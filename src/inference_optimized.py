@@ -182,11 +182,7 @@ def process_dataset(
     )
 
     # ---- 4. Remove outliers and NaNs ----
-    processed_data = (
-        processed_data.dropna()
-        .loc[lambda df: np.abs(zscore(df[target_var])) < z_threshold]
-        .copy()
-    )
+    processed_data = processed_data.dropna().loc[lambda df: np.abs(zscore(df[target_var])) < z_threshold].copy()
 
     return processed_data
 
@@ -368,9 +364,7 @@ def _select_model_type_cv(
     # Add TweedieGLM models
     for power in tweedie_params["power"]:
         for alpha in tweedie_params["alpha"]:
-            models[f"Tweedie (p={power}, α={alpha})"] = TweedieGLM(
-                power=power, alpha=alpha, link="log"
-            )
+            models[f"Tweedie (p={power}, α={alpha})"] = TweedieGLM(power=power, alpha=alpha, link="log")
 
     if include_hurdle:
         for alpha in [0.3, 0.5, 0.8]:
@@ -420,8 +414,7 @@ def _select_model_type_cv(
 
     if not results:
         raise RuntimeError(
-            "All models failed during cross-validation. "
-            "Check your data for NaNs, infinite values, or shape mismatches."
+            "All models failed during cross-validation. Check your data for NaNs, infinite values, or shape mismatches."
         )
 
     results_df = pd.DataFrame(results).sort_values("CV Mean R²", ascending=False)
@@ -900,9 +893,18 @@ def inference_pipeline(
         logger.info("-" * 40)
 
         model_path = _save_model_to_disk(
-            final_model, final_features, best_model_info, best_model_type,
-            best_feature_info, all_data, target_var, multiplier, cv_folds,
-            zero_prop, weights_all, model_base_path,
+            final_model,
+            final_features,
+            best_model_info,
+            best_model_type,
+            best_feature_info,
+            all_data,
+            target_var,
+            multiplier,
+            cv_folds,
+            zero_prop,
+            weights_all,
+            model_base_path,
         )
 
     # STEP 6: VISUALIZATION
@@ -912,17 +914,16 @@ def inference_pipeline(
         logger.info("STEP 6: 3D VISUALIZATION")
         logger.info("-" * 40)
 
-        fig = _create_pipeline_visualization(
-            final_model, all_data, variables, target_var, final_features, model_path
-        )
+        fig = _create_pipeline_visualization(final_model, all_data, variables, target_var, final_features, model_path)
 
     # PIPELINE SUMMARY
     logger.info("=" * 80)
     logger.info("PIPELINE SUMMARY")
-    logger.info(f"  Model type (Step 1): {best_model_name} "
-                f"(CV R²: {best_model_type['cv_mean_r2']:.4f})")
-    logger.info(f"  Feature set (Step 2): {best_feature_info['feature_set_name']} "
-                f"(CV R²: {best_feature_info['cv_mean_r2']:.4f} ± {best_feature_info['cv_std_r2']:.4f})")
+    logger.info(f"  Model type (Step 1): {best_model_name} (CV R²: {best_model_type['cv_mean_r2']:.4f})")
+    logger.info(
+        f"  Feature set (Step 2): {best_feature_info['feature_set_name']} "
+        f"(CV R²: {best_feature_info['cv_mean_r2']:.4f} ± {best_feature_info['cv_std_r2']:.4f})"
+    )
     logger.info(f"  Final full-data R²: {full_r2:.4f}")
     if model_path:
         logger.info(f"  Model saved: {model_path}")

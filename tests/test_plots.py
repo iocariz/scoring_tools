@@ -11,9 +11,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
-from src.plots import plot_roc_curve, plot_risk_vs_production, plot_shap_summary
 from src.constants import Columns, StatusName
-
+from src.plots import plot_risk_vs_production, plot_roc_curve, plot_shap_summary
 
 # =============================================================================
 # Matplotlib cleanup fixture

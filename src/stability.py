@@ -110,7 +110,11 @@ class StabilityReport:
         # Group by status
         for status, label, _color in [
             (StabilityStatus.UNSTABLE, f"UNSTABLE (PSI >= {PSI_UNSTABLE_THRESHOLD})", "red"),
-            (StabilityStatus.MODERATE, f"MODERATE ({PSI_STABLE_THRESHOLD} <= PSI < {PSI_UNSTABLE_THRESHOLD})", "yellow"),
+            (
+                StabilityStatus.MODERATE,
+                f"MODERATE ({PSI_STABLE_THRESHOLD} <= PSI < {PSI_UNSTABLE_THRESHOLD})",
+                "yellow",
+            ),
             (StabilityStatus.STABLE, f"STABLE (PSI < {PSI_STABLE_THRESHOLD})", "green"),
         ]:
             results = [r for r in self.psi_results if r.status == status]

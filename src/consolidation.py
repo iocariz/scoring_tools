@@ -347,7 +347,7 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
                 metrics[key]["todu_amt_pile_h6"] = float(row[todu_amt_col]) if pd.notna(row[todu_amt_col]) else 0
             except (ValueError, TypeError):
                 pass
-        
+
         # Extract CI values (only for optimum)
         if key == "optimum":
             for col in df.columns:
@@ -383,13 +383,13 @@ def aggregate_metrics(metrics_list: list[dict[str, dict[str, float]]]) -> dict[s
             aggregated[key]["production"] += metrics[key]["production"]
             aggregated[key]["todu_30ever_h6"] += metrics[key]["todu_30ever_h6"]
             aggregated[key]["todu_amt_pile_h6"] += metrics[key]["todu_amt_pile_h6"]
-            
+
             # Aggregate CIs for optimum (Production only - simple sum assumption)
             if key == "optimum":
                 if "production_ci_lower" not in aggregated[key]:
                     aggregated[key]["production_ci_lower"] = 0
                     aggregated[key]["production_ci_upper"] = 0
-                
+
                 aggregated[key]["production_ci_lower"] += metrics[key].get("production_ci_lower", 0)
                 aggregated[key]["production_ci_upper"] += metrics[key].get("production_ci_upper", 0)
                 # Risk CIs cannot be simply summed or averaged without variance/covariance
@@ -510,11 +510,11 @@ def consolidate_segments(
                         swap_out_production=agg["swap_out"]["production"],
                         swap_out_todu_30ever_h6=agg["swap_out"]["todu_30ever_h6"],
                         swap_out_todu_amt_pile_h6=agg["swap_out"]["todu_amt_pile_h6"],
-                    # Pass aggregated CIs (Production only)
-                    optimum_production_ci_lower=agg["optimum"].get("production_ci_lower", 0),
-                    optimum_production_ci_upper=agg["optimum"].get("production_ci_upper", 0),
-                    # Risk CIs are 0 for aggregated
-                )
+                        # Pass aggregated CIs (Production only)
+                        optimum_production_ci_lower=agg["optimum"].get("production_ci_lower", 0),
+                        optimum_production_ci_upper=agg["optimum"].get("production_ci_upper", 0),
+                        # Risk CIs are 0 for aggregated
+                    )
                 results.append(consolidated.to_dict())
                 supersegment_data[ss_name] = agg
 

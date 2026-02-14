@@ -6,7 +6,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 import pandas as pd
 import pytest
-from loguru import logger
 
 from src.utils import (
     DEFAULT_RISK_MULTIPLIER,
@@ -195,9 +194,6 @@ class TestB2EverH6Integration:
         assert not df["b2_ever_h6"].isna().any()
 
 
-
-
-
 # =============================================================================
 # optimize_dtypes Tests
 # =============================================================================
@@ -264,9 +260,6 @@ class TestGetDataInformation:
         result = get_data_information(df)
         a_row = result[result["Variable"] == "a"]
         assert a_row["Number of missing values"].values[0] == 1
-
-
-
 
 
 # =============================================================================

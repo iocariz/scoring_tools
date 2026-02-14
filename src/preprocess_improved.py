@@ -206,11 +206,7 @@ def _generate_bin_summary(data: pd.DataFrame, bin_col: str, source_col: str) -> 
     pd.DataFrame
         Summary with columns: bin, min, max, count
     """
-    summary = (
-        data.groupby(bin_col)[source_col]
-        .agg(["min", "max", "count"])
-        .reset_index()
-    )
+    summary = data.groupby(bin_col)[source_col].agg(["min", "max", "count"]).reset_index()
     summary.columns = ["bin", "min", "max", "count"]
     summary = summary.sort_values("bin")
     return summary
@@ -307,17 +303,13 @@ def apply_binning_transformations(data: pd.DataFrame, octroi_bins: list[float], 
     logger.info("=" * 60)
     logger.info("BIN SUMMARY: sc_octroi_new_clus (from score_rf)")
     logger.info("=" * 60)
-    octroi_summary = _generate_bin_summary(
-        transformed_data, bin_col="sc_octroi_new_clus", source_col="score_rf"
-    )
+    octroi_summary = _generate_bin_summary(transformed_data, bin_col="sc_octroi_new_clus", source_col="score_rf")
     logger.info(f"\n{octroi_summary.to_string(index=False)}")
 
     logger.info("=" * 60)
     logger.info("BIN SUMMARY: new_efx_clus (from risk_score_rf)")
     logger.info("=" * 60)
-    efx_summary = _generate_bin_summary(
-        transformed_data, bin_col="new_efx_clus", source_col="risk_score_rf"
-    )
+    efx_summary = _generate_bin_summary(transformed_data, bin_col="new_efx_clus", source_col="risk_score_rf")
     logger.info(f"\n{efx_summary.to_string(index=False)}")
 
     # Log completion
@@ -644,12 +636,8 @@ def complete_preprocessing_pipeline(
 
     try:
         data_clean = _run_data_transformations(df, config)
-        data_booked = _filter_booked_for_period(
-            data_clean, config.date_ini_book_obs, config.date_fin_book_obs
-        )
-        data_demand = _filter_demand_for_period(
-            data_clean, config.date_ini_book_obs, config.date_fin_book_obs
-        )
+        data_booked = _filter_booked_for_period(data_clean, config.date_ini_book_obs, config.date_fin_book_obs)
+        data_demand = _filter_demand_for_period(data_clean, config.date_ini_book_obs, config.date_fin_book_obs)
 
         # Log final statistics
         logger.info("\n" + "=" * 80)

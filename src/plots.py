@@ -17,17 +17,18 @@ Key components:
 - plot_risk_vs_production: Static risk vs production scatter plot
 """
 
+from typing import Any
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from typing import Any
 import seaborn as sns
 from plotly.subplots import make_subplots
 from sklearn.metrics import auc, roc_curve
 
 from . import styles
-from .constants import Columns, DEFAULT_RISK_MULTIPLIER, StatusName
+from .constants import DEFAULT_RISK_MULTIPLIER, Columns, StatusName
 from .metrics import ks_statistic
 from .utils import calculate_b2_ever_h6
 
@@ -812,7 +813,9 @@ def plot_shap_summary(
         )
     )
 
-    styles.apply_plotly_style(fig, title="Feature Importance (SHAP)", width=1000, height=max(500, len(feature_names) * 25))
+    styles.apply_plotly_style(
+        fig, title="Feature Importance (SHAP)", width=1000, height=max(500, len(feature_names) * 25)
+    )
     fig.update_layout(xaxis_title="mean(|SHAP value|)", yaxis_title="Feature")
 
     if output_path:
@@ -956,9 +959,7 @@ def calculate_and_plot_transformation_rate(
     """
 
     df_eligible = _prepare_transformation_data(data, date_col, n_months)
-    overall_rate, total_booked, total_eligible, monthly = _calculate_monthly_rates(
-        df_eligible, amount_col, date_col
-    )
+    overall_rate, total_booked, total_eligible, monthly = _calculate_monthly_rates(df_eligible, amount_col, date_col)
     fig = create_transformation_plot(monthly, overall_rate, plot_width, plot_height)
 
     return {

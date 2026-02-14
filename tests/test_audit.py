@@ -16,12 +16,14 @@ class TestClassifyRecord:
 
     def test_keep_booked_passes_cut(self):
         """Test booked record that passes cutoff is classified as keep."""
-        row = pd.Series({
-            "sc_octroi_new_clus": 1.0,
-            "new_efx_clus": 3,
-            "status_name": "booked",
-            "reject_reason": None,
-        })
+        row = pd.Series(
+            {
+                "sc_octroi_new_clus": 1.0,
+                "new_efx_clus": 3,
+                "status_name": "booked",
+                "reject_reason": None,
+            }
+        )
         cut_map = {1.0: 5, 2.0: 6}
 
         result = classify_record(row, "sc_octroi_new_clus", "new_efx_clus", cut_map)
@@ -29,12 +31,14 @@ class TestClassifyRecord:
 
     def test_swap_out_booked_fails_cut(self):
         """Test booked record that fails cutoff is classified as swap_out."""
-        row = pd.Series({
-            "sc_octroi_new_clus": 1.0,
-            "new_efx_clus": 7,  # Above cutoff of 5
-            "status_name": "booked",
-            "reject_reason": None,
-        })
+        row = pd.Series(
+            {
+                "sc_octroi_new_clus": 1.0,
+                "new_efx_clus": 7,  # Above cutoff of 5
+                "status_name": "booked",
+                "reject_reason": None,
+            }
+        )
         cut_map = {1.0: 5, 2.0: 6}
 
         result = classify_record(row, "sc_octroi_new_clus", "new_efx_clus", cut_map)
@@ -42,12 +46,14 @@ class TestClassifyRecord:
 
     def test_swap_in_score_rejected_passes_cut(self):
         """Test score-rejected record that passes cutoff is classified as swap_in."""
-        row = pd.Series({
-            "sc_octroi_new_clus": 1.0,
-            "new_efx_clus": 3,  # Below cutoff of 5
-            "status_name": "rejected",
-            "reject_reason": "09-score",
-        })
+        row = pd.Series(
+            {
+                "sc_octroi_new_clus": 1.0,
+                "new_efx_clus": 3,  # Below cutoff of 5
+                "status_name": "rejected",
+                "reject_reason": "09-score",
+            }
+        )
         cut_map = {1.0: 5, 2.0: 6}
 
         result = classify_record(row, "sc_octroi_new_clus", "new_efx_clus", cut_map)
@@ -55,12 +61,14 @@ class TestClassifyRecord:
 
     def test_rejected_score_rejected_fails_cut(self):
         """Test score-rejected record that fails cutoff is classified as rejected."""
-        row = pd.Series({
-            "sc_octroi_new_clus": 1.0,
-            "new_efx_clus": 7,  # Above cutoff of 5
-            "status_name": "rejected",
-            "reject_reason": "09-score",
-        })
+        row = pd.Series(
+            {
+                "sc_octroi_new_clus": 1.0,
+                "new_efx_clus": 7,  # Above cutoff of 5
+                "status_name": "rejected",
+                "reject_reason": "09-score",
+            }
+        )
         cut_map = {1.0: 5, 2.0: 6}
 
         result = classify_record(row, "sc_octroi_new_clus", "new_efx_clus", cut_map)
@@ -68,12 +76,14 @@ class TestClassifyRecord:
 
     def test_rejected_other_not_swap_in(self):
         """Test other-rejected record is classified as rejected_other even if passes cut."""
-        row = pd.Series({
-            "sc_octroi_new_clus": 1.0,
-            "new_efx_clus": 3,  # Below cutoff of 5
-            "status_name": "rejected",
-            "reject_reason": "08-other",  # Not score-rejected
-        })
+        row = pd.Series(
+            {
+                "sc_octroi_new_clus": 1.0,
+                "new_efx_clus": 3,  # Below cutoff of 5
+                "status_name": "rejected",
+                "reject_reason": "08-other",  # Not score-rejected
+            }
+        )
         cut_map = {1.0: 5, 2.0: 6}
 
         result = classify_record(row, "sc_octroi_new_clus", "new_efx_clus", cut_map)
@@ -81,28 +91,30 @@ class TestClassifyRecord:
 
     def test_inv_var1_logic(self):
         """Test inverted var1 logic (>= instead of <=)."""
-        row = pd.Series({
-            "sc_octroi_new_clus": 1.0,
-            "new_efx_clus": 3,  # Below cutoff of 5, would fail with inv_var1
-            "status_name": "booked",
-            "reject_reason": None,
-        })
+        row = pd.Series(
+            {
+                "sc_octroi_new_clus": 1.0,
+                "new_efx_clus": 3,  # Below cutoff of 5, would fail with inv_var1
+                "status_name": "booked",
+                "reject_reason": None,
+            }
+        )
         cut_map = {1.0: 5, 2.0: 6}
 
         # With inv_var1=True, 3 >= 5 is False, so booked becomes swap_out
-        result = classify_record(
-            row, "sc_octroi_new_clus", "new_efx_clus", cut_map, inv_var1=True
-        )
+        result = classify_record(row, "sc_octroi_new_clus", "new_efx_clus", cut_map, inv_var1=True)
         assert result == "swap_out"
 
     def test_exact_cutoff_passes(self):
         """Test record at exact cutoff passes."""
-        row = pd.Series({
-            "sc_octroi_new_clus": 1.0,
-            "new_efx_clus": 5,  # Exactly at cutoff
-            "status_name": "booked",
-            "reject_reason": None,
-        })
+        row = pd.Series(
+            {
+                "sc_octroi_new_clus": 1.0,
+                "new_efx_clus": 5,  # Exactly at cutoff
+                "status_name": "booked",
+                "reject_reason": None,
+            }
+        )
         cut_map = {1.0: 5}
 
         result = classify_record(row, "sc_octroi_new_clus", "new_efx_clus", cut_map)
@@ -110,12 +122,14 @@ class TestClassifyRecord:
 
     def test_na_reject_reason_handled(self):
         """Test that NA reject_reason is handled without error."""
-        row = pd.Series({
-            "sc_octroi_new_clus": 1.0,
-            "new_efx_clus": 3,
-            "status_name": "rejected",
-            "reject_reason": pd.NA,  # NA value
-        })
+        row = pd.Series(
+            {
+                "sc_octroi_new_clus": 1.0,
+                "new_efx_clus": 3,
+                "status_name": "rejected",
+                "reject_reason": pd.NA,  # NA value
+            }
+        )
         cut_map = {1.0: 5}
 
         # Should not raise error, should classify as rejected_other
@@ -125,12 +139,15 @@ class TestClassifyRecord:
     def test_nan_reject_reason_handled(self):
         """Test that NaN reject_reason is handled without error."""
         import numpy as np
-        row = pd.Series({
-            "sc_octroi_new_clus": 1.0,
-            "new_efx_clus": 3,
-            "status_name": "rejected",
-            "reject_reason": np.nan,  # NaN value
-        })
+
+        row = pd.Series(
+            {
+                "sc_octroi_new_clus": 1.0,
+                "new_efx_clus": 3,
+                "status_name": "rejected",
+                "reject_reason": np.nan,  # NaN value
+            }
+        )
         cut_map = {1.0: 5}
 
         # Should not raise error, should classify as rejected_other
@@ -144,25 +161,29 @@ class TestGenerateAuditTable:
     @pytest.fixture
     def sample_data(self):
         """Create sample data for testing."""
-        return pd.DataFrame({
-            "authorization_id": [1, 2, 3, 4, 5],
-            "status_name": ["booked", "booked", "rejected", "rejected", "rejected"],
-            "reject_reason": [None, None, "09-score", "09-score", "08-other"],
-            "risk_score_rf": [10, 20, 30, 40, 50],
-            "score_rf": [100, 200, 300, 400, 500],
-            "sc_octroi_new_clus": [1.0, 1.0, 2.0, 2.0, 2.0],
-            "new_efx_clus": [3, 7, 4, 8, 4],
-            "oa_amt": [1000, 2000, 3000, 4000, 5000],
-        })
+        return pd.DataFrame(
+            {
+                "authorization_id": [1, 2, 3, 4, 5],
+                "status_name": ["booked", "booked", "rejected", "rejected", "rejected"],
+                "reject_reason": [None, None, "09-score", "09-score", "08-other"],
+                "risk_score_rf": [10, 20, 30, 40, 50],
+                "score_rf": [100, 200, 300, 400, 500],
+                "sc_octroi_new_clus": [1.0, 1.0, 2.0, 2.0, 2.0],
+                "new_efx_clus": [3, 7, 4, 8, 4],
+                "oa_amt": [1000, 2000, 3000, 4000, 5000],
+            }
+        )
 
     @pytest.fixture
     def optimal_solution(self):
         """Create sample optimal solution."""
-        return pd.DataFrame({
-            "sol_fac": [0],
-            1.0: [5],  # Cutoff for bin 1.0
-            2.0: [6],  # Cutoff for bin 2.0
-        })
+        return pd.DataFrame(
+            {
+                "sol_fac": [0],
+                1.0: [5],  # Cutoff for bin 1.0
+                2.0: [6],  # Cutoff for bin 2.0
+            }
+        )
 
     def test_basic_audit_table(self, sample_data, optimal_solution):
         """Test basic audit table generation."""
@@ -203,9 +224,7 @@ class TestGenerateAuditTable:
         variables = ["sc_octroi_new_clus", "new_efx_clus"]
         financing_rate = 0.5
 
-        audit = generate_audit_table(
-            sample_data, optimal_solution, variables, financing_rate=financing_rate
-        )
+        audit = generate_audit_table(sample_data, optimal_solution, variables, financing_rate=financing_rate)
 
         # Record 3 is swap_in with oa_amt=3000
         swap_in_row = audit[audit["classification"] == "swap_in"].iloc[0]
@@ -221,9 +240,7 @@ class TestGenerateAuditTable:
         variables = ["sc_octroi_new_clus", "new_efx_clus"]
         n_months = 6  # 6 months -> annual_coef = 12/6 = 2.0
 
-        audit = generate_audit_table(
-            sample_data, optimal_solution, variables, n_months=n_months
-        )
+        audit = generate_audit_table(sample_data, optimal_solution, variables, n_months=n_months)
 
         # All amounts should be multiplied by 2.0 (12/6)
         # Record 1 is keep with oa_amt=1000
@@ -243,8 +260,7 @@ class TestGenerateAuditTable:
         n_months = 6  # annual_coef = 2.0
 
         audit = generate_audit_table(
-            sample_data, optimal_solution, variables,
-            financing_rate=financing_rate, n_months=n_months
+            sample_data, optimal_solution, variables, financing_rate=financing_rate, n_months=n_months
         )
 
         # Record 3 is swap_in with oa_amt=3000
@@ -280,11 +296,13 @@ class TestGenerateAuditSummary:
 
     def test_basic_summary(self):
         """Test basic summary generation."""
-        audit_df = pd.DataFrame({
-            "classification": ["keep", "keep", "swap_out", "swap_in", "rejected", "rejected_other"],
-            "oa_amt": [1000, 2000, 3000, 4000, 5000, 6000],
-            "oa_amt_adjusted": [1000, 2000, 3000, 2000, 5000, 6000],  # swap_in adjusted
-        })
+        audit_df = pd.DataFrame(
+            {
+                "classification": ["keep", "keep", "swap_out", "swap_in", "rejected", "rejected_other"],
+                "oa_amt": [1000, 2000, 3000, 4000, 5000, 6000],
+                "oa_amt_adjusted": [1000, 2000, 3000, 2000, 5000, 6000],  # swap_in adjusted
+            }
+        )
 
         summary = generate_audit_summary(audit_df)
 
@@ -298,11 +316,13 @@ class TestGenerateAuditSummary:
 
     def test_summary_uses_adjusted_amounts(self):
         """Test that summary uses adjusted amounts by default."""
-        audit_df = pd.DataFrame({
-            "classification": ["keep", "swap_in"],
-            "oa_amt": [1000, 4000],
-            "oa_amt_adjusted": [1000, 2000],  # swap_in adjusted by 0.5
-        })
+        audit_df = pd.DataFrame(
+            {
+                "classification": ["keep", "swap_in"],
+                "oa_amt": [1000, 4000],
+                "oa_amt_adjusted": [1000, 2000],  # swap_in adjusted by 0.5
+            }
+        )
 
         summary = generate_audit_summary(audit_df, use_adjusted=True)
 
@@ -311,11 +331,13 @@ class TestGenerateAuditSummary:
 
     def test_summary_raw_amounts(self):
         """Test that summary can use raw amounts."""
-        audit_df = pd.DataFrame({
-            "classification": ["keep", "swap_in"],
-            "oa_amt": [1000, 4000],
-            "oa_amt_adjusted": [1000, 2000],
-        })
+        audit_df = pd.DataFrame(
+            {
+                "classification": ["keep", "swap_in"],
+                "oa_amt": [1000, 4000],
+                "oa_amt_adjusted": [1000, 2000],
+            }
+        )
 
         summary = generate_audit_summary(audit_df, use_adjusted=False)
 

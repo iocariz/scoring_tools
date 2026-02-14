@@ -243,9 +243,7 @@ class TestCalculatePsiMetrics:
 
 class TestCalcIV:
     def test_basic_iv(self):
-        df = pd.DataFrame(
-            {"var": ["A", "A", "A", "B", "B", "B", "C", "C", "C"], "target": [1, 0, 0, 0, 0, 0, 1, 1, 0]}
-        )
+        df = pd.DataFrame({"var": ["A", "A", "A", "B", "B", "B", "C", "C", "C"], "target": [1, 0, 0, 0, 0, 0, 1, 1, 0]})
         iv = calc_iv(df, "var", "target")
         assert isinstance(iv, float)
         assert iv >= 0

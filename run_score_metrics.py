@@ -130,9 +130,9 @@ METRIC_NAMES = ["auroc", "gini", "ks"]
 METRIC_LABELS = {"auroc": "AUROC", "gini": "Gini", "ks": "KS"}
 
 SCORE_COLORS = {
-    "Score RF": "#3498DB",       # Accent blue
+    "Score RF": "#3498DB",  # Accent blue
     "Risk Score RF": "#E74C3C",  # Risk red
-    "Combined": "#2ECC71",       # Production green
+    "Combined": "#2ECC71",  # Production green
 }
 
 
@@ -157,15 +157,15 @@ def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
     # Build a combined label for x-axis: "name (period)" with level prefix for supersegments
     df = df.copy()
     df["x_label"] = df.apply(
-        lambda r: f"[SS] {r['name']} ({r['period']})" if r["level"] == "supersegment" else f"{r['name']} ({r['period']})",
+        lambda r: f"[SS] {r['name']} ({r['period']})"
+        if r["level"] == "supersegment"
+        else f"{r['name']} ({r['period']})",
         axis=1,
     )
 
     # Deterministic ordering: segments first (alphabetical), then supersegments
     label_order = (
-        df.sort_values(["level", "name", "period"], ascending=[False, True, True])["x_label"]
-        .drop_duplicates()
-        .tolist()
+        df.sort_values(["level", "name", "period"], ascending=[False, True, True])["x_label"].drop_duplicates().tolist()
     )
     scores = df["score"].unique().tolist()
 
@@ -185,7 +185,9 @@ def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
                 vals.append(row[metric].values[0] if len(row) else 0)
 
             color = SCORE_COLORS.get(score, "#95A5A6")
-            bars = ax.bar(x + i * bar_width, vals, bar_width, label=score, color=color, edgecolor="white", linewidth=0.5)
+            bars = ax.bar(
+                x + i * bar_width, vals, bar_width, label=score, color=color, edgecolor="white", linewidth=0.5
+            )
 
             # Value labels on bars
             for bar, v in zip(bars, vals):
@@ -208,7 +210,9 @@ def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
 
     # Single legend at the top
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=n_scores, frameon=True, fontsize=10, bbox_to_anchor=(0.5, 1.02))
+    fig.legend(
+        handles, labels, loc="upper center", ncol=n_scores, frameon=True, fontsize=10, bbox_to_anchor=(0.5, 1.02)
+    )
 
     fig.suptitle("Score Discriminance Metrics", fontsize=18, fontweight="bold", color=COLOR_PRIMARY, y=1.06)
     fig.tight_layout()
@@ -282,9 +286,7 @@ def generate_score_discriminance_report(
     # --- Per-supersegment metrics ---
     for ss_name, _ss_config in supersegments.items():
         # Find segments belonging to this supersegment
-        member_segments = [
-            sn for sn, sc in segments.items() if sc.get("supersegment") == ss_name
-        ]
+        member_segments = [sn for sn, sc in segments.items() if sc.get("supersegment") == ss_name]
 
         if not member_segments:
             logger.warning(f"Supersegment '{ss_name}': no member segments found — skipping.")
@@ -313,7 +315,19 @@ def generate_score_discriminance_report(
 
     final_df = pd.concat(all_results, ignore_index=True)
     # Reorder columns
-    col_order = ["level", "name", "supersegment", "period", "score", "auroc", "gini", "ks", "n_records", "n_bads", "bad_rate"]
+    col_order = [
+        "level",
+        "name",
+        "supersegment",
+        "period",
+        "score",
+        "auroc",
+        "gini",
+        "ks",
+        "n_records",
+        "n_bads",
+        "bad_rate",
+    ]
     final_df = final_df[[c for c in col_order if c in final_df.columns]]
 
     out_dir = Path(output_path)
@@ -340,7 +354,9 @@ def main():
     parser.add_argument("--segments", "-s", nargs="+", help="Specific segments to evaluate (default: all)")
     parser.add_argument("--output", "-o", default="output", help="Output directory (default: output)")
     parser.add_argument("--config", "-c", default="config.toml", help="Base config file (default: config.toml)")
-    parser.add_argument("--segments-config", default="segments.toml", help="Segments config file (default: segments.toml)")
+    parser.add_argument(
+        "--segments-config", default="segments.toml", help="Segments config file (default: segments.toml)"
+    )
 
     args = parser.parse_args()
 
@@ -391,7 +407,7 @@ def main():
     print("SCORE DISCRIMINANCE SUMMARY")
     print(f"{'=' * 90}")
     print(final_df.to_string(index=False))
-    print(f"\nResults saved to:")
+    print("\nResults saved to:")
     print(f"  - {args.output}/score_discriminance.csv")
     print(f"  - {args.output}/score_discriminance.png")
 

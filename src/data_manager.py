@@ -8,12 +8,15 @@ from src.config import PreprocessingSettings
 
 class DataValidationError(Exception):
     """Raised when data validation fails."""
+
     pass
+
 
 def load_data(df_path: str) -> pd.DataFrame:
     """Load data from SAS file."""
     df = pd.read_sas(df_path, format="sas7bdat", encoding="utf-8")
     return df
+
 
 def validate_data_columns(data: pd.DataFrame, required_columns: list[str], context: str = "data") -> list[str]:
     """
@@ -39,6 +42,7 @@ def validate_data_columns(data: pd.DataFrame, required_columns: list[str], conte
 
     return []
 
+
 def validate_data_not_empty(data: pd.DataFrame, context: str = "data") -> None:
     """
     Validate that DataFrame is not empty.
@@ -52,6 +56,7 @@ def validate_data_not_empty(data: pd.DataFrame, context: str = "data") -> None:
     """
     if data.empty:
         raise DataValidationError(f"{context} is empty")
+
 
 def load_and_prepare_data(settings: PreprocessingSettings, preloaded_data: pd.DataFrame = None) -> pd.DataFrame:
     """

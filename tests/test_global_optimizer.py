@@ -20,6 +20,7 @@ def _make_frontier(points: list[tuple[int, float, float]]) -> pd.DataFrame:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def two_segment_allocator():
     """Two segments, 3 frontier points each.
@@ -30,18 +31,33 @@ def two_segment_allocator():
         (0, 0.8%, 1500), (1, 1.2%, 3000), (2, 2.0%, 4000)
     """
     alloc = GlobalAllocator()
-    alloc.load_frontier("A", _make_frontier([
-        (0, 0.5, 1000), (1, 1.0, 2000), (2, 1.5, 2500),
-    ]))
-    alloc.load_frontier("B", _make_frontier([
-        (0, 0.8, 1500), (1, 1.2, 3000), (2, 2.0, 4000),
-    ]))
+    alloc.load_frontier(
+        "A",
+        _make_frontier(
+            [
+                (0, 0.5, 1000),
+                (1, 1.0, 2000),
+                (2, 1.5, 2500),
+            ]
+        ),
+    )
+    alloc.load_frontier(
+        "B",
+        _make_frontier(
+            [
+                (0, 0.8, 1500),
+                (1, 1.2, 3000),
+                (2, 2.0, 4000),
+            ]
+        ),
+    )
     return alloc
 
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestExactSolver:
     def test_two_segments_exact_known_answer(self, two_segment_allocator):
@@ -75,9 +91,16 @@ class TestExactSolver:
     def test_single_segment(self):
         """Single segment: should pick the highest-production point within risk target."""
         alloc = GlobalAllocator()
-        alloc.load_frontier("only", _make_frontier([
-            (0, 0.5, 100), (1, 1.0, 200), (2, 2.0, 300),
-        ]))
+        alloc.load_frontier(
+            "only",
+            _make_frontier(
+                [
+                    (0, 0.5, 100),
+                    (1, 1.0, 200),
+                    (2, 2.0, 300),
+                ]
+            ),
+        )
         result = alloc.optimize_exact(global_risk_target=1.5)
         assert result.allocations["only"] == 1
         assert result.global_production == pytest.approx(200)
@@ -96,9 +119,15 @@ class TestExactSolver:
         """Target so low that no combination works → RuntimeError from solver,
         caught by optimize() which falls back to greedy."""
         alloc = GlobalAllocator()
-        alloc.load_frontier("A", _make_frontier([
-            (0, 2.0, 100), (1, 3.0, 200),
-        ]))
+        alloc.load_frontier(
+            "A",
+            _make_frontier(
+                [
+                    (0, 2.0, 100),
+                    (1, 3.0, 200),
+                ]
+            ),
+        )
         # Direct call to optimize_exact should raise
         with pytest.raises(RuntimeError):
             alloc.optimize_exact(global_risk_target=0.01)
@@ -106,9 +135,15 @@ class TestExactSolver:
     def test_infeasible_falls_back_to_greedy(self):
         """optimize() with method='exact' falls back to greedy on infeasible."""
         alloc = GlobalAllocator()
-        alloc.load_frontier("A", _make_frontier([
-            (0, 2.0, 100), (1, 3.0, 200),
-        ]))
+        alloc.load_frontier(
+            "A",
+            _make_frontier(
+                [
+                    (0, 2.0, 100),
+                    (1, 3.0, 200),
+                ]
+            ),
+        )
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             result = alloc.optimize(global_risk_target=0.01, method="exact")
@@ -131,12 +166,25 @@ class TestExactSolver:
         Optimal:     A=2, B=0 → risk=0.716, prod=2500
         """
         alloc = GlobalAllocator()
-        alloc.load_frontier("A", _make_frontier([
-            (0, 0.5, 100), (1, 0.8, 110), (2, 0.82, 2000),
-        ]))
-        alloc.load_frontier("B", _make_frontier([
-            (0, 0.3, 500), (1, 0.7, 800),
-        ]))
+        alloc.load_frontier(
+            "A",
+            _make_frontier(
+                [
+                    (0, 0.5, 100),
+                    (1, 0.8, 110),
+                    (2, 0.82, 2000),
+                ]
+            ),
+        )
+        alloc.load_frontier(
+            "B",
+            _make_frontier(
+                [
+                    (0, 0.3, 500),
+                    (1, 0.7, 800),
+                ]
+            ),
+        )
 
         exact = alloc.optimize_exact(global_risk_target=0.75)
         greedy = alloc.optimize_greedy(global_risk_target=0.75)
@@ -192,27 +240,48 @@ class TestDominatedPruning:
         """Points with higher risk but no production gain are removed."""
         alloc = GlobalAllocator()
         # Point (1, 1.0, 90) is dominated by point (0, 0.5, 100)
-        alloc.load_frontier("seg", _make_frontier([
-            (0, 0.5, 100), (1, 1.0, 90), (2, 1.5, 200),
-        ]))
+        alloc.load_frontier(
+            "seg",
+            _make_frontier(
+                [
+                    (0, 0.5, 100),
+                    (1, 1.0, 90),
+                    (2, 1.5, 200),
+                ]
+            ),
+        )
         assert len(alloc.frontiers["seg"]) == 2
         assert list(alloc.frontiers["seg"]["sol_fac"]) == [0, 2]
 
     def test_equal_production_pruned(self):
         """Points with same production but higher risk are pruned."""
         alloc = GlobalAllocator()
-        alloc.load_frontier("seg", _make_frontier([
-            (0, 0.5, 100), (1, 1.0, 100), (2, 1.5, 200),
-        ]))
+        alloc.load_frontier(
+            "seg",
+            _make_frontier(
+                [
+                    (0, 0.5, 100),
+                    (1, 1.0, 100),
+                    (2, 1.5, 200),
+                ]
+            ),
+        )
         assert len(alloc.frontiers["seg"]) == 2
         assert list(alloc.frontiers["seg"]["sol_fac"]) == [0, 2]
 
     def test_strictly_increasing_not_pruned(self):
         """Frontiers with strictly increasing production keep all points."""
         alloc = GlobalAllocator()
-        alloc.load_frontier("seg", _make_frontier([
-            (0, 0.5, 100), (1, 1.0, 200), (2, 1.5, 300),
-        ]))
+        alloc.load_frontier(
+            "seg",
+            _make_frontier(
+                [
+                    (0, 0.5, 100),
+                    (1, 1.0, 200),
+                    (2, 1.5, 300),
+                ]
+            ),
+        )
         assert len(alloc.frontiers["seg"]) == 3
 
 
@@ -220,6 +289,7 @@ class TestUnknownConstraintWarning:
     def test_warns_on_unknown_segment(self, two_segment_allocator):
         """Constraints referencing unknown segments produce a warning."""
         from loguru import logger
+
         messages = []
         handler_id = logger.add(lambda msg: messages.append(str(msg)))
         try:
@@ -234,6 +304,7 @@ class TestUnknownConstraintWarning:
     def test_no_warning_for_known_segments(self, two_segment_allocator):
         """Constraints for known segments don't warn."""
         from loguru import logger
+
         messages = []
         handler_id = logger.add(lambda msg: messages.append(str(msg)))
         try:
@@ -291,12 +362,14 @@ class TestAllocationResult:
             global_production=5000,
             allocations={"X": 1},
             segment_metrics={"X": {"risk": 1.0, "production": 5000}},
-            segment_details={"X": {
-                "acct_booked_h0_rep": 50,
-                "acct_booked_h0_cut": 30,
-                "oa_amt_h0_rep": 1000,
-                "oa_amt_h0_cut": 500,
-            }},
+            segment_details={
+                "X": {
+                    "acct_booked_h0_rep": 50,
+                    "acct_booked_h0_cut": 30,
+                    "oa_amt_h0_rep": 1000,
+                    "oa_amt_h0_cut": 500,
+                }
+            },
         )
         text = str(result)
         assert "Swap In" in text
@@ -319,12 +392,14 @@ class TestAllocationResult:
             global_production=5000,
             allocations={"X": 1},
             segment_metrics={"X": {"risk": 1.0, "production": 5000}},
-            segment_details={"X": {
-                "acct_booked_h0_rep": 50,
-                "acct_booked_h0_cut": 30,
-                "oa_amt_h0_rep": 1000,
-                "oa_amt_h0_cut": 500,
-            }},
+            segment_details={
+                "X": {
+                    "acct_booked_h0_rep": 50,
+                    "acct_booked_h0_cut": 30,
+                    "oa_amt_h0_rep": 1000,
+                    "oa_amt_h0_cut": 500,
+                }
+            },
         )
         df = result.to_dataframe()
         assert "acct_booked_h0_rep" in df.columns
@@ -337,10 +412,14 @@ class TestAllocationResult:
             global_production=5000,
             allocations={"X": 1},
             segment_metrics={"X": {"risk": 1.0, "production": 5000}},
-            segment_details={"X": {
-                "sol_fac": 1, "b2_ever_h6": 1.0, "oa_amt_h0": 5000,
-                "extra_col": 42,
-            }},
+            segment_details={
+                "X": {
+                    "sol_fac": 1,
+                    "b2_ever_h6": 1.0,
+                    "oa_amt_h0": 5000,
+                    "extra_col": 42,
+                }
+            },
         )
         df = result.to_full_dataframe()
         assert df.columns[0] == "segment"

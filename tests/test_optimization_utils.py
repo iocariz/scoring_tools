@@ -3,8 +3,6 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import numpy as np
-import pandas as pd
 import pytest
 from loguru import logger
 
@@ -12,7 +10,6 @@ from src.optimization_utils import (
     create_fixed_cutoff_solution,
     get_fact_sol,
 )
-
 
 # =============================================================================
 # create_fixed_cutoff_solution Tests
@@ -101,7 +98,6 @@ class TestCreateFixedCutoffSolution:
     def test_monotonicity_warning(self):
         """Test that non-monotonic cutoffs trigger warning (captured via loguru sink)."""
         from io import StringIO
-        from loguru import logger
 
         # Add a temporary sink to capture logs
         log_capture = StringIO()
@@ -134,14 +130,11 @@ class TestCreateFixedCutoffSolution:
         values_var0 = [1.0, 2.0, 3.0]
 
         with pytest.raises(ValueError, match="Non-monotonic cutoffs"):
-            create_fixed_cutoff_solution(
-                fixed_cutoffs, variables, values_var0, strict_validation=True
-            )
+            create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0, strict_validation=True)
 
     def test_monotonicity_inverted(self):
         """Test monotonicity with inv_var1=True (cutoffs should decrease)."""
         from io import StringIO
-        from loguru import logger
 
         log_capture = StringIO()
         handler_id = logger.add(log_capture, format="{message}", level="WARNING")
@@ -155,9 +148,7 @@ class TestCreateFixedCutoffSolution:
             variables = ["var0", "var1"]
             values_var0 = [1.0, 2.0, 3.0]
 
-            result = create_fixed_cutoff_solution(
-                fixed_cutoffs, variables, values_var0, inv_var1=True
-            )
+            result = create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0, inv_var1=True)
 
             assert len(result) == 1
             log_output = log_capture.getvalue()
@@ -169,7 +160,6 @@ class TestCreateFixedCutoffSolution:
     def test_monotonicity_inverted_valid(self):
         """Test valid monotonicity with inv_var1=True."""
         from io import StringIO
-        from loguru import logger
 
         log_capture = StringIO()
         handler_id = logger.add(log_capture, format="{message}", level="WARNING")
@@ -183,9 +173,7 @@ class TestCreateFixedCutoffSolution:
             variables = ["var0", "var1"]
             values_var0 = [1.0, 2.0, 3.0]
 
-            result = create_fixed_cutoff_solution(
-                fixed_cutoffs, variables, values_var0, inv_var1=True
-            )
+            result = create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0, inv_var1=True)
 
             assert len(result) == 1
             log_output = log_capture.getvalue()
@@ -196,7 +184,6 @@ class TestCreateFixedCutoffSolution:
     def test_data_bounds_warning(self):
         """Test warning when cutoffs are outside data range."""
         from io import StringIO
-        from loguru import logger
 
         log_capture = StringIO()
         handler_id = logger.add(log_capture, format="{message}", level="WARNING")
@@ -210,9 +197,7 @@ class TestCreateFixedCutoffSolution:
             values_var0 = [1.0, 2.0, 3.0]
             values_var1 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
-            result = create_fixed_cutoff_solution(
-                fixed_cutoffs, variables, values_var0, values_var1=values_var1
-            )
+            result = create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0, values_var1=values_var1)
 
             assert len(result) == 1
             log_output = log_capture.getvalue()
@@ -250,9 +235,7 @@ class TestCreateFixedCutoffSolution:
         values_var0 = [1.0, 2.0, 4.0]  # 4.0 instead of 3.0
 
         with pytest.raises(ValueError, match="don't exactly match"):
-            create_fixed_cutoff_solution(
-                fixed_cutoffs, variables, values_var0, strict_validation=True
-            )
+            create_fixed_cutoff_solution(fixed_cutoffs, variables, values_var0, strict_validation=True)
 
     def test_valid_monotonic_cutoffs(self):
         """Test that valid monotonic cutoffs don't trigger warnings."""

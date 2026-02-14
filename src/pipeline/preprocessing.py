@@ -5,9 +5,8 @@ from loguru import logger
 
 from src.config import PreprocessingSettings
 from src.data_quality import run_data_quality_checks
-from src.plots import plot_risk_vs_production
+from src.plots import calculate_and_plot_transformation_rate, plot_risk_vs_production
 from src.preprocess_improved import PreprocessingConfig, complete_preprocessing_pipeline
-from src.plots import calculate_and_plot_transformation_rate
 from src.utils import calculate_stress_factor
 
 
@@ -27,7 +26,9 @@ def convert_bins(bins: list[float]) -> list[float]:
 
 
 def run_preprocessing_phase(
-    data: pd.DataFrame, settings: PreprocessingSettings, skip_dq_checks: bool,
+    data: pd.DataFrame,
+    settings: PreprocessingSettings,
+    skip_dq_checks: bool,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, float, float] | None:
     """Run data quality checks, preprocessing pipeline, and compute derived metrics.
 

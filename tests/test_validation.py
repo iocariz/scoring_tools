@@ -23,7 +23,7 @@ class TestPreprocessorSettings:
             "multiplier": 7.0,
             "z_threshold": 3.0,
             "date_ini_book_obs_mr": "2024-01-01",
-            "date_fin_book_obs_mr": "2024-06-30"
+            "date_fin_book_obs_mr": "2024-06-30",
         }
 
     def test_valid_config_passes(self, valid_config_dict):
@@ -83,11 +83,7 @@ class TestDataValidation:
 
     @pytest.fixture
     def sample_data(self):
-        return pd.DataFrame({
-            "col1": [1, 2, 3],
-            "col2": ["a", "b", "c"],
-            "col3": [10.0, 20.0, 30.0]
-        })
+        return pd.DataFrame({"col1": [1, 2, 3], "col2": ["a", "b", "c"], "col3": [10.0, 20.0, 30.0]})
 
     def test_all_columns_present(self, sample_data):
         assert validate_data_columns(sample_data, ["col1", "col3"]) == []

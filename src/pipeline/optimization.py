@@ -8,14 +8,14 @@ from src.audit import save_audit_tables
 from src.config import PreprocessingSettings
 from src.inference_optimized import run_optimization_pipeline
 from src.mr_pipeline import process_mr_period
-from src.plots import RiskProductionVisualizer
-from src.preprocess_improved import filter_by_date
 from src.optimization_utils import (
     create_fixed_cutoff_solution,
     get_fact_sol,
     get_optimal_solutions,
     kpi_of_fact_sol,
 )
+from src.plots import RiskProductionVisualizer
+from src.preprocess_improved import filter_by_date
 from src.utils import (
     calculate_annual_coef,
     calculate_b2_ever_h6,
@@ -112,12 +112,16 @@ def run_optimization_phase(
         if len(data_summary) > 0:
             row = data_summary.iloc[0]
             production = row.get("oa_amt_h0", 0)
-            total_demand = data_summary_desagregado["oa_amt_h0"].sum() if "oa_amt_h0" in data_summary_desagregado.columns else 0
+            total_demand = (
+                data_summary_desagregado["oa_amt_h0"].sum() if "oa_amt_h0" in data_summary_desagregado.columns else 0
+            )
             acceptance_rate = (production / total_demand * 100) if total_demand > 0 else 0
             risk_str = ""
             if "todu_30ever_h6" in row and "todu_amt_pile_h6" in row:
                 multiplier = settings.multiplier
-                risk = calculate_b2_ever_h6(row["todu_30ever_h6"], row["todu_amt_pile_h6"], multiplier=multiplier, as_percentage=True)
+                risk = calculate_b2_ever_h6(
+                    row["todu_30ever_h6"], row["todu_amt_pile_h6"], multiplier=multiplier, as_percentage=True
+                )
                 risk_str = f" | risk={risk:.4f}%"
             logger.info(
                 f"[{segment}] Fixed cutoff preview | "
@@ -243,7 +247,7 @@ def run_scenario_analysis(
     # Calculate confidence intervals (moved before saving summary table)
     # Extract optimal solution for CI calculation
     opt_sol = visualizer.get_selected_solution()
-    
+
     # Create mapping of cuts from optimal solution
     cut_map = {}
     row = opt_sol.iloc[0]
@@ -251,8 +255,8 @@ def run_scenario_analysis(
         if bin_val in row:
             cut_map[float(bin_val)] = float(row[bin_val])
         elif str(bin_val) in row:
-             cut_map[float(bin_val)] = float(row[str(bin_val)])
-    
+            cut_map[float(bin_val)] = float(row[str(bin_val)])
+
     ci_data = calculate_bootstrap_intervals(
         data_booked=data_booked,
         cut_map=cut_map,
@@ -263,13 +267,13 @@ def run_scenario_analysis(
     logger.info(f"[{segment}] Scenario {scenario_name} CI: {ci_data}")
 
     summary_table = visualizer.get_summary_table()
-    
+
     # Add CI columns to summary table (only for Optimum selected row)
     summary_table["production_ci_lower"] = 0.0
     summary_table["production_ci_upper"] = 0.0
     summary_table["risk_ci_lower"] = 0.0
     summary_table["risk_ci_upper"] = 0.0
-    
+
     if ci_data:
         mask_opt = summary_table["Metric"] == "Optimum selected"
         if mask_opt.any():
@@ -294,8 +298,6 @@ def run_scenario_analysis(
 
     # Calculate confidence intervals (Already done above)
     # cut_map logic removed as it's duped
-    
-
 
     # Generate cutoff summary for this scenario
     cutoff_summary = generate_cutoff_summary(
@@ -363,19 +365,11 @@ def run_scenario_analysis(
     # Calculate n_months for each period (for annualization)
     date_ini_main = settings.get_date("date_ini_book_obs")
     date_fin_main = settings.get_date("date_fin_book_obs")
-    n_months_main = (
-        (date_fin_main.year - date_ini_main.year) * 12
-        + (date_fin_main.month - date_ini_main.month)
-        + 1
-    )
+    n_months_main = (date_fin_main.year - date_ini_main.year) * 12 + (date_fin_main.month - date_ini_main.month) + 1
 
     date_ini_mr = settings.get_date("date_ini_book_obs_mr")
     date_fin_mr = settings.get_date("date_fin_book_obs_mr")
-    n_months_mr = (
-        (date_fin_mr.year - date_ini_mr.year) * 12
-        + (date_fin_mr.month - date_ini_mr.month)
-        + 1
-    )
+    n_months_mr = (date_fin_mr.year - date_ini_mr.year) * 12 + (date_fin_mr.month - date_ini_mr.month) + 1
 
     save_audit_tables(
         data_main=data_main_period,

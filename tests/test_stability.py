@@ -77,9 +77,7 @@ class TestPSIResult:
 
 class TestStabilityReport:
     def _make_report(self):
-        report = StabilityReport(
-            baseline_name="Main", comparison_name="MR", baseline_count=1000, comparison_count=500
-        )
+        report = StabilityReport(baseline_name="Main", comparison_name="MR", baseline_count=1000, comparison_count=500)
         report.add(PSIResult("v1", 0.01, StabilityStatus.STABLE, 10, pd.DataFrame()))
         report.add(PSIResult("v2", 0.15, StabilityStatus.MODERATE, 10, pd.DataFrame()))
         report.add(PSIResult("v3", 0.30, StabilityStatus.UNSTABLE, 10, pd.DataFrame()))
@@ -234,12 +232,8 @@ class TestCalculatePsiForVariable:
 class TestCalculateStabilityReport:
     def test_basic_report(self):
         np.random.seed(42)
-        baseline_df = pd.DataFrame(
-            {"score": np.random.normal(0, 1, 200), "amount": np.random.exponential(1000, 200)}
-        )
-        comparison_df = pd.DataFrame(
-            {"score": np.random.normal(0, 1, 200), "amount": np.random.exponential(1000, 200)}
-        )
+        baseline_df = pd.DataFrame({"score": np.random.normal(0, 1, 200), "amount": np.random.exponential(1000, 200)})
+        comparison_df = pd.DataFrame({"score": np.random.normal(0, 1, 200), "amount": np.random.exponential(1000, 200)})
         report = calculate_stability_report(baseline_df, comparison_df, ["score", "amount"])
         assert isinstance(report, StabilityReport)
         assert len(report.psi_results) == 2
@@ -250,9 +244,7 @@ class TestCalculateStabilityReport:
         np.random.seed(42)
         baseline_df = pd.DataFrame({"score": np.random.normal(0, 1, 200)})
         comparison_df = pd.DataFrame({"score": np.random.normal(0, 1, 200)})
-        report = calculate_stability_report(
-            baseline_df, comparison_df, ["score"], score_variable="score"
-        )
+        report = calculate_stability_report(baseline_df, comparison_df, ["score"], score_variable="score")
         assert report.overall_psi is not None
 
     def test_skips_missing_variable(self):
@@ -270,15 +262,9 @@ class TestCalculateStabilityReport:
 
     def test_custom_bins_per_variable(self):
         np.random.seed(42)
-        baseline_df = pd.DataFrame(
-            {"score": np.random.normal(0, 1, 100), "amt": np.random.exponential(100, 100)}
-        )
-        comparison_df = pd.DataFrame(
-            {"score": np.random.normal(0, 1, 100), "amt": np.random.exponential(100, 100)}
-        )
-        report = calculate_stability_report(
-            baseline_df, comparison_df, ["score", "amt"], bins={"score": 5, "amt": 8}
-        )
+        baseline_df = pd.DataFrame({"score": np.random.normal(0, 1, 100), "amt": np.random.exponential(100, 100)})
+        comparison_df = pd.DataFrame({"score": np.random.normal(0, 1, 100), "amt": np.random.exponential(100, 100)})
+        report = calculate_stability_report(baseline_df, comparison_df, ["score", "amt"], bins={"score": 5, "amt": 8})
         assert len(report.psi_results) == 2
 
 

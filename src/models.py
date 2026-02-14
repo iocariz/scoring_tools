@@ -20,7 +20,7 @@ from loguru import logger
 from sklearn import tree as sktree
 from sklearn.tree import DecisionTreeClassifier
 
-from .constants import Columns, DEFAULT_MIN_SAMPLES_LEAF, DEFAULT_RISK_MULTIPLIER, SCORE_SCALE_MAX, StatusName
+from .constants import DEFAULT_MIN_SAMPLES_LEAF, SCORE_SCALE_MAX, Columns, StatusName
 from .utils import calculate_todu_30ever_from_b2
 
 

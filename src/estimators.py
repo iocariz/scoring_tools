@@ -190,9 +190,7 @@ class TweedieGLM(BaseEstimator, RegressorMixin):
         """
         from sklearn.linear_model import TweedieRegressor
 
-        self.regressor_ = TweedieRegressor(
-            power=self.power, alpha=self.alpha, link=self.link, max_iter=self.max_iter
-        )
+        self.regressor_ = TweedieRegressor(power=self.power, alpha=self.alpha, link=self.link, max_iter=self.max_iter)
         self.regressor_.fit(X, y, sample_weight=sample_weight)
         return self
 

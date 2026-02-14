@@ -55,10 +55,19 @@ def main():
     parser.add_argument("--data-dir", type=str, default="data", help="Directory containing frontier CSVs")
     parser.add_argument("--output", type=str, default="allocation_results.csv", help="Output file path")
     parser.add_argument("--scenario", type=str, default="base", help="Scenario to filter files by (default: base)")
-    parser.add_argument("--method", type=str, choices=["exact", "greedy"], default="exact",
-                        help="Optimization method: exact (MILP) or greedy (default: exact)")
-    parser.add_argument("--segments-config", type=str, default="segments.toml",
-                        help="Path to segments config file (default: segments.toml)")
+    parser.add_argument(
+        "--method",
+        type=str,
+        choices=["exact", "greedy"],
+        default="exact",
+        help="Optimization method: exact (MILP) or greedy (default: exact)",
+    )
+    parser.add_argument(
+        "--segments-config",
+        type=str,
+        default="segments.toml",
+        help="Path to segments config file (default: segments.toml)",
+    )
 
     args = parser.parse_args()
 
@@ -99,6 +108,7 @@ def main():
 
     result.to_full_dataframe().to_csv(args.output, index=False)
     logger.info(f"Allocation saved to {args.output}")
+
 
 if __name__ == "__main__":
     main()

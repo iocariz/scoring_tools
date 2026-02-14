@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 class PreprocessingSettings(BaseModel):
     """Configuration for preprocessing and overall pipeline settings."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # Required fields
@@ -89,24 +90,23 @@ class PreprocessingSettings(BaseModel):
                 f"Invalid main observation period: start date ({start.date()}) is after end date ({end.date()})"
             )
 
-
         # MR period validation check consistency
         has_mr_ini = self.date_ini_book_obs_mr is not None
         has_mr_fin = self.date_fin_book_obs_mr is not None
 
         if has_mr_ini != has_mr_fin:
-             # In pydantic v2 model validators we can just log a warning via standard logging
-             # or we can decide to be stricter. The original code only warned.
-             # For a "Settings" class, simple consistency is better.
-             # Let's verify if we want to enforce both or neither.
-             # The original code just appended a warning.
-             # We will leave it as is but note it.
-             pass
+            # In pydantic v2 model validators we can just log a warning via standard logging
+            # or we can decide to be stricter. The original code only warned.
+            # For a "Settings" class, simple consistency is better.
+            # Let's verify if we want to enforce both or neither.
+            # The original code just appended a warning.
+            # We will leave it as is but note it.
+            pass
 
         if has_mr_ini and has_mr_fin:
-             start_mr = pd.to_datetime(self.date_ini_book_obs_mr, dayfirst=False)
-             end_mr = pd.to_datetime(self.date_fin_book_obs_mr, dayfirst=False)
-             if start_mr > end_mr:
+            start_mr = pd.to_datetime(self.date_ini_book_obs_mr, dayfirst=False)
+            end_mr = pd.to_datetime(self.date_fin_book_obs_mr, dayfirst=False)
+            if start_mr > end_mr:
                 raise ValueError(
                     f"Invalid MR period: start date ({start_mr.date()}) is after end date ({end_mr.date()})"
                 )

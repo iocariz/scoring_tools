@@ -20,7 +20,7 @@ import plotly.graph_objects as go
 from loguru import logger
 
 from src import styles
-from src.constants import DEFAULT_RISK_MULTIPLIER, PSI_UNSTABLE_THRESHOLD, StatusName
+from src.constants import PSI_UNSTABLE_THRESHOLD, StatusName
 from src.inference_optimized import run_optimization_pipeline
 from src.models import calculate_B2
 from src.preprocess_improved import filter_by_date

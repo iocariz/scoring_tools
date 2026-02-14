@@ -97,10 +97,17 @@ def main(
             return data_clean, data_booked, data_demand, risk_inference, reg_todu_amt_pile
 
         # Step 5: Optimization (feasible solutions, KPIs, Pareto front)
-        (data_summary_desagregado, data_summary, data_summary_sample_no_opt,
-         values_var0, values_var1) = run_optimization_phase(
-            data_booked, data_demand, risk_inference, reg_todu_amt_pile,
-            stress_factor, tasa_fin, settings, annual_coef,
+        (data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_var0, values_var1) = (
+            run_optimization_phase(
+                data_booked,
+                data_demand,
+                risk_inference,
+                reg_todu_amt_pile,
+                stress_factor,
+                tasa_fin,
+                settings,
+                annual_coef,
+            )
         )
 
         # Step 6: Scenario analysis loop
@@ -111,7 +118,8 @@ def main(
         cutoff_summaries = []
         for scenario_risk, scenario_name in scenarios:
             summary = run_scenario_analysis(
-                scenario_risk, scenario_name,
+                scenario_risk,
+                scenario_name,
                 data_summary=data_summary,
                 data_summary_desagregado=data_summary_desagregado,
                 data_summary_sample_no_opt=data_summary_sample_no_opt,
@@ -151,9 +159,7 @@ def main(
                 anomaly_months = anomalies[anomalies["is_anomaly"]]
                 if not anomaly_months.empty:
                     anomalies.to_csv(f"data/trend_anomalies_{segment}.csv")
-                    logger.warning(
-                        f"[{segment}] Trend anomalies detected in {len(anomaly_months)} month(s)"
-                    )
+                    logger.warning(f"[{segment}] Trend anomalies detected in {len(anomaly_months)} month(s)")
                 else:
                     logger.info(f"[{segment}] No trend anomalies detected")
             else:

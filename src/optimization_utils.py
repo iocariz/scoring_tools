@@ -7,7 +7,6 @@ calculating KPIs, and finding Pareto-optimal cutoffs.
 
 import gc
 from itertools import combinations_with_replacement
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -31,8 +30,7 @@ def _build_cutoff_dataframe(
         cutoff_val = bin_to_cutoff.get(float(bin_val))
         if cutoff_val is None:
             raise ValueError(
-                f"No cutoff defined for bin {bin_val}. "
-                f"Fixed cutoffs must cover all data bins: {list(values_var0)}"
+                f"No cutoff defined for bin {bin_val}. Fixed cutoffs must cover all data bins: {list(values_var0)}"
             )
         solution_data[bin_val] = [cutoff_val]
 
@@ -48,9 +46,7 @@ def _validate_cutoff_dict_structure(
     var1_name = variables[1]
 
     if var0_name not in fixed_cutoffs or var1_name not in fixed_cutoffs:
-        raise ValueError(
-            f"fixed_cutoffs must contain both variables: {variables}. Got: {list(fixed_cutoffs.keys())}"
-        )
+        raise ValueError(f"fixed_cutoffs must contain both variables: {variables}. Got: {list(fixed_cutoffs.keys())}")
 
     var0_bins = fixed_cutoffs[var0_name]
     var1_cutoffs = fixed_cutoffs[var1_name]
@@ -74,9 +70,7 @@ def _validate_bins_match_data(
     var0_bins_set = {float(v) for v in var0_bins}
 
     if var0_bins_set != values_var0_set:
-        msg = (
-            f"Fixed cutoff bins {sorted(var0_bins_set)} don't exactly match data bins {sorted(values_var0_set)}. "
-        )
+        msg = f"Fixed cutoff bins {sorted(var0_bins_set)} don't exactly match data bins {sorted(values_var0_set)}. "
         if strict_validation:
             raise ValueError(msg + "Enable strict_validation=False to proceed anyway.")
         logger.warning(msg + "Proceeding with provided cutoffs.")
@@ -126,9 +120,7 @@ def _validate_cutoff_range(
         return
 
     min_var1, max_var1 = min(values_var1), max(values_var1)
-    out_of_range = [
-        cutoff for cutoff in var1_cutoffs if cutoff < min_var1 or cutoff > max_var1
-    ]
+    out_of_range = [cutoff for cutoff in var1_cutoffs if cutoff < min_var1 or cutoff > max_var1]
     if out_of_range:
         msg = (
             f"Cutoff values {out_of_range} are outside data range [{min_var1}, {max_var1}]. "
@@ -271,45 +263,29 @@ def process_kpi_chunk(
     chunk_melt[variables[0]] = chunk_melt[variables[0]].astype(float)
 
     # Get distinct combinations
-    chunk_distinct = chunk_melt.drop_duplicates(
-        subset=[variables[0], f"{variables[1]}_lim"]
-    )[[variables[0], f"{variables[1]}_lim"]]
+    chunk_distinct = chunk_melt.drop_duplicates(subset=[variables[0], f"{variables[1]}_lim"])[
+        [variables[0], f"{variables[1]}_lim"]
+    ]
 
     # Merge with summary data
-    data_sumary = chunk_distinct.merge(
-        data_sumary_desagregado, how="left", on=variables[0]
-    )
+    data_sumary = chunk_distinct.merge(data_sumary_desagregado, how="left", on=variables[0])
 
     # Apply filters
     if inv_var1:
-        data_sumary = data_sumary[
-            data_sumary[variables[1]] > data_sumary[f"{variables[1]}_lim"]
-        ]
+        data_sumary = data_sumary[data_sumary[variables[1]] > data_sumary[f"{variables[1]}_lim"]]
     else:
-        data_sumary = data_sumary[
-            data_sumary[variables[1]] <= data_sumary[f"{variables[1]}_lim"]
-        ]
+        data_sumary = data_sumary[data_sumary[variables[1]] <= data_sumary[f"{variables[1]}_lim"]]
 
     # Identify numeric columns for aggregation
     numeric_cols = data_sumary.select_dtypes(include=[np.number]).columns
-    agg_dict = {
-        col: "sum"
-        for col in numeric_cols
-        if col not in [variables[0], f"{variables[1]}_lim"]
-    }
+    agg_dict = {col: "sum" for col in numeric_cols if col not in [variables[0], f"{variables[1]}_lim"]}
 
     # Group and aggregate
-    data_sumary = (
-        data_sumary.groupby([variables[0], f"{variables[1]}_lim"])
-        .agg(agg_dict)
-        .reset_index()
-    )
+    data_sumary = data_sumary.groupby([variables[0], f"{variables[1]}_lim"]).agg(agg_dict).reset_index()
 
     # Merge back with chunk data and aggregate by solution
     chunk_result = (
-        chunk_melt.merge(
-            data_sumary, how="left", on=[variables[0], f"{variables[1]}_lim"]
-        )
+        chunk_melt.merge(data_sumary, how="left", on=[variables[0], f"{variables[1]}_lim"])
         .fillna(0)
         .groupby("sol_fac", observed=True)
         .agg(agg_dict)
@@ -360,16 +336,12 @@ def kpi_of_fact_sol(
         logger.info("--Calculating KPIs for feasible solutions")
 
         # Prepare chunks
-        chunks = [
-            df_v.iloc[i : i + chunk_size] for i in range(0, len(df_v), chunk_size)
-        ]
+        chunks = [df_v.iloc[i : i + chunk_size] for i in range(0, len(df_v), chunk_size)]
 
         # Parallel Processing
         # n_jobs=-1 uses all available cores
         chunks_results = Parallel(n_jobs=-1)(
-            delayed(process_kpi_chunk)(
-                chunk, values_var0, data_sumary_desagregado, variables, inv_var1
-            )
+            delayed(process_kpi_chunk)(chunk, values_var0, data_sumary_desagregado, variables, inv_var1)
             for chunk in tqdm(chunks, desc="Processing chunks (Parallel)")
         )
 
@@ -383,9 +355,7 @@ def kpi_of_fact_sol(
         gc.collect()
 
         # Group combined results
-        final_result = (
-            final_result.groupby("sol_fac", observed=True).sum().reset_index()
-        )
+        final_result = final_result.groupby("sol_fac", observed=True).sum().reset_index()
 
         # Calculate cut metrics
         for kpi in indicadores:
@@ -413,9 +383,7 @@ def kpi_of_fact_sol(
         raise
 
 
-def process_optimal_chunk(
-    df_chunk: pd.DataFrame, data_sumary: pd.DataFrame
-) -> pd.DataFrame | None:
+def process_optimal_chunk(df_chunk: pd.DataFrame, data_sumary: pd.DataFrame) -> pd.DataFrame | None:
     """Process a chunk for optimal solution finding"""
     chunk_result = df_chunk.merge(data_sumary, how="inner", on="sol_fac")
 
@@ -424,9 +392,7 @@ def process_optimal_chunk(
     return chunk_result
 
 
-def get_optimal_solutions(
-    df_v: pd.DataFrame, data_sumary: pd.DataFrame, chunk_size: int = 1000
-) -> pd.DataFrame:
+def get_optimal_solutions(df_v: pd.DataFrame, data_sumary: pd.DataFrame, chunk_size: int = 1000) -> pd.DataFrame:
     """Memory-optimized version of get_optimal_solutions with parallel processing"""
     try:
         logger.info("--Getting optimal solutions")
@@ -448,9 +414,7 @@ def get_optimal_solutions(
         data_sumary = data_sumary[data_sumary["optimal"]].drop(columns=["optimal"])
 
         # Merge in chunks
-        chunks = [
-            df_v.iloc[i : i + chunk_size] for i in range(0, len(df_v), chunk_size)
-        ]
+        chunks = [df_v.iloc[i : i + chunk_size] for i in range(0, len(df_v), chunk_size)]
 
         # Parallel Processing
         chunks_results = Parallel(n_jobs=-1)(

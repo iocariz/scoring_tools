@@ -24,7 +24,7 @@ class AllocationResult:
     global_risk: float
     global_production: float
     allocations: dict[str, int]  # segment_name -> solution_id (sol_fac)
-    segment_metrics: dict[str, dict[str, float]] # segment_name -> {risk, production}
+    segment_metrics: dict[str, dict[str, float]]  # segment_name -> {risk, production}
     method: str = ""
     target: float | None = None
     segment_details: dict[str, dict] = field(default_factory=dict)  # full frontier row per segment
@@ -32,17 +32,23 @@ class AllocationResult:
     def to_dataframe(self) -> pd.DataFrame:
         """Return a DataFrame with allocation summary and swap details per segment."""
         detail_cols = [
-            'acct_booked_h0_boo', 'acct_booked_h0_rep', 'acct_booked_h0_cut',
-            'oa_amt_h0_boo', 'oa_amt_h0_rep', 'oa_amt_h0_cut',
-            'b2_ever_h6_boo', 'b2_ever_h6_rep', 'b2_ever_h6_cut',
+            "acct_booked_h0_boo",
+            "acct_booked_h0_rep",
+            "acct_booked_h0_cut",
+            "oa_amt_h0_boo",
+            "oa_amt_h0_rep",
+            "oa_amt_h0_cut",
+            "b2_ever_h6_boo",
+            "b2_ever_h6_rep",
+            "b2_ever_h6_cut",
         ]
         rows = []
         for seg, metrics in self.segment_metrics.items():
             row = {
-                'segment': seg,
-                'risk': metrics['risk'],
-                'production': metrics['production'],
-                'sol_fac': self.allocations[seg],
+                "segment": seg,
+                "risk": metrics["risk"],
+                "production": metrics["production"],
+                "sol_fac": self.allocations[seg],
             }
             details = self.segment_details.get(seg, {})
             for col in detail_cols:
@@ -56,13 +62,13 @@ class AllocationResult:
         rows = []
         for seg in sorted(self.segment_details):
             row = dict(self.segment_details[seg])
-            row['segment'] = seg
+            row["segment"] = seg
             rows.append(row)
         if not rows:
             return self.to_dataframe()
         df = pd.DataFrame(rows)
         # Move segment to first column
-        cols = ['segment'] + [c for c in df.columns if c != 'segment']
+        cols = ["segment"] + [c for c in df.columns if c != "segment"]
         return df[cols]
 
     def __str__(self) -> str:
@@ -81,33 +87,22 @@ class AllocationResult:
         lines.append("-" * 90)
         for seg in sorted(self.segment_metrics):
             m = self.segment_metrics[seg]
-            lines.append(
-                f"{seg:<25} {m['risk']:>9.3f}% {m['production']:>15,.0f} {self.allocations[seg]:>8}"
-            )
+            lines.append(f"{seg:<25} {m['risk']:>9.3f}% {m['production']:>15,.0f} {self.allocations[seg]:>8}")
 
         # Swap details (only if segment_details are populated with swap columns)
-        has_swap = any(
-            'acct_booked_h0_rep' in d or 'acct_booked_h0_cut' in d
-            for d in self.segment_details.values()
-        )
+        has_swap = any("acct_booked_h0_rep" in d or "acct_booked_h0_cut" in d for d in self.segment_details.values())
         if has_swap:
             lines.append("")
             lines.append("-" * 90)
-            lines.append(
-                f"{'Segment':<25} {'Swap In':>10} {'Swap Out':>10} "
-                f"{'Prod Swap In':>15} {'Prod Swap Out':>15}"
-            )
+            lines.append(f"{'Segment':<25} {'Swap In':>10} {'Swap Out':>10} {'Prod Swap In':>15} {'Prod Swap Out':>15}")
             lines.append("-" * 90)
             for seg in sorted(self.segment_details):
                 d = self.segment_details[seg]
-                si = d.get('acct_booked_h0_rep', 0)
-                so = d.get('acct_booked_h0_cut', 0)
-                si_prod = d.get('oa_amt_h0_rep', 0)
-                so_prod = d.get('oa_amt_h0_cut', 0)
-                lines.append(
-                    f"{seg:<25} {si:>10,.0f} {so:>10,.0f} "
-                    f"{si_prod:>15,.0f} {so_prod:>15,.0f}"
-                )
+                si = d.get("acct_booked_h0_rep", 0)
+                so = d.get("acct_booked_h0_cut", 0)
+                si_prod = d.get("oa_amt_h0_rep", 0)
+                so_prod = d.get("oa_amt_h0_cut", 0)
+                lines.append(f"{seg:<25} {si:>10,.0f} {so:>10,.0f} {si_prod:>15,.0f} {so_prod:>15,.0f}")
 
         lines.append("=" * 90)
         return "\n".join(lines)
@@ -124,15 +119,15 @@ class GlobalAllocator:
 
         Dominated points (higher risk without higher production) are pruned.
         """
-        required_cols = ['sol_fac', 'b2_ever_h6', 'oa_amt_h0']
+        required_cols = ["sol_fac", "b2_ever_h6", "oa_amt_h0"]
         if not all(col in frontier_df.columns for col in required_cols):
             raise ValueError(f"Frontier for {segment_name} missing required columns: {required_cols}")
 
         # Sort by risk ascending
-        sorted_df = frontier_df.sort_values('b2_ever_h6').reset_index(drop=True)
+        sorted_df = frontier_df.sort_values("b2_ever_h6").reset_index(drop=True)
 
         # Prune dominated points: keep only strictly increasing production
-        prod = sorted_df['oa_amt_h0']
+        prod = sorted_df["oa_amt_h0"]
         cummax = prod.cummax()
         pareto_mask = cummax != cummax.shift(1)
         pareto_mask.iloc[0] = True
@@ -221,7 +216,7 @@ class GlobalAllocator:
         for seg in segments:
             df = self.frontiers[seg]
             off = var_offset[seg]
-            c[off : off + len(df)] = -df['oa_amt_h0'].values
+            c[off : off + len(df)] = -df["oa_amt_h0"].values
 
         # All variables are binary
         integrality = np.ones(n_vars)
@@ -248,7 +243,7 @@ class GlobalAllocator:
             df = self.frontiers[seg]
             off = var_offset[seg]
             k = len(df)
-            coeffs = df['oa_amt_h0'].values * (df['b2_ever_h6'].values - global_risk_target)
+            coeffs = df["oa_amt_h0"].values * (df["b2_ever_h6"].values - global_risk_target)
             ub_rows.extend([0] * k)
             ub_cols.extend(range(off, off + k))
             ub_data.extend(coeffs.tolist())
@@ -263,7 +258,7 @@ class GlobalAllocator:
                 df = self.frontiers[seg]
                 off = var_offset[seg]
                 k = len(df)
-                risks = df['b2_ever_h6'].values
+                risks = df["b2_ever_h6"].values
 
                 # min_r ≤ Σ r[s,j]*x[s,j]  →  -Σ r[s,j]*x[s,j] ≤ -min_r
                 ub_rows.extend([row_idx] * k)
@@ -314,10 +309,10 @@ class GlobalAllocator:
             chosen = int(np.argmax(seg_x))
             row = df.iloc[chosen]
 
-            allocations[seg] = int(row['sol_fac'])
-            prod = row['oa_amt_h0']
-            risk = row['b2_ever_h6']
-            segment_metrics[seg] = {'risk': risk, 'production': prod}
+            allocations[seg] = int(row["sol_fac"])
+            prod = row["oa_amt_h0"]
+            risk = row["b2_ever_h6"]
+            segment_metrics[seg] = {"risk": risk, "production": prod}
             segment_details[seg] = row.to_dict()
             total_prod += prod
             total_risk_num += risk * prod
@@ -361,7 +356,7 @@ class GlobalAllocator:
                 if seg in self.frontiers:
                     # Find first solution >= min_r
                     df = self.frontiers[seg]
-                    valid_idx = df[df['b2_ever_h6'] >= min_r].index
+                    valid_idx = df[df["b2_ever_h6"] >= min_r].index
                     if not valid_idx.empty:
                         current_indices[seg] = valid_idx[0]
                     else:
@@ -381,8 +376,8 @@ class GlobalAllocator:
 
             for seg, idx in current_indices.items():
                 row = self.frontiers[seg].iloc[idx]
-                prod = row['oa_amt_h0']
-                risk = row['b2_ever_h6']
+                prod = row["oa_amt_h0"]
+                risk = row["b2_ever_h6"]
 
                 total_production += prod
                 weighted_risk_num += risk * prod
@@ -396,7 +391,7 @@ class GlobalAllocator:
             is_recovery_mode = current_global_risk > global_risk_target
 
             # Find best next step
-            best_score = -float('inf')
+            best_score = -float("inf")
             best_segment_to_increment = None
 
             for seg in sorted(self.frontiers.keys()):
@@ -411,24 +406,24 @@ class GlobalAllocator:
                 # Check max_risk constraint per segment
                 if risk_constraints and seg in risk_constraints:
                     _, max_r = risk_constraints[seg]
-                    if next_row['b2_ever_h6'] > max_r:
+                    if next_row["b2_ever_h6"] > max_r:
                         continue
 
                 # Calculate deltas
                 curr_row = df.iloc[idx]
-                delta_p = next_row['oa_amt_h0'] - curr_row['oa_amt_h0']
+                delta_p = next_row["oa_amt_h0"] - curr_row["oa_amt_h0"]
 
-                risk_mass_next = next_row['b2_ever_h6'] * next_row['oa_amt_h0']
-                risk_mass_curr = curr_row['b2_ever_h6'] * curr_row['oa_amt_h0']
+                risk_mass_next = next_row["b2_ever_h6"] * next_row["oa_amt_h0"]
+                risk_mass_curr = curr_row["b2_ever_h6"] * curr_row["oa_amt_h0"]
                 delta_risk_mass = risk_mass_next - risk_mass_curr
 
                 if delta_p > 1e-9:
                     marginal_risk = delta_risk_mass / delta_p
                 else:
                     if delta_risk_mass < 0:
-                         marginal_risk = -float('inf')
+                        marginal_risk = -float("inf")
                     else:
-                         marginal_risk = float('inf')
+                        marginal_risk = float("inf")
 
                 if is_recovery_mode:
                     if marginal_risk < current_global_risk:
@@ -444,7 +439,7 @@ class GlobalAllocator:
 
                     if new_global_risk <= global_risk_target:
                         if delta_risk_mass <= 1e-9:
-                            score = float('inf')
+                            score = float("inf")
                         else:
                             score = delta_p / delta_risk_mass
 
@@ -454,7 +449,9 @@ class GlobalAllocator:
 
             if best_segment_to_increment is None:
                 if is_recovery_mode:
-                    logger.warning(f"Optimization stopped: Cannot reduce risk below {current_global_risk:.4f}% (Target: {global_risk_target}%). Stuck at local minimum.")
+                    logger.warning(
+                        f"Optimization stopped: Cannot reduce risk below {current_global_risk:.4f}% (Target: {global_risk_target}%). Stuck at local minimum."
+                    )
                 else:
                     logger.info("Optimization stopped: Target reached or no efficient moves left.")
                 break
@@ -474,14 +471,11 @@ class GlobalAllocator:
 
         for seg, idx in current_indices.items():
             row = self.frontiers[seg].iloc[idx]
-            allocations[seg] = int(row['sol_fac'])
-            segment_metrics[seg] = {
-                'risk': row['b2_ever_h6'],
-                'production': row['oa_amt_h0']
-            }
+            allocations[seg] = int(row["sol_fac"])
+            segment_metrics[seg] = {"risk": row["b2_ever_h6"], "production": row["oa_amt_h0"]}
             segment_details[seg] = row.to_dict()
-            final_total_prod += row['oa_amt_h0']
-            final_risk_num += row['b2_ever_h6'] * row['oa_amt_h0']
+            final_total_prod += row["oa_amt_h0"]
+            final_risk_num += row["b2_ever_h6"] * row["oa_amt_h0"]
 
         final_global_risk = final_risk_num / final_total_prod if final_total_prod > 0 else 0.0
 

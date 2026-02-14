@@ -12,7 +12,9 @@ from src.persistence import load_model_for_prediction
 
 
 def run_inference_phase(
-    data_clean: pd.DataFrame, settings: PreprocessingSettings, model_path: str = None,
+    data_clean: pd.DataFrame,
+    settings: PreprocessingSettings,
+    model_path: str = None,
 ) -> tuple[dict, Any]:
     """Run risk inference: either load a pre-trained model or train a new one.
 

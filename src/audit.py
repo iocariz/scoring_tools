@@ -66,10 +66,7 @@ def classify_record(
 
     # Classify based on status, reject_reason, and cutoff
     is_booked = status == StatusName.BOOKED.value
-    is_score_rejected = (
-        status == StatusName.REJECTED.value and
-        reject_reason == RejectReason.SCORE.value
-    )
+    is_score_rejected = status == StatusName.REJECTED.value and reject_reason == RejectReason.SCORE.value
 
     if is_booked and passes_cut:
         return "keep"
@@ -206,14 +203,22 @@ def generate_audit_summary(audit_df: pd.DataFrame, use_adjusted: bool = True) ->
     amount_col = "oa_amt_adjusted" if use_adjusted and "oa_amt_adjusted" in audit_df.columns else "oa_amt"
 
     if amount_col in audit_df.columns:
-        summary = audit_df.groupby("classification").agg(
-            count=("classification", "size"),
-            total_oa_amt=(amount_col, "sum"),
-        ).reset_index()
+        summary = (
+            audit_df.groupby("classification")
+            .agg(
+                count=("classification", "size"),
+                total_oa_amt=(amount_col, "sum"),
+            )
+            .reset_index()
+        )
     else:
-        summary = audit_df.groupby("classification").agg(
-            count=("classification", "size"),
-        ).reset_index()
+        summary = (
+            audit_df.groupby("classification")
+            .agg(
+                count=("classification", "size"),
+            )
+            .reset_index()
+        )
         summary["total_oa_amt"] = 0
 
     return summary
@@ -324,7 +329,9 @@ def validate_audit_against_summary(
     swap_out_audit = audit_totals.get("swap_out", 0)
     keep_audit = audit_totals.get("keep", 0)
 
-    logger.info(f"Audit totals - swap_in: {swap_in_audit:,.0f}, swap_out: {swap_out_audit:,.0f}, keep: {keep_audit:,.0f}")
+    logger.info(
+        f"Audit totals - swap_in: {swap_in_audit:,.0f}, swap_out: {swap_out_audit:,.0f}, keep: {keep_audit:,.0f}"
+    )
 
     # Try to extract from summary table
     try:
@@ -340,10 +347,7 @@ def validate_audit_against_summary(
             so_diff = abs(swap_out_audit - swap_out_summary) / max(swap_out_summary, 1)
 
             if si_diff > tolerance or so_diff > tolerance:
-                logger.warning(
-                    f"Audit validation warning: "
-                    f"swap_in diff={si_diff:.2%}, swap_out diff={so_diff:.2%}"
-                )
+                logger.warning(f"Audit validation warning: swap_in diff={si_diff:.2%}, swap_out diff={so_diff:.2%}")
                 return False
 
             logger.info("Audit validation passed: totals match summary table")

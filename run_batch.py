@@ -47,6 +47,15 @@ class SupersegmentTrainingError(RuntimeError):
     """Raised when supersegment model training fails."""
 
 
+def _safe_remove_sink(sink_id: int) -> None:
+    """Remove a loguru sink if it still exists."""
+    try:
+        logger.remove(sink_id)
+    except ValueError:
+        # Sink may already be removed by nested logger configuration.
+        pass
+
+
 def load_and_standardize_data(data_path: str) -> pd.DataFrame | None:
     """
     Load data from SAS file and standardize column names and categorical values.
@@ -181,7 +190,7 @@ def run_segment_pipeline(
     try:
         from main import main as run_main_pipeline
 
-        temp_config = write_temp_config(merged_config, dirs["root"])
+        temp_config = write_temp_config(merged_config, dirs["root"]).resolve()
         resolved_model_path = str(Path(model_path).resolve()) if model_path else None
 
         with _working_directory(dirs["root"]):
@@ -207,7 +216,7 @@ def run_segment_pipeline(
         logger.exception("Full traceback:")
         return False
     finally:
-        logger.remove(sink_id)
+        _safe_remove_sink(sink_id)
 
 
 def run_supersegment_training(
@@ -270,7 +279,7 @@ def run_supersegment_training(
     try:
         from main import main as run_main_pipeline
 
-        temp_config = write_temp_config(merged_config, dirs["root"])
+        temp_config = write_temp_config(merged_config, dirs["root"]).resolve()
         with _working_directory(dirs["root"]):
             result = run_main_pipeline(
                 config_path=str(temp_config),
@@ -280,18 +289,14 @@ def run_supersegment_training(
             )
 
         if result is None:
-            raise SupersegmentTrainingError(
-                f"Supersegment training returned no result: {supersegment_name}"
-            )
+            raise SupersegmentTrainingError(f"Supersegment training returned no result: {supersegment_name}")
 
         # Find the most recent model directory
         models_dir = dirs["models"]
         model_dirs = sorted(models_dir.glob("model_*"), reverse=True)
 
         if not model_dirs:
-            raise SupersegmentTrainingError(
-                f"No model directory found after training: {supersegment_name}"
-            )
+            raise SupersegmentTrainingError(f"No model directory found after training: {supersegment_name}")
 
         model_path = str(model_dirs[0].resolve())
         logger.info(f"Supersegment model trained successfully: {model_path}")
@@ -306,7 +311,7 @@ def run_supersegment_training(
         logger.exception("Full traceback:")
         return None
     finally:
-        logger.remove(sink_id)
+        _safe_remove_sink(sink_id)
 
 
 def write_temp_config(config: dict[str, Any], output_dir: Path) -> Path:

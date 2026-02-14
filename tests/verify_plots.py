@@ -8,7 +8,7 @@ import pandas as pd
 # Add src to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src import plots, styles, utils
+from src import plots, styles
 
 # Create output directory
 os.makedirs("images/verification", exist_ok=True)

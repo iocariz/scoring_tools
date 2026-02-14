@@ -599,9 +599,7 @@ def create_download_button(button_id: str, label: str = "Download CSV") -> html.
     )
 
 
-def create_collapsible_section(
-    header: str, children: list, section_id: str, is_open: bool = True
-) -> html.Div:
+def create_collapsible_section(header: str, children: list, section_id: str, is_open: bool = True) -> html.Div:
     """Pattern-matching collapsible wrapper."""
     return html.Div(
         [
@@ -879,10 +877,16 @@ def create_model_details_content(segment: str | None = None) -> html.Div:
         ("Model Type", metadata.get("model_type", "N/A")),
         ("Features", str(metadata.get("num_features", "N/A"))),
         ("Date", metadata.get("timestamp", "N/A")),
-        ("Samples", f"{metadata.get('total_samples', 'N/A'):,}" if isinstance(metadata.get("total_samples"), int) else "N/A"),
+        (
+            "Samples",
+            f"{metadata.get('total_samples', 'N/A'):,}" if isinstance(metadata.get("total_samples"), int) else "N/A",
+        ),
         ("CV Folds", str(metadata.get("cv_folds", "N/A"))),
         ("Is Hurdle", str(metadata.get("is_hurdle", "N/A"))),
-        ("Zero Proportion", f"{metadata.get('zero_proportion', 0):.1%}" if metadata.get("zero_proportion") is not None else "N/A"),
+        (
+            "Zero Proportion",
+            f"{metadata.get('zero_proportion', 0):.1%}" if metadata.get("zero_proportion") is not None else "N/A",
+        ),
         ("Weighted", str(metadata.get("weighted_regression", "N/A"))),
     ]
 
@@ -930,7 +934,10 @@ def create_model_details_content(segment: str | None = None) -> html.Div:
             )
 
     performance_card = dbc.Card(
-        [dbc.CardHeader("Performance Metrics"), dbc.CardBody(progress_items if progress_items else "No metrics available")],
+        [
+            dbc.CardHeader("Performance Metrics"),
+            dbc.CardBody(progress_items if progress_items else "No metrics available"),
+        ],
         className="mb-4",
     )
 
