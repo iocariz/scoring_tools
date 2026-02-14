@@ -11,6 +11,7 @@ Key features include:
 - **Recent Monitoring (MR)**: Validates strategy performance on recent data.
 - **Stability Analysis**: Automatically calculates PSI/CSI to detect distribution drift.
 - **Supersegments**: Supports training shared models across multiple segments.
+- **Score Discriminance**: Evaluates model performance using Gini and discriminance plots.
 - **Robust Configuration**: Type-safe configuration using Pydantic.
 
 ## Quick Start
@@ -33,6 +34,9 @@ uv run python run_batch.py
 
 # Run specific segments
 uv run python run_batch.py -s no_premium_ab premium
+
+# Clean previous outputs before running
+uv run python run_batch.py --clean
 
 # Run in parallel
 uv run python run_batch.py --parallel --workers 4
@@ -62,7 +66,7 @@ uv run python run_batch.py --parallel --workers 4
 | :--- | :--- |
 | `src/config.py` | Pydantic settings definition and validation. |
 | `src/data_manager.py` | Centralized data loading and column validation. |
-| `src/inference_optimized.py` | Training/inference logic for risk models. |
+| `src/preprocess_improved.py` | Preprocessing logic for risk models. |
 | `src/inference_optimized.py` | Training/inference logic for risk models. |
 | `src/optimization_utils.py` | Optimization algorithms (Pareto frontier, solution generation). |
 | `src/utils.py` | Core utilities, risk metrics, and memory management. |
@@ -203,6 +207,17 @@ Artifacts are saved in `output/SEGMENT_NAME/`:
 | `images/stability_report_{scenario}.html` | Visual stability report. |
 | `models/` | Saved models (if training occurred). |
 
+### 5. Consolidated Reports
+
+The batch pipeline produces consolidated reports in `output/`:
+
+| Path | Description |
+| :--- | :--- |
+| `consolidated_risk_production.csv` | Aggregated metrics across all segments. |
+| `consolidated_risk_production.html` | Interactive dashboard comparing Actual vs Optimum production. |
+| `score_discriminance.csv` | Gini coefficient and discriminance metrics. |
+| `score_discriminance.png` | Visual plot of score discriminance. |
+
 ## Development
 
 ### Running Tests
@@ -213,6 +228,9 @@ uv run pytest tests/
 
 # Run specific validation tests
 uv run pytest tests/test_validation.py -v
+
+# Run tests with coverage report
+uv run pytest --cov=src tests/
 ```
 
 ### Adding a New Segment
