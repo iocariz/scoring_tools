@@ -13,14 +13,14 @@ Using these constants instead of hardcoded strings improves:
 - Documentation: Clear overview of data schema expectations
 """
 
-from enum import Enum
+from enum import StrEnum
 from typing import Final
 
 
 # =============================================================================
 # STATUS VALUES
 # =============================================================================
-class StatusName(str, Enum):
+class StatusName(StrEnum):
     """Status values for loan applications."""
 
     BOOKED = "booked"
@@ -28,7 +28,7 @@ class StatusName(str, Enum):
     CANCELED = "canceled"
 
 
-class RejectReason(str, Enum):
+class RejectReason(StrEnum):
     """Rejection reason codes."""
 
     OTHER = "08-other"
