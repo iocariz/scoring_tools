@@ -68,7 +68,7 @@ class PreprocessingSettings(BaseModel):
             # Enforce dayfirst=False to match original implicit behavior but be explicit to suppress warning
             pd.to_datetime(v, dayfirst=False)
         except (ValueError, TypeError) as e:
-            raise ValueError(f"Invalid date format: {v}. Error: {e}")
+            raise ValueError(f"Invalid date format: {v}. Error: {e}") from e
         return v
 
     @model_validator(mode="after")

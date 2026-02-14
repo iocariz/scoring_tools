@@ -27,6 +27,7 @@ import shutil
 import sys
 import tomllib
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,14 @@ from loguru import logger
 from tqdm import tqdm
 
 from src.consolidation import generate_consolidation_report
+
+
+class SegmentPipelineError(RuntimeError):
+    """Raised when a segment pipeline execution fails."""
+
+
+class SupersegmentTrainingError(RuntimeError):
+    """Raised when supersegment model training fails."""
 
 
 def load_and_standardize_data(data_path: str) -> pd.DataFrame | None:
@@ -154,7 +163,7 @@ def run_segment_pipeline(
 
     # Setup logging for this segment
     log_file = dirs["logs"] / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    logger.add(log_file, rotation="10 MB", level="DEBUG")
+    sink_id = logger.add(log_file, rotation="10 MB", level="DEBUG")
 
     logger.info("=" * 80)
     logger.info(f"PROCESSING SEGMENT: {segment_name}")
@@ -168,46 +177,37 @@ def run_segment_pipeline(
     if model_path:
         logger.info(f"Using pre-trained model from: {model_path}")
 
-    # Change to output directory context and run
+    # Run with segment output directory as cwd so all relative outputs are isolated.
     try:
-        # Import main module
         from main import main as run_main_pipeline
 
-        # Temporarily modify paths by changing working directory
-        # and creating symlinks/copies as needed
-
-        # Create a temporary config with this segment's settings
         temp_config = write_temp_config(merged_config, dirs["root"])
+        resolved_model_path = str(Path(model_path).resolve()) if model_path else None
 
-        # Create symbolic links or rename directories
-        # Copy input data file to segment directory before redirection
-        data_file = merged_config.get("data_path", "data/demanda_direct_out.sas7bdat")
-        setup_output_redirection(dirs, data_file=data_file)
-
-        try:
-            # Run the main pipeline
+        with _working_directory(dirs["root"]):
             result = run_main_pipeline(
                 config_path=str(temp_config),
-                model_path=model_path,
+                model_path=resolved_model_path,
                 skip_dq_checks=skip_dq_checks,
                 preloaded_data=preloaded_data,
             )
 
-            if result is None:
-                logger.error(f"Pipeline failed for segment: {segment_name}")
-                return False
+        if result is None:
+            raise SegmentPipelineError(f"Pipeline returned no result for segment: {segment_name}")
 
-            logger.info(f"Pipeline completed successfully for segment: {segment_name}")
-            return True
+        logger.info(f"Pipeline completed successfully for segment: {segment_name}")
+        return True
 
-        finally:
-            # Restore original directory structure
-            cleanup_output_redirection(dirs)
-
+    except SegmentPipelineError:
+        logger.exception(f"Error processing segment {segment_name}")
+        return False
     except Exception as e:
-        logger.error(f"Error processing segment {segment_name}: {e}")
+        error = SegmentPipelineError(f"Unexpected segment error: {segment_name}")
+        logger.error(f"{error}: {e}")
         logger.exception("Full traceback:")
         return False
+    finally:
+        logger.remove(sink_id)
 
 
 def run_supersegment_training(
@@ -241,7 +241,7 @@ def run_supersegment_training(
 
     # Setup logging
     log_file = dirs["logs"] / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    logger.add(log_file, rotation="10 MB", level="DEBUG")
+    sink_id = logger.add(log_file, rotation="10 MB", level="DEBUG")
 
     logger.info("=" * 80)
     logger.info(f"TRAINING SUPERSEGMENT MODEL: {supersegment_name}")
@@ -267,20 +267,11 @@ def run_supersegment_training(
     merged_config = base_config.copy()
     merged_config["segment_filter"] = combined_filter
 
-    original_cwd = os.getcwd()
-
     try:
         from main import main as run_main_pipeline
 
-        # Create temporary config
         temp_config = write_temp_config(merged_config, dirs["root"])
-
-        # Setup output redirection
-        data_file = merged_config.get("data_path", "data/demanda_direct_out.sas7bdat")
-        setup_output_redirection(dirs, data_file=data_file)
-
-        try:
-            # Run the main pipeline in training-only mode (skip optimization)
+        with _working_directory(dirs["root"]):
             result = run_main_pipeline(
                 config_path=str(temp_config),
                 training_only=True,
@@ -288,33 +279,34 @@ def run_supersegment_training(
                 preloaded_data=preloaded_data,
             )
 
-            if result is None:
-                logger.error(f"Supersegment training failed: {supersegment_name}")
-                return None
+        if result is None:
+            raise SupersegmentTrainingError(
+                f"Supersegment training returned no result: {supersegment_name}"
+            )
 
-            # Find the most recent model directory
-            models_dir = dirs["models"]
-            model_dirs = sorted(models_dir.glob("model_*"), reverse=True)
+        # Find the most recent model directory
+        models_dir = dirs["models"]
+        model_dirs = sorted(models_dir.glob("model_*"), reverse=True)
 
-            if not model_dirs:
-                logger.error("No model directory found after training")
-                return None
+        if not model_dirs:
+            raise SupersegmentTrainingError(
+                f"No model directory found after training: {supersegment_name}"
+            )
 
-            model_path = str(model_dirs[0])
-            logger.info(f"Supersegment model trained successfully: {model_path}")
+        model_path = str(model_dirs[0].resolve())
+        logger.info(f"Supersegment model trained successfully: {model_path}")
+        return model_path
 
-            return model_path
-
-        finally:
-            cleanup_output_redirection(dirs)
-
+    except SupersegmentTrainingError:
+        logger.exception(f"Error training supersegment {supersegment_name}")
+        return None
     except Exception as e:
-        logger.error(f"Error training supersegment {supersegment_name}: {e}")
+        error = SupersegmentTrainingError(f"Unexpected supersegment training error: {supersegment_name}")
+        logger.error(f"{error}: {e}")
         logger.exception("Full traceback:")
         return None
-
     finally:
-        os.chdir(original_cwd)
+        logger.remove(sink_id)
 
 
 def write_temp_config(config: dict[str, Any], output_dir: Path) -> Path:
@@ -323,8 +315,16 @@ def write_temp_config(config: dict[str, Any], output_dir: Path) -> Path:
 
     config_path = output_dir / "config_segment.toml"
 
+    # Keep data source stable if process working directory changes.
+    config_for_dump = config.copy()
+    data_path = config_for_dump.get("data_path")
+    if isinstance(data_path, str):
+        data_path_obj = Path(data_path)
+        if not data_path_obj.is_absolute():
+            config_for_dump["data_path"] = str((Path.cwd() / data_path_obj).resolve())
+
     # Wrap config in preprocessing section
-    full_config = {"preprocessing": config}
+    full_config = {"preprocessing": config_for_dump}
 
     with open(config_path, "wb") as f:
         tomli_w.dump(full_config, f)
@@ -332,54 +332,15 @@ def write_temp_config(config: dict[str, Any], output_dir: Path) -> Path:
     return config_path
 
 
-def setup_output_redirection(dirs: dict[str, Path], data_file: str = None) -> None:
-    """
-    Setup output redirection by renaming existing directories
-    and creating symlinks to segment directories.
-
-    Args:
-        dirs: Dictionary of output directories
-        data_file: Optional path to the input data file to copy to segment data dir
-    """
-    # If data file is specified, copy it to the segment's data directory first
-    if data_file:
-        source_data = Path(data_file)
-        if source_data.exists():
-            dest_data = dirs["data"] / source_data.name
-            if not dest_data.exists():
-                shutil.copy2(source_data, dest_data)
-                logger.info(f"Copied data file to {dest_data}")
-
-    for name in ["images", "models", "data"]:
-        original = Path(name)
-        backup = Path(f"{name}_backup")
-        segment_dir = dirs[name]
-
-        # Backup original if exists
-        if original.exists() and not original.is_symlink():
-            if backup.exists():
-                shutil.rmtree(backup)
-            original.rename(backup)
-        elif original.is_symlink():
-            original.unlink()
-
-        # Create symlink to segment directory
-        original.symlink_to(segment_dir.absolute())
-
-
-def cleanup_output_redirection(dirs: dict[str, Path]) -> None:
-    """Restore original directory structure after processing."""
-    for name in ["images", "models", "data"]:
-        original = Path(name)
-        backup = Path(f"{name}_backup")
-
-        # Remove symlink
-        if original.is_symlink():
-            original.unlink()
-
-        # Restore backup
-        if backup.exists():
-            backup.rename(original)
+@contextmanager
+def _working_directory(path: Path):
+    """Temporarily switch process cwd."""
+    original_cwd = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(original_cwd)
 
 
 def run_segments_sequential(
