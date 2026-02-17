@@ -1,9 +1,10 @@
 """
-Score discriminance metrics (AUROC, KS, Gini) for booked population.
+Full score monitoring report: discriminance, lift, precision-recall,
+score distributions, and pairwise model comparison (DeLong).
 
-Evaluates the discriminatory power of score_rf, risk_score_rf, and their
-logistic-regression combination against the early_bad target, per segment,
-per supersegment, and for both Main and MR periods.
+Evaluates score_rf, risk_score_rf, and their logistic-regression combination
+against the early_bad target, per segment, per supersegment, and for both
+Main and MR periods.
 
 Usage:
     uv run python run_score_metrics.py                             # All segments
@@ -27,7 +28,14 @@ from run_batch import (
     load_segments_config,
     load_supersegments_config,
 )
-from src.metrics import compute_score_discriminance
+from src.metrics import (
+    calculate_lift_table,
+    compute_precision_recall,
+    compute_score_discriminance,
+    delong_test,
+)
+from src.plots import plot_precision_recall_curve, plot_score_distribution
+from src.styles import COLOR_PRIMARY, COLOR_SECONDARY, apply_matplotlib_style
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -41,6 +49,12 @@ SCORE_COLUMNS: dict[str, dict] = {
 
 COMBINED_COLUMNS: dict[str, list] = {
     "Combined": ["score_rf", "risk_score_rf"],
+}
+
+SCORE_COLORS = {
+    "Score RF": "#3498DB",
+    "Risk Score RF": "#E74C3C",
+    "Combined": "#2ECC71",
 }
 
 
@@ -79,6 +93,15 @@ def _validate_target(df: pd.DataFrame, label: str) -> bool:
     return True
 
 
+def _prepare_scores(df: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Build negated score arrays from the dataframe, matching SCORE_COLUMNS config."""
+    scores = {}
+    for name, info in SCORE_COLUMNS.items():
+        sign = -1 if info["negate"] else 1
+        scores[name] = sign * df[info["column"]].values
+    return scores
+
+
 def _compute_for_period(
     df_base: pd.DataFrame,
     date_ini: str | None,
@@ -87,8 +110,13 @@ def _compute_for_period(
     level: str,
     name: str,
     supersegment: str,
-) -> pd.DataFrame | None:
-    """Compute discriminance metrics for a single period, returning tagged rows."""
+) -> dict | None:
+    """
+    Compute all monitoring metrics for a single period.
+
+    Returns a dict with: discriminance_df, lift_tables, pr_data,
+    delong_results, scores_dict, y_true, and metadata tags.
+    """
     if not date_ini or not date_fin:
         return None
 
@@ -102,7 +130,6 @@ def _compute_for_period(
     if not _validate_target(df_booked, label):
         return None
 
-    # Drop rows where scores or target are NaN
     required_cols = [TARGET_COLUMN] + [s["column"] for s in SCORE_COLUMNS.values()]
     df_booked = df_booked.dropna(subset=required_cols)
 
@@ -110,6 +137,10 @@ def _compute_for_period(
         logger.warning(f"[{label}] Not enough data after dropping NaNs — skipping.")
         return None
 
+    y_true = df_booked[TARGET_COLUMN].values
+    scores_dict = _prepare_scores(df_booked)
+
+    # 1. Discriminance (AUROC, Gini, KS)
     metrics_df = compute_score_discriminance(
         df_booked,
         target_column=TARGET_COLUMN,
@@ -120,7 +151,44 @@ def _compute_for_period(
     metrics_df["name"] = name
     metrics_df["supersegment"] = supersegment
     metrics_df["period"] = period
-    return metrics_df
+
+    # 2. Lift tables per score
+    lift_tables = {}
+    for score_name, score_arr in scores_dict.items():
+        lift_tables[score_name] = calculate_lift_table(y_true, score_arr)
+
+    # 3. Precision-Recall per score
+    pr_data = {}
+    for score_name, score_arr in scores_dict.items():
+        precision, recall, _, ap = compute_precision_recall(y_true, score_arr)
+        pr_data[score_name] = {"precision": precision, "recall": recall, "ap": ap}
+
+    # 4. DeLong pairwise tests
+    delong_results = []
+    score_names = list(scores_dict.keys())
+    for i in range(len(score_names)):
+        for j in range(i + 1, len(score_names)):
+            n1, n2 = score_names[i], score_names[j]
+            result = delong_test(y_true, scores_dict[n1], scores_dict[n2])
+            result["model_1"] = n1
+            result["model_2"] = n2
+            result["level"] = level
+            result["name"] = name
+            result["period"] = period
+            delong_results.append(result)
+
+    return {
+        "discriminance_df": metrics_df,
+        "lift_tables": lift_tables,
+        "pr_data": pr_data,
+        "delong_results": delong_results,
+        "scores_dict": scores_dict,
+        "y_true": y_true,
+        "label": label,
+        "level": level,
+        "name": name,
+        "period": period,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -128,12 +196,6 @@ def _compute_for_period(
 # ---------------------------------------------------------------------------
 METRIC_NAMES = ["auroc", "gini", "ks"]
 METRIC_LABELS = {"auroc": "AUROC", "gini": "Gini", "ks": "KS"}
-
-SCORE_COLORS = {
-    "Score RF": "#3498DB",  # Accent blue
-    "Risk Score RF": "#E74C3C",  # Risk red
-    "Combined": "#2ECC71",  # Production green
-}
 
 
 def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
@@ -150,11 +212,8 @@ def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
     Returns:
         Path to the saved figure.
     """
-    from src.styles import COLOR_PRIMARY, COLOR_SECONDARY, apply_matplotlib_style
-
     apply_matplotlib_style()
 
-    # Build a combined label for x-axis: "name (period)" with level prefix for supersegments
     df = df.copy()
     df["x_label"] = df.apply(
         lambda r: (
@@ -163,7 +222,6 @@ def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
         axis=1,
     )
 
-    # Deterministic ordering: segments first (alphabetical), then supersegments
     label_order = (
         df.sort_values(["level", "name", "period"], ascending=[False, True, True])["x_label"].drop_duplicates().tolist()
     )
@@ -189,7 +247,6 @@ def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
                 x + i * bar_width, vals, bar_width, label=score, color=color, edgecolor="white", linewidth=0.5
             )
 
-            # Value labels on bars
             for bar, v in zip(bars, vals):
                 if v != 0:
                     ax.text(
@@ -208,7 +265,6 @@ def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
         ax.set_ylabel(METRIC_LABELS[metric])
         ax.axhline(0.5, color=COLOR_SECONDARY, linestyle="--", linewidth=0.8, alpha=0.6)
 
-    # Single legend at the top
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(
         handles, labels, loc="upper center", ncol=n_scores, frameon=True, fontsize=10, bbox_to_anchor=(0.5, 1.02)
@@ -226,6 +282,74 @@ def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
     return fig_path
 
 
+def plot_monitoring_dashboard(period_result: dict, output_dir: Path) -> Path:
+    """
+    Generate a 2x2 monitoring dashboard for a single segment/period:
+      [0,0] Precision-Recall curves
+      [0,1] Score distribution (Score RF)
+      [1,0] Score distribution (Risk Score RF)
+      [1,1] Cumulative Gains chart
+
+    Returns path to the saved figure.
+    """
+    apply_matplotlib_style()
+
+    label = period_result["label"]
+    y_true = period_result["y_true"]
+    scores_dict = period_result["scores_dict"]
+    lift_tables = period_result["lift_tables"]
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+    # [0,0] Precision-Recall
+    plot_precision_recall_curve(axes[0, 0], y_true, scores_dict)
+
+    # [0,1] Score distribution — first score
+    score_names = list(scores_dict.keys())
+    if len(score_names) >= 1:
+        plot_score_distribution(axes[0, 1], y_true, scores_dict[score_names[0]], name=score_names[0])
+
+    # [1,0] Score distribution — second score
+    if len(score_names) >= 2:
+        plot_score_distribution(axes[1, 0], y_true, scores_dict[score_names[1]], name=score_names[1])
+    else:
+        axes[1, 0].set_visible(False)
+
+    # [1,1] Cumulative Gains chart
+    ax_lift = axes[1, 1]
+    for score_name, lift_df in lift_tables.items():
+        color = SCORE_COLORS.get(score_name, "#95A5A6")
+        ax_lift.plot(
+            lift_df["cumulative_pct_population"],
+            lift_df["cumulative_pct_bads"],
+            marker="o",
+            markersize=5,
+            lw=2.5,
+            label=score_name,
+            color=color,
+        )
+    ax_lift.plot([0, 1], [0, 1], "k--", lw=1.5, label="Random")
+    ax_lift.set_xlabel("Cumulative % Population", fontsize=14)
+    ax_lift.set_ylabel("Cumulative % Bads Captured", fontsize=14)
+    ax_lift.set_title("Cumulative Gains Chart", fontsize=16)
+    ax_lift.legend(fontsize=11)
+    ax_lift.set_xlim(0, 1.02)
+    ax_lift.set_ylim(0, 1.05)
+    ax_lift.grid(True, which="both", linestyle="--", linewidth=0.5)
+    ax_lift.spines["top"].set_visible(False)
+    ax_lift.spines["right"].set_visible(False)
+
+    fig.suptitle(f"Score Monitoring: {label}", fontsize=18, fontweight="bold", color=COLOR_PRIMARY, y=1.02)
+    fig.tight_layout()
+
+    safe_label = label.replace("/", "_")
+    fig_path = output_dir / f"monitoring_{safe_label}.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Monitoring dashboard saved to {fig_path}")
+    return fig_path
+
+
 # ---------------------------------------------------------------------------
 # Main report function (also used by run_batch.py)
 # ---------------------------------------------------------------------------
@@ -237,25 +361,29 @@ def generate_score_discriminance_report(
     output_path: str,
 ) -> pd.DataFrame:
     """
-    Compute score discriminance metrics for all segments and supersegments.
+    Compute full score monitoring report for all segments and supersegments.
 
-    Args:
-        preloaded_data: Standardised raw DataFrame.
-        segments: Segment configs from segments.toml.
-        supersegments: Supersegment configs from segments.toml.
-        base_config: Base config from config.toml (preprocessing section).
-        output_path: Directory to write score_discriminance.csv.
-
-    Returns:
-        Concatenated results DataFrame.
+    Outputs:
+    - score_discriminance.csv: AUROC / Gini / KS per segment, period, score.
+    - score_discriminance.png: Grouped bar chart of the above.
+    - lift_tables/{label}.csv: Decile lift table per segment/period/score.
+    - delong_comparisons.csv: Pairwise DeLong AUC comparison results.
+    - monitoring_{label}.png: 2x2 dashboard per segment/period.
     """
     date_ini_main = base_config.get("date_ini_book_obs")
     date_fin_main = base_config.get("date_fin_book_obs")
     date_ini_mr = base_config.get("date_ini_book_obs_mr")
     date_fin_mr = base_config.get("date_fin_book_obs_mr")
 
-    all_results: list[pd.DataFrame] = []
-    # Cache of base-filtered data per segment for supersegment aggregation
+    out_dir = Path(output_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lift_dir = out_dir / "lift_tables"
+    lift_dir.mkdir(parents=True, exist_ok=True)
+
+    all_discriminance: list[pd.DataFrame] = []
+    all_delong: list[dict] = []
+    all_period_results: list[dict] = []
+
     segment_base_cache: dict[str, pd.DataFrame] = {}
 
     # --- Per-segment metrics ---
@@ -280,19 +408,26 @@ def generate_score_discriminance_report(
             ("mr", date_ini_mr, date_fin_mr),
         ]:
             result = _compute_for_period(df_base, d_ini, d_fin, period, "segment", seg_name, ss_name)
-            if result is not None:
-                all_results.append(result)
+            if result is None:
+                continue
+
+            all_discriminance.append(result["discriminance_df"])
+            all_delong.extend(result["delong_results"])
+            all_period_results.append(result)
+
+            # Save lift tables
+            for score_name, lift_df in result["lift_tables"].items():
+                safe_name = f"{seg_name}_{period}_{score_name.replace(' ', '_')}"
+                lift_df.to_csv(lift_dir / f"{safe_name}.csv", index=False)
 
     # --- Per-supersegment metrics ---
     for ss_name, _ss_config in supersegments.items():
-        # Find segments belonging to this supersegment
         member_segments = [sn for sn, sc in segments.items() if sc.get("supersegment") == ss_name]
 
         if not member_segments:
             logger.warning(f"Supersegment '{ss_name}': no member segments found — skipping.")
             continue
 
-        # Combine cached base populations
         frames = [segment_base_cache[sn] for sn in member_segments if sn in segment_base_cache]
         if not frames:
             continue
@@ -305,16 +440,24 @@ def generate_score_discriminance_report(
             ("mr", date_ini_mr, date_fin_mr),
         ]:
             result = _compute_for_period(df_combined, d_ini, d_fin, period, "supersegment", ss_name, "")
-            if result is not None:
-                all_results.append(result)
+            if result is None:
+                continue
+
+            all_discriminance.append(result["discriminance_df"])
+            all_delong.extend(result["delong_results"])
+            all_period_results.append(result)
+
+            for score_name, lift_df in result["lift_tables"].items():
+                safe_name = f"SS_{ss_name}_{period}_{score_name.replace(' ', '_')}"
+                lift_df.to_csv(lift_dir / f"{safe_name}.csv", index=False)
 
     # --- Assemble & save ---
-    if not all_results:
-        logger.warning("No metrics computed — output CSV will not be created.")
+    if not all_discriminance:
+        logger.warning("No metrics computed — output files will not be created.")
         return pd.DataFrame()
 
-    final_df = pd.concat(all_results, ignore_index=True)
-    # Reorder columns
+    # Discriminance CSV
+    final_df = pd.concat(all_discriminance, ignore_index=True)
     col_order = [
         "level",
         "name",
@@ -329,15 +472,36 @@ def generate_score_discriminance_report(
         "bad_rate",
     ]
     final_df = final_df[[c for c in col_order if c in final_df.columns]]
+    final_df.to_csv(out_dir / "score_discriminance.csv", index=False)
+    logger.info(f"Score discriminance report saved to {out_dir / 'score_discriminance.csv'}")
 
-    out_dir = Path(output_path)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = out_dir / "score_discriminance.csv"
-    final_df.to_csv(csv_path, index=False)
-    logger.info(f"Score discriminance report saved to {csv_path}")
-
-    # Generate plot
+    # Discriminance plot
     plot_score_discriminance(final_df, out_dir)
+
+    # DeLong comparisons CSV
+    if all_delong:
+        delong_df = pd.DataFrame(all_delong)
+        delong_col_order = [
+            "level",
+            "name",
+            "period",
+            "model_1",
+            "model_2",
+            "auc1",
+            "auc2",
+            "auc_diff",
+            "se_diff",
+            "z_statistic",
+            "p_value",
+        ]
+        delong_df = delong_df[[c for c in delong_col_order if c in delong_df.columns]]
+        delong_df = delong_df.round({"auc1": 4, "auc2": 4, "auc_diff": 4, "se_diff": 4, "z_statistic": 3, "p_value": 4})
+        delong_df.to_csv(out_dir / "delong_comparisons.csv", index=False)
+        logger.info(f"DeLong comparisons saved to {out_dir / 'delong_comparisons.csv'}")
+
+    # Per-period monitoring dashboards
+    for result in all_period_results:
+        plot_monitoring_dashboard(result, out_dir)
 
     return final_df
 
@@ -347,7 +511,7 @@ def generate_score_discriminance_report(
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Compute score discriminance metrics (AUROC, KS, Gini) on booked population.",
+        description="Full score monitoring: discriminance, lift, PR, distributions, DeLong.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -389,7 +553,7 @@ def main():
         return 1
 
     # Compute
-    print(f"\nComputing score discriminance for {len(segments)} segment(s)...")
+    print(f"\nComputing full score monitoring for {len(segments)} segment(s)...")
     final_df = generate_score_discriminance_report(
         preloaded_data=preloaded_data,
         segments=segments,
@@ -402,14 +566,33 @@ def main():
         print("\nNo metrics were computed.")
         return 1
 
-    # Print summary table
+    # Print summary
     print(f"\n{'=' * 90}")
-    print("SCORE DISCRIMINANCE SUMMARY")
+    print("SCORE MONITORING SUMMARY")
     print(f"{'=' * 90}")
+
+    print("\n--- Discriminance Metrics ---")
     print(final_df.to_string(index=False))
-    print("\nResults saved to:")
-    print(f"  - {args.output}/score_discriminance.csv")
-    print(f"  - {args.output}/score_discriminance.png")
+
+    # Print DeLong results
+    delong_path = Path(args.output) / "delong_comparisons.csv"
+    if delong_path.exists():
+        delong_df = pd.read_csv(delong_path)
+        print("\n--- DeLong AUC Comparisons ---")
+        print(delong_df.to_string(index=False))
+
+        sig = delong_df[delong_df["p_value"] < 0.05]
+        if not sig.empty:
+            print(f"\n  * {len(sig)} significant AUC difference(s) detected (p < 0.05)")
+        else:
+            print("\n  * No significant AUC differences detected")
+
+    print(f"\nOutputs saved to {args.output}/:")
+    print("  - score_discriminance.csv    (AUROC, Gini, KS)")
+    print("  - score_discriminance.png    (bar chart)")
+    print("  - delong_comparisons.csv     (pairwise AUC tests)")
+    print("  - lift_tables/*.csv          (decile lift tables)")
+    print("  - monitoring_*.png           (per-segment dashboards)")
 
     return 0
 

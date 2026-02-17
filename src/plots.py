@@ -3,14 +3,18 @@ Visualization functions for credit risk model analysis and reporting.
 
 This module provides plotting functions for model evaluation and risk analysis:
 - ROC curves and Gini visualization
+- Precision-Recall curves
 - KS statistic plots
 - CAP curves and rejection analysis
+- Score distribution comparison plots
 - 3D surface plots for risk landscapes
 - Interactive risk vs production visualizations
 - Group statistics and confidence interval plots
 
 Key components:
 - plot_roc_curve: Plot ROC curve with Gini and KS annotations
+- plot_precision_recall_curve: Plot precision-recall curve with AP annotation
+- plot_score_distribution: Compare score distributions for goods vs bads
 - visualize_metrics: Create comprehensive model evaluation dashboard
 - plot_group_statistics: Visualize performance by risk groups
 - RiskProductionVisualizer: Interactive risk/production trade-off visualization
@@ -29,7 +33,7 @@ from sklearn.metrics import auc, roc_curve
 
 from . import styles
 from .constants import DEFAULT_RISK_MULTIPLIER, Columns, StatusName
-from .metrics import ks_statistic
+from .metrics import compute_precision_recall, ks_statistic
 from .utils import calculate_b2_ever_h6
 
 # Keep track of previous KS annotation y-coordinates
@@ -165,6 +169,88 @@ def plot_gini_confidence_intervals(ax, df):
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.invert_yaxis()  # Higher scores at the top
+
+
+def plot_precision_recall_curve(
+    ax,
+    y_true: np.ndarray,
+    scores_dict: dict[str, np.ndarray],
+) -> None:
+    """
+    Plot precision-recall curves for one or more models.
+
+    Precision-recall curves are more informative than ROC curves when
+    evaluating models on imbalanced datasets (e.g., low default rates).
+
+    Args:
+        ax: Matplotlib axes to plot on.
+        y_true: Binary array of true outcomes (1=bad, 0=good).
+        scores_dict: Dictionary mapping model names to score arrays.
+    """
+    palette = sns.color_palette("viridis", len(scores_dict))
+
+    for (name, scores), color in zip(scores_dict.items(), palette):
+        precision, recall, _, ap = compute_precision_recall(y_true, scores)
+        ax.plot(recall, precision, lw=2.5, label=f"{name} (AP={ap:.3f})", color=color)
+        ax.fill_between(recall, precision, color=color, alpha=0.05)
+
+    # Baseline: fraction of positives (random classifier)
+    baseline = np.asarray(y_true).mean()
+    ax.axhline(y=baseline, linestyle="--", color="grey", lw=1.5, label=f"Baseline ({baseline:.3f})")
+
+    ax.set_xlabel("Recall", fontsize=14)
+    ax.set_ylabel("Precision", fontsize=14)
+    ax.set_title("Precision-Recall Curve", fontsize=16)
+    ax.legend(loc="upper right", fontsize=11)
+    ax.set_xlim(0, 1.02)
+    ax.set_ylim(0, 1.05)
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+
+def plot_score_distribution(
+    ax,
+    y_true: np.ndarray,
+    scores: np.ndarray,
+    name: str = "Score",
+    bins: int = 50,
+) -> None:
+    """
+    Plot overlapping score distributions for goods (0) vs bads (1).
+
+    Useful for visual assessment of model discrimination: well-separated
+    distributions indicate a strong model. Also shows the KDE overlay.
+
+    Args:
+        ax: Matplotlib axes to plot on.
+        y_true: Binary array of true outcomes (1=bad, 0=good).
+        scores: Model scores.
+        name: Label for the score.
+        bins: Number of histogram bins.
+    """
+    y_true_arr = np.asarray(y_true)
+    scores_arr = np.asarray(scores)
+
+    goods = scores_arr[y_true_arr == 0]
+    bads = scores_arr[y_true_arr == 1]
+
+    ax.hist(goods, bins=bins, density=True, alpha=0.4, color=styles.COLOR_GOOD, label="Good (0)")
+    ax.hist(bads, bins=bins, density=True, alpha=0.4, color=styles.COLOR_BAD, label="Bad (1)")
+
+    # KDE overlays
+    if len(goods) > 1:
+        sns.kdeplot(goods, ax=ax, color=styles.COLOR_GOOD, lw=2)
+    if len(bads) > 1:
+        sns.kdeplot(bads, ax=ax, color=styles.COLOR_BAD, lw=2)
+
+    ax.set_xlabel(name, fontsize=14)
+    ax.set_ylabel("Density", fontsize=14)
+    ax.set_title(f"Score Distribution: {name}", fontsize=16)
+    ax.legend(fontsize=12)
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.7)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
 
 def plot_group_statistics(data_frame, group_col, binary_outcome):
