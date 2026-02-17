@@ -5,9 +5,12 @@ import pytest
 from src.metrics import (
     bootstrap_confidence_interval,
     calc_iv,
+    calculate_lift_table,
     calculate_psi_by_period,
     calculate_rejection_thresholds,
     compute_metrics,
+    compute_precision_recall,
+    delong_test,
     ks_statistic,
     train_logistic_regression,
 )
@@ -294,3 +297,182 @@ class TestTrainLogisticRegression:
         # Standardized data should have mean ~0 and std ~1
         assert abs(X_standardized[:, 0].mean()) < 0.5
         assert abs(X_standardized[:, 1].mean()) < 0.5
+
+
+# =============================================================================
+# compute_precision_recall Tests
+# =============================================================================
+
+
+class TestComputePrecisionRecall:
+    def test_returns_four_values(self):
+        y_true = np.array([0, 0, 1, 1])
+        scores = np.array([0.1, 0.2, 0.8, 0.9])
+        result = compute_precision_recall(y_true, scores)
+        assert len(result) == 4
+
+    def test_perfect_model_high_ap(self):
+        """Perfect model should have AP close to 1."""
+        y_true = np.array([0, 0, 0, 0, 0, 1, 1, 1, 1, 1])
+        scores = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+        precision, recall, _, ap = compute_precision_recall(y_true, scores)
+        assert ap > 0.9
+
+    def test_random_model_low_ap(self):
+        """Random model should have AP close to the positive class prevalence."""
+        np.random.seed(42)
+        y_true = np.random.randint(0, 2, 1000)
+        scores = np.random.rand(1000)
+        _, _, _, ap = compute_precision_recall(y_true, scores)
+        prevalence = y_true.mean()
+        assert abs(ap - prevalence) < 0.15
+
+    def test_precision_recall_between_0_and_1(self):
+        y_true = np.array([0, 0, 1, 1, 0, 1])
+        scores = np.array([0.1, 0.3, 0.7, 0.8, 0.2, 0.6])
+        precision, recall, _, ap = compute_precision_recall(y_true, scores)
+        assert all(0 <= p <= 1 for p in precision)
+        assert all(0 <= r <= 1 for r in recall)
+        assert 0 <= ap <= 1
+
+
+# =============================================================================
+# calculate_lift_table Tests
+# =============================================================================
+
+
+class TestCalculateLiftTable:
+    def test_returns_dataframe(self):
+        np.random.seed(42)
+        y_true = np.random.randint(0, 2, 200)
+        scores = np.random.rand(200)
+        result = calculate_lift_table(y_true, scores)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_default_deciles(self):
+        np.random.seed(42)
+        y_true = np.random.randint(0, 2, 200)
+        scores = np.random.rand(200)
+        result = calculate_lift_table(y_true, scores)
+        assert len(result) == 10
+
+    def test_custom_bins(self):
+        np.random.seed(42)
+        y_true = np.random.randint(0, 2, 200)
+        scores = np.random.rand(200)
+        result = calculate_lift_table(y_true, scores, n_bins=5)
+        assert len(result) == 5
+
+    def test_expected_columns(self):
+        y_true = np.array([0] * 80 + [1] * 20)
+        scores = np.arange(100, dtype=float)
+        result = calculate_lift_table(y_true, scores)
+        expected_cols = {
+            "bin",
+            "n_records",
+            "n_bads",
+            "bad_rate",
+            "pct_population",
+            "pct_bads",
+            "cumulative_pct_bads",
+            "cumulative_pct_population",
+            "lift",
+            "cumulative_lift",
+        }
+        assert set(result.columns) == expected_cols
+
+    def test_cumulative_pct_bads_reaches_one(self):
+        np.random.seed(42)
+        y_true = np.random.randint(0, 2, 200)
+        scores = np.random.rand(200)
+        result = calculate_lift_table(y_true, scores)
+        assert result["cumulative_pct_bads"].iloc[-1] == pytest.approx(1.0, abs=0.01)
+
+    def test_cumulative_pct_population_reaches_one(self):
+        np.random.seed(42)
+        y_true = np.random.randint(0, 2, 200)
+        scores = np.random.rand(200)
+        result = calculate_lift_table(y_true, scores)
+        assert result["cumulative_pct_population"].iloc[-1] == pytest.approx(1.0, abs=0.01)
+
+    def test_first_bin_has_highest_lift(self):
+        """With a good model, bin 1 (highest risk) should have lift >= 1."""
+        np.random.seed(42)
+        n = 500
+        y_true = np.zeros(n)
+        scores = np.random.rand(n)
+        y_true[scores > 0.7] = 1
+        result = calculate_lift_table(y_true, scores)
+        assert result["lift"].iloc[0] >= 1.0
+
+    def test_total_bads_sum_matches(self):
+        np.random.seed(42)
+        y_true = np.random.randint(0, 2, 200)
+        scores = np.random.rand(200)
+        result = calculate_lift_table(y_true, scores)
+        assert result["n_bads"].sum() == y_true.sum()
+
+
+# =============================================================================
+# delong_test Tests
+# =============================================================================
+
+
+class TestDelongTest:
+    def test_returns_expected_keys(self):
+        np.random.seed(42)
+        y_true = np.random.randint(0, 2, 200)
+        scores1 = np.random.rand(200)
+        scores2 = np.random.rand(200)
+        result = delong_test(y_true, scores1, scores2)
+        expected_keys = {"auc1", "auc2", "z_statistic", "p_value", "auc_diff", "se_diff"}
+        assert set(result.keys()) == expected_keys
+
+    def test_identical_scores_not_significant(self):
+        """Comparing a model to itself should yield p-value of 1 (no difference)."""
+        np.random.seed(42)
+        y_true = np.random.randint(0, 2, 200)
+        scores = np.random.rand(200)
+        result = delong_test(y_true, scores, scores)
+        assert result["p_value"] == pytest.approx(1.0, abs=0.01)
+        assert result["auc_diff"] == pytest.approx(0.0, abs=1e-10)
+
+    def test_different_models_detectable(self):
+        """A strong model vs a random one should yield a significant p-value."""
+        np.random.seed(42)
+        n = 500
+        y_true = np.zeros(n)
+        good_scores = np.random.rand(n)
+        y_true[good_scores > 0.5] = 1
+
+        random_scores = np.random.rand(n)
+        result = delong_test(y_true, good_scores, random_scores)
+        assert result["p_value"] < 0.05
+
+    def test_auc_values_between_0_and_1(self):
+        np.random.seed(42)
+        y_true = np.random.randint(0, 2, 200)
+        scores1 = np.random.rand(200)
+        scores2 = np.random.rand(200)
+        result = delong_test(y_true, scores1, scores2)
+        assert 0 <= result["auc1"] <= 1
+        assert 0 <= result["auc2"] <= 1
+
+    def test_p_value_between_0_and_1(self):
+        np.random.seed(42)
+        y_true = np.random.randint(0, 2, 200)
+        scores1 = np.random.rand(200)
+        scores2 = np.random.rand(200)
+        result = delong_test(y_true, scores1, scores2)
+        assert 0 <= result["p_value"] <= 1
+
+    def test_symmetry(self):
+        """delong_test(y, s1, s2) and delong_test(y, s2, s1) should give same p-value."""
+        np.random.seed(42)
+        y_true = np.random.randint(0, 2, 200)
+        scores1 = np.random.rand(200)
+        scores2 = np.random.rand(200)
+        result1 = delong_test(y_true, scores1, scores2)
+        result2 = delong_test(y_true, scores2, scores1)
+        assert result1["p_value"] == pytest.approx(result2["p_value"], abs=1e-10)
+        assert result1["auc_diff"] == pytest.approx(-result2["auc_diff"], abs=1e-10)

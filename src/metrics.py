@@ -3,26 +3,33 @@ Statistical metrics and model evaluation functions for credit risk scoring.
 
 This module provides functions for evaluating credit risk model performance:
 - Classification metrics (Gini, AUC, KS statistic)
+- Precision-Recall metrics
 - Population Stability Index (PSI) calculation
 - Bootstrap confidence intervals
 - Rejection threshold analysis
+- Lift and cumulative gains analysis
 - Information Value (IV) calculation
+- DeLong test for AUC comparison
 - Comprehensive model summary reports
 
 Key functions:
 - compute_metrics: Calculate Gini, AUC, KS, and CAP curve
+- compute_precision_recall: Calculate precision, recall, and average precision
 - bootstrap_confidence_interval: Compute CI for Gini and KS via bootstrap
 - calculate_psi_by_period: Population Stability Index with visualization (date-based)
+- calculate_lift_table: Decile-level lift and cumulative gains analysis
 - model_summary: Generate comprehensive model performance report
 - calc_iv: Calculate Information Value for feature selection
+- delong_test: Statistical test for comparing two AUC values
 """
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from scipy import stats
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import auc, roc_curve
+from sklearn.metrics import auc, average_precision_score, precision_recall_curve, roc_curve
 from sklearn.preprocessing import StandardScaler
 
 
@@ -429,3 +436,235 @@ def calc_iv(df: pd.DataFrame, var: str, target: str) -> float:
     iv = df_tmp["iv"].sum()
 
     return iv
+
+
+def compute_precision_recall(
+    y_true: np.ndarray,
+    y_scores: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """
+    Compute precision-recall curve and average precision.
+
+    Useful for evaluating models on imbalanced datasets (low default rates)
+    where ROC curves can be misleadingly optimistic.
+
+    Args:
+        y_true: Binary array of true outcomes (1=bad, 0=good).
+        y_scores: Model scores (higher = higher risk of being class 1).
+
+    Returns:
+        Tuple of (precision, recall, thresholds, average_precision).
+    """
+    precision, recall, thresholds = precision_recall_curve(y_true, y_scores)
+    ap = average_precision_score(y_true, y_scores)
+    return precision, recall, thresholds, ap
+
+
+def calculate_lift_table(
+    y_true: np.ndarray,
+    y_scores: np.ndarray,
+    n_bins: int = 10,
+) -> pd.DataFrame:
+    """
+    Generate a decile-level lift and cumulative gains table.
+
+    Sorts the population by score (descending risk), divides into quantile bins,
+    and computes per-bin and cumulative statistics.
+
+    Args:
+        y_true: Binary array of true outcomes (1=bad, 0=good).
+        y_scores: Model scores (higher = higher risk).
+        n_bins: Number of quantile bins (default 10 for deciles).
+
+    Returns:
+        DataFrame with columns:
+        - bin: Bin number (1 = highest risk).
+        - n_records: Number of records in the bin.
+        - n_bads: Number of bads (target=1) in the bin.
+        - bad_rate: Bad rate within the bin.
+        - pct_population: Percentage of total population in the bin.
+        - pct_bads: Percentage of total bads captured by the bin.
+        - cumulative_pct_bads: Cumulative percentage of bads captured.
+        - cumulative_pct_population: Cumulative percentage of population.
+        - lift: Ratio of bin bad rate to overall bad rate.
+        - cumulative_lift: Cumulative lift up to and including this bin.
+    """
+    y_true_arr = np.asarray(y_true)
+    y_scores_arr = np.asarray(y_scores)
+
+    total_records = len(y_true_arr)
+    total_bads = y_true_arr.sum()
+    overall_bad_rate = total_bads / total_records if total_records > 0 else 0.0
+
+    # Sort by descending score
+    sorted_indices = np.argsort(y_scores_arr)[::-1]
+    sorted_true = y_true_arr[sorted_indices]
+
+    # Create bins (1 = highest risk)
+    bin_edges = np.linspace(0, total_records, n_bins + 1, dtype=int)
+
+    rows = []
+    cumulative_bads = 0
+    cumulative_records = 0
+
+    for i in range(n_bins):
+        start, end = bin_edges[i], bin_edges[i + 1]
+        bin_true = sorted_true[start:end]
+        n_records = len(bin_true)
+        n_bads = int(bin_true.sum())
+        bad_rate = n_bads / n_records if n_records > 0 else 0.0
+
+        cumulative_bads += n_bads
+        cumulative_records += n_records
+
+        pct_population = n_records / total_records
+        pct_bads = n_bads / total_bads if total_bads > 0 else 0.0
+        cumulative_pct_bads = cumulative_bads / total_bads if total_bads > 0 else 0.0
+        cumulative_pct_population = cumulative_records / total_records
+
+        lift = bad_rate / overall_bad_rate if overall_bad_rate > 0 else 0.0
+        cumulative_bad_rate = cumulative_bads / cumulative_records if cumulative_records > 0 else 0.0
+        cumulative_lift = cumulative_bad_rate / overall_bad_rate if overall_bad_rate > 0 else 0.0
+
+        rows.append(
+            {
+                "bin": i + 1,
+                "n_records": n_records,
+                "n_bads": n_bads,
+                "bad_rate": round(bad_rate, 4),
+                "pct_population": round(pct_population, 4),
+                "pct_bads": round(pct_bads, 4),
+                "cumulative_pct_bads": round(cumulative_pct_bads, 4),
+                "cumulative_pct_population": round(cumulative_pct_population, 4),
+                "lift": round(lift, 4),
+                "cumulative_lift": round(cumulative_lift, 4),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def _compute_midrank(x: np.ndarray) -> np.ndarray:
+    """Compute midranks for the DeLong test."""
+    sorted_idx = np.argsort(x)
+    n = len(x)
+    midranks = np.empty(n)
+    i = 0
+    while i < n:
+        j = i
+        while j < n and x[sorted_idx[j]] == x[sorted_idx[i]]:
+            j += 1
+        # Assign average rank to all tied values
+        avg_rank = 0.5 * (i + j + 1)
+        for k in range(i, j):
+            midranks[sorted_idx[k]] = avg_rank
+        i = j
+    return midranks
+
+
+def _fast_delong(y_true: np.ndarray, scores1: np.ndarray, scores2: np.ndarray) -> tuple[float, np.ndarray]:
+    """
+    Core DeLong computation for two paired AUC estimates.
+
+    Implementation based on:
+    Sun & Xu (2014) "Fast Implementation of DeLong's Algorithm for Comparing
+    the Areas Under Correlated Receiver Operating Characteristic Curves"
+
+    Returns:
+        Tuple of (auc1, auc2, covariance_matrix).
+    """
+    positive_mask = y_true == 1
+    negative_mask = y_true == 0
+    m = positive_mask.sum()  # number of positives
+    n = negative_mask.sum()  # number of negatives
+
+    aucs = []
+    structural_components = []
+
+    for scores in [scores1, scores2]:
+        # Compute the structural components (placement values)
+        # For positives: fraction of negatives with lower score
+        # For negatives: fraction of positives with lower score
+        ordered = np.concatenate([scores[positive_mask], scores[negative_mask]])
+
+        midranks = _compute_midrank(ordered)
+
+        positive_ranks = midranks[:m]
+        auc_val = (positive_ranks.sum() - m * (m + 1) / 2) / (m * n)
+        aucs.append(auc_val)
+
+        # Structural components for variance estimation
+        v_positive = (positive_ranks - np.arange(1, m + 1)) / n
+        v_negative = 1.0 - (_compute_midrank(-ordered)[m:] - np.arange(1, n + 1)) / m
+
+        structural_components.append((v_positive, v_negative))
+
+    # Compute 2x2 covariance matrix
+    cov = np.zeros((2, 2))
+    for i in range(2):
+        for j in range(2):
+            s10 = np.cov(structural_components[i][0], structural_components[j][0], ddof=1)[0, 1] if m > 1 else 0.0
+            s01 = np.cov(structural_components[i][1], structural_components[j][1], ddof=1)[0, 1] if n > 1 else 0.0
+            cov[i, j] = s10 / m + s01 / n
+
+    return np.array(aucs), cov
+
+
+def delong_test(
+    y_true: np.ndarray,
+    scores1: np.ndarray,
+    scores2: np.ndarray,
+) -> dict[str, float]:
+    """
+    DeLong test for comparing two correlated AUC values.
+
+    Tests the null hypothesis that two models have equal AUC on the same dataset.
+
+    Based on:
+    DeLong et al. (1988) "Comparing the Areas under Two or More Correlated
+    Receiver Operating Characteristic Curves: A Nonparametric Approach"
+
+    Args:
+        y_true: Binary array of true outcomes (1=bad, 0=good).
+        scores1: Predicted scores from model 1.
+        scores2: Predicted scores from model 2.
+
+    Returns:
+        Dictionary with keys:
+        - auc1: AUC for model 1.
+        - auc2: AUC for model 2.
+        - z_statistic: Z-score of the difference.
+        - p_value: Two-sided p-value.
+        - auc_diff: AUC1 - AUC2.
+        - se_diff: Standard error of the difference.
+
+    Example:
+        >>> result = delong_test(y_true, model_a_scores, model_b_scores)
+        >>> if result["p_value"] < 0.05:
+        ...     print("Models have significantly different AUCs")
+    """
+    y_true_arr = np.asarray(y_true)
+    scores1_arr = np.asarray(scores1, dtype=float)
+    scores2_arr = np.asarray(scores2, dtype=float)
+
+    aucs, cov = _fast_delong(y_true_arr, scores1_arr, scores2_arr)
+
+    # Variance of the difference: Var(AUC1 - AUC2) = Var(AUC1) + Var(AUC2) - 2*Cov(AUC1, AUC2)
+    var_diff = cov[0, 0] + cov[1, 1] - 2 * cov[0, 1]
+    se_diff = np.sqrt(max(var_diff, 0))
+
+    if se_diff == 0:
+        z = 0.0
+    else:
+        z = (aucs[0] - aucs[1]) / se_diff
+
+    p_value = 2 * stats.norm.sf(abs(z))
+
+    return {
+        "auc1": aucs[0],
+        "auc2": aucs[1],
+        "z_statistic": z,
+        "p_value": p_value,
+        "auc_diff": aucs[0] - aucs[1],
+        "se_diff": se_diff,
+    }
