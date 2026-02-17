@@ -21,3 +21,4 @@ env/
 error_log.txt
 .pytest_cache/
 .claude/
+allocation_results.csv
