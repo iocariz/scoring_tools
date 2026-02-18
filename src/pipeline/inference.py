@@ -6,7 +6,7 @@ import joblib
 import pandas as pd
 from loguru import logger
 
-from src.config import PreprocessingSettings
+from src.config import OutputPaths, PreprocessingSettings
 from src.inference_optimized import inference_pipeline, todu_average_inference
 from src.persistence import load_model_for_prediction
 
@@ -15,6 +15,7 @@ def run_inference_phase(
     data_clean: pd.DataFrame,
     settings: PreprocessingSettings,
     model_path: str = None,
+    output: OutputPaths | None = None,
 ) -> tuple[dict, Any]:
     """Run risk inference: either load a pre-trained model or train a new one.
 
@@ -22,6 +23,7 @@ def run_inference_phase(
         data_clean: Cleaned DataFrame from preprocessing
         settings: Configuration settings object
         model_path: Optional path to a pre-trained model directory
+        output: Output paths configuration. Defaults to current directory.
 
     Returns:
         Tuple of (risk_inference, reg_todu_amt_pile)
@@ -29,6 +31,9 @@ def run_inference_phase(
     Raises:
         Exception: If model loading or training fails
     """
+    if output is None:
+        output = OutputPaths()
+
     t0 = time.perf_counter()
     segment = settings.segment_filter
 
@@ -69,7 +74,7 @@ def run_inference_phase(
                 feature_col="oa_amt",
                 target_col="todu_amt_pile_h6",
                 z_threshold=settings.z_threshold,
-                plot_output_path="models/todu_avg_inference.html",
+                plot_output_path=output.todu_avg_inference_html,
                 model_output_path=None,  # Don't save, it's a fallback
             )
 
@@ -88,7 +93,7 @@ def run_inference_phase(
             test_size=0.4,
             include_hurdle=True,
             save_model=True,
-            model_base_path="models",
+            model_base_path=output.model_base_path,
             create_visualizations=True,
         )
 
@@ -100,8 +105,8 @@ def run_inference_phase(
             feature_col="oa_amt",
             target_col="todu_amt_pile_h6",
             z_threshold=settings.z_threshold,
-            plot_output_path="models/todu_avg_inference.html",
-            model_output_path="models/todu_model.joblib",
+            plot_output_path=output.todu_avg_inference_html,
+            model_output_path=output.todu_model_joblib,
         )
 
         elapsed = time.perf_counter() - t0

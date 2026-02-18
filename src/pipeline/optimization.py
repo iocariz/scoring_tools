@@ -5,7 +5,7 @@ import pandas as pd
 from loguru import logger
 
 from src.audit import save_audit_tables
-from src.config import PreprocessingSettings
+from src.config import OutputPaths, PreprocessingSettings
 from src.inference_optimized import run_optimization_pipeline
 from src.mr_pipeline import process_mr_period
 from src.optimization_utils import (
@@ -35,6 +35,7 @@ def run_optimization_phase(
     tasa_fin: float,
     settings: PreprocessingSettings,
     annual_coef: float,
+    output: OutputPaths | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list, list]:
     """Run the optimization pipeline: generate summary, find optimal cutoffs.
 
@@ -47,14 +48,17 @@ def run_optimization_phase(
         tasa_fin: Financing/transformation rate
         settings: Configuration settings object
         annual_coef: Annual coefficient for the observation period
+        output: Output paths configuration. Defaults to current directory.
 
     Returns:
         Tuple of (data_summary_desagregado, data_summary, data_summary_sample_no_opt,
                   values_var0, values_var1)
     """
+    if output is None:
+        output = OutputPaths()
+
     t0 = time.perf_counter()
     segment = settings.segment_filter
-    config_dict = settings.model_dump()
 
     data_summary_desagregado = run_optimization_pipeline(
         data_booked=data_booked,
@@ -63,8 +67,10 @@ def run_optimization_phase(
         reg_todu_amt_pile=reg_todu_amt_pile,
         stressor=stress_factor,
         tasa_fin=tasa_fin,
-        config_data=config_dict,
+        indicators=settings.indicators,
+        variables=settings.variables,
         annual_coef=annual_coef,
+        b2_output_path=output.b2_visualization_html,
     )
 
     # Cutoff optimization
@@ -133,8 +139,8 @@ def run_optimization_phase(
         data_summary_sample_no_opt = data_summary.copy()
 
         # Save the fixed cutoff solution as the only Pareto solution
-        data_summary.to_csv("data/pareto_optimal_solutions.csv", index=False)
-        logger.debug(f"[{segment}] Fixed cutoff solution saved to data/pareto_optimal_solutions.csv")
+        data_summary.to_csv(output.pareto_solutions_csv, index=False)
+        logger.debug(f"[{segment}] Fixed cutoff solution saved to {output.pareto_solutions_csv}")
 
     else:
         # Get feasible solutions
@@ -161,8 +167,8 @@ def run_optimization_phase(
         )
 
         # Save all Pareto-optimal solutions (for Cutoff Explorer risk slider)
-        data_summary.to_csv("data/pareto_optimal_solutions.csv", index=False)
-        logger.debug(f"[{segment}] Pareto solutions saved to data/pareto_optimal_solutions.csv")
+        data_summary.to_csv(output.pareto_solutions_csv, index=False)
+        logger.debug(f"[{segment}] Pareto solutions saved to {output.pareto_solutions_csv}")
 
     multiplier = settings.multiplier
     data_summary_desagregado["b2_ever_h6"] = calculate_b2_ever_h6(
@@ -203,6 +209,7 @@ def run_scenario_analysis(
     annual_coef_mr: float,
     values_var0: list,
     values_var1: list,
+    output: OutputPaths | None = None,
 ) -> pd.DataFrame:
     """Run scenario analysis for a single risk threshold: visualization, MR processing, audit.
 
@@ -226,10 +233,12 @@ def run_scenario_analysis(
     Returns:
         Cutoff summary DataFrame for this scenario
     """
+    if output is None:
+        output = OutputPaths()
+
     t0 = time.perf_counter()
     segment = settings.segment_filter
     current_risk = float(round(scenario_risk, 1))
-    config_dict = settings.model_dump()
 
     visualizer = RiskProductionVisualizer(
         data_summary=data_summary,
@@ -283,12 +292,12 @@ def run_scenario_analysis(
             summary_table.loc[mask_opt, "risk_ci_upper"] = ci_data.get("risk_ci_upper", 0.0) * 100
 
     # Save outputs
-    visualizer.save_html(f"images/risk_production_visualizer{suffix}.html")
-    summary_table.to_csv(f"data/risk_production_summary_table{suffix}.csv", index=False)
-    data_summary_desagregado.to_csv(f"data/data_summary_desagregado{suffix}.csv", index=False)
-    opt_sol.to_csv(f"data/optimal_solution{suffix}.csv", index=False)
+    visualizer.save_html(output.risk_production_visualizer_html(suffix))
+    summary_table.to_csv(output.risk_production_summary_csv(suffix), index=False)
+    data_summary_desagregado.to_csv(output.data_summary_desagregado_csv(suffix), index=False)
+    opt_sol.to_csv(output.optimal_solution_csv(suffix), index=False)
     # Export full efficient frontier for global optimization
-    data_summary.to_csv(f"data/efficient_frontier{suffix}.csv", index=False)
+    data_summary.to_csv(output.efficient_frontier_csv(suffix), index=False)
     logger.debug(f"[{segment}] Scenario {scenario_name} outputs saved with suffix '{suffix}'")
 
     # Extract risk and production values from summary table for cutoff summary
@@ -312,17 +321,17 @@ def run_scenario_analysis(
 
     if scenario_name == "base":
         # Also save as default filenames for backward compatibility
-        visualizer.save_html("images/risk_production_visualizer.html")
-        summary_table.to_csv("data/risk_production_summary_table.csv", index=False)
-        opt_sol.to_csv("data/optimal_solution.csv", index=False)
-        data_summary_desagregado.to_csv("data/data_summary_desagregado.csv", index=False)
+        visualizer.save_html(output.risk_production_visualizer_html())
+        summary_table.to_csv(output.risk_production_summary_csv(), index=False)
+        opt_sol.to_csv(output.optimal_solution_csv(), index=False)
+        data_summary_desagregado.to_csv(output.data_summary_desagregado_csv(), index=False)
         logger.debug(f"[{segment}] Base scenario outputs also saved to default filenames")
 
         # Base Scenario MR Processing (Default filenames)
         process_mr_period(
             data_clean=data_clean,
             data_booked=data_booked,
-            config_data=config_dict,
+            settings=settings,
             risk_inference=risk_inference,
             reg_todu_amt_pile=reg_todu_amt_pile,
             stress_factor=stress_factor,
@@ -336,7 +345,7 @@ def run_scenario_analysis(
     process_mr_period(
         data_clean=data_clean,
         data_booked=data_booked,
-        config_data=config_dict,
+        settings=settings,
         risk_inference=risk_inference,
         reg_todu_amt_pile=reg_todu_amt_pile,
         stress_factor=stress_factor,
@@ -367,9 +376,12 @@ def run_scenario_analysis(
     date_fin_main = settings.get_date("date_fin_book_obs")
     n_months_main = (date_fin_main.year - date_ini_main.year) * 12 + (date_fin_main.month - date_ini_main.month) + 1
 
-    date_ini_mr = settings.get_date("date_ini_book_obs_mr")
-    date_fin_mr = settings.get_date("date_fin_book_obs_mr")
-    n_months_mr = (date_fin_mr.year - date_ini_mr.year) * 12 + (date_fin_mr.month - date_ini_mr.month) + 1
+    if settings.date_ini_book_obs_mr is not None and settings.date_fin_book_obs_mr is not None:
+        date_ini_mr = settings.get_date("date_ini_book_obs_mr")
+        date_fin_mr = settings.get_date("date_fin_book_obs_mr")
+        n_months_mr = (date_fin_mr.year - date_ini_mr.year) * 12 + (date_fin_mr.month - date_ini_mr.month) + 1
+    else:
+        n_months_mr = None
 
     save_audit_tables(
         data_main=data_main_period,
@@ -377,7 +389,7 @@ def run_scenario_analysis(
         optimal_solution_df=opt_sol,
         variables=settings.variables,
         scenario_name=scenario_name,
-        output_dir="data",
+        output_dir=str(output.data_dir),
         inv_var1=inv_var1,
         financing_rate=tasa_fin,
         n_months_main=n_months_main,
@@ -423,7 +435,13 @@ def _build_scenario_list(settings: PreprocessingSettings, use_fixed_cutoffs: boo
 
 
 def _compute_mr_annual_coef(settings: PreprocessingSettings) -> float:
-    """Compute the annual coefficient for the MR period."""
+    """Compute the annual coefficient for the MR period.
+
+    Returns 1.0 if MR dates are not configured.
+    """
+    if settings.date_ini_book_obs_mr is None or settings.date_fin_book_obs_mr is None:
+        logger.warning("MR dates not configured — using annual_coef_mr=1.0")
+        return 1.0
     date_ini_mr = settings.get_date("date_ini_book_obs_mr")
     date_fin_mr = settings.get_date("date_fin_book_obs_mr")
     annual_coef_mr = calculate_annual_coef(date_ini_book_obs=date_ini_mr, date_fin_book_obs=date_fin_mr)
@@ -431,12 +449,19 @@ def _compute_mr_annual_coef(settings: PreprocessingSettings) -> float:
     return annual_coef_mr
 
 
-def _save_cutoff_summaries(cutoff_summaries: list[pd.DataFrame], settings: PreprocessingSettings) -> None:
+def _save_cutoff_summaries(
+    cutoff_summaries: list[pd.DataFrame],
+    settings: PreprocessingSettings,
+    output: OutputPaths | None = None,
+) -> None:
     """Consolidate and save cutoff summaries across scenarios."""
+    if output is None:
+        output = OutputPaths()
+
     segment = settings.segment_filter
 
     consolidated_cutoffs = consolidate_cutoff_summaries(
-        summaries=cutoff_summaries, output_path="data/cutoff_summary_by_segment.csv"
+        summaries=cutoff_summaries, output_path=output.cutoff_summary_by_segment_csv
     )
 
     if not consolidated_cutoffs.empty:
@@ -444,7 +469,7 @@ def _save_cutoff_summaries(cutoff_summaries: list[pd.DataFrame], settings: Prepr
             cutoff_summary=consolidated_cutoffs,
             variables=settings.variables,
         )
-        wide_cutoffs.to_csv("data/cutoff_summary_wide.csv", index=False)
-        logger.debug(f"[{segment}] Cutoff summaries saved to data/cutoff_summary_*.csv")
+        wide_cutoffs.to_csv(output.cutoff_summary_wide_csv, index=False)
+        logger.debug(f"[{segment}] Cutoff summaries saved to {output.cutoff_summary_by_segment_csv}")
 
         logger.info(f"[{segment}] Cutoff summary:\n{wide_cutoffs.to_string()}")

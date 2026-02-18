@@ -7,11 +7,14 @@ Helps avoid wasted compute time on bad data.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 from loguru import logger
+
+if TYPE_CHECKING:
+    from src.config import PreprocessingSettings
 
 
 class CheckStatus(Enum):
@@ -415,13 +418,15 @@ def check_duplicate_rows(
         )
 
 
-def run_data_quality_checks(df: pd.DataFrame, config: dict[str, Any], verbose: bool = True) -> DataQualityReport:
+def run_data_quality_checks(
+    df: pd.DataFrame, settings: "PreprocessingSettings", verbose: bool = True
+) -> DataQualityReport:
     """
     Run all data quality checks on the input data.
 
     Args:
         df: Input DataFrame
-        config: Configuration dictionary with keys like 'keep_vars', 'indicators', etc.
+        settings: Configuration settings object
         verbose: Whether to print the report
 
     Returns:
@@ -430,11 +435,11 @@ def run_data_quality_checks(df: pd.DataFrame, config: dict[str, Any], verbose: b
     report = DataQualityReport()
 
     # Extract config values
-    keep_vars = config.get("keep_vars", [])
-    indicators = config.get("indicators", [])
-    segment_filter = config.get("segment_filter", "")
-    date_ini = config.get("date_ini_book_obs", "")
-    date_fin = config.get("date_fin_book_obs", "")
+    keep_vars = settings.keep_vars
+    indicators = settings.indicators
+    segment_filter = settings.segment_filter
+    date_ini = settings.date_ini_book_obs
+    date_fin = settings.date_fin_book_obs
 
     required_columns = keep_vars + indicators + ["segment_cut_off", "status_name", "mis_date"]
 
@@ -461,13 +466,15 @@ def run_data_quality_checks(df: pd.DataFrame, config: dict[str, Any], verbose: b
     return report
 
 
-def validate_data_or_fail(df: pd.DataFrame, config: dict[str, Any], allow_warnings: bool = True) -> DataQualityReport:
+def validate_data_or_fail(
+    df: pd.DataFrame, settings: "PreprocessingSettings", allow_warnings: bool = True
+) -> DataQualityReport:
     """
     Run data quality checks and raise an exception if validation fails.
 
     Args:
         df: Input DataFrame
-        config: Configuration dictionary
+        settings: Configuration settings object
         allow_warnings: If True, only fail on errors; if False, fail on warnings too
 
     Returns:
@@ -476,7 +483,7 @@ def validate_data_or_fail(df: pd.DataFrame, config: dict[str, Any], allow_warnin
     Raises:
         ValueError: If validation fails
     """
-    report = run_data_quality_checks(df, config, verbose=True)
+    report = run_data_quality_checks(df, settings, verbose=True)
 
     if not report.is_valid:
         raise ValueError(

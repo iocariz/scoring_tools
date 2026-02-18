@@ -7,39 +7,15 @@ performance optimizations, and comprehensive logging.
 
 import sys
 import time
-from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import pandas as pd
 from loguru import logger
 
 from src.constants import RejectReason, StatusName
 
-
-@dataclass
-class PreprocessingConfig:
-    """Configuration for preprocessing pipeline."""
-
-    keep_vars: list[str]
-    indicators: list[str]
-    segment_filter: str = "loan_known_ab"
-    octroi_bins: list[float] | None = None
-    efx_bins: list[float] | None = None
-    date_ini_book_obs: str | None = None
-    date_fin_book_obs: str | None = None
-    score_measures: list[str] | None = None
-    log_level: str = "INFO"
-    log_file: str | None = None
-
-    def validate(self) -> None:
-        """Validate configuration parameters."""
-        if not self.keep_vars:
-            raise ValueError("keep_vars cannot be empty")
-        if not self.indicators:
-            raise ValueError("indicators cannot be empty")
-        if self.octroi_bins and len(self.octroi_bins) < 2:
-            raise ValueError("octroi_bins must have at least 2 values")
-        if self.efx_bins and len(self.efx_bins) < 2:
-            raise ValueError("efx_bins must have at least 2 values")
+if TYPE_CHECKING:
+    from src.config import PreprocessingSettings
 
 
 def log_dataframe_stats(df: pd.DataFrame, name: str) -> None:
@@ -526,26 +502,24 @@ def update_status_and_reject_reason(data: pd.DataFrame, score_measures: list[str
     return result
 
 
-def _configure_pipeline_logging(log_level: str, log_file: str | None) -> None:
+def _configure_pipeline_logging(log_level: str) -> None:
     """Remove default handler and add configured one."""
     logger.remove()
     logger.add(sys.stdout, level=log_level)
-    if log_file:
-        logger.add(log_file, level=log_level, rotation="10 MB")
 
 
-def _run_data_transformations(df: pd.DataFrame, config: PreprocessingConfig) -> pd.DataFrame:
+def _run_data_transformations(df: pd.DataFrame, settings: "PreprocessingSettings") -> pd.DataFrame:
     """Run preprocess_data, apply_binning, update_oa_amt_h0, update_status."""
     logger.info("\n" + "=" * 80)
     logger.info("Step 1: Basic filtering")
     logger.info("=" * 80)
-    data_clean = preprocess_data(df, config.keep_vars, config.indicators, config.segment_filter)
+    data_clean = preprocess_data(df, settings.keep_vars, settings.indicators, settings.segment_filter)
 
-    if config.octroi_bins and config.efx_bins:
+    if settings.octroi_bins and settings.efx_bins:
         logger.info("\n" + "=" * 80)
         logger.info("Step 2: Binning transformations")
         logger.info("=" * 80)
-        data_clean = apply_binning_transformations(data_clean, config.octroi_bins, config.efx_bins)
+        data_clean = apply_binning_transformations(data_clean, settings.octroi_bins, settings.efx_bins)
     else:
         logger.warning("Skipping binning transformations (bins not provided)")
 
@@ -557,7 +531,7 @@ def _run_data_transformations(df: pd.DataFrame, config: PreprocessingConfig) -> 
     logger.info("\n" + "=" * 80)
     logger.info("Step 4: Update status and reject reasons")
     logger.info("=" * 80)
-    data_clean = update_status_and_reject_reason(data_clean, config.score_measures)
+    data_clean = update_status_and_reject_reason(data_clean, settings.score_measures)
 
     return data_clean
 
@@ -602,7 +576,7 @@ def _filter_demand_for_period(
 
 
 def complete_preprocessing_pipeline(
-    df: pd.DataFrame, config: PreprocessingConfig
+    df: pd.DataFrame, settings: "PreprocessingSettings"
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Run the complete preprocessing pipeline.
@@ -611,8 +585,8 @@ def complete_preprocessing_pipeline(
     ----------
     df : pd.DataFrame
         Raw input data
-    config : PreprocessingConfig
-        Configuration object containing all parameters
+    settings : PreprocessingSettings
+        Configuration settings object
 
     Returns
     -------
@@ -624,20 +598,19 @@ def complete_preprocessing_pipeline(
     ValueError
         If configuration is invalid or processing fails
     """
-    config.validate()
-    _configure_pipeline_logging(config.log_level, config.log_file)
+    _configure_pipeline_logging(settings.log_level)
 
     total_start_time = time.time()
     logger.info("=" * 80)
     logger.info("Starting complete preprocessing pipeline")
     logger.info("=" * 80)
     logger.info(f"Input data shape: {df.shape}")
-    logger.info(f"Observation period: {config.date_ini_book_obs} to {config.date_fin_book_obs}")
+    logger.info(f"Observation period: {settings.date_ini_book_obs} to {settings.date_fin_book_obs}")
 
     try:
-        data_clean = _run_data_transformations(df, config)
-        data_booked = _filter_booked_for_period(data_clean, config.date_ini_book_obs, config.date_fin_book_obs)
-        data_demand = _filter_demand_for_period(data_clean, config.date_ini_book_obs, config.date_fin_book_obs)
+        data_clean = _run_data_transformations(df, settings)
+        data_booked = _filter_booked_for_period(data_clean, settings.date_ini_book_obs, settings.date_fin_book_obs)
+        data_demand = _filter_demand_for_period(data_clean, settings.date_ini_book_obs, settings.date_fin_book_obs)
 
         # Log final statistics
         logger.info("\n" + "=" * 80)

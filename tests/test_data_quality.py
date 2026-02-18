@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.config import PreprocessingSettings
 from src.data_quality import (
     CheckResult,
     CheckStatus,
@@ -367,6 +368,22 @@ class TestCheckDuplicateRows:
 # =============================================================================
 
 
+def _make_settings(**overrides) -> PreprocessingSettings:
+    """Build a PreprocessingSettings with sensible defaults for tests."""
+    defaults = dict(
+        keep_vars=["score"],
+        indicators=["oa_amt"],
+        segment_filter="A",
+        octroi_bins=[-float("inf"), 0.5, float("inf")],
+        efx_bins=[-float("inf"), 0.5, float("inf")],
+        date_ini_book_obs="2023-01-01",
+        date_fin_book_obs="2023-07-01",
+        variables=["sc_octroi_new_clus", "new_efx_clus"],
+    )
+    defaults.update(overrides)
+    return PreprocessingSettings(**defaults)
+
+
 class TestRunDataQualityChecks:
     def _make_df(self):
         return pd.DataFrame(
@@ -381,14 +398,8 @@ class TestRunDataQualityChecks:
 
     def test_basic_run(self):
         df = self._make_df()
-        config = {
-            "keep_vars": ["score"],
-            "indicators": ["oa_amt"],
-            "segment_filter": "A",
-            "date_ini_book_obs": "2023-01-01",
-            "date_fin_book_obs": "2023-07-01",
-        }
-        report = run_data_quality_checks(df, config, verbose=False)
+        settings = _make_settings()
+        report = run_data_quality_checks(df, settings, verbose=False)
         assert isinstance(report, DataQualityReport)
         assert len(report.checks) > 0
 
@@ -401,15 +412,13 @@ class TestRunDataQualityChecks:
 class TestValidateDataOrFail:
     def test_fails_on_failure(self):
         df = pd.DataFrame({"a": [1]})  # Missing required columns
-        config = {
-            "keep_vars": ["missing_col"],
-            "indicators": ["missing_ind"],
-            "segment_filter": "A",
-            "date_ini_book_obs": "2023-01-01",
-            "date_fin_book_obs": "2023-12-01",
-        }
+        settings = _make_settings(
+            keep_vars=["missing_col"],
+            indicators=["missing_ind"],
+            date_fin_book_obs="2023-12-01",
+        )
         with pytest.raises(ValueError, match="Data quality validation failed"):
-            validate_data_or_fail(df, config)
+            validate_data_or_fail(df, settings)
 
     def test_passes_valid_data(self):
         df = pd.DataFrame(
@@ -420,12 +429,6 @@ class TestValidateDataOrFail:
                 "oa_amt": np.random.rand(200) * 1000,
             }
         )
-        config = {
-            "keep_vars": ["oa_amt"],
-            "indicators": [],
-            "segment_filter": "A",
-            "date_ini_book_obs": "2023-01-01",
-            "date_fin_book_obs": "2023-07-01",
-        }
-        report = validate_data_or_fail(df, config)
+        settings = _make_settings(keep_vars=["oa_amt"], indicators=["oa_amt"])
+        report = validate_data_or_fail(df, settings)
         assert report.is_valid

@@ -12,7 +12,9 @@ Key functions:
 - process_mr_period: Execute full MR analysis for a time period
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from src.config import OutputPaths
 
 import numpy as np
 import pandas as pd
@@ -26,6 +28,9 @@ from src.models import calculate_B2
 from src.preprocess_improved import filter_by_date
 from src.stability import compare_main_vs_mr
 from src.utils import calculate_b2_ever_h6, calculate_todu_30ever_from_b2
+
+if TYPE_CHECKING:
+    from src.config import PreprocessingSettings
 
 
 def calculate_metrics_from_cuts(
@@ -149,7 +154,7 @@ def calculate_metrics_from_cuts(
 def process_mr_period(
     data_clean: pd.DataFrame,
     data_booked: pd.DataFrame,
-    config_data: dict[str, Any],
+    settings: "PreprocessingSettings",
     risk_inference: dict[str, Any],
     reg_todu_amt_pile: Any,
     stress_factor: float,
@@ -157,25 +162,29 @@ def process_mr_period(
     annual_coef: float,
     optimal_solution_df: pd.DataFrame | None = None,
     file_suffix: str = "",
+    output: OutputPaths | None = None,
 ) -> None:
     """
     Process the MR period data: filtering, inference, aggregation, visualization, and summary table.
     """
+    if output is None:
+        output = OutputPaths()
+
     logger.info(f"Processing MR period data (suffix: '{file_suffix}')...")
 
-    if not (config_data.get("date_ini_book_obs_mr") and config_data.get("date_fin_book_obs_mr")):
+    if not (settings.date_ini_book_obs_mr and settings.date_fin_book_obs_mr):
         logger.warning("MR dates not configured. Skipping MR period processing.")
         return
 
     try:
         indicators_mr = ["acct_booked_h0", "oa_amt", "oa_amt_h0"]
         # Ensure merge keys (variables) are included
-        merge_keys = config_data.get("variables", ["sc_octroi_new_clus", "new_efx_clus"])
-        mr_cols = config_data["keep_vars"] + indicators_mr + merge_keys
+        merge_keys = settings.variables
+        mr_cols = settings.keep_vars + indicators_mr + merge_keys
 
         # Create data_demand_mr (filter by date and select columns)
         data_mr_period = filter_by_date(
-            data_clean, "mis_date", config_data["date_ini_book_obs_mr"], config_data["date_fin_book_obs_mr"]
+            data_clean, "mis_date", settings.date_ini_book_obs_mr, settings.date_fin_book_obs_mr
         )
 
         available_mr_cols = [c for c in mr_cols if c in data_mr_period.columns]
@@ -318,18 +327,19 @@ def process_mr_period(
             reg_todu_amt_pile=reg_todu_amt_pile,
             stressor=stress_factor,
             tasa_fin=tasa_fin,
-            config_data=config_data,
+            indicators=settings.indicators,
+            variables=settings.variables,
             annual_coef=annual_coef,
         )
 
         # Save MR summary
-        summary_path = f"data/data_summary_desagregado_mr{file_suffix}.csv"
+        summary_path = output.mr_summary_csv(file_suffix)
         data_summary_desagregado_mr.to_csv(summary_path, index=False)
         logger.info(f"MR summary data saved to {summary_path}")
 
         # --- Visualize b2_ever_h6 for MR ---
         logger.info("Generating b2_ever_h6 visualization for MR dataset...")
-        VARIABLES = config_data.get("variables", ["sc_octroi_new_clus", "new_efx_clus"])
+        VARIABLES = settings.variables
 
         fig_mr = go.Figure()
         data_surf_mr = data_summary_desagregado_mr.copy()
@@ -365,7 +375,7 @@ def process_mr_period(
             )
         )
 
-        output_plot_path_mr = f"images/b2_ever_h6_vs_octroi_and_risk_score_mr{file_suffix}.html"
+        output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
         fig_mr.write_html(output_plot_path_mr)
         logger.info(f"MR Visualization saved to {output_plot_path_mr}")
 
@@ -381,7 +391,7 @@ def process_mr_period(
         mr_summary_table = calculate_metrics_from_cuts(data_summary_desagregado_mr, optimal_solution_df, VARIABLES)
 
         if mr_summary_table is not None:
-            mr_summary_path = f"data/risk_production_summary_table_mr{file_suffix}.csv"
+            mr_summary_path = output.mr_risk_production_summary_csv(file_suffix)
             mr_summary_table.to_csv(mr_summary_path, index=False)
             logger.info(f"MR Risk Production Summary Table saved to {mr_summary_path}")
             logger.info(f"MR Table:\n{mr_summary_table.to_string()}")
@@ -411,13 +421,13 @@ def process_mr_period(
                     mr_df=data_booked_mr,
                     variables=stability_vars,
                     score_variable=score_var,
-                    output_path=f"images/stability_report{file_suffix}.html",
+                    output_path=output.stability_report_html(file_suffix),
                     verbose=True,
                 )
 
                 # Save stability results to CSV
                 stability_df = stability_report.to_dataframe()
-                stability_csv_path = f"data/stability_psi{file_suffix}.csv"
+                stability_csv_path = output.stability_psi_csv(file_suffix)
                 stability_df.to_csv(stability_csv_path, index=False)
                 logger.info(f"Stability metrics saved to {stability_csv_path}")
 
@@ -427,10 +437,10 @@ def process_mr_period(
 
                     alert_report = generate_drift_alerts(
                         stability_report,
-                        segment=config_data.get("segment_filter", ""),
+                        segment=settings.segment_filter,
                         period="MR",
                     )
-                    alert_json_path = f"data/drift_alerts{file_suffix}.json"
+                    alert_json_path = output.drift_alerts_json(file_suffix)
                     alert_report.to_json(alert_json_path)
                     logger.info(f"Drift alerts saved to {alert_json_path}")
                 except (ImportError, ValueError) as e:

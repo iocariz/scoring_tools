@@ -1107,7 +1107,17 @@ def todu_average_inference(
 
 
 def run_optimization_pipeline(
-    data_booked, data_demand, risk_inference, reg_todu_amt_pile, stressor, tasa_fin, config_data, annual_coef
+    data_booked,
+    data_demand,
+    risk_inference,
+    reg_todu_amt_pile,
+    stressor,
+    tasa_fin,
+    *,
+    indicators: list[str],
+    variables: list[str],
+    annual_coef,
+    b2_output_path: str = "images/b2_ever_h6_vs_octroi_and_risk_score.html",
 ):
     """
     Runs the optimization pipeline: aggregates data, applies risk models, and generates visualizations.
@@ -1120,8 +1130,8 @@ def run_optimization_pipeline(
     var_target = "b2_ever_h6"
 
     # Define Constants
-    INDICADORES = config_data.get("indicators")
-    VARIABLES = config_data.get("variables")
+    INDICADORES = indicators
+    VARIABLES = variables
 
     # Calculate aggregate data for booked and repesca cases
     def calculate_aggregate_data(data, status, reject_reason=None):
@@ -1186,7 +1196,7 @@ def run_optimization_pipeline(
             aspectratio=dict(x=1, y=1, z=1),
         )
     )
-    fig.write_html("images/b2_ever_h6_vs_octroi_and_risk_score.html")
-    logger.info("Optimization visualization saved to images/b2_ever_h6_vs_octroi_and_risk_score.html")
+    fig.write_html(b2_output_path)
+    logger.info(f"Optimization visualization saved to {b2_output_path}")
 
     return data_sumary_desagregado

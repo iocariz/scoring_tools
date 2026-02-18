@@ -5,6 +5,7 @@ import pandas as pd
 from loguru import logger
 from pydantic import ValidationError
 
+from src.config import OutputPaths
 from src.data_manager import DataValidationError, load_and_prepare_data
 from src.pipeline.config_loader import load_and_validate_config
 from src.pipeline.inference import run_inference_phase
@@ -40,6 +41,7 @@ def main(
     training_only: bool = False,
     skip_dq_checks: bool = False,
     preloaded_data: pd.DataFrame = None,
+    output: OutputPaths | None = None,
 ):
     """
     Load and preprocess SAS data using configuration.
@@ -54,6 +56,10 @@ def main(
     Returns:
         Tuple of processed DataFrames, or None if processing fails
     """
+    if output is None:
+        output = OutputPaths()
+    output.ensure_dirs()
+
     t0_total = time.perf_counter()
 
     try:
@@ -76,14 +82,14 @@ def main(
             raise DataLoadError(f"[{segment}] Unexpected data loading error") from e
 
         # Step 3: Preprocessing (DQ checks, binning, stress factor, transformation rate)
-        result = run_preprocessing_phase(data, settings, skip_dq_checks)
+        result = run_preprocessing_phase(data, settings, skip_dq_checks, output=output)
         if result is None:
             return None
         data_clean, data_booked, data_demand, stress_factor, tasa_fin = result
 
         # Step 4: Risk inference (model training or loading)
         try:
-            risk_inference, reg_todu_amt_pile = run_inference_phase(data_clean, settings, model_path)
+            risk_inference, reg_todu_amt_pile = run_inference_phase(data_clean, settings, model_path, output=output)
         except Exception as e:
             raise InferencePhaseError(f"[{segment}] Inference phase failed") from e
 
@@ -107,6 +113,7 @@ def main(
                 tasa_fin,
                 settings,
                 annual_coef,
+                output=output,
             )
         )
 
@@ -133,10 +140,11 @@ def main(
                 annual_coef_mr=annual_coef_mr,
                 values_var0=values_var0,
                 values_var1=values_var1,
+                output=output,
             )
             cutoff_summaries.append(summary)
 
-        _save_cutoff_summaries(cutoff_summaries, settings)
+        _save_cutoff_summaries(cutoff_summaries, settings, output=output)
 
         # Step 7: Temporal trend analysis (non-blocking)
         try:
@@ -145,20 +153,20 @@ def main(
             monthly = compute_monthly_metrics(data_clean, date_column="mis_date", segment_filter=segment)
             if not monthly.empty:
                 # Save monthly metrics
-                monthly.to_csv(f"data/monthly_metrics_{segment}.csv")
+                monthly.to_csv(output.monthly_metrics_csv(segment))
 
                 # Plot key metrics
                 plot_metric_trends(
                     monthly,
                     ["approval_rate", "total_records", "mean_production"],
-                    output_path=f"images/metric_trends_{segment}.html",
+                    output_path=output.metric_trends_html(segment),
                 )
 
                 # Detect anomalies in approval rate
                 anomalies = detect_trend_changes(monthly, "approval_rate", window=3)
                 anomaly_months = anomalies[anomalies["is_anomaly"]]
                 if not anomaly_months.empty:
-                    anomalies.to_csv(f"data/trend_anomalies_{segment}.csv")
+                    anomalies.to_csv(output.trend_anomalies_csv(segment))
                     logger.warning(f"[{segment}] Trend anomalies detected in {len(anomaly_months)} month(s)")
                 else:
                     logger.info(f"[{segment}] No trend anomalies detected")

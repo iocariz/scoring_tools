@@ -1,8 +1,131 @@
 import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+@dataclass
+class OutputPaths:
+    """Centralized output path configuration for the pipeline.
+
+    All pipeline output files are written relative to ``base_dir``.
+    Use the directory properties (``data_dir``, ``images_dir``, ``models_dir``)
+    for ad-hoc paths, or the helper methods for well-known output files.
+    """
+
+    base_dir: Path = field(default_factory=lambda: Path("."))
+
+    # -- directory roots --
+
+    @property
+    def data_dir(self) -> Path:
+        return self.base_dir / "data"
+
+    @property
+    def images_dir(self) -> Path:
+        return self.base_dir / "images"
+
+    @property
+    def models_dir(self) -> Path:
+        return self.base_dir / "models"
+
+    # -- preprocessing --
+
+    @property
+    def risk_vs_production_html(self) -> str:
+        return str(self.images_dir / "risk_vs_production.html")
+
+    @property
+    def transformation_rate_html(self) -> str:
+        return str(self.images_dir / "transformation_rate.html")
+
+    # -- inference --
+
+    @property
+    def todu_avg_inference_html(self) -> str:
+        return str(self.models_dir / "todu_avg_inference.html")
+
+    @property
+    def todu_model_joblib(self) -> str:
+        return str(self.models_dir / "todu_model.joblib")
+
+    @property
+    def model_base_path(self) -> str:
+        return str(self.models_dir)
+
+    # -- optimization --
+
+    @property
+    def pareto_solutions_csv(self) -> str:
+        return str(self.data_dir / "pareto_optimal_solutions.csv")
+
+    def risk_production_visualizer_html(self, suffix: str = "") -> str:
+        return str(self.images_dir / f"risk_production_visualizer{suffix}.html")
+
+    def risk_production_summary_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"risk_production_summary_table{suffix}.csv")
+
+    def data_summary_desagregado_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"data_summary_desagregado{suffix}.csv")
+
+    def optimal_solution_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"optimal_solution{suffix}.csv")
+
+    def efficient_frontier_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"efficient_frontier{suffix}.csv")
+
+    @property
+    def cutoff_summary_by_segment_csv(self) -> str:
+        return str(self.data_dir / "cutoff_summary_by_segment.csv")
+
+    @property
+    def cutoff_summary_wide_csv(self) -> str:
+        return str(self.data_dir / "cutoff_summary_wide.csv")
+
+    # -- MR pipeline --
+
+    def mr_summary_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"data_summary_desagregado_mr{suffix}.csv")
+
+    def mr_b2_visualization_html(self, suffix: str = "") -> str:
+        return str(self.images_dir / f"b2_ever_h6_vs_octroi_and_risk_score_mr{suffix}.html")
+
+    def mr_risk_production_summary_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"risk_production_summary_table_mr{suffix}.csv")
+
+    def stability_report_html(self, suffix: str = "") -> str:
+        return str(self.images_dir / f"stability_report{suffix}.html")
+
+    def stability_psi_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"stability_psi{suffix}.csv")
+
+    def drift_alerts_json(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"drift_alerts{suffix}.json")
+
+    # -- trends --
+
+    def monthly_metrics_csv(self, segment: str) -> str:
+        return str(self.data_dir / f"monthly_metrics_{segment}.csv")
+
+    def metric_trends_html(self, segment: str) -> str:
+        return str(self.images_dir / f"metric_trends_{segment}.html")
+
+    def trend_anomalies_csv(self, segment: str) -> str:
+        return str(self.data_dir / f"trend_anomalies_{segment}.csv")
+
+    # -- inference_optimized (main-period visualization) --
+
+    @property
+    def b2_visualization_html(self) -> str:
+        return str(self.images_dir / "b2_ever_h6_vs_octroi_and_risk_score.html")
+
+    def ensure_dirs(self) -> None:
+        """Create output directories if they don't exist."""
+        for d in (self.data_dir, self.images_dir, self.models_dir):
+            d.mkdir(parents=True, exist_ok=True)
 
 
 class PreprocessingSettings(BaseModel):
@@ -95,13 +218,12 @@ class PreprocessingSettings(BaseModel):
         has_mr_fin = self.date_fin_book_obs_mr is not None
 
         if has_mr_ini != has_mr_fin:
-            # In pydantic v2 model validators we can just log a warning via standard logging
-            # or we can decide to be stricter. The original code only warned.
-            # For a "Settings" class, simple consistency is better.
-            # Let's verify if we want to enforce both or neither.
-            # The original code just appended a warning.
-            # We will leave it as is but note it.
-            pass
+            provided = "date_ini_book_obs_mr" if has_mr_ini else "date_fin_book_obs_mr"
+            missing = "date_fin_book_obs_mr" if has_mr_ini else "date_ini_book_obs_mr"
+            raise ValueError(
+                f"Partial MR date configuration: '{provided}' is set but '{missing}' is missing. "
+                f"Provide both MR dates or neither."
+            )
 
         if has_mr_ini and has_mr_fin:
             start_mr = pd.to_datetime(self.date_ini_book_obs_mr, dayfirst=False)

@@ -28,7 +28,6 @@ from src.persistence import (
     save_model_with_metadata,
 )
 from src.preprocess_improved import (
-    PreprocessingConfig,
     complete_preprocessing_pipeline,
 )
 
@@ -51,6 +50,5 @@ __all__ = [
     "load_model_for_prediction",
     "predict_on_new_data",
     # Preprocessing
-    "PreprocessingConfig",
     "complete_preprocessing_pipeline",
 ]

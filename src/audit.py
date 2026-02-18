@@ -165,7 +165,7 @@ def generate_audit_table(
 
     is_booked = data["status_name"] == StatusName.BOOKED.value
     is_score_rejected = (data["status_name"] == StatusName.REJECTED.value) & (
-        data.get("reject_reason", pd.Series(dtype=str)).fillna("") == RejectReason.SCORE.value
+        data.get("reject_reason", pd.Series(dtype=str)).astype(str).replace("nan", "") == RejectReason.SCORE.value
     )
 
     audit_df["classification"] = np.select(
@@ -318,7 +318,7 @@ def validate_audit_against_summary(
     audit_df: pd.DataFrame,
     summary_table: pd.DataFrame,
     tolerance: float = 0.01,
-) -> bool:
+) -> bool | None:
     """
     Validate that audit table totals match the summary table.
 
@@ -330,7 +330,8 @@ def validate_audit_against_summary(
         tolerance: Allowed relative difference (default 1%).
 
     Returns:
-        True if validation passes, False otherwise.
+        True if validation passes, False if it fails, None if validation
+        could not be performed (e.g., missing columns).
     """
     # Calculate totals from audit using adjusted amounts
     amount_col = "oa_amt_adjusted" if "oa_amt_adjusted" in audit_df.columns else "oa_amt"
@@ -368,5 +369,4 @@ def validate_audit_against_summary(
 
     except (KeyError, ValueError) as e:
         logger.warning(f"Could not validate audit against summary: {e}")
-
-    return True  # Don't fail if validation can't be performed
+        return None

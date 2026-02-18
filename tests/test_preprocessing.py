@@ -1,17 +1,11 @@
-import os
-import sys
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-import logging
-
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
+from src.config import PreprocessingSettings
 from src.constants import RejectReason, StatusName
 from src.preprocess_improved import (
-    PreprocessingConfig,
     apply_binning_transformations,
     complete_preprocessing_pipeline,
     filter_by_date,
@@ -53,7 +47,7 @@ def sample_data():
 @pytest.fixture
 def config():
     """Create a sample configuration."""
-    return PreprocessingConfig(
+    return PreprocessingSettings(
         keep_vars=["mis_date", "status_name", "risk_score_rf", "score_rf", "reject_reason"],
         indicators=["oa_amt", "oa_amt_h0"],
         segment_filter="test_segment",
@@ -61,8 +55,9 @@ def config():
         efx_bins=[-np.inf, 20, 50, 80, np.inf],
         date_ini_book_obs="2024-01-01",
         date_fin_book_obs="2024-12-31",
+        variables=["sc_octroi_new_clus", "new_efx_clus"],
         score_measures=["m_ct_direct_sc_nov23"],
-        log_level=logging.WARNING,
+        log_level="WARNING",
     )
 
 
@@ -71,31 +66,41 @@ def config():
 # =============================================================================
 
 
+_REQUIRED_FIELDS = dict(
+    keep_vars=["a"],
+    indicators=["b"],
+    octroi_bins=[1.0, 2.0],
+    efx_bins=[1.0, 2.0],
+    date_ini_book_obs="2024-01-01",
+    date_fin_book_obs="2024-12-31",
+    variables=["v0", "v1"],
+)
+
+
 def test_config_validation_empty_keep_vars():
     """Test that empty keep_vars raises error."""
-    with pytest.raises(ValueError, match="keep_vars cannot be empty"):
-        PreprocessingConfig(keep_vars=[], indicators=["a"]).validate()
+    with pytest.raises(ValidationError, match="keep_vars"):
+        PreprocessingSettings(**{**_REQUIRED_FIELDS, "keep_vars": []})
 
 
 def test_config_validation_empty_indicators():
     """Test that empty indicators raises error."""
-    with pytest.raises(ValueError, match="indicators cannot be empty"):
-        PreprocessingConfig(keep_vars=["a"], indicators=[]).validate()
+    with pytest.raises(ValidationError, match="indicators"):
+        PreprocessingSettings(**{**_REQUIRED_FIELDS, "indicators": []})
 
 
 def test_config_validation_invalid_bins():
     """Test that bins with less than 2 values raise error."""
-    with pytest.raises(ValueError, match="octroi_bins must have at least 2 values"):
-        PreprocessingConfig(keep_vars=["a"], indicators=["b"], octroi_bins=[1], efx_bins=[1, 2]).validate()
+    with pytest.raises(ValidationError, match="octroi_bins"):
+        PreprocessingSettings(**{**_REQUIRED_FIELDS, "octroi_bins": [1.0]})
 
-    with pytest.raises(ValueError, match="efx_bins must have at least 2 values"):
-        PreprocessingConfig(keep_vars=["a"], indicators=["b"], octroi_bins=[1, 2], efx_bins=[1]).validate()
+    with pytest.raises(ValidationError, match="efx_bins"):
+        PreprocessingSettings(**{**_REQUIRED_FIELDS, "efx_bins": [1.0]})
 
 
 def test_config_validation_valid():
     """Test that valid config passes validation."""
-    config = PreprocessingConfig(keep_vars=["a", "b"], indicators=["c", "d"], octroi_bins=[1, 2, 3], efx_bins=[1, 2, 3])
-    config.validate()  # Should not raise
+    PreprocessingSettings(**{**_REQUIRED_FIELDS, "octroi_bins": [1.0, 2.0, 3.0], "efx_bins": [1.0, 2.0, 3.0]})
 
 
 # =============================================================================
