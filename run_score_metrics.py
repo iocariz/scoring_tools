@@ -34,7 +34,7 @@ from src.metrics import (
     compute_score_discriminance,
     delong_test,
 )
-from src.plots import plot_precision_recall_curve, plot_score_distribution
+from src.plots import plot_precision_recall_curve, plot_roc_curve, plot_score_distribution
 from src.styles import (
     COLOR_ACCENT,
     COLOR_PRIMARY,
@@ -291,11 +291,13 @@ def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
 
 def plot_monitoring_dashboard(period_result: dict, output_dir: Path) -> Path:
     """
-    Generate a 2x2 monitoring dashboard for a single segment/period:
-      [0,0] Precision-Recall curves
-      [0,1] Score distribution (Score RF)
-      [1,0] Score distribution (Risk Score RF)
-      [1,1] Cumulative Gains chart
+    Generate a 3x2 monitoring dashboard for a single segment/period:
+      [0,0] ROC Curve
+      [0,1] Precision-Recall Curve
+      [1,0] Score distribution (Score RF)
+      [1,1] Score distribution (Risk Score RF)
+      [2,0] CAP Curve (Cumulative Accuracy Profile)
+      [2,1] (Empty or additional metrics)
 
     Returns path to the saved figure.
     """
@@ -306,45 +308,65 @@ def plot_monitoring_dashboard(period_result: dict, output_dir: Path) -> Path:
     scores_dict = period_result["scores_dict"]
     lift_tables = period_result["lift_tables"]
 
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    # Change to 3x2 layout
+    fig, axes = plt.subplots(3, 2, figsize=(16, 18))
 
-    # [0,0] Precision-Recall
-    plot_precision_recall_curve(axes[0, 0], y_true, scores_dict)
+    # [0,0] ROC Curve
+    ax_roc = axes[0, 0]
+    for score_name, score_arr in scores_dict.items():
+        color = SCORE_COLORS.get(score_name, "#95A5A6")
+        plot_roc_curve(ax_roc, y_true, score_arr, name=score_name, color=color)
+    
+    ax_roc.plot([0, 1], [0, 1], "k--", lw=1.5, label="Random")
+    ax_roc.set_xlabel("False Positive Rate", fontsize=12)
+    ax_roc.set_ylabel("True Positive Rate", fontsize=12)
+    ax_roc.set_title("ROC Curve", fontsize=14)
+    ax_roc.legend(loc="lower right", fontsize=10)
+    ax_roc.set_xlim(0, 1.02)
+    ax_roc.set_ylim(0, 1.05)
+    ax_roc.grid(True, which="both", linestyle="--", linewidth=0.5)
 
-    # [0,1] Score distribution — first score
+    # [0,1] Precision-Recall
+    plot_precision_recall_curve(axes[0, 1], y_true, scores_dict)
+
+    # [1,0] Score distribution — first score
     score_names = list(scores_dict.keys())
     if len(score_names) >= 1:
-        plot_score_distribution(axes[0, 1], y_true, scores_dict[score_names[0]], name=score_names[0])
+        plot_score_distribution(axes[1, 0], y_true, scores_dict[score_names[0]], name=score_names[0])
 
-    # [1,0] Score distribution — second score
+    # [1,1] Score distribution — second score
     if len(score_names) >= 2:
-        plot_score_distribution(axes[1, 0], y_true, scores_dict[score_names[1]], name=score_names[1])
+        plot_score_distribution(axes[1, 1], y_true, scores_dict[score_names[1]], name=score_names[1])
     else:
-        axes[1, 0].set_visible(False)
+        axes[1, 1].set_visible(False)
 
-    # [1,1] Cumulative Gains chart
-    ax_lift = axes[1, 1]
+    # [2,0] CAP Curve (Cumulative Accuracy Profile)
+    # Previously "Cumulative Gains Chart"
+    ax_cap = axes[2, 0]
     for score_name, lift_df in lift_tables.items():
         color = SCORE_COLORS.get(score_name, "#95A5A6")
-        ax_lift.plot(
+        ax_cap.plot(
             lift_df["cumulative_pct_population"],
             lift_df["cumulative_pct_bads"],
             marker="o",
-            markersize=5,
-            lw=2.5,
+            markersize=4,
+            lw=2,
             label=score_name,
             color=color,
         )
-    ax_lift.plot([0, 1], [0, 1], "k--", lw=1.5, label="Random")
-    ax_lift.set_xlabel("Cumulative % Population", fontsize=14)
-    ax_lift.set_ylabel("Cumulative % Bads Captured", fontsize=14)
-    ax_lift.set_title("Cumulative Gains Chart", fontsize=16)
-    ax_lift.legend(fontsize=11)
-    ax_lift.set_xlim(0, 1.02)
-    ax_lift.set_ylim(0, 1.05)
-    ax_lift.grid(True, which="both", linestyle="--", linewidth=0.5)
-    ax_lift.spines["top"].set_visible(False)
-    ax_lift.spines["right"].set_visible(False)
+    ax_cap.plot([0, 1], [0, 1], "k--", lw=1.5, label="Random")
+    ax_cap.set_xlabel("Cumulative % Population", fontsize=12)
+    ax_cap.set_ylabel("Cumulative % Bads Captured", fontsize=12)
+    ax_cap.set_title("CAP Curve (Cumulative Accuracy Profile)", fontsize=14)
+    ax_cap.legend(fontsize=10)
+    ax_cap.set_xlim(0, 1.02)
+    ax_cap.set_ylim(0, 1.05)
+    ax_cap.grid(True, which="both", linestyle="--", linewidth=0.5)
+    ax_cap.spines["top"].set_visible(False)
+    ax_cap.spines["right"].set_visible(False)
+
+    # [2,1] Empty for now
+    axes[2, 1].set_visible(False)
 
     fig.suptitle(f"Score Monitoring: {label}", fontsize=18, fontweight="bold", color=COLOR_PRIMARY, y=1.02)
     fig.tight_layout()
