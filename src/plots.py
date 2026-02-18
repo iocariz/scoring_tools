@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import seaborn as sns
+from loguru import logger
 from plotly.subplots import make_subplots
 from sklearn.metrics import auc, roc_curve
 
@@ -568,8 +569,17 @@ class RiskProductionVisualizer:
                 # Fallback if sol_fac is not index/column (it really should be there)
                 pass
 
-        data_filtered = self.data_summary[self.data_summary["b2_ever_h6"] <= self.optimum_risk]
+        b2_col = self.data_summary["b2_ever_h6"]
+        data_filtered = self.data_summary[b2_col <= self.optimum_risk]
         if data_filtered.empty:
+            min_b2 = b2_col.min()
+            max_b2 = b2_col.max()
+            logger.warning(
+                f"No Pareto solution with b2_ever_h6 <= {self.optimum_risk:.2f}%. "
+                f"Pareto b2 range: [{min_b2:.2f}%, {max_b2:.2f}%]. "
+                f"Falling back to minimum-risk solution (b2={min_b2:.2f}%). "
+                f"Consider increasing optimum_risk in config.toml."
+            )
             data_filtered = self.data_summary.sort_values("b2_ever_h6").head(1)
         else:
             data_filtered = data_filtered.tail(1)

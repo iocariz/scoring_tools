@@ -71,6 +71,9 @@ def run_optimization_phase(
         variables=settings.variables,
         annual_coef=annual_coef,
         b2_output_path=output.b2_visualization_html,
+        reject_inference_method=settings.reject_inference_method,
+        reject_uplift_factor=settings.reject_uplift_factor,
+        reject_max_risk_multiplier=settings.reject_max_risk_multiplier,
     )
 
     # Cutoff optimization
@@ -184,9 +187,12 @@ def run_optimization_phase(
 
     elapsed = time.perf_counter() - t0
     mode = "fixed_cutoffs" if use_fixed_cutoffs else "pareto"
+    b2_min = data_summary["b2_ever_h6"].min()
+    b2_max = data_summary["b2_ever_h6"].max()
     logger.info(
         f"[{segment}] Optimization done | mode={mode} | "
-        f"{len(data_summary)} solutions | {len(values_var0)}x{len(values_var1)} grid | {elapsed:.1f}s"
+        f"{len(data_summary)} solutions | {len(values_var0)}x{len(values_var1)} grid | "
+        f"b2 range: [{b2_min:.2f}%, {b2_max:.2f}%] | optimum_risk={settings.optimum_risk:.1f}% | {elapsed:.1f}s"
     )
 
     return data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_var0, values_var1
@@ -253,9 +259,14 @@ def run_scenario_analysis(
 
     suffix = f"_{scenario_name}"
 
-    # Calculate confidence intervals (moved before saving summary table)
     # Extract optimal solution for CI calculation
     opt_sol = visualizer.get_selected_solution()
+    selected_b2 = opt_sol.iloc[0].get("b2_ever_h6", float("nan"))
+    selected_prod = opt_sol.iloc[0].get("oa_amt_h0", float("nan"))
+    logger.info(
+        f"[{segment}] Scenario {scenario_name} | risk_threshold={current_risk:.1f}% | "
+        f"selected b2={selected_b2:.2f}% | production={selected_prod:,.0f}"
+    )
 
     # Create mapping of cuts from optimal solution
     cut_map = {}
@@ -339,6 +350,7 @@ def run_scenario_analysis(
             annual_coef=annual_coef_mr,
             optimal_solution_df=opt_sol,
             file_suffix="",
+            output=output,
         )
 
     # Scenario MR Processing
@@ -353,6 +365,7 @@ def run_scenario_analysis(
         annual_coef=annual_coef_mr,
         optimal_solution_df=opt_sol,
         file_suffix=suffix,
+        output=output,
     )
 
     # Generate audit tables for this scenario
@@ -386,18 +399,21 @@ def run_scenario_analysis(
     else:
         n_months_mr = None
 
-    save_audit_tables(
-        data_main=data_main_period,
-        data_mr=data_mr_period,
-        optimal_solution_df=opt_sol,
-        variables=settings.variables,
-        scenario_name=scenario_name,
-        output_dir=str(output.data_dir),
-        inv_var1=inv_var1,
-        financing_rate=tasa_fin,
-        n_months_main=n_months_main,
-        n_months_mr=n_months_mr,
-    )
+    try:
+        save_audit_tables(
+            data_main=data_main_period,
+            data_mr=data_mr_period,
+            optimal_solution_df=opt_sol,
+            variables=settings.variables,
+            scenario_name=scenario_name,
+            output_dir=str(output.data_dir),
+            inv_var1=inv_var1,
+            financing_rate=tasa_fin,
+            n_months_main=n_months_main,
+            n_months_mr=n_months_mr,
+        )
+    except Exception as e:
+        logger.error(f"[{segment}] Audit table generation failed for {scenario_name} (non-blocking): {e}")
 
     elapsed = time.perf_counter() - t0
     logger.info(
@@ -411,7 +427,7 @@ def run_scenario_analysis(
 def _build_scenario_list(settings: PreprocessingSettings, use_fixed_cutoffs: bool) -> list[tuple[float, str]]:
     """Build the list of (risk_threshold, name) scenarios to run."""
     base_optimum_risk = settings.optimum_risk
-    scenario_step = settings.scenario_step
+    scenario_step = settings.risk_step
     segment = settings.segment_filter
 
     if use_fixed_cutoffs:

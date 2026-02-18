@@ -23,9 +23,23 @@ from src.inference_optimized import _compute_shap_values
 from src.metrics import bootstrap_confidence_interval
 from src.persistence import save_model_with_metadata
 from src.plots import plot_shap_summary
-from src.schema import validate_raw_data
 from src.stability import StabilityReport, StabilityStatus, calculate_stability_report
 from src.trends import compute_monthly_metrics, detect_trend_changes, plot_metric_trends
+
+try:
+    from src.schema import validate_raw_data
+
+    _has_pandera = True
+except ImportError:
+    validate_raw_data = None
+    _has_pandera = False
+
+try:
+    import shap  # noqa: F401
+
+    _has_shap = True
+except ImportError:
+    _has_shap = False
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -76,6 +90,7 @@ def booked_mr_df(valid_df):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(not _has_pandera, reason="pandera not installed")
 class TestSchemaIntegration:
     def test_valid_data_passes_schema(self, valid_df):
         """Schema validation should pass for well-formed data."""
@@ -193,6 +208,7 @@ class TestTrendsIntegration:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(not _has_shap, reason="shap not installed")
 class TestModelShapIntegration:
     def test_train_shap_save(self, tmp_path):
         """Full flow: train model -> compute SHAP -> save with metadata."""

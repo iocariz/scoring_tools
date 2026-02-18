@@ -29,6 +29,13 @@ variables = ['sc_octroi_new_clus', 'new_efx_clus']
 multiplier = 7
 z_threshold = 3.0
 
+
+# Reject inference (optional) - adjusts predicted risk for score-rejected bins
+# based on per-bin acceptance rates to correct for selection bias.
+reject_inference_method = "parceling"  # "none" (default) or "parceling"
+reject_uplift_factor = 1.5            # scaling coefficient for reject ratio (0.0-10.0)
+reject_max_risk_multiplier = 3.0      # upper cap for per-bin multiplier (1.0-10.0)
+
 # Fixed cutoffs (optional) - uncomment to skip optimization and use predefined cutoffs
 # When set, the optimization step is skipped and these cutoffs are applied directly.
 # [preprocessing.fixed_cutoffs]

@@ -1,7 +1,7 @@
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -152,11 +152,16 @@ class PreprocessingSettings(BaseModel):
     multiplier: float = Field(default=7.0, gt=0)
     z_threshold: float = Field(default=3.0, gt=0)
     optimum_risk: float = 1.1
-    scenario_step: float = 0.1
+    risk_step: float = 0.1
     cz_config: dict[int, Any] = Field(default_factory=dict)
     log_level: str = "INFO"
     fixed_cutoffs: dict[str, Any] | None = None
     inv_var1: bool = False
+
+    # Reject inference settings
+    reject_inference_method: Literal["none", "parceling"] = "none"
+    reject_uplift_factor: float = Field(default=1.5, ge=0.0, le=10.0)
+    reject_max_risk_multiplier: float = Field(default=3.0, ge=1.0, le=10.0)
 
     @field_validator("keep_vars", "indicators")
     @classmethod

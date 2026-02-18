@@ -329,6 +329,9 @@ def process_mr_period(
             indicators=settings.indicators,
             variables=settings.variables,
             annual_coef=annual_coef,
+            reject_inference_method=settings.reject_inference_method,
+            reject_uplift_factor=settings.reject_uplift_factor,
+            reject_max_risk_multiplier=settings.reject_max_risk_multiplier,
         )
 
         # Save MR summary

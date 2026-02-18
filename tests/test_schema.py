@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+pytest.importorskip("pandera", reason="pandera not installed")
+
 from src.data_manager import DataValidationError
 from src.schema import validate_raw_data
 

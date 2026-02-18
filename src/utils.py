@@ -244,7 +244,7 @@ def _bootstrap_worker(
     risk_num = passed_df["todu_30ever_h6"].sum() if not passed_df.empty else 0.0
     risk_den = passed_df["todu_amt_pile_h6"].sum() if not passed_df.empty else 0.0
 
-    risk = calculate_b2_ever_h6(risk_num, risk_den, multiplier=multiplier, as_percentage=False)
+    risk = calculate_b2_ever_h6(risk_num, risk_den, multiplier=multiplier, as_percentage=False, decimals=6)
 
     return production, float(risk)
 

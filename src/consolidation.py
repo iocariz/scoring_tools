@@ -58,19 +58,19 @@ class ConsolidatedMetrics:
     # Calculated risk properties
     @property
     def actual_risk(self) -> float:
-        return float(np.nan_to_num(calculate_b2_ever_h6(self.actual_todu_30ever_h6, self.actual_todu_amt_pile_h6)))
+        return float(np.nan_to_num(calculate_b2_ever_h6(self.actual_todu_30ever_h6, self.actual_todu_amt_pile_h6, decimals=6)))
 
     @property
     def optimum_risk(self) -> float:
-        return float(np.nan_to_num(calculate_b2_ever_h6(self.optimum_todu_30ever_h6, self.optimum_todu_amt_pile_h6)))
+        return float(np.nan_to_num(calculate_b2_ever_h6(self.optimum_todu_30ever_h6, self.optimum_todu_amt_pile_h6, decimals=6)))
 
     @property
     def swap_in_risk(self) -> float:
-        return float(np.nan_to_num(calculate_b2_ever_h6(self.swap_in_todu_30ever_h6, self.swap_in_todu_amt_pile_h6)))
+        return float(np.nan_to_num(calculate_b2_ever_h6(self.swap_in_todu_30ever_h6, self.swap_in_todu_amt_pile_h6, decimals=6)))
 
     @property
     def swap_out_risk(self) -> float:
-        return float(np.nan_to_num(calculate_b2_ever_h6(self.swap_out_todu_30ever_h6, self.swap_out_todu_amt_pile_h6)))
+        return float(np.nan_to_num(calculate_b2_ever_h6(self.swap_out_todu_30ever_h6, self.swap_out_todu_amt_pile_h6, decimals=6)))
 
     @property
     def production_delta(self) -> float:

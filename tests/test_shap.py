@@ -3,10 +3,18 @@
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import pytest
 from sklearn.linear_model import Ridge
 
 from src.inference_optimized import _compute_shap_values
 from src.plots import plot_shap_summary
+
+try:
+    import shap  # noqa: F401
+
+    _has_shap = True
+except ImportError:
+    _has_shap = False
 
 
 def _make_synthetic_model_and_data(n_samples: int = 100, n_features: int = 4, seed: int = 42):
@@ -25,6 +33,7 @@ def _make_synthetic_model_and_data(n_samples: int = 100, n_features: int = 4, se
     return model, X, list(X.columns)
 
 
+@pytest.mark.skipif(not _has_shap, reason="shap not installed")
 class TestComputeShapValues:
     def test_returns_dict_for_linear_model(self):
         model, X, features = _make_synthetic_model_and_data()

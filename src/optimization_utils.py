@@ -379,7 +379,7 @@ def kpi_of_fact_sol(
                     final_result[todu_30].astype(float),
                     final_result[todu_amt].replace(0, np.nan).astype(float),
                     multiplier=DEFAULT_RISK_MULTIPLIER,
-                    as_percentage=False,
+                    as_percentage=True,
                 ).fillna(0)
 
         return final_result.sort_values(["b2_ever_h6", "oa_amt_h0"])

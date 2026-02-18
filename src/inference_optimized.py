@@ -1115,6 +1115,9 @@ def run_optimization_pipeline(
     variables: list[str],
     annual_coef,
     b2_output_path: str = "images/b2_ever_h6_vs_octroi_and_risk_score.html",
+    reject_inference_method: str = "none",
+    reject_uplift_factor: float = 1.5,
+    reject_max_risk_multiplier: float = 3.0,
 ):
     """
     Runs the optimization pipeline: aggregates data, applies risk models, and generates visualizations.
@@ -1156,6 +1159,23 @@ def run_optimization_pipeline(
     data_sumary_desagregado_repesca = calculate_risk_values(
         data_sumary_desagregado_repesca, final_model, reg_todu_amt_pile, VARIABLES, stressor, final_features
     )[VARIABLES + INDICADORES]
+
+    # Apply reject inference adjustment (after stressor, before tasa_fin)
+    if reject_inference_method != "none":
+        from src.reject_inference import apply_reject_inference
+
+        data_sumary_desagregado_repesca = apply_reject_inference(
+            repesca_summary=data_sumary_desagregado_repesca,
+            data_demand=data_demand,
+            variables=VARIABLES,
+            method=reject_inference_method,
+            reject_uplift_factor=reject_uplift_factor,
+            max_risk_multiplier=reject_max_risk_multiplier,
+        )
+        # Drop auxiliary columns before downstream merge
+        data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.drop(
+            columns=["acceptance_rate", "reject_risk_multiplier"], errors="ignore"
+        )
 
     data_sumary_desagregado_repesca[INDICADORES] *= tasa_fin
     data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.rename(
