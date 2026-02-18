@@ -36,9 +36,6 @@ from .constants import DEFAULT_RISK_MULTIPLIER, Columns, StatusName
 from .metrics import compute_precision_recall, ks_statistic
 from .utils import calculate_b2_ever_h6
 
-# Keep track of previous KS annotation y-coordinates
-previous_ks_y_positions = []
-
 
 def plot_roc_curve(ax, y_true, scores, name, color):
     """Plot ROC curve on given axes."""
@@ -276,7 +273,6 @@ def plot_group_statistics(data_frame, group_col, binary_outcome):
     ax2.plot(grouped.index.astype(str).to_numpy(), grouped["Target_mean"].to_numpy(), color=color)
     ax2.tick_params(axis="y", labelcolor=color)
 
-    fig.tight_layout()
     fig.tight_layout()
     return fig
 

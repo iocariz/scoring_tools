@@ -14,6 +14,7 @@ from joblib import Parallel, delayed
 from loguru import logger
 from tqdm import tqdm
 
+from .constants import DEFAULT_RISK_MULTIPLIER
 from .utils import calculate_b2_ever_h6, optimize_dtypes
 
 
@@ -372,7 +373,7 @@ def kpi_of_fact_sol(
                 final_result[f"b2_ever_h6{metric}"] = calculate_b2_ever_h6(
                     final_result[todu_30].astype(float),
                     final_result[todu_amt].replace(0, np.nan).astype(float),
-                    multiplier=7,  # Hardcoded multiplier
+                    multiplier=DEFAULT_RISK_MULTIPLIER,
                     as_percentage=False,
                 ).fillna(0)
 
@@ -401,17 +402,10 @@ def get_optimal_solutions(df_v: pd.DataFrame, data_sumary: pd.DataFrame, chunk_s
         data_sumary = data_sumary.sort_values(by=["b2_ever_h6", "oa_amt_h0"])
         data_sumary = data_sumary.drop_duplicates(subset=["b2_ever_h6"], keep="last")
 
-        # Find Pareto optimal solutions efficiently
-        data_sumary["optimal"] = False
-        current_max = float("-inf")
-
-        for idx in data_sumary.index:
-            value = data_sumary.loc[idx, "oa_amt_h0"]
-            if value > current_max:
-                current_max = value
-                data_sumary.loc[idx, "optimal"] = True
-
-        data_sumary = data_sumary[data_sumary["optimal"]].drop(columns=["optimal"])
+        # Find Pareto optimal solutions using vectorized cummax
+        cummax = data_sumary["oa_amt_h0"].cummax()
+        pareto_mask = data_sumary["oa_amt_h0"] >= cummax
+        data_sumary = data_sumary[pareto_mask]
 
         # Merge in chunks
         chunks = [df_v.iloc[i : i + chunk_size] for i in range(0, len(df_v), chunk_size)]

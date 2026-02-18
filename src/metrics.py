@@ -28,9 +28,12 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from scipy import stats
+from scipy.stats import rankdata
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import auc, average_precision_score, precision_recall_curve, roc_curve
 from sklearn.preprocessing import StandardScaler
+
+from src.constants import DEFAULT_RANDOM_STATE
 
 
 def train_logistic_regression(X, y):
@@ -52,7 +55,7 @@ def compute_metrics(y_true, scores):
     fpr, tpr, _ = roc_curve(y_true, scores)
     roc_auc = auc(fpr, tpr)
     gini = 2 * roc_auc - 1
-    ks = ks_statistic(y_true, scores)
+    ks = float(max(tpr - fpr))
 
     # CAP Curve Calculation
     y_true_array = np.array(y_true)
@@ -65,8 +68,6 @@ def compute_metrics(y_true, scores):
 
 def bootstrap_confidence_interval(y_true, y_scores, n_iterations=100, alpha=0.05, random_state=42):
     """Compute bootstrap confidence interval for Gini and KS."""
-    from src.constants import DEFAULT_RANDOM_STATE
-
     if random_state is None:
         random_state = DEFAULT_RANDOM_STATE
     rng = np.random.RandomState(random_state)
@@ -545,21 +546,12 @@ def calculate_lift_table(
 
 
 def _compute_midrank(x: np.ndarray) -> np.ndarray:
-    """Compute midranks for the DeLong test."""
-    sorted_idx = np.argsort(x)
-    n = len(x)
-    midranks = np.empty(n)
-    i = 0
-    while i < n:
-        j = i
-        while j < n and x[sorted_idx[j]] == x[sorted_idx[i]]:
-            j += 1
-        # Assign average rank to all tied values
-        avg_rank = 0.5 * (i + j + 1)
-        for k in range(i, j):
-            midranks[sorted_idx[k]] = avg_rank
-        i = j
-    return midranks
+    """Compute midranks for the DeLong test.
+
+    Uses scipy.stats.rankdata (C-level implementation) for performance
+    instead of a Python while-loop over sorted indices.
+    """
+    return rankdata(x, method="average")
 
 
 def _fast_delong(y_true: np.ndarray, scores1: np.ndarray, scores2: np.ndarray) -> tuple[float, np.ndarray]:

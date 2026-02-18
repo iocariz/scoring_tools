@@ -5,10 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "logging>=0.4.9.6",
     "pandas>=3.0.0",
     "scipy>=1.17.0",
-    "pytest>=7.0.0",
     "tqdm>=4.0.0",
     "ipython>=8.0.0",
     "loguru>=0.7.0",
@@ -22,11 +20,16 @@ dependencies = [
     "dash>=2.15.0",
     "dash-bootstrap-components>=1.5.0",
     "tomli-w>=1.2.0",
-    "ruff>=0.15.1",
-    "pytest-cov>=4.1.0",
     "pydantic>=2.0.0",
     "pandera>=0.29.0",
     "shap>=0.49.1",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.1",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.1.0",
 ]
 
 [tool.ruff]
