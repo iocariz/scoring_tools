@@ -362,12 +362,15 @@ def run_scenario_analysis(
         settings.date_ini_book_obs,
         settings.date_fin_book_obs,
     )
-    data_mr_period = filter_by_date(
-        data_clean,
-        "mis_date",
-        settings.date_ini_book_obs_mr,
-        settings.date_fin_book_obs_mr,
-    )
+    if settings.date_ini_book_obs_mr is not None and settings.date_fin_book_obs_mr is not None:
+        data_mr_period = filter_by_date(
+            data_clean,
+            "mis_date",
+            settings.date_ini_book_obs_mr,
+            settings.date_fin_book_obs_mr,
+        )
+    else:
+        data_mr_period = pd.DataFrame(columns=data_clean.columns)
 
     inv_var1 = settings.inv_var1
 

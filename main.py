@@ -37,10 +37,10 @@ class InferencePhaseError(PipelineExecutionError):
 
 def main(
     config_path: str = "config.toml",
-    model_path: str = None,
+    model_path: str | None = None,
     training_only: bool = False,
     skip_dq_checks: bool = False,
-    preloaded_data: pd.DataFrame = None,
+    preloaded_data: pd.DataFrame | None = None,
     output: OutputPaths | None = None,
 ):
     """

@@ -131,6 +131,9 @@ def check_missing_values(
     if not existing_cols:
         return CheckResult(name="Missing Values", status=CheckStatus.SKIPPED, message="No columns to check")
 
+    if len(df) == 0:
+        return CheckResult(name="Missing Values", status=CheckStatus.SKIPPED, message="DataFrame is empty")
+
     missing_stats = {}
     max_missing_pct = 0
 

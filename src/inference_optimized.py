@@ -711,7 +711,7 @@ def _create_pipeline_visualization(
     variables: list[str],
     target_var: str,
     final_features: list[str],
-    model_path: str | None,
+    plot_output_path: str | None,
 ) -> go.Figure | None:
     """Create 3D surface plot and save HTML."""
     try:
@@ -727,10 +727,9 @@ def _create_pipeline_visualization(
 
         if fig is not None:
             logger.info("3D surface plot created")
-            if model_path:
-                plot_path = Path(model_path) / "prediction_surface.html"
-                fig.write_html(str(plot_path))
-                logger.info(f"  Plot saved to: {plot_path}")
+            if plot_output_path:
+                fig.write_html(str(plot_output_path))
+                logger.info(f"  Plot saved to: {plot_output_path}")
 
         return fig
     except (ValueError, KeyError, OSError) as e:
@@ -745,7 +744,6 @@ def inference_pipeline(
     indicators: list,
     target_var: str,
     multiplier: float,
-    test_size: float = 0.4,
     cv_folds: int = 5,
     include_hurdle: bool = True,
     save_model: bool = True,
@@ -777,7 +775,6 @@ def inference_pipeline(
         indicators: List of indicator column names for calculations.
         target_var: Name of the target variable to predict.
         multiplier: Multiplier for target variable calculation.
-        test_size: Unused, kept for backward compatibility. Will be removed.
         cv_folds: Number of cross-validation folds (default: 5).
         include_hurdle: Whether to include Hurdle models (default: True).
         save_model: Whether to save the best model (default: True).
@@ -797,13 +794,6 @@ def inference_pipeline(
         - model_path: Path to saved model (if save_model=True)
         - visualization: Plotly figure (if create_visualizations=True)
     """
-    if test_size != 0.4:
-        logger.warning(
-            "test_size parameter is deprecated and ignored. "
-            "All evaluation is done via cross-validation. "
-            "Use cv_folds to control validation."
-        )
-
     logger.info("=" * 80)
     logger.info("INFERENCE PIPELINE (CV-based)")
     logger.info("=" * 80)
@@ -914,7 +904,14 @@ def inference_pipeline(
         logger.info("STEP 6: 3D VISUALIZATION")
         logger.info("-" * 40)
 
-        fig = _create_pipeline_visualization(final_model, all_data, variables, target_var, final_features, model_path)
+        # Save visualization alongside models (in images/ sibling directory)
+        if model_path:
+            images_dir = Path(model_path).parent.parent / "images"
+            images_dir.mkdir(parents=True, exist_ok=True)
+            viz_output_path = str(images_dir / "prediction_surface.html")
+        else:
+            viz_output_path = None
+        fig = _create_pipeline_visualization(final_model, all_data, variables, target_var, final_features, viz_output_path)
 
     # PIPELINE SUMMARY
     logger.info("=" * 80)

@@ -90,7 +90,6 @@ def run_inference_phase(
             indicators=settings.indicators,
             target_var="b2_ever_h6",
             multiplier=settings.multiplier,
-            test_size=0.4,
             include_hurdle=True,
             save_model=True,
             model_base_path=output.model_base_path,

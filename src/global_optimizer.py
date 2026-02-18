@@ -306,7 +306,13 @@ class GlobalAllocator:
             off = var_offset[seg]
             k = len(df)
             seg_x = x[off : off + k]
-            chosen = int(np.argmax(seg_x))
+            rounded = np.round(seg_x).astype(int)
+            if rounded.sum() != 1:
+                logger.warning(
+                    f"MILP solution for {seg} has {rounded.sum()} selected points "
+                    f"(expected 1). Using argmax as fallback."
+                )
+            chosen = int(np.argmax(rounded))
             row = df.iloc[chosen]
 
             allocations[seg] = int(row["sol_fac"])

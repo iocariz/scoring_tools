@@ -15,7 +15,7 @@ from loguru import logger
 from tqdm import tqdm
 
 from .constants import DEFAULT_RISK_MULTIPLIER
-from .utils import calculate_b2_ever_h6, optimize_dtypes
+from .utils import MAX_PARALLEL_JOBS, calculate_b2_ever_h6, optimize_dtypes
 
 
 def _build_cutoff_dataframe(
@@ -341,7 +341,7 @@ def kpi_of_fact_sol(
 
         # Parallel Processing
         # n_jobs=-1 uses all available cores
-        chunks_results = Parallel(n_jobs=-1)(
+        chunks_results = Parallel(n_jobs=MAX_PARALLEL_JOBS)(
             delayed(process_kpi_chunk)(chunk, values_var0, data_sumary_desagregado, variables, inv_var1)
             for chunk in tqdm(chunks, desc="Processing chunks (Parallel)")
         )
@@ -360,9 +360,14 @@ def kpi_of_fact_sol(
 
         # Calculate cut metrics
         for kpi in indicadores:
-            final_result[f"{kpi}_cut"] = (
-                data_sumary_desagregado[f"{kpi}_boo"].sum() - final_result[f"{kpi}_boo"]
-            ).clip(lower=0)
+            raw_cut = data_sumary_desagregado[f"{kpi}_boo"].sum() - final_result[f"{kpi}_boo"]
+            neg_count = (raw_cut < 0).sum()
+            if neg_count > 0:
+                logger.warning(
+                    f"{kpi}_cut has {neg_count} negative values (min={raw_cut.min():.2f}). "
+                    f"This may indicate double-counting in KPI aggregation. Clipping to 0."
+                )
+            final_result[f"{kpi}_cut"] = raw_cut.clip(lower=0)
 
         # Calculate B2 metrics
         metrics = ["", "_cut", "_rep", "_boo"]
@@ -411,7 +416,7 @@ def get_optimal_solutions(df_v: pd.DataFrame, data_sumary: pd.DataFrame, chunk_s
         chunks = [df_v.iloc[i : i + chunk_size] for i in range(0, len(df_v), chunk_size)]
 
         # Parallel Processing
-        chunks_results = Parallel(n_jobs=-1)(
+        chunks_results = Parallel(n_jobs=MAX_PARALLEL_JOBS)(
             delayed(process_optimal_chunk)(chunk, data_sumary.reset_index())
             for chunk in tqdm(chunks, desc="Processing chunks (Parallel)")
         )

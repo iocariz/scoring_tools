@@ -48,48 +48,49 @@ def compute_monthly_metrics(
 
     # Create year-month period column
     df["year_month"] = df[date_column].dt.to_period("M")
+    df["_is_booked"] = df[Columns.STATUS_NAME] == StatusName.BOOKED.value
 
-    # Compute metrics per month
-    monthly = []
-    for period, group in df.groupby("year_month"):
-        row = {"year_month": period.to_timestamp()}
+    # Build aggregation dict
+    agg_dict = {
+        "_is_booked": ["sum", "count"],
+    }
+    # Production metrics (booked-only will be handled post-agg)
+    has_oa_amt = Columns.OA_AMT in df.columns
+    has_risk = Columns.TODU_30EVER_H6 in df.columns and Columns.TODU_AMT_PILE_H6 in df.columns
 
-        # Volume
-        row["total_records"] = len(group)
-        booked_mask = group[Columns.STATUS_NAME] == StatusName.BOOKED.value
-        row["booked_count"] = booked_mask.sum()
-        row["approval_rate"] = row["booked_count"] / row["total_records"] if row["total_records"] > 0 else 0.0
+    # Use vectorized groupby for booked-only metrics
+    booked_df = df[df["_is_booked"]]
+    grouped_all = df.groupby("year_month")
+    grouped_booked = booked_df.groupby("year_month") if not booked_df.empty else None
 
-        # Production metrics
-        if Columns.OA_AMT in group.columns:
-            booked_data = group.loc[booked_mask]
-            row["mean_production"] = booked_data[Columns.OA_AMT].mean() if len(booked_data) > 0 else 0.0
-            row["total_production"] = booked_data[Columns.OA_AMT].sum() if len(booked_data) > 0 else 0.0
+    # Total records and booked counts
+    counts = grouped_all["_is_booked"].agg(["sum", "count"])
+    counts.columns = ["booked_count", "total_records"]
+    counts["approval_rate"] = counts["booked_count"] / counts["total_records"]
 
-        # Risk metrics
-        if Columns.TODU_30EVER_H6 in group.columns and Columns.TODU_AMT_PILE_H6 in group.columns:
-            booked_data = group.loc[booked_mask]
-            if len(booked_data) > 0:
-                b2 = calculate_b2_ever_h6(
-                    booked_data[Columns.TODU_30EVER_H6],
-                    booked_data[Columns.TODU_AMT_PILE_H6],
-                )
-                row["risk_rate"] = b2.mean() if len(b2) > 0 else np.nan
-            else:
-                row["risk_rate"] = np.nan
+    result = counts.copy()
 
-        # Score metrics (check common score columns)
-        for score_col in ["sc_octroi", "new_efx", "risk_score_rf"]:
-            if score_col in group.columns:
-                booked_data = group.loc[booked_mask]
-                row[f"mean_{score_col}"] = booked_data[score_col].mean() if len(booked_data) > 0 else np.nan
+    # Production metrics from booked records
+    if has_oa_amt and grouped_booked is not None:
+        prod = grouped_booked[Columns.OA_AMT].agg(["mean", "sum"])
+        prod.columns = ["mean_production", "total_production"]
+        result = result.join(prod)
 
-        monthly.append(row)
+    # Risk metrics from booked records
+    if has_risk and grouped_booked is not None:
+        risk_agg = grouped_booked[[Columns.TODU_30EVER_H6, Columns.TODU_AMT_PILE_H6]].sum()
+        result["risk_rate"] = calculate_b2_ever_h6(
+            risk_agg[Columns.TODU_30EVER_H6], risk_agg[Columns.TODU_AMT_PILE_H6]
+        )
 
-    if not monthly:
-        return pd.DataFrame()
+    # Score metrics from booked records
+    for score_col in ["sc_octroi", "new_efx", "risk_score_rf"]:
+        if score_col in df.columns and grouped_booked is not None:
+            result[f"mean_{score_col}"] = grouped_booked[score_col].mean()
 
-    result = pd.DataFrame(monthly)
+    # Convert period index to timestamp
+    result.index = result.index.to_timestamp()
+    result = result.reset_index().rename(columns={"year_month": "year_month"})
     result = result.sort_values("year_month").reset_index(drop=True)
 
     logger.info(f"Monthly metrics computed: {len(result)} months, {result['total_records'].sum():,} total records")

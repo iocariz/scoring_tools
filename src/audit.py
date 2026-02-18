@@ -164,8 +164,13 @@ def generate_audit_table(
         passes_cut = data[var1_col] <= audit_df["cut_limit"]
 
     is_booked = data["status_name"] == StatusName.BOOKED.value
+    if "reject_reason" in data.columns:
+        # Convert to object dtype first to safely handle Categorical columns with <NA>
+        reject_reason_col = data["reject_reason"].astype(object).fillna("").astype(str)
+    else:
+        reject_reason_col = pd.Series("", index=data.index)
     is_score_rejected = (data["status_name"] == StatusName.REJECTED.value) & (
-        data.get("reject_reason", pd.Series(dtype=str)).astype(str).replace("nan", "") == RejectReason.SCORE.value
+        reject_reason_col == RejectReason.SCORE.value
     )
 
     audit_df["classification"] = np.select(

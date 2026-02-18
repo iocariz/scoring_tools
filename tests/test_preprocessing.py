@@ -384,8 +384,8 @@ def test_preprocess_empty_dataframe(config):
         preprocess_data(empty_df, config.keep_vars, config.indicators, config.segment_filter)
 
 
-def test_binning_with_nan_values():
-    """Test binning handles NaN values gracefully."""
+def test_binning_with_nan_values_raises_when_above_threshold():
+    """Test binning raises ValueError when NaN percentage exceeds 1%."""
     data = pd.DataFrame(
         {
             "score_rf": [320, np.nan, 380],
@@ -395,11 +395,8 @@ def test_binning_with_nan_values():
     octroi_bins = [-np.inf, 350, 400, np.inf]
     efx_bins = [-np.inf, 25, 50, np.inf]
 
-    result = apply_binning_transformations(data, octroi_bins, efx_bins)
-
-    # NaN input should produce NaN bins (filled with median by function)
-    assert "sc_octroi_new_clus" in result.columns
-    assert "new_efx_clus" in result.columns
+    with pytest.raises(ValueError, match="exceeds 1% threshold"):
+        apply_binning_transformations(data, octroi_bins, efx_bins)
 
 
 def test_filter_by_date_with_nat():

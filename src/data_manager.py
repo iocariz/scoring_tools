@@ -58,7 +58,7 @@ def validate_data_not_empty(data: pd.DataFrame, context: str = "data") -> None:
         raise DataValidationError(f"{context} is empty")
 
 
-def load_and_prepare_data(settings: PreprocessingSettings, preloaded_data: pd.DataFrame = None) -> pd.DataFrame:
+def load_and_prepare_data(settings: PreprocessingSettings, preloaded_data: pd.DataFrame | None = None) -> pd.DataFrame:
     """
     Load data from file or use preloaded data, standardize columns and validate.
 

@@ -21,7 +21,7 @@ from sklearn import tree as sktree
 from sklearn.tree import DecisionTreeClassifier
 
 from .constants import DEFAULT_MIN_SAMPLES_LEAF, SCORE_SCALE_MAX, Columns, StatusName
-from .utils import calculate_todu_30ever_from_b2
+from .utils import calculate_b2_ever_h6, calculate_todu_30ever_from_b2
 
 
 def extract_splits_from_tree(tree, feature_names):
@@ -43,20 +43,28 @@ def extract_splits_from_tree(tree, feature_names):
 def optimal_splits_using_tree(data_frame, numeric_variable, binary_outcome, num_groups):
     """
     Bin the numeric_variable using decision trees and assign rows to groups.
+
+    Returns a copy of the DataFrame with an added 'group' column.
     """
-    X = data_frame[[numeric_variable]]
-    y = data_frame[binary_outcome]
+    for col in (numeric_variable, binary_outcome):
+        if col not in data_frame.columns:
+            raise ValueError(f"Column '{col}' not found in DataFrame. Available: {list(data_frame.columns)}")
+
+    result = data_frame.copy()
+
+    X = result[[numeric_variable]]
+    y = result[binary_outcome]
 
     tree = DecisionTreeClassifier(max_leaf_nodes=num_groups, min_samples_leaf=DEFAULT_MIN_SAMPLES_LEAF)
     tree.fit(X, y)
 
     splits = extract_splits_from_tree(tree, [numeric_variable])
 
-    data_frame["group"] = pd.cut(
-        data_frame[numeric_variable], bins=[-float("inf")] + splits + [float("inf")], labels=range(1, len(splits) + 2)
+    result["group"] = pd.cut(
+        result[numeric_variable], bins=[-float("inf")] + splits + [float("inf")], labels=range(1, len(splits) + 2)
     )
 
-    return data_frame
+    return result
 
 
 def calculate_financing_rates(data, date_ini_demand, lm=6):
@@ -198,8 +206,10 @@ def preprocess_data(
     booked_data = data.loc[data[Columns.STATUS_NAME] == StatusName.BOOKED.value, variables + indicadores]
     data_train = data_train.merge(booked_data.groupby(variables).sum().reset_index(), on=variables, how="left")
 
-    # Calculating the target variable more directly
-    data_train[var_target] = np.round(multiplier * data_train["todu_30ever_h6"] / data_train["todu_amt_pile_h6"], 2)
+    # Calculating the target variable with division-by-zero handling
+    data_train[var_target] = calculate_b2_ever_h6(
+        data_train["todu_30ever_h6"], data_train["todu_amt_pile_h6"], multiplier=multiplier
+    )
 
     return data_train
 

@@ -12,6 +12,7 @@ Key functions:
 - process_mr_period: Execute full MR analysis for a time period
 """
 
+import traceback
 from typing import TYPE_CHECKING, Any
 
 from src.config import OutputPaths
@@ -145,8 +146,6 @@ def calculate_metrics_from_cuts(
 
     except (KeyError, IndexError, ValueError) as e:
         logger.error(f"Error calculating metrics from cuts: {e}")
-        import traceback
-
         logger.error(traceback.format_exc())
         return None
 
@@ -457,13 +456,9 @@ def process_mr_period(
                 logger.warning("No numeric variables found for stability analysis")
 
         except (ValueError, KeyError) as e:
-            logger.error(f"Error calculating stability metrics: {e}")
-            import traceback
-
-            logger.debug(traceback.format_exc())
+            logger.warning(f"Error calculating stability metrics: {e}")
+            logger.warning(traceback.format_exc())
 
     except (ValueError, KeyError, RuntimeError) as e:
         logger.error(f"Error processing MR period: {e}")
-        import traceback
-
         logger.error(traceback.format_exc())

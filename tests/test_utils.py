@@ -230,10 +230,11 @@ class TestOptimizeDtypes:
         result = optimize_dtypes(df)
         assert result["a"].dtype == np.int32
 
-    def test_float64_to_float32(self):
+    def test_float64_preserved(self):
+        """Float64 is preserved to avoid precision loss on financial data."""
         df = pd.DataFrame({"a": pd.array([1.1, 2.2, 3.3], dtype="float64")})
         result = optimize_dtypes(df)
-        assert result["a"].dtype == np.float32
+        assert result["a"].dtype == np.float64
 
     def test_preserves_string_columns(self):
         df = pd.DataFrame({"a": ["x", "y", "z"]})

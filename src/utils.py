@@ -7,12 +7,18 @@ This module provides core utility functions used throughout the scoring tools:
 
 """
 
+import os
+
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 from loguru import logger
 
 from .constants import DEFAULT_RISK_MULTIPLIER
+
+# Cap parallel workers to avoid OOM on many-core servers.
+# Override with SCORING_TOOLS_MAX_JOBS environment variable.
+MAX_PARALLEL_JOBS = int(os.environ.get("SCORING_TOOLS_MAX_JOBS", min(4, os.cpu_count() or 4)))
 
 
 def calculate_b2_ever_h6(
@@ -103,7 +109,12 @@ def get_data_information(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
-    """Optimize DataFrame memory usage by choosing appropriate dtypes"""
+    """Optimize DataFrame memory usage by choosing appropriate integer dtypes.
+
+    Works on a copy to avoid mutating the input. Float64 columns are preserved
+    to avoid precision loss on financial data.
+    """
+    df = df.copy()
     for col in df.columns:
         # Convert integer columns
         if df[col].dtype == "int64":
@@ -122,9 +133,7 @@ def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
                 else:
                     df[col] = df[col].astype("int32")
 
-        # Convert float columns
-        elif df[col].dtype == "float64":
-            df[col] = df[col].astype("float32")
+        # Float64 columns are intentionally preserved to avoid precision loss
 
     return df
 
@@ -273,8 +282,8 @@ def calculate_bootstrap_intervals(
     else:
         seeds = [None] * n_bootstraps
 
-    # Parallel execution
-    results = Parallel(n_jobs=-1)(
+    # Parallel execution (capped to avoid OOM)
+    results = Parallel(n_jobs=MAX_PARALLEL_JOBS)(
         delayed(_bootstrap_worker)(
             data_booked, cut_map, variables, multiplier, random_state=int(seed) if seed is not None else None
         )

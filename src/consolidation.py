@@ -402,7 +402,7 @@ def consolidate_segments(
     output_base: Path,
     segments: dict[str, dict[str, Any]],
     supersegments: dict[str, dict[str, Any]],
-    scenarios: list[str] = None,
+    scenarios: list[str] | None = None,
 ) -> pd.DataFrame:
     """
     Consolidate risk production tables across segments, supersegments, and scenarios.
@@ -515,8 +515,8 @@ def consolidate_segments(
                         optimum_production_ci_upper=agg["optimum"].get("production_ci_upper", 0),
                         # Risk CIs are 0 for aggregated
                     )
-                results.append(consolidated.to_dict())
-                supersegment_data[ss_name] = agg
+                    results.append(consolidated.to_dict())
+                    supersegment_data[ss_name] = agg
 
             # Add all individual segments (including those in supersegments)
             for seg_name, metrics in segment_metrics.items():
@@ -767,8 +767,8 @@ def generate_consolidation_report(
     output_base: str,
     segments: dict[str, dict[str, Any]],
     supersegments: dict[str, dict[str, Any]],
-    scenarios: list[str] = None,
-    output_path: str = None,
+    scenarios: list[str] | None = None,
+    output_path: str | None = None,
 ) -> tuple[pd.DataFrame, go.Figure]:
     """
     Generate complete consolidation report with CSV and HTML dashboard.

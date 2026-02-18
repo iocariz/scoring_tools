@@ -124,8 +124,9 @@ def preprocess_data(
     )
 
     try:
-        # First apply non-segment filters
-        data_filtered = df.query("fuera_norma == 'n' & fraud_flag == 'n' & nature_holder != 'legal'").copy()
+        # First apply non-segment filters using explicit boolean masks
+        mask = (df["fuera_norma"] == "n") & (df["fraud_flag"] == "n") & (df["nature_holder"] != "legal")
+        data_filtered = df[mask].copy()
 
         # Apply segment filter - support both exact match and regex patterns
         # If segment_filter contains '|' (OR operator), treat as regex pattern
@@ -257,13 +258,23 @@ def apply_binning_transformations(data: pd.DataFrame, octroi_bins: list[float], 
             transformed_data["risk_score_rf"], bins=efx_bins, labels=False, include_lowest=True
         )
 
-        # Check for NaN values from binning
+        # Check for NaN values from binning (values outside efx bin range)
         nan_count = transformed_data["new_efx_clus"].isna().sum()
         if nan_count > 0:
-            logger.warning(f"{nan_count:,} records have NaN values after efx binning")
-            median_val = transformed_data["new_efx_clus"].median()
-            logger.warning(f"Filling NaN values with median: {median_val}")
-            transformed_data["new_efx_clus"] = transformed_data["new_efx_clus"].fillna(median_val)
+            nan_pct = nan_count / len(transformed_data)
+            score_min = transformed_data["risk_score_rf"].min()
+            score_max = transformed_data["risk_score_rf"].max()
+            logger.warning(
+                f"{nan_count:,} records ({nan_pct:.1%}) have NaN after efx binning. "
+                f"risk_score_rf range: [{score_min}, {score_max}], efx_bins: [{min(efx_bins)}, {max(efx_bins)}]"
+            )
+            if nan_pct > 0.01:
+                raise ValueError(
+                    f"{nan_pct:.1%} of records fall outside efx bin range — exceeds 1% threshold. "
+                    f"Check efx_bins configuration or data quality."
+                )
+            logger.warning(f"Dropping {nan_count:,} out-of-range records")
+            transformed_data = transformed_data.dropna(subset=["new_efx_clus"])
 
         # Adjust bins to 1-indexed
         transformed_data["new_efx_clus"] = transformed_data["new_efx_clus"] + 1
