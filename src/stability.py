@@ -11,7 +11,7 @@ PSI Interpretation:
 """
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 import numpy as np
 import pandas as pd
@@ -22,7 +22,7 @@ from plotly.subplots import make_subplots
 from .constants import PSI_STABLE_THRESHOLD, PSI_UNSTABLE_THRESHOLD
 
 
-class StabilityStatus(Enum):
+class StabilityStatus(StrEnum):
     """Stability status based on PSI/CSI value."""
 
     STABLE = "stable"  # PSI < 0.1
@@ -95,37 +95,33 @@ class StabilityReport:
         return pd.DataFrame(data).sort_values("psi", ascending=False)
 
     def print_report(self) -> None:
-        """Print formatted stability report to console."""
-        print("\n" + "=" * 70)
-        print("STABILITY REPORT (PSI/CSI)")
-        print("=" * 70)
-        print(f"\nBaseline:   {self.baseline_name} (n={self.baseline_count:,})")
-        print(f"Comparison: {self.comparison_name} (n={self.comparison_count:,})")
+        """Log formatted stability report using loguru."""
+        logger.info("=" * 70)
+        logger.info("STABILITY REPORT (PSI/CSI)")
+        logger.info("=" * 70)
+        logger.info(f"Baseline:   {self.baseline_name} (n={self.baseline_count:,})")
+        logger.info(f"Comparison: {self.comparison_name} (n={self.comparison_count:,})")
 
         if self.overall_psi is not None:
             status = get_psi_status(self.overall_psi)
             icon = {"stable": "✓", "moderate": "⚠", "unstable": "✗"}[status.value]
-            print(f"\nOverall PSI: {self.overall_psi:.4f} {icon} ({status.value})")
+            logger.info(f"Overall PSI: {self.overall_psi:.4f} {icon} ({status.value})")
 
         # Group by status
-        for status, label, _color in [
-            (StabilityStatus.UNSTABLE, f"UNSTABLE (PSI >= {PSI_UNSTABLE_THRESHOLD})", "red"),
-            (
-                StabilityStatus.MODERATE,
-                f"MODERATE ({PSI_STABLE_THRESHOLD} <= PSI < {PSI_UNSTABLE_THRESHOLD})",
-                "yellow",
-            ),
-            (StabilityStatus.STABLE, f"STABLE (PSI < {PSI_STABLE_THRESHOLD})", "green"),
+        for status, label in [
+            (StabilityStatus.UNSTABLE, f"UNSTABLE (PSI >= {PSI_UNSTABLE_THRESHOLD})"),
+            (StabilityStatus.MODERATE, f"MODERATE ({PSI_STABLE_THRESHOLD} <= PSI < {PSI_UNSTABLE_THRESHOLD})"),
+            (StabilityStatus.STABLE, f"STABLE (PSI < {PSI_STABLE_THRESHOLD})"),
         ]:
             results = [r for r in self.psi_results if r.status == status]
             if results:
-                print(f"\n{label}:")
+                logger.info(f"{label}:")
                 for r in sorted(results, key=lambda x: -x.psi_value):
-                    print(f"  {r}")
+                    logger.info(f"  {r}")
 
-        print("\n" + "-" * 70)
-        print(self.summary())
-        print("=" * 70 + "\n")
+        logger.info("-" * 70)
+        logger.info(self.summary())
+        logger.info("=" * 70)
 
 
 def get_psi_status(psi_value: float) -> StabilityStatus:
@@ -171,6 +167,7 @@ def calculate_psi(
             _, bin_edges = pd.qcut(baseline_clean, q=bins, retbins=True, duplicates="drop")
         except ValueError:
             # Fallback to equal-width bins if quantiles fail
+            logger.warning("Quantile binning failed (low cardinality data), falling back to equal-width bins.")
             _, bin_edges = pd.cut(baseline_clean, bins=bins, retbins=True)
     else:
         bin_edges = bins

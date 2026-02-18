@@ -120,14 +120,26 @@ class TestStabilityReport:
         assert "psi" in df.columns
         assert "status" in df.columns
 
-    def test_print_report(self, capsys):
+    def test_print_report(self):
+        from io import StringIO
+
+        from loguru import logger
+
         report = self._make_report()
         report.overall_psi = 0.12
-        report.print_report()
-        captured = capsys.readouterr()
-        assert "STABILITY REPORT" in captured.out
-        assert "Main" in captured.out
-        assert "MR" in captured.out
+
+        # Capture loguru output via a temporary sink
+        buffer = StringIO()
+        sink_id = logger.add(buffer, format="{message}")
+        try:
+            report.print_report()
+        finally:
+            logger.remove(sink_id)
+
+        output = buffer.getvalue()
+        assert "STABILITY REPORT" in output
+        assert "Main" in output
+        assert "MR" in output
 
 
 # =============================================================================

@@ -9,6 +9,7 @@ Classification logic matches the main pipeline:
 - Swap-in amounts are multiplied by the financing rate (tasa_fin)
 """
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -153,35 +154,47 @@ def generate_audit_table(
     audit_df = data[available_columns].copy()
 
     # Add cutoff limit for each record
-    audit_df["cut_limit"] = data[var0_col].map(lambda x: cut_map.get(float(x)))
+    audit_df["cut_limit"] = data[var0_col].astype(float).map(cut_map)
 
-    # Classify each record
-    audit_df["classification"] = data.apply(
-        lambda row: classify_record(row, var0_col, var1_col, cut_map, inv_var1),
-        axis=1,
+    # Vectorized classification (replaces row-by-row apply for ~10x speedup)
+    passes_cut: pd.Series
+    if inv_var1:
+        passes_cut = data[var1_col] >= audit_df["cut_limit"]
+    else:
+        passes_cut = data[var1_col] <= audit_df["cut_limit"]
+
+    is_booked = data["status_name"] == StatusName.BOOKED.value
+    is_score_rejected = (data["status_name"] == StatusName.REJECTED.value) & (
+        data.get("reject_reason", pd.Series(dtype=str)).fillna("") == RejectReason.SCORE.value
     )
 
-    # Add passes_cut boolean for verification
-    if inv_var1:
-        audit_df["passes_cut"] = data[var1_col] >= audit_df["cut_limit"]
-    else:
-        audit_df["passes_cut"] = data[var1_col] <= audit_df["cut_limit"]
+    audit_df["classification"] = np.select(
+        [
+            is_booked & passes_cut,
+            is_booked & ~passes_cut,
+            is_score_rejected & passes_cut,
+            is_score_rejected & ~passes_cut,
+        ],
+        ["keep", "swap_out", "swap_in", "rejected"],
+        default="rejected_other",
+    )
+
+    # Handle rows with no cutoff found
+    no_cutoff = audit_df["cut_limit"].isna()
+    if no_cutoff.any():
+        logger.warning(f"{no_cutoff.sum()} records had no matching cutoff bin — classified as 'unknown'.")
+        audit_df.loc[no_cutoff, "classification"] = "unknown"
+
+    audit_df["passes_cut"] = passes_cut
 
     # Calculate annualization coefficient
     annual_coef = 12 / n_months if n_months else 1.0
 
-    # Calculate adjusted amount:
-    # - All amounts are annualized (multiplied by 12/n_months)
-    # - Swap-in amounts are also multiplied by financing rate (tasa_fin)
+    # Vectorized adjusted amount (replaces row-by-row apply)
     if "oa_amt" in audit_df.columns:
-        audit_df["oa_amt_adjusted"] = audit_df.apply(
-            lambda row: (
-                row["oa_amt"] * financing_rate * annual_coef
-                if row["classification"] == "swap_in"
-                else row["oa_amt"] * annual_coef
-            ),
-            axis=1,
-        )
+        is_swap_in = audit_df["classification"] == "swap_in"
+        audit_df["oa_amt_adjusted"] = audit_df["oa_amt"] * annual_coef
+        audit_df.loc[is_swap_in, "oa_amt_adjusted"] *= financing_rate
 
     logger.info(f"Annualization: {n_months} months -> coefficient {annual_coef:.4f}")
     logger.info(f"Financing rate applied to swap-in: {financing_rate:.2%}")

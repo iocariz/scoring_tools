@@ -35,7 +35,14 @@ from src.metrics import (
     delong_test,
 )
 from src.plots import plot_precision_recall_curve, plot_score_distribution
-from src.styles import COLOR_PRIMARY, COLOR_SECONDARY, apply_matplotlib_style
+from src.styles import (
+    COLOR_ACCENT,
+    COLOR_PRIMARY,
+    COLOR_PRODUCTION,
+    COLOR_RISK,
+    COLOR_SECONDARY,
+    apply_matplotlib_style,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -52,9 +59,9 @@ COMBINED_COLUMNS: dict[str, list] = {
 }
 
 SCORE_COLORS = {
-    "Score RF": "#3498DB",
-    "Risk Score RF": "#E74C3C",
-    "Combined": "#2ECC71",
+    "Score RF": COLOR_ACCENT,
+    "Risk Score RF": COLOR_RISK,
+    "Combined": COLOR_PRODUCTION,
 }
 
 
