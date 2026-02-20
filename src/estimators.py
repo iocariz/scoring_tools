@@ -8,6 +8,7 @@ This module provides specialized machine learning estimators:
 import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin, clone
 from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.utils.validation import check_X_y
 
 from src.constants import DEFAULT_RANDOM_STATE, DEFAULT_ZERO_THRESHOLD
 
@@ -64,6 +65,20 @@ class HurdleRegressor(BaseEstimator, RegressorMixin):
         Returns:
             self
         """
+        # Preserve feature names if X is a pandas DataFrame
+        feature_names_in_ = None
+        if hasattr(X, "columns"):
+            feature_names_in_ = X.columns
+            
+        # Validate inputs (raises ValueError if NaNs are present)
+        X, y = check_X_y(X, y, accept_sparse=True)
+        
+        # If we had feature names, optionally restore X to a DataFrame to keep names
+        # for sklearn models that warn without them (like Lasso, Ridge)
+        if feature_names_in_ is not None:
+            import pandas as pd
+            X = pd.DataFrame(X, columns=feature_names_in_)
+
         # Initialize models if not provided
         if self.classifier is None:
             self.classifier_ = LogisticRegression(max_iter=1000, random_state=DEFAULT_RANDOM_STATE)
@@ -112,7 +127,16 @@ class HurdleRegressor(BaseEstimator, RegressorMixin):
             predictions: Array of predictions
         """
         # Stage 1: Predict probability of being non-zero
-        prob_nonzero = self.classifier_.predict_proba(X)[:, 1]
+        # Handle single-class case where predict_proba returns 1-column array
+        proba = self.classifier_.predict_proba(X)
+        if proba.shape[1] == 1:
+            # Classifier saw only one class during training
+            if self.classifier_.classes_[0] == 1:
+                prob_nonzero = np.ones(len(X))
+            else:
+                prob_nonzero = np.zeros(len(X))
+        else:
+            prob_nonzero = proba[:, 1]
 
         # Stage 2: Predict magnitude for all observations
         magnitude = self.regressor_.predict(X)
@@ -131,13 +155,34 @@ class HurdleRegressor(BaseEstimator, RegressorMixin):
         return self.regressor_.predict(X)
 
     def get_params(self, deep=True):
-        """Get parameters for this estimator."""
-        return {"classifier": self.classifier, "regressor": self.regressor, "zero_threshold": self.zero_threshold}
+        """Get parameters for this estimator.
+
+        When deep=True, returns nested estimator parameters (e.g., classifier__C)
+        for full sklearn compatibility with GridSearchCV/clone.
+        """
+        params = {"classifier": self.classifier, "regressor": self.regressor, "zero_threshold": self.zero_threshold}
+        if deep:
+            if self.classifier is not None:
+                for key, value in self.classifier.get_params(deep=True).items():
+                    params[f"classifier__{key}"] = value
+            if self.regressor is not None:
+                for key, value in self.regressor.get_params(deep=True).items():
+                    params[f"regressor__{key}"] = value
+        return params
 
     def set_params(self, **params):
-        """Set parameters for this estimator."""
+        """Set parameters for this estimator, including nested estimator params."""
+        nested = {}
         for key, value in params.items():
-            setattr(self, key, value)
+            if "__" in key:
+                prefix, sub_key = key.split("__", 1)
+                nested.setdefault(prefix, {})[sub_key] = value
+            else:
+                setattr(self, key, value)
+        if "classifier" in nested and self.classifier is not None:
+            self.classifier.set_params(**nested["classifier"])
+        if "regressor" in nested and self.regressor is not None:
+            self.regressor.set_params(**nested["regressor"])
         return self
 
 
@@ -189,8 +234,16 @@ class TweedieGLM(BaseEstimator, RegressorMixin):
             self
         """
         from sklearn.linear_model import TweedieRegressor
+        
+        # Check if X has feature names (is a DataFrame)
+        feature_names_in_ = None
+        if hasattr(X, "columns"):
+            feature_names_in_ = X.columns
 
         self.regressor_ = TweedieRegressor(power=self.power, alpha=self.alpha, link=self.link, max_iter=self.max_iter)
+
+        # Let the internal sklearn estimator handle validation, but if it was
+        # passed as a DataFrame, keep it as a DataFrame so sklearn registers feature_names_in_
         self.regressor_.fit(X, y, sample_weight=sample_weight)
         return self
 

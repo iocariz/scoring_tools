@@ -1,5 +1,5 @@
 """
-Enhanced data preprocessing module for fraud detection pipeline.
+Enhanced data preprocessing module for credit risk scoring pipeline.
 
 This module provides robust preprocessing functions with improved error handling,
 performance optimizations, and comprehensive logging.
@@ -291,8 +291,18 @@ def _apply_binning_from_config(
                         f"{nan_pct:.1%} of records fall outside {bc.output_col} bin range — exceeds 1% threshold. "
                         f"Check bin_edges configuration or data quality."
                     )
-                logger.warning(f"Dropping {nan_count:,} out-of-range records")
-                transformed_data = transformed_data.dropna(subset=[bc.output_col])
+                # Assign out-of-range records to the nearest boundary bin instead of dropping
+                n_bins = len(bc.bin_edges) - 1
+                nan_mask = transformed_data[bc.output_col].isna()
+                below_mask = nan_mask & (transformed_data[bc.source_col] < min(bc.bin_edges))
+                above_mask = nan_mask & (transformed_data[bc.source_col] >= max(bc.bin_edges))
+                transformed_data.loc[below_mask, bc.output_col] = 0  # first bin (0-indexed)
+                transformed_data.loc[above_mask, bc.output_col] = n_bins - 1  # last bin (0-indexed)
+                # Any remaining NaNs (e.g., NaN source values) are dropped
+                remaining_nan = transformed_data[bc.output_col].isna().sum()
+                if remaining_nan > 0:
+                    transformed_data = transformed_data.dropna(subset=[bc.output_col])
+                logger.info(f"Assigned {nan_count - remaining_nan:,} out-of-range records to boundary bins")
 
             # 1-indexed bins
             transformed_data[bc.output_col] = transformed_data[bc.output_col] + 1
@@ -647,13 +657,37 @@ def _infer_monotonicity(data: pd.DataFrame, settings: "PreprocessingSettings") -
 
                 cov_xy = np.average((rank_x - mean_x) * (rank_y - mean_y), weights=weights)
 
-                # Direction is entirely driven by the sign of the covariance
+                # Permutation test: assess significance of weighted covariance
+                n_permutations = 1000
+                rng = np.random.RandomState(42)
+                abs_cov_obs = abs(cov_xy) if not np.isnan(cov_xy) else 0.0
+                exceed_count = 0
+                for _ in range(n_permutations):
+                    perm_y = rng.permutation(rank_y)
+                    perm_mean_y = np.average(perm_y, weights=weights)
+                    perm_cov = np.average((rank_x - mean_x) * (perm_y - perm_mean_y), weights=weights)
+                    if abs(perm_cov) >= abs_cov_obs:
+                        exceed_count += 1
+                p_value = (exceed_count + 1) / (n_permutations + 1)
+
+                # Direction is driven by the sign of the covariance + significance check
                 if np.isnan(cov_xy) or np.isclose(cov_xy, 0):
                     direction = 1
-                    logger.warning(f"[{var}] Weighted Spearman covariance returned NaN or 0. Defaulting to ascending (1).")
+                    logger.warning(
+                        f"[{var}] Weighted Spearman covariance returned NaN or 0. Defaulting to ascending (1)."
+                    )
+                elif p_value > 0.10:
+                    direction = 1
+                    logger.warning(
+                        f"[{var}] Weighted Spearman covariance not significant "
+                        f"(cov={cov_xy:g}, p={p_value:.3f} > 0.10). "
+                        f"Defaulting to ascending (1). Consider setting direction explicitly in config."
+                    )
                 else:
                     direction = 1 if cov_xy > 0 else -1
-                    logger.info(f"[{var}] Inferred direction: {direction} (Weighted Spearman Cov: {cov_xy:g})")
+                    logger.info(
+                        f"[{var}] Inferred direction: {direction} (Weighted Spearman Cov: {cov_xy:g}, p={p_value:.3f})"
+                    )
 
             settings.directions[var] = direction
 

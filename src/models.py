@@ -92,10 +92,9 @@ def calculate_financing_rates(data, date_ini_demand, lm=6):
     booked_data = relevant_data.loc[relevant_data[Columns.STATUS_NAME] == StatusName.BOOKED.value]
 
     # Group and calculate rates (no need to reset_index)
-    financing_rate_by_month = (
-        booked_data.groupby(Columns.MIS_DATE)[Columns.OA_AMT].sum()
-        / relevant_data.groupby(Columns.MIS_DATE)[Columns.OA_AMT].sum()
-    )
+    numerator = booked_data.groupby(Columns.MIS_DATE)[Columns.OA_AMT].sum()
+    denominator = relevant_data.groupby(Columns.MIS_DATE)[Columns.OA_AMT].sum()
+    financing_rate_by_month = numerator.div(denominator, fill_value=0)
 
     # Calculate recent financing rates
     recent_data = relevant_data.loc[relevant_data[Columns.MIS_DATE] >= date_ini_demand]
@@ -148,7 +147,12 @@ def transform_variables(df: pd.DataFrame, variables: list[str], degree: int = 3)
 
 
 def _transform_variables_2d(df: pd.DataFrame, variables: list[str]) -> pd.DataFrame:
-    """Standard 2-variable transform."""
+    """Standard 2-variable transform.
+
+    Note: polynomial features on integer bin indices (1..N) create high
+    multicollinearity (VIF). This is acceptable for prediction but coefficient
+    estimates may be unstable. Use regularized models (Ridge/Lasso) when possible.
+    """
     var0, var1 = variables
 
     df[f"{var0}_{var1}"] = df[var0] * df[var1]

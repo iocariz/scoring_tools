@@ -33,7 +33,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import auc, average_precision_score, precision_recall_curve, roc_curve
 from sklearn.preprocessing import StandardScaler
 
-from src.constants import DEFAULT_RANDOM_STATE
+from src.constants import DEFAULT_RANDOM_STATE, PSI_EPSILON
 
 
 def train_logistic_regression(X, y):
@@ -66,7 +66,7 @@ def compute_metrics(y_true, scores):
     return gini, roc_auc, ks, cumulative_true_positive
 
 
-def bootstrap_confidence_interval(y_true, y_scores, n_iterations=100, alpha=0.05, random_state=42):
+def bootstrap_confidence_interval(y_true, y_scores, n_iterations=1000, alpha=0.05, random_state=42):
     """Compute bootstrap confidence interval for Gini and KS."""
     if random_state is None:
         random_state = DEFAULT_RANDOM_STATE
@@ -81,6 +81,10 @@ def bootstrap_confidence_interval(y_true, y_scores, n_iterations=100, alpha=0.05
         sampled_y_true = y_true.iloc[sample_indices].values
         sampled_y_scores = y_scores.iloc[sample_indices].values
 
+        # Skip degenerate resamples that contain only one class
+        if len(np.unique(sampled_y_true)) < 2:
+            continue
+
         # Compute GINI
         fpr, tpr, _ = roc_curve(sampled_y_true, sampled_y_scores)
         auc_score = auc(fpr, tpr)
@@ -88,6 +92,9 @@ def bootstrap_confidence_interval(y_true, y_scores, n_iterations=100, alpha=0.05
 
         # Compute KS
         ks_scores.append(ks_statistic(sampled_y_true, sampled_y_scores))
+
+    if not gini_scores:
+        return (0.0, 0.0), (0.0, 0.0)
 
     gini_ci = (np.percentile(gini_scores, 100 * alpha / 2.0), np.percentile(gini_scores, 100 * (1 - alpha / 2.0)))
     ks_ci = (np.percentile(ks_scores, 100 * alpha / 2.0), np.percentile(ks_scores, 100 * (1 - alpha / 2.0)))
@@ -115,6 +122,10 @@ def calculate_rejection_thresholds(y_true: np.ndarray, scores: np.ndarray, thres
         thresholds = [5, 10, 15, 20]
     y_true_array = np.array(y_true)
     total_bad = np.sum(y_true_array)
+
+    if total_bad == 0:
+        return {f"{t}%": 0.0 for t in thresholds}
+
     sorted_indices = np.argsort(scores)[::-1]
     sorted_true_values = y_true_array[sorted_indices]
 
@@ -198,10 +209,12 @@ def calculate_psi_by_period(
     df["Expected Percent"] = df["Expected Count"] / len(expected)
     df["Actual Percent"] = df["Actual Count"] / len(actual)
 
-    # Handle edge cases for computing PSI
-    epsilon = 0.001  # small value to prevent log(0)
+    # Handle edge cases for computing PSI: replace zeros then re-normalize
+    epsilon = PSI_EPSILON
     df["Expected Percent"] = df["Expected Percent"].replace(0, epsilon)
     df["Actual Percent"] = df["Actual Percent"].replace(0, epsilon)
+    df["Expected Percent"] = df["Expected Percent"] / df["Expected Percent"].sum()
+    df["Actual Percent"] = df["Actual Percent"] / df["Actual Percent"].sum()
 
     # Compute PSI
     df["PSI"] = (df["Actual Percent"] - df["Expected Percent"]) * np.log(df["Actual Percent"] / df["Expected Percent"])
@@ -252,7 +265,7 @@ def model_summary(
     score_columns: dict,
     combined_columns: dict = None,
     plot: bool = True,
-    n_iterations: int = 100,
+    n_iterations: int = 1000,
     alpha: float = 0.05,
 ) -> pd.DataFrame:
     """
@@ -430,9 +443,20 @@ def calc_iv(df: pd.DataFrame, var: str, target: str) -> float:
     df_tmp = df.groupby(var).agg({target: ["sum", "count"]})
     df_tmp.columns = ["sum", "count"]
     df_tmp = df_tmp.reset_index()
-    df_tmp["perc_bad"] = df_tmp["sum"] / df_tmp["sum"].sum()
-    df_tmp["perc_good"] = (df_tmp["count"] - df_tmp["sum"]) / (df_tmp["count"].sum() - df_tmp["sum"].sum())
-    df_tmp["woe"] = np.log((df_tmp["perc_good"] + 0.00001) / (df_tmp["perc_bad"] + 0.00001))
+
+    total_bad = df_tmp["sum"].sum()
+    total_good = df_tmp["count"].sum() - total_bad
+
+    # Guard against degenerate cases (all-bad or all-good)
+    if total_bad == 0 or total_good == 0:
+        return 0.0
+
+    df_tmp["perc_bad"] = (df_tmp["sum"] / total_bad).clip(lower=PSI_EPSILON)
+    df_tmp["perc_good"] = ((df_tmp["count"] - df_tmp["sum"]) / total_good).clip(lower=PSI_EPSILON)
+    # Re-normalize after clipping so distributions sum to 1.0
+    df_tmp["perc_bad"] = df_tmp["perc_bad"] / df_tmp["perc_bad"].sum()
+    df_tmp["perc_good"] = df_tmp["perc_good"] / df_tmp["perc_good"].sum()
+    df_tmp["woe"] = np.log(df_tmp["perc_good"] / df_tmp["perc_bad"])
     df_tmp["iv"] = (df_tmp["perc_good"] - df_tmp["perc_bad"]) * df_tmp["woe"]
     iv = df_tmp["iv"].sum()
 
@@ -575,8 +599,9 @@ def _fast_delong(y_true: np.ndarray, scores1: np.ndarray, scores2: np.ndarray) -
 
     for scores in [scores1, scores2]:
         # Compute the structural components (placement values)
-        # For positives: fraction of negatives with lower score
-        # For negatives: fraction of positives with lower score
+        # Following Sun & Xu (2014) exactly:
+        #   V10[i] = (rank_combined[i] - rank_among_positives[i]) / n
+        #   V01[j] = (rank_combined[m+j] - rank_among_negatives[j]) / m
         ordered = np.concatenate([scores[positive_mask], scores[negative_mask]])
 
         midranks = _compute_midrank(ordered)
@@ -587,11 +612,13 @@ def _fast_delong(y_true: np.ndarray, scores1: np.ndarray, scores2: np.ndarray) -
 
         # Structural components for variance estimation
         v_positive = (positive_ranks - np.arange(1, m + 1)) / n
-        v_negative = 1.0 - (_compute_midrank(-ordered)[m:] - np.arange(1, n + 1)) / m
+        negative_ranks_combined = midranks[m:]
+        negative_ranks_within = _compute_midrank(ordered[m:])
+        v_negative = (negative_ranks_combined - negative_ranks_within) / m
 
         structural_components.append((v_positive, v_negative))
 
-    # Compute 2x2 covariance matrix
+    # Compute 2x2 covariance matrix (ddof=1 for unbiased variance per DeLong et al. 1988)
     cov = np.zeros((2, 2))
     for i in range(2):
         for j in range(2):

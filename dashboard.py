@@ -911,7 +911,7 @@ def create_model_details_content(segment: str | None = None) -> html.Div:
     # Performance: R2 progress bars
     r2_metrics = [
         ("CV Mean R\u00b2", metadata.get("cv_mean_r2")),
-        ("Full R\u00b2", metadata.get("full_r2")),
+        ("Train R² (in-sample)", metadata.get("train_r2", metadata.get("full_r2"))),
         ("Step 1 CV R\u00b2", metadata.get("step1_cv_r2")),
         ("Step 2 CV R\u00b2", metadata.get("step2_cv_r2")),
     ]

@@ -1,6 +1,7 @@
 """
 Optuna hyperparameter tuning for tree-based monotonic models.
 """
+
 import numpy as np
 import optuna
 import pandas as pd
@@ -14,6 +15,9 @@ from xgboost import XGBRegressor
 from src.constants import DEFAULT_RANDOM_STATE
 from src.estimators import HurdleRegressor, TweedieGLM
 
+# Disable optuna's default trial-level logging to keep the console clean
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
 
 def tune_tree_models(
     raw_data: pd.DataFrame,
@@ -25,7 +29,8 @@ def tune_tree_models(
     z_threshold: float,
     cv_folds: int = 5,
     n_trials: int = 30,
-    random_state: int = DEFAULT_RANDOM_STATE
+    random_state: int = DEFAULT_RANDOM_STATE,
+    directions: dict[str, int] | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """
     Run Optuna to find best hyperparameters for XGBoost and LightGBM models.
@@ -37,10 +42,18 @@ def tune_tree_models(
     """
     logger.info(f"Starting Optuna hyperparameter tuning for XGBoost and LightGBM ({n_trials} trials each)...")
 
-    # Define generic monotonic constraints (-1 for all features)
+    # Define monotonic constraints from directions (default -1 = decreasing risk)
     n_features = len(variables)
-    xgb_monotone = tuple([-1] * n_features)
-    lgb_monotone = list([-1] * n_features)
+    if directions:
+        xgb_monotone = tuple(directions.get(v, -1) for v in variables)
+        lgb_monotone = [directions.get(v, -1) for v in variables]
+    else:
+        xgb_monotone = tuple([-1] * n_features)
+        lgb_monotone = list([-1] * n_features)
+
+    fresh_seed = random_state + 1000
+
+    from sklearn.base import clone as sklearn_clone
 
     from src.inference_optimized import process_dataset
 
@@ -51,8 +64,16 @@ def tune_tree_models(
             raw_train, raw_val = raw_eval.iloc[train_idx].copy(), raw_eval.iloc[val_idx].copy()
 
             # Aggregate train/val completely independently to prevent validation leakage
-            train_agg = process_dataset(raw_train, bins, variables, indicators, target_var, multiplier, variables, z_threshold)
-            val_agg = process_dataset(raw_val, bins, variables, indicators, target_var, multiplier, variables, z_threshold)
+            train_agg = process_dataset(
+                raw_train, bins, variables, indicators, target_var, multiplier, variables, z_threshold
+            )
+            val_agg = process_dataset(
+                raw_val, bins, variables, indicators, target_var, multiplier, variables, z_threshold
+            )
+
+            # Skip fold if validation has too few bins for reliable R²
+            if len(val_agg) < 3:
+                continue
 
             # Extract features/targets
             X_train, y_train = train_agg[variables], train_agg[target_var]
@@ -61,10 +82,15 @@ def tune_tree_models(
             w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
             w_val = val_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in val_agg.columns else None
 
-            model.fit(X_train, y_train, sample_weight=w_train)
-            pred = model.predict(X_val)
-            scores.append(r2_score(y_val, pred, sample_weight=w_val))
-        return np.mean(scores), np.std(scores)
+            # Clone to avoid leaking fitted state across folds
+            model_clone = sklearn_clone(model)
+            model_clone.fit(X_train, y_train, sample_weight=w_train)
+            pred = model_clone.predict(X_val)
+            if len(y_val) >= 2:
+                scores.append(r2_score(y_val, pred, sample_weight=w_val))
+        if not scores:
+            return -np.inf, 0.0
+        return np.mean(scores), np.std(scores, ddof=1) / np.sqrt(len(scores))
 
     # --- XGBoost Study ---
     def objective_xgb(trial):
@@ -77,14 +103,14 @@ def tune_tree_models(
             "min_child_weight": trial.suggest_int("min_child_weight", 10, 100),
             "monotone_constraints": xgb_monotone,
             "random_state": random_state,
-            "n_jobs": -1
+            "n_jobs": -1,
         }
         model = XGBRegressor(**params)
         mean_score, _ = eval_model(model, raw_data, cv_folds, random_state)
         return mean_score
 
     study_xgb = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=random_state))
-    study_xgb.optimize(objective_xgb, n_trials=n_trials)
+    study_xgb.optimize(objective_xgb, n_trials=n_trials, show_progress_bar=True)
 
     best_xgb_params = study_xgb.best_params
     best_xgb_params["monotone_constraints"] = xgb_monotone
@@ -92,8 +118,10 @@ def tune_tree_models(
     best_xgb_params["n_jobs"] = -1
 
     xgb_model = XGBRegressor(**best_xgb_params)
-    xgb_mean, xgb_std = eval_model(xgb_model, raw_data, cv_folds, random_state)
-    logger.info(f"Best XGBoost CV R²: {xgb_mean:.4f} ± {xgb_std:.4f}")
+    # Fresh-seed eval mitigates fold-level overfitting but is not fully nested CV;
+    # R² may be slightly optimistic due to hyperparameter selection on the same data.
+    xgb_mean, xgb_std = eval_model(xgb_model, raw_data, cv_folds, fresh_seed)
+    logger.info(f"Best XGBoost CV R²: {xgb_mean:.4f} ± {xgb_std:.4f} (fresh-seed, not nested CV)")
 
     # --- LightGBM Study ---
     def objective_lgb(trial):
@@ -108,14 +136,14 @@ def tune_tree_models(
             "monotone_constraints": lgb_monotone,
             "random_state": random_state,
             "verbose": -1,
-            "n_jobs": -1
+            "n_jobs": -1,
         }
         model = LGBMRegressor(**params)
         mean_score, _ = eval_model(model, raw_data, cv_folds, random_state)
         return mean_score
 
     study_lgb = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=random_state))
-    study_lgb.optimize(objective_lgb, n_trials=n_trials)
+    study_lgb.optimize(objective_lgb, n_trials=n_trials, show_progress_bar=True)
 
     best_lgb_params = study_lgb.best_params
     best_lgb_params["monotone_constraints"] = lgb_monotone
@@ -124,27 +152,14 @@ def tune_tree_models(
     best_lgb_params["n_jobs"] = -1
 
     lgb_model = LGBMRegressor(**best_lgb_params)
-    lgb_mean, lgb_std = eval_model(lgb_model, raw_data, cv_folds, random_state)
-    logger.info(f"Best LightGBM CV R²: {lgb_mean:.4f} ± {lgb_std:.4f}")
+    lgb_mean, lgb_std = eval_model(lgb_model, raw_data, cv_folds, fresh_seed)
+    logger.info(f"Best LightGBM CV R²: {lgb_mean:.4f} ± {lgb_std:.4f} (fresh-seed, not nested CV)")
 
-    models = {
-        "XGBoost (Optuna Tuned)": xgb_model,
-        "LightGBM (Optuna Tuned)": lgb_model
-    }
+    models = {"XGBoost (Optuna Tuned)": xgb_model, "LightGBM (Optuna Tuned)": lgb_model}
 
     results = [
-        {
-            "Model": "XGBoost (Optuna Tuned)",
-            "CV Mean R²": xgb_mean,
-            "CV Std R²": xgb_std,
-            "model_template": xgb_model
-        },
-        {
-            "Model": "LightGBM (Optuna Tuned)",
-            "CV Mean R²": lgb_mean,
-            "CV Std R²": lgb_std,
-            "model_template": lgb_model
-        }
+        {"Model": "XGBoost (Optuna Tuned)", "CV Mean R²": xgb_mean, "CV Std R²": xgb_std, "model_template": xgb_model},
+        {"Model": "LightGBM (Optuna Tuned)", "CV Mean R²": lgb_mean, "CV Std R²": lgb_std, "model_template": lgb_model},
     ]
     results_df = pd.DataFrame(results)
 
@@ -163,7 +178,7 @@ def tune_linear_models(
     cv_folds: int = 5,
     n_trials: int = 20,
     include_hurdle: bool = True,
-    random_state: int = DEFAULT_RANDOM_STATE
+    random_state: int = DEFAULT_RANDOM_STATE,
 ) -> tuple[pd.DataFrame, dict]:
     """
     Run Optuna to find best hyperparameters for standard linear and GLM models.
@@ -174,6 +189,8 @@ def tune_linear_models(
     """
     logger.info(f"Starting Optuna hyperparameter tuning for Linear/GLM models ({n_trials} trials each)...")
 
+    fresh_seed = random_state + 1000
+
     from src.inference_optimized import process_dataset
 
     def eval_model(model, raw_eval, cv_folds, random_state):
@@ -183,8 +200,16 @@ def tune_linear_models(
             raw_train, raw_val = raw_eval.iloc[train_idx].copy(), raw_eval.iloc[val_idx].copy()
 
             # Aggregate train/val completely independently to prevent validation leakage
-            train_agg = process_dataset(raw_train, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold)
-            val_agg = process_dataset(raw_val, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold)
+            train_agg = process_dataset(
+                raw_train, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold
+            )
+            val_agg = process_dataset(
+                raw_val, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold
+            )
+
+            # Skip fold if validation has too few bins for reliable R²
+            if len(val_agg) < 3:
+                continue
 
             # Extract generated features
             X_train, y_train = train_agg[var_reg], train_agg[target_var]
@@ -196,18 +221,25 @@ def tune_linear_models(
             try:
                 model.fit(X_train, y_train, sample_weight=w_train)
                 pred = model.predict(X_val)
-                scores.append(r2_score(y_val, pred, sample_weight=w_val))
+                if len(y_val) >= 2:
+                    scores.append(r2_score(y_val, pred, sample_weight=w_val))
             except (ValueError, np.linalg.LinAlgError, RuntimeError) as e:
                 raise optuna.exceptions.TrialPruned() from e
 
         if not scores:
             raise optuna.exceptions.TrialPruned()
 
-        return np.mean(scores), np.std(scores)
+        return np.mean(scores), np.std(scores, ddof=1) / np.sqrt(len(scores))
 
     def safe_eval(model):
         try:
             return eval_model(model, raw_data, cv_folds, random_state)
+        except Exception:
+            return -np.inf, 0.0
+
+    def safe_eval_fresh(model):
+        try:
+            return eval_model(model, raw_data, cv_folds, fresh_seed)
         except Exception:
             return -np.inf, 0.0
 
@@ -217,19 +249,16 @@ def tune_linear_models(
     def optimize_and_evaluate(objective_func, create_model_func, name_func):
         study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=random_state))
         try:
-            study.optimize(objective_func, n_trials=n_trials)
+            study.optimize(objective_func, n_trials=n_trials, show_progress_bar=True)
             if study.best_value == -np.inf:
                 return
             best_model = create_model_func(study.best_params)
-            mean_r2, std_r2 = safe_eval(best_model)
+            mean_r2, std_r2 = safe_eval_fresh(best_model)
             if mean_r2 > -np.inf:
                 name = name_func(study.best_params)
-                results.append({
-                    "Model": name,
-                    "CV Mean R²": mean_r2,
-                    "CV Std R²": std_r2,
-                    "model_template": best_model
-                })
+                results.append(
+                    {"Model": name, "CV Mean R²": mean_r2, "CV Std R²": std_r2, "model_template": best_model}
+                )
                 models[name] = best_model
         except ValueError:
             # Handle cases where all trials were pruned and best_params doesn't exist
@@ -237,9 +266,11 @@ def tune_linear_models(
 
     # 1. LinearRegression (baseline, no tuning needed)
     lin_model = LinearRegression(fit_intercept=True)
-    lin_mean, lin_std = safe_eval(lin_model)
+    lin_mean, lin_std = safe_eval_fresh(lin_model)
     if lin_mean > -np.inf:
-        results.append({"Model": "Linear Regression", "CV Mean R²": lin_mean, "CV Std R²": lin_std, "model_template": lin_model})
+        results.append(
+            {"Model": "Linear Regression", "CV Mean R²": lin_mean, "CV Std R²": lin_std, "model_template": lin_model}
+        )
         models["Linear Regression"] = lin_model
 
     # 2. Ridge
@@ -248,10 +279,11 @@ def tune_linear_models(
         model = Ridge(alpha=alpha, fit_intercept=True, random_state=random_state)
         mean_score, _ = safe_eval(model)
         return mean_score
+
     optimize_and_evaluate(
         objective_func=objective_ridge,
         create_model_func=lambda p: Ridge(alpha=p["alpha"], fit_intercept=True, random_state=random_state),
-        name_func=lambda p: f"Ridge (Optuna Tuned α={p['alpha']:.3f})"
+        name_func=lambda p: f"Ridge (Optuna Tuned α={p['alpha']:.3f})",
     )
 
     # 3. Lasso
@@ -260,10 +292,11 @@ def tune_linear_models(
         model = Lasso(alpha=alpha, fit_intercept=True, random_state=random_state)
         mean_score, _ = safe_eval(model)
         return mean_score
+
     optimize_and_evaluate(
         objective_func=objective_lasso,
         create_model_func=lambda p: Lasso(alpha=p["alpha"], fit_intercept=True, random_state=random_state),
-        name_func=lambda p: f"Lasso (Optuna Tuned α={p['alpha']:.3f})"
+        name_func=lambda p: f"Lasso (Optuna Tuned α={p['alpha']:.3f})",
     )
 
     # 4. ElasticNet
@@ -273,10 +306,13 @@ def tune_linear_models(
         model = ElasticNet(alpha=alpha, l1_ratio=l1_ratio, fit_intercept=True, random_state=random_state)
         mean_score, _ = safe_eval(model)
         return mean_score
+
     optimize_and_evaluate(
         objective_func=objective_enet,
-        create_model_func=lambda p: ElasticNet(alpha=p["alpha"], l1_ratio=p["l1_ratio"], fit_intercept=True, random_state=random_state),
-        name_func=lambda p: f"ElasticNet (Optuna Tuned α={p['alpha']:.3f}, l1={p['l1_ratio']:.2f})"
+        create_model_func=lambda p: ElasticNet(
+            alpha=p["alpha"], l1_ratio=p["l1_ratio"], fit_intercept=True, random_state=random_state
+        ),
+        name_func=lambda p: f"ElasticNet (Optuna Tuned α={p['alpha']:.3f}, l1={p['l1_ratio']:.2f})",
     )
 
     # 5. TweedieGLM
@@ -286,10 +322,11 @@ def tune_linear_models(
         model = TweedieGLM(power=power, alpha=alpha, link="log")
         mean_score, _ = safe_eval(model)
         return mean_score
+
     optimize_and_evaluate(
         objective_func=objective_tweedie,
         create_model_func=lambda p: TweedieGLM(power=p["power"], alpha=p["alpha"], link="log"),
-        name_func=lambda p: f"Tweedie (Optuna Tuned p={p['power']:.2f}, α={p['alpha']:.2f})"
+        name_func=lambda p: f"Tweedie (Optuna Tuned p={p['power']:.2f}, α={p['alpha']:.2f})",
     )
 
     if include_hurdle:
@@ -298,17 +335,18 @@ def tune_linear_models(
             alpha = trial.suggest_float("alpha", 0.01, 10.0, log=True)
             model = HurdleRegressor(
                 classifier=LogisticRegression(max_iter=1000, random_state=random_state),
-                regressor=Ridge(alpha=alpha, fit_intercept=True, random_state=random_state)
+                regressor=Ridge(alpha=alpha, fit_intercept=True, random_state=random_state),
             )
             mean_score, _ = safe_eval(model)
             return mean_score
+
         optimize_and_evaluate(
             objective_func=objective_hurdle_ridge,
             create_model_func=lambda p: HurdleRegressor(
                 classifier=LogisticRegression(max_iter=1000, random_state=random_state),
-                regressor=Ridge(alpha=p["alpha"], fit_intercept=True, random_state=random_state)
+                regressor=Ridge(alpha=p["alpha"], fit_intercept=True, random_state=random_state),
             ),
-            name_func=lambda p: f"Hurdle-Ridge (Optuna Tuned α={p['alpha']:.3f})"
+            name_func=lambda p: f"Hurdle-Ridge (Optuna Tuned α={p['alpha']:.3f})",
         )
 
         # 7. Hurdle-Lasso
@@ -316,17 +354,18 @@ def tune_linear_models(
             alpha = trial.suggest_float("alpha", 0.001, 1.0, log=True)
             model = HurdleRegressor(
                 classifier=LogisticRegression(max_iter=1000, random_state=random_state),
-                regressor=Lasso(alpha=alpha, fit_intercept=True, random_state=random_state)
+                regressor=Lasso(alpha=alpha, fit_intercept=True, random_state=random_state),
             )
             mean_score, _ = safe_eval(model)
             return mean_score
+
         optimize_and_evaluate(
             objective_func=objective_hurdle_lasso,
             create_model_func=lambda p: HurdleRegressor(
                 classifier=LogisticRegression(max_iter=1000, random_state=random_state),
-                regressor=Lasso(alpha=p["alpha"], fit_intercept=True, random_state=random_state)
+                regressor=Lasso(alpha=p["alpha"], fit_intercept=True, random_state=random_state),
             ),
-            name_func=lambda p: f"Hurdle-Lasso (Optuna Tuned α={p['alpha']:.3f})"
+            name_func=lambda p: f"Hurdle-Lasso (Optuna Tuned α={p['alpha']:.3f})",
         )
 
     if not results:

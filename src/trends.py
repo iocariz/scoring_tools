@@ -181,7 +181,7 @@ def plot_metric_trends(
 def detect_trend_changes(
     monthly_df: pd.DataFrame,
     metric: str,
-    window: int = 3,
+    window: int = 6,
     n_sigma: float = 2.0,
 ) -> pd.DataFrame:
     """
@@ -215,14 +215,43 @@ def detect_trend_changes(
         df["direction"] = None
         return df
 
-    # Compute rolling stats from previous values (shifted by 1 so current value
-    # is compared against the window of preceding observations)
-    rolling_mean = df["value"].rolling(window=window, min_periods=window).mean().shift(1)
-    rolling_std = df["value"].rolling(window=window, min_periods=window).std().shift(1)
+    # Compute robust rolling stats: rolling median and rolling MAD
+    rolling_median = df["value"].rolling(window=window, min_periods=window).median().shift(1)
+    
+    # We need a custom rolling MAD function
+    def mad(x):
+        median = np.median(x)
+        return np.median(np.abs(x - median))
+        
+    rolling_mad = df["value"].rolling(window=window, min_periods=window).apply(mad, raw=True).shift(1)
 
-    df["rolling_mean"] = rolling_mean
-    df["upper_bound"] = rolling_mean + n_sigma * rolling_std
-    df["lower_bound"] = rolling_mean - n_sigma * rolling_std
+    # For small windows, use t-distribution critical value instead of normal z
+    # to maintain the intended false-positive rate (n_sigma maps to tail probability)
+    if window < 20:
+        from scipy.stats import norm
+        from scipy.stats import t as t_dist
+
+        target_alpha = 2 * (1 - norm.cdf(n_sigma))  # two-tailed alpha implied by n_sigma
+        effective_sigma = t_dist.ppf(1 - target_alpha / 2, df=window - 1)
+        logger.debug(
+            f"SPC: small window ({window}), adjusting sigma from {n_sigma:.2f} to {effective_sigma:.2f} "
+            f"(t-distribution, df={window - 1})"
+        )
+    else:
+        effective_sigma = n_sigma
+
+    # Convert MAD to standard deviation equivalent: std = MAD / 0.6745
+    rolling_std_est = rolling_mad / 0.6745
+    
+    # Handle cases where MAD is 0 (e.g. constant values in window)
+    # Fallback to standard deviation
+    rolling_std_traditional = df["value"].rolling(window=window, min_periods=window).std().shift(1)
+    rolling_std_est = rolling_std_est.fillna(rolling_std_traditional)
+    rolling_std_est = np.where(rolling_std_est == 0, rolling_std_traditional, rolling_std_est)
+
+    df["rolling_mean"] = rolling_median # using median as the center line for robust SPC
+    df["upper_bound"] = rolling_median + effective_sigma * rolling_std_est
+    df["lower_bound"] = rolling_median - effective_sigma * rolling_std_est
 
     # Flag anomalies
     df["is_anomaly"] = (df["value"] > df["upper_bound"]) | (df["value"] < df["lower_bound"])

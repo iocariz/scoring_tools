@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+    <style>
+        :root {
+            --primary: #0d6efd;
+            --bg: #f8f9fa;
+            --card-bg: #ffffff;
+            --border: #dee2e6;
+            --text: #212529;
+            --text-muted: #6c757d;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 2rem;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        header {
+            background: var(--primary);
+            color: #fff;
+            padding: 1.5rem 2rem;
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+        }
+        header h1 { font-size: 1.5rem; font-weight: 600; }
+        header .meta { font-size: 0.85rem; opacity: 0.85; margin-top: 0.25rem; }
+        nav {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        nav ul { list-style: none; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+        nav a {
+            color: var(--primary);
+            text-decoration: none;
+            font-size: 0.85rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 4px;
+            border: 1px solid var(--border);
+        }
+        nav a:hover { background: var(--bg); }
+        .section {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem 2rem;
+            margin-bottom: 1.5rem;
+        }
+        .section h2 {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: var(--primary);
+            border-bottom: 2px solid var(--primary);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .section h4 {
+            font-size: 0.95rem;
+            font-weight: 600;
+            margin: 1rem 0 0.5rem;
+            color: var(--text-muted);
+        }
+        .chart-container {
+            margin-bottom: 1.5rem;
+            overflow-x: auto;
+        }
+        .report-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            margin-bottom: 1rem;
+        }
+        .report-table th, .report-table td {
+            padding: 0.4rem 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        .report-table th {
+            background: var(--bg);
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+        .report-table tr:hover { background: #f1f3f5; }
+        .table-wrapper { overflow-x: auto; margin-bottom: 1rem; }
+        footer {
+            text-align: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 2rem;
+            padding: 1rem;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>{{ title }}</h1>
+        <div class="meta">Generated {{ generation_date }} | {{ date_range }}</div>
+    </header>
+
+    {% if sections %}
+    <nav>
+        <ul>
+            {% for s in sections %}
+            <li><a href="#{{ s.id }}">{{ s.title }}</a></li>
+            {% endfor %}
+        </ul>
+    </nav>
+    {% endif %}
+
+    {% for section in sections %}
+    <div class="section" id="{{ section.id }}">
+        <h2>{{ section.title }}</h2>
+
+        {% for chart in section.charts %}
+        <div class="chart-container">{{ chart }}</div>
+        {% endfor %}
+
+        {% for table in section.tables %}
+        <div class="table-wrapper">{{ table }}</div>
+        {% endfor %}
+    </div>
+    {% endfor %}
+
+    <footer>
+        Scoring Tools &mdash; Consolidated Report &mdash; {{ generation_date }}
+    </footer>
+</div>
+</body>
+</html>

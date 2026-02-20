@@ -28,6 +28,7 @@ n_months = 24
 variables = ['sc_octroi_new_clus', 'new_efx_clus']
 multiplier = 7
 z_threshold = 3.0
+cv_folds = 3
 
 # Reject inference (optional) - adjusts predicted risk for score-rejected bins
 # based on per-bin acceptance rates to correct for selection bias.

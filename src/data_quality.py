@@ -292,13 +292,17 @@ def check_numeric_outliers(
         if len(values) == 0:
             continue
 
-        mean = values.mean()
-        std = values.std()
+        median = values.median()
+        mad = np.median(np.abs(values - median))
 
-        if std == 0:
-            continue
+        if mad == 0:
+            # Fallback to mean absolute deviation or simple std if MAD is 0 (e.g. lots of identical values)
+            mad = np.mean(np.abs(values - median))
+            if mad == 0:
+                continue
 
-        z_scores = np.abs((values - mean) / std)
+        # Modified Z-score formula: 0.6745 * (x - median) / MAD
+        z_scores = 0.6745 * np.abs(values - median) / mad
         outlier_count = (z_scores > z_threshold).sum()
         outlier_pct = outlier_count / len(values)
 

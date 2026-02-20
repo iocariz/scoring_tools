@@ -119,16 +119,16 @@ def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
         # Convert integer columns
         if df[col].dtype == "int64":
             if df[col].min() >= 0:
-                if df[col].max() < 255:
+                if df[col].max() <= 255:
                     df[col] = df[col].astype("uint8")
-                elif df[col].max() < 65535:
+                elif df[col].max() <= 65535:
                     df[col] = df[col].astype("uint16")
                 else:
                     df[col] = df[col].astype("uint32")
             else:
-                if df[col].min() > -128 and df[col].max() < 127:
+                if df[col].min() >= -128 and df[col].max() <= 127:
                     df[col] = df[col].astype("int8")
-                elif df[col].min() > -32768 and df[col].max() < 32767:
+                elif df[col].min() >= -32768 and df[col].max() <= 32767:
                     df[col] = df[col].astype("int16")
                 else:
                     df[col] = df[col].astype("int32")
@@ -147,6 +147,7 @@ def calculate_stress_factor(
     frac: float = 0.05,
     target_status: str = "booked",
     bad_rate: float = 0.05,
+    higher_is_worse: bool = False,
 ) -> float:
     # Filter for target status
     df_target = df[df[status_col] == target_status].copy()
@@ -161,12 +162,13 @@ def calculate_stress_factor(
 
     overall_bad_rate = (total_num / total_den * DEFAULT_RISK_MULTIPLIER) if total_den > 0 else bad_rate
 
-    # Calculate cutoff using quantile from the known population
-    cutoff_score = df_target[score_col].quantile(frac)
-
     # Select worst population based on score cutoff
-    # Assuming lower score is worse (ascending=True)
-    df_worst = df_target[df_target[score_col] <= cutoff_score]
+    if higher_is_worse:
+        cutoff_score = df_target[score_col].quantile(1.0 - frac)
+        df_worst = df_target[df_target[score_col] >= cutoff_score]
+    else:
+        cutoff_score = df_target[score_col].quantile(frac)
+        df_worst = df_target[df_target[score_col] <= cutoff_score]
 
     logger.debug(f"Score cutoff (frac={frac}): {cutoff_score}")
     logger.debug(
@@ -205,6 +207,7 @@ def _bootstrap_worker(
     variables: list[str],
     multiplier: float,
     random_state: int | None = None,
+    inv_var1: bool = False,
 ) -> tuple[float, float]:
     """Worker function for bootstrap resampling."""
     # Resample with replacement
@@ -215,15 +218,17 @@ def _bootstrap_worker(
     var1 = variables[1]
 
     # Map cuts to each row based on var0 bin
-    # We use a default value (infinite) for bins not in cut_map to be safe,
-    # though valid data should be covered.
-    # Optimized mapping: converting dict to series for mapping is faster for large dfs
-    # but for loop might be slow.
-    # Let's use map which is generally fast enough for this scale.
-    full_cut_series = sample[var0].map(cut_map).fillna(np.inf)
+    # For missing bins, default to strict rejection:
+    #   non-inverted (var1 <= cutoff): fillna(-inf) → always rejects
+    #   inverted (var1 >= cutoff): fillna(+inf) → always rejects
+    fallback = np.inf if inv_var1 else -np.inf
+    full_cut_series = sample[var0].map(cut_map).fillna(fallback)
 
-    # Filter passed
-    passes = sample[var1] <= full_cut_series
+    # Filter passed — inverted variables use >= (higher bin = safer)
+    if inv_var1:
+        passes = sample[var1] >= full_cut_series
+    else:
+        passes = sample[var1] <= full_cut_series
 
     # Calculate metrics on passed (Production) and Risk (B2)
     # Production: sum of filtered oa_amt (assuming oa_amt is the production column,
@@ -236,9 +241,8 @@ def _bootstrap_worker(
 
     passed_df = sample[passes]
 
-    # production = passed_df["oa_amt"].sum() # Or oa_amt_h0?
-    # Let's use "oa_amt" if available, else "oa_amt_h0"
-    prod_col = "oa_amt" if "oa_amt" in passed_df.columns else "oa_amt_h0"
+    # Use oa_amt_h0 to match the optimization pipeline metric
+    prod_col = "oa_amt_h0" if "oa_amt_h0" in passed_df.columns else "oa_amt"
     production = passed_df[prod_col].sum() if not passed_df.empty else 0.0
 
     risk_num = passed_df["todu_30ever_h6"].sum() if not passed_df.empty else 0.0
@@ -257,6 +261,8 @@ def calculate_bootstrap_intervals(
     n_bootstraps: int = 1000,
     confidence_level: float = 0.95,
     random_state: int | None = 42,
+    inv_var1: bool = False,
+    model_cv_se_risk: float | None = None,
 ) -> dict[str, float]:
     """
     Calculate confidence intervals for Risk and Production using bootstrap resampling.
@@ -269,6 +275,13 @@ def calculate_bootstrap_intervals(
         n_bootstraps: Number of bootstrap iterations
         confidence_level: Confidence level (e.g., 0.95)
         random_state: Seed for reproducibility (default: 42)
+        inv_var1: If True, use >= comparison for var1 (higher bin = safer)
+        model_cv_se_risk: Optional standard error of the risk model's CV predictions.
+            When provided, the risk CI is widened to account for model prediction
+            uncertainty (which the bootstrap alone does not capture, since it only
+            resamples booked records and ignores model inference error on the
+            rejected/swap-in population).  The total SE is computed as
+            ``sqrt(bootstrap_se² + model_cv_se²)``.
 
     Returns:
         Dictionary with lower/upper bounds for production and risk
@@ -285,7 +298,12 @@ def calculate_bootstrap_intervals(
     # Parallel execution (capped to avoid OOM)
     results = Parallel(n_jobs=MAX_PARALLEL_JOBS)(
         delayed(_bootstrap_worker)(
-            data_booked, cut_map, variables, multiplier, random_state=int(seed) if seed is not None else None
+            data_booked,
+            cut_map,
+            variables,
+            multiplier,
+            random_state=int(seed) if seed is not None else None,
+            inv_var1=inv_var1,
         )
         for seed in seeds
     )
@@ -303,10 +321,20 @@ def calculate_bootstrap_intervals(
     risk_lower = np.percentile(risks, lower_p)
     risk_upper = np.percentile(risks, upper_p)
 
-    # Format as percentage for Risk (since b2_ever is usually minimal,
-    # but here we return raw value then convert?
-    # calculate_b2_ever_h6 returns raw value by default (as_percentage=False).
-    # We should probably return them as they are and handle formatting downstream.
+    # Inflate risk CI to account for model prediction uncertainty
+    if model_cv_se_risk is not None and model_cv_se_risk > 0:
+        from scipy.stats import norm
+
+        z = norm.ppf(1 - alpha)
+        risk_mean = float(np.mean(risks))
+        bootstrap_se = float(np.std(risks, ddof=1))
+        total_se = np.sqrt(bootstrap_se**2 + model_cv_se_risk**2)
+        risk_lower = risk_mean - z * total_se
+        risk_upper = risk_mean + z * total_se
+        logger.info(
+            f"  Risk CI inflated for model uncertainty: bootstrap_se={bootstrap_se:.6f}, "
+            f"model_se={model_cv_se_risk:.6f}, total_se={total_se:.6f}"
+        )
 
     return {
         "production_ci_lower": prod_lower,
@@ -391,7 +419,7 @@ def generate_cutoff_summary(
         if pd.notna(cutoff) and np.isfinite(cutoff):
             safe_cutoff = int(cutoff)
         elif pd.notna(cutoff):
-            safe_cutoff = float(cutoff) # Keep as inf or -inf
+            safe_cutoff = float(cutoff)  # Keep as inf or -inf
         else:
             safe_cutoff = None
 

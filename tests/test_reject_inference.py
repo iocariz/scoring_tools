@@ -131,9 +131,7 @@ class TestComputeAcceptanceRates:
 
 class TestApplyParcelingAdjustment:
     def _make_repesca(self, todu_val=100.0, amt_val=500.0):
-        return pd.DataFrame(
-            {"var0": [1], "var1": [1], "todu_30ever_h6": [todu_val], "todu_amt_pile_h6": [amt_val]}
-        )
+        return pd.DataFrame({"var0": [1], "var1": [1], "todu_30ever_h6": [todu_val], "todu_amt_pile_h6": [amt_val]})
 
     def _make_rates(self, acceptance_rate=1.0):
         return pd.DataFrame(
@@ -232,9 +230,7 @@ class TestApplyParcelingAdjustment:
 
 class TestApplyRejectInference:
     def _make_data(self):
-        repesca = pd.DataFrame(
-            {"var0": [1], "var1": [1], "todu_30ever_h6": [100.0], "todu_amt_pile_h6": [500.0]}
-        )
+        repesca = pd.DataFrame({"var0": [1], "var1": [1], "todu_30ever_h6": [100.0], "todu_amt_pile_h6": [500.0]})
         demand = _make_demand(
             [
                 (1, 1, "booked", None),

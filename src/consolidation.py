@@ -58,19 +58,43 @@ class ConsolidatedMetrics:
     # Calculated risk properties (as percentage, e.g. 1.5 means 1.5%)
     @property
     def actual_risk(self) -> float:
-        return float(np.nan_to_num(calculate_b2_ever_h6(self.actual_todu_30ever_h6, self.actual_todu_amt_pile_h6, as_percentage=True, decimals=6)))
+        return float(
+            np.nan_to_num(
+                calculate_b2_ever_h6(
+                    self.actual_todu_30ever_h6, self.actual_todu_amt_pile_h6, as_percentage=True, decimals=6
+                )
+            )
+        )
 
     @property
     def optimum_risk(self) -> float:
-        return float(np.nan_to_num(calculate_b2_ever_h6(self.optimum_todu_30ever_h6, self.optimum_todu_amt_pile_h6, as_percentage=True, decimals=6)))
+        return float(
+            np.nan_to_num(
+                calculate_b2_ever_h6(
+                    self.optimum_todu_30ever_h6, self.optimum_todu_amt_pile_h6, as_percentage=True, decimals=6
+                )
+            )
+        )
 
     @property
     def swap_in_risk(self) -> float:
-        return float(np.nan_to_num(calculate_b2_ever_h6(self.swap_in_todu_30ever_h6, self.swap_in_todu_amt_pile_h6, as_percentage=True, decimals=6)))
+        return float(
+            np.nan_to_num(
+                calculate_b2_ever_h6(
+                    self.swap_in_todu_30ever_h6, self.swap_in_todu_amt_pile_h6, as_percentage=True, decimals=6
+                )
+            )
+        )
 
     @property
     def swap_out_risk(self) -> float:
-        return float(np.nan_to_num(calculate_b2_ever_h6(self.swap_out_todu_30ever_h6, self.swap_out_todu_amt_pile_h6, as_percentage=True, decimals=6)))
+        return float(
+            np.nan_to_num(
+                calculate_b2_ever_h6(
+                    self.swap_out_todu_30ever_h6, self.swap_out_todu_amt_pile_h6, as_percentage=True, decimals=6
+                )
+            )
+        )
 
     @property
     def production_delta(self) -> float:
@@ -112,7 +136,7 @@ class ConsolidatedMetrics:
             "swap_out_todu_amt_pile_h6": self.swap_out_todu_amt_pile_h6,
             "production_delta": self.production_delta,
             "production_delta_pct": self.production_delta_pct * 100,
-            "risk_delta_pct": self.risk_delta * 100,
+            "risk_delta_pct": self.risk_delta,
             "production_ci_lower": self.optimum_production_ci_lower,
             "production_ci_upper": self.optimum_production_ci_upper,
             "risk_ci_lower": self.optimum_risk_ci_lower,
@@ -384,16 +408,56 @@ def aggregate_metrics(metrics_list: list[dict[str, dict[str, float]]]) -> dict[s
             aggregated[key]["todu_30ever_h6"] += metrics[key]["todu_30ever_h6"]
             aggregated[key]["todu_amt_pile_h6"] += metrics[key]["todu_amt_pile_h6"]
 
-            # Aggregate CIs for optimum (Production only - simple sum assumption)
+            # Aggregate CIs for optimum using variance addition (assumes independence)
             if key == "optimum":
-                if "production_ci_lower" not in aggregated[key]:
-                    aggregated[key]["production_ci_lower"] = 0
-                    aggregated[key]["production_ci_upper"] = 0
+                if "_ci_segments" not in aggregated[key]:
+                    aggregated[key]["_ci_segments"] = []
 
-                aggregated[key]["production_ci_lower"] += metrics[key].get("production_ci_lower", 0)
-                aggregated[key]["production_ci_upper"] += metrics[key].get("production_ci_upper", 0)
-                # Risk CIs cannot be simply summed or averaged without variance/covariance
-                # So we leave them as 0 for aggregated groups
+                aggregated[key]["_ci_segments"].append(
+                    {
+                        "prod_lower": metrics[key].get("production_ci_lower", 0),
+                        "prod_upper": metrics[key].get("production_ci_upper", 0),
+                        "risk_lower": metrics[key].get("risk_ci_lower", 0),
+                        "risk_upper": metrics[key].get("risk_ci_upper", 0),
+                    }
+                )
+
+    # Combine segment CIs using variance addition rule (assumes independence).
+    # SE_i ≈ (upper - lower) / (2 * z_95); combined SE = sqrt(sum(SE_i²))
+    import numpy as np
+
+    z_95 = 1.96
+    for key in aggregated:
+        segments = aggregated[key].pop("_ci_segments", [])
+        if not segments:
+            aggregated[key].setdefault("production_ci_lower", 0)
+            aggregated[key].setdefault("production_ci_upper", 0)
+            continue
+
+        prod_means, prod_ses = [], []
+        risk_means, risk_ses = [], []
+        for s in segments:
+            p_lo, p_hi = s["prod_lower"], s["prod_upper"]
+            r_lo, r_hi = s["risk_lower"], s["risk_upper"]
+            prod_means.append((p_lo + p_hi) / 2)
+            prod_ses.append((p_hi - p_lo) / (2 * z_95) if p_hi != p_lo else 0)
+            risk_means.append((r_lo + r_hi) / 2)
+            risk_ses.append((r_hi - r_lo) / (2 * z_95) if r_hi != r_lo else 0)
+
+        combined_prod_mean = sum(prod_means)
+        combined_prod_se = np.sqrt(sum(se**2 for se in prod_ses))
+        aggregated[key]["production_ci_lower"] = combined_prod_mean - z_95 * combined_prod_se
+        aggregated[key]["production_ci_upper"] = combined_prod_mean + z_95 * combined_prod_se
+
+        # Risk CIs: aggregate using exposure-weighted risk (already done for point estimate)
+        combined_risk_se = np.sqrt(sum(se**2 for se in risk_ses))
+        if combined_risk_se > 0:
+            combined_risk_mean = sum(risk_means)
+            aggregated[key]["risk_ci_lower"] = combined_risk_mean - z_95 * combined_risk_se
+            aggregated[key]["risk_ci_upper"] = combined_risk_mean + z_95 * combined_risk_se
+        else:
+            aggregated[key]["risk_ci_lower"] = 0
+            aggregated[key]["risk_ci_upper"] = 0
 
     return aggregated
 

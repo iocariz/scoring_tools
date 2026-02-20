@@ -100,6 +100,9 @@ DEFAULT_ZERO_THRESHOLD: Final[float] = 1e-10
 PSI_STABLE_THRESHOLD: Final[float] = 0.1
 PSI_UNSTABLE_THRESHOLD: Final[float] = 0.25
 
+# PSI/CSI epsilon to prevent log(0) in divergence calculations
+PSI_EPSILON: Final[float] = 0.0001
+
 # Score scale: risk scores range from 0 to this value,
 # where this value represents the best credit quality.
 SCORE_SCALE_MAX: Final[int] = 9

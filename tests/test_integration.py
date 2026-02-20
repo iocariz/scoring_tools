@@ -229,7 +229,7 @@ class TestModelShapIntegration:
         metadata = {
             "cv_mean_r2": 0.95,
             "cv_std_r2": 0.02,
-            "full_r2": 0.97,
+            "train_r2": 0.97,
             "shap_values": shap_result["shap_values"],
         }
         model_path = save_model_with_metadata(

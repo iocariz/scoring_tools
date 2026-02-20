@@ -288,13 +288,20 @@ def run_scenario_analysis(
             cut_map[float(bin_val)] = float(row[bin_val])
         elif str(bin_val) in row:
             cut_map[float(bin_val)] = float(row[str(bin_val)])
+        elif str(float(bin_val)) in row:
+            cut_map[float(bin_val)] = float(row[str(float(bin_val))])
 
+    inv_var1 = settings.variables[1] in settings.inv_vars
+    # Pass model CV SE so bootstrap CI accounts for model prediction uncertainty
+    model_cv_se = risk_inference.get("cv_std_r2") if risk_inference else None
     ci_data = calculate_bootstrap_intervals(
         data_booked=data_booked,
         cut_map=cut_map,
         variables=settings.variables,
         multiplier=settings.multiplier,
-        n_bootstraps=100,
+        n_bootstraps=1000,
+        inv_var1=inv_var1,
+        model_cv_se_risk=model_cv_se,
     )
     logger.info(f"[{segment}] Scenario {scenario_name} CI: {ci_data}")
 

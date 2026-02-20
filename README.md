@@ -225,8 +225,13 @@ Loads SAS data (`.sas7bdat`), standardizes column names (lowercase, underscores)
 Trains a polynomial surface model on the 2D score grid to predict risk (`b2_ever_h6`).
 
 - **Feature sets tested**: simple (2 features), base (3: with interaction), polynomial (squared/cubic), full.
-- **Estimators evaluated**: `HurdleRegressor`, `TweedieGLM`, `LinearRegression`, `Ridge`, `Lasso`, `ElasticNet`.
-- **Selection**: 5-fold cross-validation on mean R².
+- **Estimators evaluated**: `LinearRegression`, `Ridge`, `Lasso`, `ElasticNet`, `HurdleRegressor`, `TweedieGLM`, `XGBoost`, `LightGBM` (via Optuna hyperparameter tuning).
+- **Cross-Validation Strategy**:
+  - **Feature Selection & Tuning**: Uses 5-Fold Cross-Validation. *Crucially, validation folds are physically split on the raw unaggregated data first*. Aggregation and outlier Z-scoring are then performed independently on the train and validation sets to mathematically guarantee zero target leakage between folds.
+  - **Selection Rule**: Employs the **one-standard-error rule** -- among models within one SE of the best mean CV R², the simplest architecture is selected to guard against overfitting.
+  - **Fresh-fold re-evaluation**: After Optuna selects the best hyperparameters, the final CV R² is computed on a fresh set of folds (different random seed) to avoid optimistic search bias.
+- **Continuous Impact Sanity Check**: Runs a secondary `_estimate_continuous_impact` analysis to verify the linear relationship between the continuous production volume and risk metrics. Because this runs on heavily compressed, post-aggregated groups (where `N` is tiny), it uses **Leave-One-Out (LOO) CV** paired with `cross_val_predict` to ensure an unbiased, mathematically stable global R² trend estimate.
+- **Monotonic constraints**: Tree models (XGBoost, LightGBM) use monotonic constraints derived from the configured `directions` dictionary, ensuring each variable's constraint matches its actual risk relationship (ascending or descending).
 - **TODU amount model**: Linear regression `oa_amt` -> `todu_amt_pile_h6`, saved separately.
 - **SHAP analysis**: Feature importance computed and saved with model metadata.
 - **Pre-trained models**: Can load supersegment models via `--model-path` to skip training.
@@ -243,7 +248,7 @@ Trains a polynomial surface model on the 2D score grid to predict risk (`b2_ever
 For each scenario (pessimistic / base / optimistic):
 
 1. Selects the optimal solution from the Pareto frontier at the scenario's risk threshold.
-2. Computes bootstrap confidence intervals (100 resamples).
+2. Computes bootstrap confidence intervals (1,000 resamples).
 3. Generates interactive Pareto dashboard (HTML).
 4. Runs MR period validation with the selected cutoffs.
 5. Calculates PSI/CSI stability metrics between main and MR periods.
@@ -330,6 +335,7 @@ reject_max_risk_multiplier = 3.0      # Upper cap for per-bin multiplier (1.0-10
 ```
 
 **Parceling formula** (per bin):
+
 ```
 acceptance_rate = n_booked / (n_booked + n_score_rejected)
 reject_ratio = 1 - acceptance_rate
@@ -444,7 +450,7 @@ When `date_ini_book_obs_mr` and `date_fin_book_obs_mr` are configured, the pipel
 
 ### Stability Analysis (PSI/CSI)
 
-Compares distributions between the main and MR periods using the Population Stability Index:
+Compares distributions between the main and MR periods using the Population Stability Index. A unified epsilon constant (`PSI_EPSILON = 0.0001`) is used across all PSI/CSI calculations to prevent `log(0)`.
 
 ```
 PSI = sum( (Actual% - Expected%) * ln(Actual% / Expected%) )
@@ -472,7 +478,7 @@ Record-level classification for each application:
 
 ### Bootstrap Confidence Intervals
 
-For the selected optimal solution, the pipeline runs 100 bootstrap resamples of the booked population, recalculating production and risk for each sample. The 2.5th and 97.5th percentiles provide 95% confidence intervals.
+For the selected optimal solution, the pipeline runs 1,000 bootstrap resamples of the booked population, recalculating production and risk for each sample. The 2.5th and 97.5th percentiles provide 95% confidence intervals.
 
 ### Reject Inference (Parceling)
 
@@ -534,6 +540,7 @@ Monthly aggregation of approval rate, production volume, mean production, and ri
 | `inference_optimized.py` | Model training pipeline with feature selection and CV |
 | `models.py` | Variable transformations and risk calculations |
 | `estimators.py` | Custom estimators: `HurdleRegressor`, `TweedieGLM` |
+| `optuna_tuning.py` | Optuna hyperparameter tuning for tree and linear models |
 | `persistence.py` | Model serialization with metadata (save/load) |
 | `optimization_utils.py` | Feasible solution generation, KPI calculation, Pareto filtering |
 | `reject_inference.py` | Acceptance rate computation and parceling adjustment |
@@ -727,6 +734,7 @@ uv run pytest --cov=src tests/
 | `test_plots.py` | Visualization functions |
 | `test_utils.py` | Utility functions |
 | `test_persistence.py` | Model save/load |
+| `test_optuna_tuning.py` | Optuna hyperparameter tuning |
 | `test_shap.py` | SHAP analysis |
 
 ### Adding a New Segment

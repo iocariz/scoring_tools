@@ -64,6 +64,22 @@ def compute_acceptance_rates(
     total = rates["n_booked"] + rates["n_score_rejected"]
     rates["acceptance_rate"] = (rates["n_booked"] / total).where(total > 0, 0.0)
 
+    # Warn about non-score rejections that are excluded from acceptance rate
+    n_other_rejected = len(
+        data_demand[
+            (data_demand["status_name"] == StatusName.REJECTED.value)
+            & (data_demand["reject_reason"] != RejectReason.SCORE.value)
+        ]
+    )
+    n_total_demand = len(data_demand)
+    if n_other_rejected > 0:
+        other_pct = n_other_rejected / n_total_demand * 100
+        logger.info(
+            f"Acceptance rates exclude {n_other_rejected:,} non-score rejections "
+            f"({other_pct:.1f}% of demand). Bins with many non-score rejections "
+            f"may have overstated acceptance rates."
+        )
+
     logger.debug(
         f"Acceptance rates computed for {len(rates)} bins | "
         f"mean={rates['acceptance_rate'].mean():.3f} | "
@@ -81,13 +97,17 @@ def apply_parceling_adjustment(
     *,
     reject_uplift_factor: float = 1.5,
     max_risk_multiplier: float = 3.0,
+    method: Literal["linear", "power"] = "linear",
 ) -> pd.DataFrame:
     """Apply per-bin risk uplift to repesca summary based on acceptance rates.
 
-    For each bin the multiplier is::
+    Two methods are available:
 
-        reject_ratio  = 1 - acceptance_rate
-        multiplier    = clamp(1 + reject_uplift_factor * reject_ratio, 1.0, max_risk_multiplier)
+    - ``"linear"`` (default): ``multiplier = 1 + factor * (1 - acceptance_rate)``
+    - ``"power"``: ``multiplier = (1 / acceptance_rate) ^ factor``.  This is
+      grounded in the assumption that rejected applicants are drawn from the
+      riskier tail, so risk scales as a power of the inverse acceptance rate.
+      It produces a non-linear curve that grows faster at low acceptance rates.
 
     Only ``todu_30ever_h6`` is adjusted (revenue columns are left unchanged
     because ``oa_amt`` is observable for rejected records).
@@ -102,9 +122,12 @@ def apply_parceling_adjustment(
     variables:
         Binning variable names.
     reject_uplift_factor:
-        Scaling coefficient for the reject ratio.
+        Scaling coefficient.  For ``"linear"``: additive slope on reject ratio.
+        For ``"power"``: exponent on inverse acceptance rate.
     max_risk_multiplier:
         Upper cap for the per-bin multiplier.
+    method:
+        ``"linear"`` or ``"power"`` (see above).
 
     Returns
     -------
@@ -121,9 +144,25 @@ def apply_parceling_adjustment(
     # Bins missing from acceptance_rates (no demand data) get no adjustment
     result["acceptance_rate"] = result["acceptance_rate"].fillna(1.0)
 
-    reject_ratio = 1.0 - result["acceptance_rate"]
-    raw_multiplier = 1.0 + reject_uplift_factor * reject_ratio
+    if method == "power":
+        # Power-law: multiplier = (1 / acceptance_rate) ^ factor
+        # Clamp acceptance_rate away from 0 to avoid infinity
+        safe_rate = result["acceptance_rate"].clip(lower=0.01)
+        raw_multiplier = (1.0 / safe_rate) ** reject_uplift_factor
+    else:
+        # Linear: multiplier = 1 + factor * reject_ratio
+        reject_ratio = 1.0 - result["acceptance_rate"]
+        raw_multiplier = 1.0 + reject_uplift_factor * reject_ratio
+
     result["reject_risk_multiplier"] = raw_multiplier.clip(lower=1.0, upper=max_risk_multiplier)
+
+    # Warn about bins with extreme adjustments or very few observations
+    extreme_bins = (result["reject_risk_multiplier"] >= max_risk_multiplier * 0.9).sum()
+    if extreme_bins > 0:
+        logger.warning(
+            f"Reject inference ({method}): {extreme_bins}/{len(result)} bins have multipliers "
+            f"near or at the cap ({max_risk_multiplier:.1f}x). Consider reviewing reject_uplift_factor."
+        )
 
     result["todu_30ever_h6"] = result["todu_30ever_h6"] * result["reject_risk_multiplier"]
 
@@ -187,7 +226,4 @@ def apply_reject_inference(
             max_risk_multiplier=max_risk_multiplier,
         )
 
-    raise ValueError(
-        f"Unknown reject inference method: {method!r}. "
-        f"Supported methods: 'none', 'parceling'."
-    )
+    raise ValueError(f"Unknown reject inference method: {method!r}. Supported methods: 'none', 'parceling'.")

@@ -21,6 +21,7 @@ Output structure:
 """
 
 import argparse
+import copy
 import os
 import re
 import shutil
@@ -133,9 +134,13 @@ def create_output_directories(base_output_dir: Path) -> dict[str, Path]:
 
 
 def merge_configs(base_config: dict[str, Any], segment_config: dict[str, Any]) -> dict[str, Any]:
-    """Merge base config with segment-specific overrides."""
-    merged = base_config.copy()
-    merged.update(segment_config)
+    """Merge base config with segment-specific overrides (recursive for nested dicts)."""
+    merged = copy.deepcopy(base_config)
+    for key, value in segment_config.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = merge_configs(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
     return merged
 
 
@@ -342,7 +347,11 @@ def write_temp_config(config: dict[str, Any], output_dir: Path) -> Path:
 
 @contextmanager
 def _working_directory(path: Path):
-    """Temporarily switch process cwd."""
+    """Temporarily switch process cwd.
+
+    WARNING: os.chdir is process-global. This is safe with ProcessPoolExecutor
+    (each child gets its own CWD) but NOT with ThreadPoolExecutor.
+    """
     original_cwd = Path.cwd()
     os.chdir(path)
     try:
@@ -772,9 +781,8 @@ def main():
     parser.add_argument(
         "--consolidate-only", action="store_true", help="Only generate consolidated report (skip running segments)"
     )
-    parser.add_argument(
-        "--training-only", action="store_true", help="Only run data quality and training"
-    )
+    parser.add_argument("--training-only", action="store_true", help="Only run data quality and training")
+    parser.add_argument("--no-report", action="store_true", help="Skip generating HTML reports")
 
     args = parser.parse_args()
 
@@ -931,6 +939,29 @@ def main():
                 logger.exception("Full traceback:")
         else:
             print("\nNo successful segments to consolidate.")
+
+    # Generate HTML reports
+    if not args.no_consolidation and not args.training_only and not args.no_report:
+        print(f"\n{'=' * 60}")
+        print("Generating HTML Reports")
+        print(f"{'=' * 60}")
+        try:
+            from src.pipeline.reporting import generate_batch_reports
+
+            report_paths = generate_batch_reports(
+                output_base=args.output,
+                segments=segments,
+                supersegments=all_supersegments,
+                segment_results=results,
+            )
+            if report_paths:
+                print(f"\nHTML reports generated ({len(report_paths)}):")
+                for name, path in report_paths.items():
+                    print(f"  - {name}: {path}")
+            else:
+                print("\nNo HTML reports generated (no successful segments or artifacts).")
+        except Exception as e:
+            logger.error(f"Report generation failed: {e}")
 
     # Generate score discriminance report
     if not args.no_consolidation and not args.training_only and preloaded_data is not None:

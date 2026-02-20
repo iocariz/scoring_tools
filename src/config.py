@@ -1,4 +1,3 @@
-
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -117,6 +116,12 @@ class OutputPaths:
     def trend_anomalies_csv(self, segment: str) -> str:
         return str(self.data_dir / f"trend_anomalies_{segment}.csv")
 
+    # -- reporting --
+
+    @property
+    def segment_report_html(self) -> str:
+        return str(self.base_dir / "report.html")
+
     # -- inference_optimized (main-period visualization) --
 
     @property
@@ -186,6 +191,7 @@ class PreprocessingSettings(BaseModel):
     n_months: int = 12
     multiplier: float = Field(default=7.0, gt=0)
     z_threshold: float = Field(default=3.0, gt=0)
+    cv_folds: int = Field(default=4, ge=2, le=10)
     optimum_risk: float = 1.1
     risk_step: float = 0.1
     cz_config: dict[int, Any] = Field(default_factory=dict)
@@ -296,6 +302,11 @@ class PreprocessingSettings(BaseModel):
                 ),
             }
 
+        if not self.bins:
+            raise ValueError(
+                "No binning configuration provided. Set either 'bins' dict or "
+                "both 'octroi_bins' and 'efx_bins' in your configuration."
+            )
 
         return self
 

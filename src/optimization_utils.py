@@ -178,6 +178,12 @@ def milp_solve_cutoffs(
     #   sum((multiplier * todu_30ever_h6[i] - target_risk/100 * todu_amt_pile_h6[i]) * x[i]) <= 0
     todu_30 = cell["todu_30ever_h6"].values.astype(float)
     todu_amt = cell["todu_amt_pile_h6"].values.astype(float)
+
+    # Guard: if total exposure is zero, the risk constraint is vacuous
+    if todu_amt.sum() == 0:
+        logger.warning("MILP: total todu_amt_pile_h6 is zero — risk constraint is vacuous.")
+        return None
+
     risk_coeffs = multiplier * todu_30 - (target_risk / 100.0) * todu_amt
 
     # Monotonicity constraints: A_mono @ x <= 0
@@ -335,13 +341,20 @@ def trace_pareto_frontier(
     df = df.iloc[sort_idx].reset_index(drop=True)
     all_masks = [all_masks[i] for i in sort_idx]
 
-    # Pareto filter: for ascending risk, production must be non-decreasing
+    # Pareto filter: for ascending risk, production must be strictly increasing
+    # (except the first row which is always kept as the lowest-risk solution)
     cummax = df["oa_amt_h0"].cummax()
     pareto_mask = df["oa_amt_h0"] >= cummax
     pareto_indices = pareto_mask[pareto_mask].index.tolist()
 
     df = df[pareto_mask].reset_index(drop=True)
     pareto_masks = [all_masks[i] for i in pareto_indices]
+
+    # Remove dominated duplicates: same production but higher risk
+    dup_mask = ~df["oa_amt_h0"].duplicated(keep="first")
+    if not dup_mask.all():
+        df = df[dup_mask].reset_index(drop=True)
+        pareto_masks = [m for m, keep in zip(pareto_masks, dup_mask) if keep]
 
     logger.info(f"Pareto frontier: {len(df)} solutions (from {len(solutions)} unique MILP solves)")
 
@@ -804,7 +817,7 @@ def kpi_of_fact_sol(
         chunk_distinct = chunk_melt.drop_duplicates(subset=[vars_[0], f"{vars_[1]}_lim"])[[vars_[0], f"{vars_[1]}_lim"]]
         ds = chunk_distinct.merge(data_sumary, how="left", on=vars_[0])
         if inv_:
-            ds = ds[ds[vars_[1]] > ds[f"{vars_[1]}_lim"]]
+            ds = ds[ds[vars_[1]] >= ds[f"{vars_[1]}_lim"]]
         else:
             ds = ds[ds[vars_[1]] <= ds[f"{vars_[1]}_lim"]]
         numeric_cols = ds.select_dtypes(include=[np.number]).columns
@@ -846,9 +859,11 @@ def kpi_of_fact_sol(
         t30 = f"todu_30ever_h6{metric}"
         tamt = f"todu_amt_pile_h6{metric}"
         if t30 in final_result.columns and tamt in final_result.columns:
+            # calculate_b2_ever_h6 already returns NaN for zero denominators;
+            # fillna(0) at the display boundary is consistent with MILP path.
             final_result[f"b2_ever_h6{metric}"] = calculate_b2_ever_h6(
                 final_result[t30].astype(float),
-                final_result[tamt].replace(0, np.nan).astype(float),
+                final_result[tamt].astype(float),
                 multiplier=DEFAULT_RISK_MULTIPLIER,
                 as_percentage=True,
             ).fillna(0)

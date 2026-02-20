@@ -54,7 +54,7 @@ def sample_metadata():
     return {
         "cv_mean_r2": 0.95,
         "cv_std_r2": 0.02,
-        "full_r2": 0.96,
+        "train_r2": 0.96,
         "cv_folds": 5,
         "total_samples": 20,
     }

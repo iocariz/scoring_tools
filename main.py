@@ -103,18 +103,16 @@ def main(
             return data_clean, data_booked, data_demand, risk_inference, reg_todu_amt_pile
 
         # Step 5: Optimization (MILP Pareto frontier or fixed cutoffs)
-        (data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var) = (
-            run_optimization_phase(
-                data_booked,
-                data_demand,
-                risk_inference,
-                reg_todu_amt_pile,
-                stress_factor,
-                tasa_fin,
-                settings,
-                annual_coef,
-                output=output,
-            )
+        (data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var) = run_optimization_phase(
+            data_booked,
+            data_demand,
+            risk_inference,
+            reg_todu_amt_pile,
+            stress_factor,
+            tasa_fin,
+            settings,
+            annual_coef,
+            output=output,
         )
 
         # Step 6: Scenario analysis loop
@@ -173,6 +171,18 @@ def main(
                 logger.info(f"[{segment}] Insufficient data for trend analysis")
         except Exception as e:
             logger.warning(f"[{segment}] Trend analysis failed (non-blocking): {e}")
+
+        # Step 8: Generate HTML report (non-blocking)
+        try:
+            from src.pipeline.reporting import generate_segment_report
+
+            report_path = generate_segment_report(
+                settings=settings, output=output, scenarios=[name for _, name in scenarios]
+            )
+            if report_path:
+                logger.info(f"[{segment}] Report generated: {report_path}")
+        except Exception as e:
+            logger.warning(f"[{segment}] Report generation failed (non-blocking): {e}")
 
         elapsed_total = time.perf_counter() - t0_total
         logger.info(f"[{segment}] Pipeline complete | {len(scenarios)} scenarios | {elapsed_total:.1f}s total")

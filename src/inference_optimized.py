@@ -1,5 +1,5 @@
 """
-Optimized inference module for fraud detection system.
+Optimized inference module for credit risk scoring system.
 Key improvements:
 - Consolidated imports
 - Removed redundant operations
@@ -43,6 +43,66 @@ from src.persistence import (
     save_model_with_metadata,
 )
 from src.utils import calculate_b2_ever_h6
+
+
+def _get_model_complexity(model_name: str) -> int:
+    """Return a complexity rank for a model type (lower = simpler)."""
+    model_name_lower = model_name.lower()
+    complexity_map = [
+        ("linear regression", 1),
+        ("ridge", 2),
+        ("lasso", 3),
+        ("elasticnet", 4),
+        ("elastic", 4),
+        ("tweedie", 5),
+        ("hurdle-ridge", 6),
+        ("hurdle-lasso", 7),
+        ("xgboost", 8),
+        ("lightgbm", 9),
+    ]
+    for pattern, rank in complexity_map:
+        if pattern in model_name_lower:
+            return rank
+    return 10  # unknown models get highest complexity
+
+
+def _apply_one_se_rule(results_df: pd.DataFrame, complexity_col: str) -> int:
+    """Apply the one-standard-error rule: among models within 1 SE of the best,
+    pick the simplest.
+
+    The 'CV Std R²' column is expected to contain the standard error of the
+    mean (i.e., ``std(fold_scores, ddof=1) / sqrt(k)``), not the raw standard
+    deviation of fold scores.
+
+    Args:
+        results_df: DataFrame with 'CV Mean R²', 'CV Std R²', and complexity_col.
+        complexity_col: Column name with complexity metric (lower = simpler).
+
+    Returns:
+        Index of the selected row in results_df.
+    """
+    best_idx = results_df["CV Mean R²"].idxmax()
+    best_mean = results_df.loc[best_idx, "CV Mean R²"]
+    best_se = results_df.loc[best_idx, "CV Std R²"]
+    threshold = best_mean - best_se
+
+    # Models within 1 SE of best
+    eligible = results_df[results_df["CV Mean R²"] >= threshold]
+
+    # Pick simplest among eligible
+    selected_idx = eligible[complexity_col].idxmin()
+
+    selected_name = results_df.loc[selected_idx].get("Model", results_df.loc[selected_idx].get("Feature Set", ""))
+    best_name = results_df.loc[best_idx].get("Model", results_df.loc[best_idx].get("Feature Set", ""))
+    if selected_idx != best_idx:
+        logger.info(
+            f"1SE rule: selected '{selected_name}' (R²={results_df.loc[selected_idx, 'CV Mean R²']:.4f}) "
+            f"over '{best_name}' (R²={best_mean:.4f}±{best_se:.4f}, threshold={threshold:.4f})"
+        )
+    else:
+        logger.info(f"1SE rule: best model '{best_name}' is also the simplest eligible")
+
+    return selected_idx
 
 
 def calculate_target_metric(df: pd.DataFrame, multiplier: float, numerator: str, denominator: str) -> np.ndarray:
@@ -141,11 +201,14 @@ def _generate_regression_variables_nd(variables: list[str]) -> tuple[list[str], 
         poly = PolynomialFeatures(degree=deg, include_bias=False)
         poly.fit_transform(np.zeros((1, len(input_cols))))
         names = list(poly.get_feature_names_out(input_cols))
-        # Remove raw variable names (already columns in df)
-        feature_names = [n for n in names if n not in variables]
-        feature_sets[label] = feature_names
         if deg == 1:
-            var_reg = feature_names
+            # Degree-1 features are the base variables themselves
+            feature_sets[label] = names
+            var_reg = names
+        else:
+            # Higher degrees: remove raw variable names (already columns in df)
+            feature_names = [n for n in names if n not in variables]
+            feature_sets[label] = feature_names
 
     # Also add a combined set
     feature_sets["original"] = list(variables)
@@ -214,6 +277,23 @@ def process_dataset(
 
     # ---- 4. Filter missing targets ----
     processed_data = processed_data.dropna(subset=[target_var]).copy()
+
+    # ---- 5. Remove outlier bins by z-score on target variable ----
+    if z_threshold > 0 and len(processed_data) > 2:
+        target_vals = processed_data[target_var]
+        target_median = target_vals.median()
+        target_mad = np.median(np.abs(target_vals - target_median))
+        
+        if target_mad == 0:
+             target_mad = np.mean(np.abs(target_vals - target_median))
+
+        if target_mad > 0:
+            z_scores = 0.6745 * np.abs(target_vals - target_median) / target_mad
+            outlier_mask = z_scores >= z_threshold
+            n_outliers = outlier_mask.sum()
+            if n_outliers > 0:
+                logger.debug(f"process_dataset: removed {n_outliers} outlier bins (z >= {z_threshold})")
+                processed_data = processed_data[~outlier_mask].copy()
 
     return processed_data
 
@@ -331,7 +411,7 @@ def plot_3d_surface(
                 zaxis_title=target_var,
                 xaxis=dict(range=[1, max(1, x_max)]),
                 yaxis=dict(range=[1, max(1, y_max)]),
-                aspectratio=dict(x=1, y=1, z=0.8)
+                aspectratio=dict(x=1, y=1, z=0.8),
             )
         )
 
@@ -390,7 +470,7 @@ def _select_model_type_cv(
         cv_folds=cv_folds,
         n_trials=20,
         include_hurdle=include_hurdle,
-        random_state=DEFAULT_RANDOM_STATE
+        random_state=DEFAULT_RANDOM_STATE,
     )
 
     if results_df.empty:
@@ -403,7 +483,10 @@ def _select_model_type_cv(
     logger.info("Model type CV results:")
     logger.info(f"\n{results_df[display_cols].head(10).to_string()}")
 
-    best_idx = results_df["CV Mean R²"].idxmax()
+    # Apply 1SE rule: pick simplest model within 1 SE of the best
+    results_df["_complexity"] = results_df["Model"].apply(_get_model_complexity)
+    best_idx = _apply_one_se_rule(results_df, "_complexity")
+    results_df = results_df.drop(columns=["_complexity"])
     best_row = results_df.loc[best_idx]
 
     best_model_info = {
@@ -444,11 +527,20 @@ def _select_feature_set_cv(
         for train_idx, val_idx in kfold.split(raw_data):
             raw_train, raw_val = raw_data.iloc[train_idx].copy(), raw_data.iloc[val_idx].copy()
 
-            train_agg = process_dataset(raw_train, bins, variables, indicators, target_var, multiplier, features, z_threshold)
-            val_agg = process_dataset(raw_val, bins, variables, indicators, target_var, multiplier, features, z_threshold)
+            train_agg = process_dataset(
+                raw_train, bins, variables, indicators, target_var, multiplier, features, z_threshold
+            )
+            val_agg = process_dataset(
+                raw_val, bins, variables, indicators, target_var, multiplier, features, z_threshold
+            )
 
             missing_train = [f for f in features if f not in train_agg.columns]
             if missing_train:
+                continue
+
+            # Skip fold if validation has too few bins for reliable R²
+            if len(val_agg) < 3:
+                logger.debug(f"Fold skipped for {feature_name}: only {len(val_agg)} validation bins")
                 continue
 
             X_train, y_train = train_agg[features], train_agg[target_var]
@@ -460,15 +552,16 @@ def _select_feature_set_cv(
             model_clone = clone(model_template)
             model_clone.fit(X_train, y_train, sample_weight=w_train)
             y_pred = model_clone.predict(X_val)
-            fold_r2 = r2_score(y_val, y_pred, sample_weight=w_val)
-            cv_scores.append(fold_r2)
+            if len(y_val) >= 2:
+                fold_r2 = r2_score(y_val, y_pred, sample_weight=w_val)
+                cv_scores.append(fold_r2)
 
         if not cv_scores:
             logger.warning(f"Skipping {feature_name}: execution failed internally.")
             continue
 
         cv_mean = np.mean(cv_scores)
-        cv_std = np.std(cv_scores)
+        cv_std = np.std(cv_scores, ddof=1) / np.sqrt(len(cv_scores))
 
         feature_results.append(
             {
@@ -486,7 +579,9 @@ def _select_feature_set_cv(
         raise RuntimeError("All feature sets failed or were skipped. Check data columns.")
 
     results_df = pd.DataFrame(feature_results)
-    best_idx = results_df["CV Mean R²"].idxmax()
+
+    # Apply 1SE rule: pick simplest feature set within 1 SE of the best
+    best_idx = _apply_one_se_rule(results_df, "Num Features")
     best_row = results_df.loc[best_idx]
 
     best_feature_info = {
@@ -541,6 +636,7 @@ def _select_best_model_and_features(
     target_var: str,
     cv_folds: int,
     include_hurdle: bool,
+    directions: dict[str, int] | None = None,
 ) -> tuple[pd.DataFrame, dict, pd.DataFrame, dict]:
     """Run model type CV + feature set CV, and Optuna tuning for tree models."""
     # Step 1: Tune Tree Models on Original Features
@@ -556,7 +652,8 @@ def _select_best_model_and_features(
         multiplier=multiplier,
         z_threshold=z_threshold,
         cv_folds=cv_folds,
-        n_trials=30
+        n_trials=30,
+        directions=directions,
     )
 
     # Step 2: Evaluate Linear/GLM models on var_reg
@@ -584,36 +681,45 @@ def _select_best_model_and_features(
     display_cols = ["Model", "CV Mean R²", "CV Std R²"]
     logger.info(f"\n{combined_results[display_cols].head(10).to_string()}")
 
-    best_global_name = combined_results.iloc[0]["Model"]
+    # Apply 1SE rule on combined tree+linear results
+    combined_results["_complexity"] = combined_results["Model"].apply(_get_model_complexity)
+    best_combined_idx = _apply_one_se_rule(combined_results, "_complexity")
+    combined_results = combined_results.drop(columns=["_complexity"])
+    best_global_name = combined_results.loc[best_combined_idx, "Model"]
 
     if "Optuna Tuned" in best_global_name:
         # A tree model won. We do not need step 3 for feature sets,
         # tree models inherently use "original" feature set.
-        best_model_template = combined_results.iloc[0]["model_template"]
+        best_row = combined_results.loc[best_combined_idx]
+        best_model_template = best_row["model_template"]
         logger.info(f"Tree model '{best_global_name}' won overall! Skipping Step 3.")
 
         # Override the outputs to fast-path using "original" features
         best_model_type = {
             "model_template": best_model_template,
             "name": best_global_name,
-            "cv_mean_r2": combined_results.iloc[0]["CV Mean R²"],
-            "cv_std_r2": combined_results.iloc[0]["CV Std R²"],
+            "cv_mean_r2": best_row["CV Mean R²"],
+            "cv_std_r2": best_row["CV Std R²"],
         }
 
         # Simulate results of step 2 for tree models
-        results_step2 = pd.DataFrame([{
-            "Feature Set": "original",
-            "Num Features": len(variables),
-            "Features": variables,
-            "CV Mean R²": combined_results.iloc[0]["CV Mean R²"],
-            "CV Std R²": combined_results.iloc[0]["CV Std R²"],
-        }])
+        results_step2 = pd.DataFrame(
+            [
+                {
+                    "Feature Set": "original",
+                    "Num Features": len(variables),
+                    "Features": variables,
+                    "CV Mean R²": best_row["CV Mean R²"],
+                    "CV Std R²": best_row["CV Std R²"],
+                }
+            ]
+        )
 
         best_feature_info = {
             "feature_set_name": "original",
             "features": variables,
-            "cv_mean_r2": combined_results.iloc[0]["CV Mean R²"],
-            "cv_std_r2": combined_results.iloc[0]["CV Std R²"],
+            "cv_mean_r2": best_row["CV Mean R²"],
+            "cv_std_r2": best_row["CV Std R²"],
         }
     else:
         # A linear/GLM model won. Proceed with Step 3.
@@ -637,7 +743,12 @@ def _select_best_model_and_features(
             cv_folds=cv_folds,
         )
 
-    return combined_results.drop(columns=["model_template"], errors="ignore"), best_model_type, results_step2, best_feature_info
+    return (
+        combined_results.drop(columns=["model_template"], errors="ignore"),
+        best_model_type,
+        results_step2,
+        best_feature_info,
+    )
 
 
 def _train_and_evaluate_final_model(
@@ -647,7 +758,7 @@ def _train_and_evaluate_final_model(
     target_var: str,
     weights: pd.Series | None,
 ) -> tuple[Any, float]:
-    """Clone, fit, predict, compute R², return model + full_r2."""
+    """Clone, fit, predict, compute R², return model + train_r2."""
     from sklearn.base import clone
 
     final_model = clone(best_model_template)
@@ -655,9 +766,13 @@ def _train_and_evaluate_final_model(
     final_model.fit(all_data[final_features], y_all, sample_weight=weights)
 
     y_all_pred = final_model.predict(all_data[final_features])
-    full_r2 = r2_score(y_all, y_all_pred, sample_weight=weights)
+    
+    if len(y_all) >= 2:
+        train_r2 = r2_score(y_all, y_all_pred, sample_weight=weights)
+    else:
+        train_r2 = float('nan')
 
-    return final_model, full_r2
+    return final_model, train_r2
 
 
 def _compute_shap_values(
@@ -723,7 +838,8 @@ def _save_model_to_disk(
     model_metadata = {
         "cv_mean_r2": best_model_info["cv_mean_r2"],
         "cv_std_r2": best_model_info["cv_std_r2"],
-        "full_r2": best_model_info["full_r2"],
+        "train_r2": best_model_info["train_r2"],
+        "full_r2": best_model_info["train_r2"],  # Full and train R2 are identical because final model uses all data
         "cv_folds": cv_folds,
         "total_samples": len(all_data),
         "target_variable": target_var,
@@ -796,6 +912,7 @@ def inference_pipeline(
     save_model: bool = True,
     model_base_path: str = "models",
     create_visualizations: bool = True,
+    directions: dict[str, int] | None = None,
 ):
     """
     Two-step inference pipeline using cross-validation throughout.
@@ -827,6 +944,8 @@ def inference_pipeline(
         save_model: Whether to save the best model (default: True).
         model_base_path: Base path for saving models (default: 'models').
         create_visualizations: Whether to create 3D plots (default: True).
+        directions: Dict mapping variable names to monotonic constraint
+            directions (-1=decreasing, 1=increasing). Used for tree models.
 
     Returns:
         Dictionary containing all pipeline outputs:
@@ -837,7 +956,7 @@ def inference_pipeline(
         - step1_results: Model type CV comparison results
         - step2_results: Feature set CV comparison results
         - best_model_info: Final model details (model, name, cv_mean_r2,
-          cv_std_r2, full_r2, model_type, feature_set, weighted, is_hurdle)
+          cv_std_r2, train_r2, model_type, feature_set, weighted, is_hurdle)
         - model_path: Path to saved model (if save_model=True)
         - visualization: Plotly figure (if create_visualizations=True)
     """
@@ -851,9 +970,7 @@ def inference_pipeline(
     logger.info("STEP 1: DATA PREPARATION")
     logger.info("-" * 40)
 
-    all_data, var_reg, feature_sets = _prepare_pipeline_data(
-        data, bins, variables, indicators, target_var, multiplier
-    )
+    all_data, var_reg, feature_sets = _prepare_pipeline_data(data, bins, variables, indicators, target_var, multiplier)
 
     # Global aggregation happens purely at the final stage for training/saving
     final_agg = process_dataset(
@@ -884,6 +1001,7 @@ def inference_pipeline(
         target_var=target_var,
         cv_folds=cv_folds,
         include_hurdle=include_hurdle,
+        directions=directions,
     )
 
     best_model_name = best_model_type["name"]
@@ -894,13 +1012,13 @@ def inference_pipeline(
     logger.info("STEP 4: FINAL MODEL TRAINING (all data)")
     logger.info("-" * 40)
 
-    final_model, full_r2 = _train_and_evaluate_final_model(
+    final_model, train_r2 = _train_and_evaluate_final_model(
         best_model_type["model_template"], final_agg, final_features, target_var, weights_all
     )
 
     logger.info(f"Final model: {best_model_name} + {best_feature_info['feature_set_name']}")
     logger.info(f"  CV R²: {best_feature_info['cv_mean_r2']:.4f} ± {best_feature_info['cv_std_r2']:.4f}")
-    logger.info(f"  Full-data R² (refit): {full_r2:.4f}")
+    logger.info(f"  Train R² (in-sample): {train_r2:.4f}")
 
     if hasattr(final_model, "coef_"):
         logger.debug("Model Coefficients:")
@@ -916,7 +1034,7 @@ def inference_pipeline(
         "name": f"{best_model_name} + {best_feature_info['feature_set_name']}",
         "cv_mean_r2": best_feature_info["cv_mean_r2"],
         "cv_std_r2": best_feature_info["cv_std_r2"],
-        "full_r2": full_r2,
+        "train_r2": train_r2,
         "model_type": best_model_name,
         "feature_set": best_feature_info["feature_set_name"],
         "weighted": weights_all is not None,
@@ -980,7 +1098,9 @@ def inference_pipeline(
             viz_output_path = str(images_dir / "prediction_surface.html")
         else:
             viz_output_path = None
-        fig = _create_pipeline_visualization(final_model, final_agg, variables, target_var, final_features, viz_output_path)
+        fig = _create_pipeline_visualization(
+            final_model, final_agg, variables, target_var, final_features, viz_output_path
+        )
 
     # PIPELINE SUMMARY
     logger.info("=" * 80)
@@ -990,7 +1110,7 @@ def inference_pipeline(
         f"  Feature set (Step 2): {best_feature_info['feature_set_name']} "
         f"(CV R²: {best_feature_info['cv_mean_r2']:.4f} ± {best_feature_info['cv_std_r2']:.4f})"
     )
-    logger.info(f"  Final full-data R²: {full_r2:.4f}")
+    logger.info(f"  Train R² (in-sample): {train_r2:.4f}")
     if model_path:
         logger.info(f"  Model saved: {model_path}")
     logger.info("=" * 80)
@@ -1092,8 +1212,18 @@ def todu_average_inference(
     r_sq = model.score(X, y)
     coef = model.coef_[0]
 
-    logger.info(f"Model Coefficient: {coef:.4f}")
-    logger.info(f"Model R²: {r_sq:.4f}")
+    # LOO-CV R² for unbiased performance estimate
+    if len(X) > 2:
+        from sklearn.metrics import r2_score
+        from sklearn.model_selection import LeaveOneOut, cross_val_predict
+
+        loo_preds = cross_val_predict(LinearRegression(fit_intercept=True), X, y, cv=LeaveOneOut())
+        loo_r2 = float(r2_score(y, loo_preds))
+        logger.info(f"Model Coefficient: {coef:.4f}")
+        logger.info(f"Model R² (in-sample): {r_sq:.4f} | LOO-CV R²: {loo_r2:.4f}")
+    else:
+        logger.info(f"Model Coefficient: {coef:.4f}")
+        logger.info(f"Model R² (in-sample): {r_sq:.4f} (too few points for LOO-CV)")
 
     # --- SAVE MODEL FUNCTIONALITY ---
     if model_output_path:
@@ -1266,7 +1396,9 @@ def run_optimization_pipeline(
         logger.info("Generating optimization visualization...")
         fig = go.Figure()
         data_surf = data_sumary_desagregado.copy()
-        data_surf["b2_ever_h6"] = calculate_b2_ever_h6(data_surf["todu_30ever_h6"], data_surf["todu_amt_pile_h6"], as_percentage=True)
+        data_surf["b2_ever_h6"] = calculate_b2_ever_h6(
+            data_surf["todu_30ever_h6"], data_surf["todu_amt_pile_h6"], as_percentage=True
+        )
         data_surf_pivot = data_surf.pivot(index=VARIABLES[1], columns=VARIABLES[0], values="b2_ever_h6")
 
         fig = fig.add_trace(

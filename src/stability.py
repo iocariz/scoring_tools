@@ -19,7 +19,7 @@ import plotly.graph_objects as go
 from loguru import logger
 from plotly.subplots import make_subplots
 
-from .constants import PSI_STABLE_THRESHOLD, PSI_UNSTABLE_THRESHOLD
+from .constants import PSI_EPSILON, PSI_STABLE_THRESHOLD, PSI_UNSTABLE_THRESHOLD
 
 
 class StabilityStatus(StrEnum):
@@ -135,7 +135,7 @@ def get_psi_status(psi_value: float) -> StabilityStatus:
 
 
 def calculate_psi(
-    baseline: pd.Series, comparison: pd.Series, bins: int | list[float] = 10, min_pct: float = 0.0001
+    baseline: pd.Series, comparison: pd.Series, bins: int | list[float] = 10, min_pct: float = PSI_EPSILON
 ) -> tuple[float, pd.DataFrame]:
     """
     Calculate Population Stability Index between two distributions.
@@ -190,9 +190,11 @@ def calculate_psi(
     baseline_pct = baseline_pct.reindex(all_bins, fill_value=0)
     comparison_pct = comparison_pct.reindex(all_bins, fill_value=0)
 
-    # Apply minimum percentage to avoid log(0)
+    # Apply minimum percentage to avoid log(0), then re-normalize so percentages sum to 1
     baseline_pct = baseline_pct.clip(lower=min_pct)
     comparison_pct = comparison_pct.clip(lower=min_pct)
+    baseline_pct = baseline_pct / baseline_pct.sum()
+    comparison_pct = comparison_pct / comparison_pct.sum()
 
     # Calculate PSI components
     psi_components = (comparison_pct - baseline_pct) * np.log(comparison_pct / baseline_pct)
@@ -472,7 +474,7 @@ def compare_main_vs_mr(
 
 
 def calculate_csi_for_categorical(
-    baseline: pd.Series, comparison: pd.Series, min_pct: float = 0.0001
+    baseline: pd.Series, comparison: pd.Series, min_pct: float = PSI_EPSILON
 ) -> tuple[float, pd.DataFrame]:
     """
     Calculate Characteristic Stability Index for categorical variables.
@@ -494,9 +496,11 @@ def calculate_csi_for_categorical(
     baseline_pct = baseline_pct.reindex(all_cats, fill_value=0)
     comparison_pct = comparison_pct.reindex(all_cats, fill_value=0)
 
-    # Apply minimum percentage
+    # Apply minimum percentage, then re-normalize so percentages sum to 1
     baseline_pct = baseline_pct.clip(lower=min_pct)
     comparison_pct = comparison_pct.clip(lower=min_pct)
+    baseline_pct = baseline_pct / baseline_pct.sum()
+    comparison_pct = comparison_pct / comparison_pct.sum()
 
     # Calculate CSI (same formula as PSI)
     csi_components = (comparison_pct - baseline_pct) * np.log(comparison_pct / baseline_pct)

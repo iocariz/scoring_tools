@@ -130,7 +130,11 @@ app.layout = dbc.Container(
                                     ),
                                     html.Div(id="upload-filename"),
                                     dbc.Button(
-                                        "Run Optimization", id="run-button", color="primary", n_clicks=0, className="w-100"
+                                        "Run Optimization",
+                                        id="run-button",
+                                        color="primary",
+                                        n_clicks=0,
+                                        className="w-100",
                                     ),
                                 ]
                             ),

@@ -128,7 +128,7 @@ def _save_model_summary(version_path: Path, model, features: list[str], metadata
         # Support both old and new metric formats
         if "cv_mean_r2" in metadata:
             # New CV-based metrics
-            for key in ["cv_mean_r2", "cv_std_r2", "full_r2"]:
+            for key in ["cv_mean_r2", "cv_std_r2", "train_r2", "full_r2"]:
                 value = metadata.get(key, "N/A")
                 display_value = f"{value:.4f}" if isinstance(value, (int, float)) else value
                 label = key.replace("_", " ").replace("cv ", "CV ").replace("r2", "R²").title()

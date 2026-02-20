@@ -37,7 +37,7 @@ def calculate_metrics_from_cuts(
     data_summary_desagregado: pd.DataFrame,
     optimal_solution_df: pd.DataFrame | None,
     variables: list[str],
-    inv_vars: list[str] | None = None
+    inv_vars: list[str] | None = None,
 ) -> pd.DataFrame | None:
     """
     Generates the Risk Production Summary Table by applying optimal cuts to aggregated data.
@@ -63,8 +63,12 @@ def calculate_metrics_from_cuts(
                 cut_map[bin_val] = opt_sol_row[bin_val]
             elif str(bin_val) in optimal_solution_df.columns:
                 cut_map[bin_val] = opt_sol_row[str(bin_val)]
+            elif str(float(bin_val)) in optimal_solution_df.columns:
+                cut_map[bin_val] = opt_sol_row[str(float(bin_val))]
             else:
-                logger.warning(f"Warning: Bin {bin_val} not found in optimal solution columns. Defaulting to strict rejection.")
+                logger.warning(
+                    f"Warning: Bin {bin_val} not found in optimal solution columns. Defaulting to strict rejection."
+                )
                 cut_map[bin_val] = np.inf if (inv_vars and var1_col in inv_vars) else -np.inf
 
         logger.info(f"Optimal Cuts: {cut_map}")
@@ -200,6 +204,9 @@ def process_mr_period(
         data_demand_mr = data_mr_period[available_mr_cols].copy()
 
         # --- Calculate b2_ever_h6_tmp from initial period (data_booked) ---
+        # NOTE: MR risk uses training-period observed risk, not MR-period outcomes.
+        # This is appropriate when the MR observation horizon has not yet matured,
+        # but will not detect model degradation if MR outcome data is available.
         logger.info(f"Calculating b2_ever_h6_tmp aggregated by {merge_keys} from initial period...")
 
         required_agg_cols = merge_keys + ["todu_30ever_h6", "todu_amt_pile_h6"]
@@ -265,6 +272,9 @@ def process_mr_period(
 
                     # Drop the helper column
                     data_demand_mr = data_demand_mr.drop(columns=["b2_ever_h6_inferred"], errors="ignore")
+
+                    # Recompute booked_mask after merge to avoid stale index alignment
+                    booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
 
                     # Verify all booked accounts now have values
                     remaining_nulls = (booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()).sum()
@@ -398,7 +408,9 @@ def process_mr_period(
         # --- Generate Risk Production Summary Table for MR ---
         logger.info("Generating Risk Production Summary Table for MR period...")
 
-        mr_summary_table = calculate_metrics_from_cuts(data_summary_desagregado_mr, optimal_solution_df, VARIABLES, settings.inv_vars)
+        mr_summary_table = calculate_metrics_from_cuts(
+            data_summary_desagregado_mr, optimal_solution_df, VARIABLES, settings.inv_vars
+        )
 
         if mr_summary_table is not None:
             mr_summary_path = output.mr_risk_production_summary_csv(file_suffix)

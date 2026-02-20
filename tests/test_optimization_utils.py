@@ -732,7 +732,10 @@ class TestGAFallback:
             pytest.skip("pymoo is installed, cannot test missing-pymoo path")
         except ImportError:
             result_df, result_grid, result_masks = _ga_pareto_fallback(
-                grid, inv_vars=[], multiplier=7, indicators=["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"],
+                grid,
+                inv_vars=[],
+                multiplier=7,
+                indicators=["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"],
                 n_points=5,
             )
             assert result_df.empty

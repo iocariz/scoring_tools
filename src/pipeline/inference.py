@@ -96,10 +96,12 @@ def run_inference_phase(
             indicators=settings.indicators,
             target_var="b2_ever_h6",
             multiplier=settings.multiplier,
+            cv_folds=settings.cv_folds,
             include_hurdle=True,
             save_model=True,
             model_base_path=output.model_base_path,
             create_visualizations=True,
+            directions=settings.directions or None,
         )
 
         # Todu Average Inference
