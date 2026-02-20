@@ -416,7 +416,7 @@ def _select_model_type_cv(
     logger.info(f"Best model type: {best_model_info['name']}")
     logger.info(f"  CV R²: {best_model_info['cv_mean_r2']:.4f} ± {best_model_info['cv_std_r2']:.4f}")
 
-    return results_df.drop("model_template", axis=1), best_model_info
+    return results_df, best_model_info
 
 
 def _select_feature_set_cv(
@@ -454,8 +454,8 @@ def _select_feature_set_cv(
             X_train, y_train = train_agg[features], train_agg[target_var]
             X_val, y_val = val_agg[features], val_agg[target_var]
 
-            w_train = train_agg["n_observations"] if "n_observations" in train_agg.columns else None
-            w_val = val_agg["n_observations"] if "n_observations" in val_agg.columns else None
+            w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
+            w_val = val_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in val_agg.columns else None
 
             model_clone = clone(model_template)
             model_clone.fit(X_train, y_train, sample_weight=w_train)
@@ -859,7 +859,7 @@ def inference_pipeline(
     final_agg = process_dataset(
         all_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold=DEFAULT_Z_THRESHOLD
     )
-    weights_all = final_agg["n_observations"] if "n_observations" in final_agg.columns else None
+    weights_all = final_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in final_agg.columns else None
     zero_prop = (np.abs(final_agg[target_var]) < 1e-10).mean()
 
     logger.info(f"Processed full data scope: {final_agg.shape[0]} groups")

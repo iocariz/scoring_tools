@@ -58,8 +58,8 @@ def tune_tree_models(
             X_train, y_train = train_agg[variables], train_agg[target_var]
             X_val, y_val = val_agg[variables], val_agg[target_var]
 
-            w_train = train_agg["n_observations"] if "n_observations" in train_agg.columns else None
-            w_val = val_agg["n_observations"] if "n_observations" in val_agg.columns else None
+            w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
+            w_val = val_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in val_agg.columns else None
 
             model.fit(X_train, y_train, sample_weight=w_train)
             pred = model.predict(X_val)
@@ -190,8 +190,8 @@ def tune_linear_models(
             X_train, y_train = train_agg[var_reg], train_agg[target_var]
             X_val, y_val = val_agg[var_reg], val_agg[target_var]
 
-            w_train = train_agg["n_observations"] if "n_observations" in train_agg.columns else None
-            w_val = val_agg["n_observations"] if "n_observations" in val_agg.columns else None
+            w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
+            w_val = val_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in val_agg.columns else None
 
             try:
                 model.fit(X_train, y_train, sample_weight=w_train)
