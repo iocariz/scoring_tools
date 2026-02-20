@@ -34,8 +34,8 @@ if TYPE_CHECKING:
 
 
 def calculate_metrics_from_cuts(
-    data_summary_desagregado: pd.DataFrame, 
-    optimal_solution_df: pd.DataFrame | None, 
+    data_summary_desagregado: pd.DataFrame,
+    optimal_solution_df: pd.DataFrame | None,
     variables: list[str],
     inv_vars: list[str] | None = None
 ) -> pd.DataFrame | None:

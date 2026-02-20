@@ -3,7 +3,6 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.tree import DecisionTreeClassifier
 
-from src.constants import SCORE_SCALE_MAX
 from src.models import (
     calculate_B2,
     calculate_risk_values,

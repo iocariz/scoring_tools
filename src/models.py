@@ -21,7 +21,7 @@ from sklearn import tree as sktree
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.tree import DecisionTreeClassifier
 
-from .constants import DEFAULT_MIN_SAMPLES_LEAF, SCORE_SCALE_MAX, Columns, StatusName
+from .constants import DEFAULT_MIN_SAMPLES_LEAF, Columns, StatusName
 from .utils import calculate_b2_ever_h6, calculate_todu_30ever_from_b2
 
 

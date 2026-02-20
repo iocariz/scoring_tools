@@ -261,7 +261,7 @@ def _apply_binning_from_config(
 
     transformed_data = data.copy()
 
-    for var_name, bc in bins_config.items():
+    for _var_name, bc in bins_config.items():
         logger.info(f"Applying binning '{bc.output_col}' from '{bc.source_col}' with {len(bc.bin_edges)} edges")
         logger.info(f"  Bin edges: {bc.bin_edges}")
 
@@ -603,27 +603,31 @@ def _infer_monotonicity(data: pd.DataFrame, settings: "PreprocessingSettings") -
     """
     Infer the monotonicity of binned variables with respect to the risk target.
     Updates settings.directions and settings.inv_vars in place.
-    
+
     1 = ascending risk (higher bin = riskier)
     -1 = descending risk (higher bin = safer)
     """
     logger.info("\n" + "=" * 80)
-    logger.info("Step 7: Infer dynamic monotonicity for variables")
+    logger.info("Step 7: Infer dynamic monotonicity for variables (Weighted)")
     logger.info("=" * 80)
 
+    import numpy as np
+    from scipy.stats import rankdata
+
     from src.utils import calculate_b2_ever_h6
-    import scipy.stats as stats
-    
+
     for var in settings.variables:
         if var in settings.directions:
             direction = settings.directions[var]
             logger.info(f"[{var}] Using explicitly configured direction: {direction}")
         else:
-            # We calculate B2 risk empirically per bin on the booked records
-            # using todu_30ever_h6 and todu_amt_pile_h6
-            aggs = data.groupby(var, observed=True)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum()
+            # Drop unbinned/missing records for inference
+            valid_data = data[[var, "todu_30ever_h6", "todu_amt_pile_h6", "oa_amt"]].dropna()
+
+            # Calculate B2 risk empirically per bin on the booked records
+            aggs = valid_data.groupby(var, observed=True)[["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt"]].sum()
             b2_risks = calculate_b2_ever_h6(aggs["todu_30ever_h6"], aggs["todu_amt_pile_h6"])
-            
+
             valid_idx = ~b2_risks.isna()
             if sum(valid_idx) < 2:
                 logger.warning(f"[{var}] Not enough valid risk data to infer direction. Defaulting to ascending (1).")
@@ -631,16 +635,26 @@ def _infer_monotonicity(data: pd.DataFrame, settings: "PreprocessingSettings") -
             else:
                 bin_vals = aggs.index[valid_idx].values
                 risk_vals = b2_risks[valid_idx].values
-                corr, _ = stats.spearmanr(bin_vals, risk_vals)
-                
-                # If correlation is highly erratic or perfectly flat, default to 1
-                if pd.isna(corr):
+                weights = aggs["oa_amt"][valid_idx].values
+
+                # Calculate weighted Spearman correlation using ranked variables
+                rank_x = rankdata(bin_vals)
+                rank_y = rankdata(risk_vals)
+
+                # Calculate weighted covariance of ranks to prevent tiny edge bins dictating constraints
+                mean_x = np.average(rank_x, weights=weights)
+                mean_y = np.average(rank_y, weights=weights)
+
+                cov_xy = np.average((rank_x - mean_x) * (rank_y - mean_y), weights=weights)
+
+                # Direction is entirely driven by the sign of the covariance
+                if np.isnan(cov_xy) or np.isclose(cov_xy, 0):
                     direction = 1
-                    logger.warning(f"[{var}] Spearman correlation returned NaN. Defaulting to ascending (1).")
+                    logger.warning(f"[{var}] Weighted Spearman covariance returned NaN or 0. Defaulting to ascending (1).")
                 else:
-                    direction = 1 if corr >= 0 else -1
-                    logger.info(f"[{var}] Inferred direction: {direction} (Spearman corr: {corr:.3f})")
-                
+                    direction = 1 if cov_xy > 0 else -1
+                    logger.info(f"[{var}] Inferred direction: {direction} (Weighted Spearman Cov: {cov_xy:g})")
+
             settings.directions[var] = direction
 
         # Update inv_vars mapping for the optimization engine

@@ -324,7 +324,7 @@ class TestConfigRejectInference:
         """Invalid reject_inference_method is rejected by pydantic."""
         from src.config import PreprocessingSettings
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             PreprocessingSettings(
                 keep_vars=["authorization_id"],
                 indicators=["oa_amt"],
@@ -340,7 +340,7 @@ class TestConfigRejectInference:
         """reject_uplift_factor respects ge=0 and le=10 bounds."""
         from src.config import PreprocessingSettings
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             PreprocessingSettings(
                 keep_vars=["authorization_id"],
                 indicators=["oa_amt"],
@@ -356,7 +356,7 @@ class TestConfigRejectInference:
         """reject_max_risk_multiplier respects ge=1 and le=10 bounds."""
         from src.config import PreprocessingSettings
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             PreprocessingSettings(
                 keep_vars=["authorization_id"],
                 indicators=["oa_amt"],

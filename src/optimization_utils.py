@@ -393,10 +393,10 @@ def mask_to_cutoffs(
                     else:
                         if max_v1 is None or v1 > max_v1:
                             max_v1 = v1
-                            
+
             if max_v1 is None:
                 max_v1 = np.inf if var1 in inv_vars else -np.inf
-                
+
             cut_map[float(v0)] = float(max_v1)
 
         result[var0] = cut_map

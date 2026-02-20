@@ -21,7 +21,7 @@ from loguru import logger
 from scipy.stats import zscore
 
 # Scikit-learn imports
-from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, LogisticRegression, Ridge
+from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 from sklearn.model_selection import KFold
 
@@ -30,16 +30,15 @@ from src.constants import (
     DEFAULT_N_POINTS_3D,
     DEFAULT_RANDOM_STATE,
     DEFAULT_Z_THRESHOLD,
-    SCORE_SCALE_MAX,
     Columns,
     StatusName,
     Suffixes,
 )
-from src.estimators import HurdleRegressor, TweedieGLM
+from src.estimators import HurdleRegressor
 
 # Project imports
 from src.models import transform_variables
-from src.optuna_tuning import tune_tree_models, tune_linear_models
+from src.optuna_tuning import tune_linear_models, tune_tree_models
 from src.persistence import (
     save_model_with_metadata,
 )
@@ -213,8 +212,8 @@ def process_dataset(
         processed_data, multiplier, "todu_30ever_h6", "todu_amt_pile_h6"
     )
 
-    # ---- 4. Remove outliers and NaNs ----
-    processed_data = processed_data.dropna().loc[lambda df: np.abs(zscore(df[target_var])) < z_threshold].copy()
+    # ---- 4. Filter missing targets ----
+    processed_data = processed_data.dropna(subset=[target_var]).copy()
 
     return processed_data
 
@@ -326,7 +325,14 @@ def plot_3d_surface(
             fig, title=f"{target_var} vs {var0} and {var1} with Model Predictions", width=1000, height=800
         )
         fig.update_layout(
-            scene=dict(xaxis_title=var0, yaxis_title=var1, zaxis_title=target_var, aspectratio=dict(x=1, y=1, z=0.8))
+            scene=dict(
+                xaxis_title=var0,
+                yaxis_title=var1,
+                zaxis_title=target_var,
+                xaxis=dict(range=[1, max(1, x_max)]),
+                yaxis=dict(range=[1, max(1, y_max)]),
+                aspectratio=dict(x=1, y=1, z=0.8)
+            )
         )
 
         return fig
@@ -338,12 +344,16 @@ def plot_3d_surface(
 
 
 def _select_model_type_cv(
-    data: pd.DataFrame,
-    var_reg: list[str],
+    raw_data: pd.DataFrame,
+    bins: tuple,
+    variables: list[str],
+    indicators: list[str],
     target_var: str,
+    multiplier: float,
+    z_threshold: float,
+    var_reg: list[str],
     cv_folds: int,
     include_hurdle: bool,
-    weights: pd.Series | None,
 ) -> tuple[pd.DataFrame, dict]:
     """
     Select the best model type using k-fold cross-validation on base features.
@@ -352,25 +362,31 @@ def _select_model_type_cv(
     and returns the best model type based on mean CV R².
 
     Args:
-        data: Processed dataset with features and target.
-        var_reg: Base feature column names.
+        raw_data: Un-aggregated dataset with features and target.
+        bins: Bin definitions.
+        variables: Demographic features to group by.
+        indicators: Metrics required for aggregation.
         target_var: Target column name.
+        multiplier: Scaler for target derivation.
+        z_threshold: Outlier cutoff threshold.
+        var_reg: Base feature column names.
         cv_folds: Number of cross-validation folds.
         include_hurdle: Whether to include Hurdle model variants.
-        weights: Optional sample weights (e.g., n_observations).
 
     Returns:
         Tuple of (results_df, best_model_info) where best_model_info contains
         the unfitted model object, name, and CV scores.
     """
-    X = data[var_reg]
-    y = data[target_var]
-
     # Run Optuna tuning for all linear and GLM regression models
     results_df, _ = tune_linear_models(
-        X=X,
-        y=y,
-        weights=weights,
+        raw_data=raw_data,
+        bins=bins,
+        variables=variables,
+        indicators=indicators,
+        target_var=target_var,
+        multiplier=multiplier,
+        z_threshold=z_threshold,
+        var_reg=var_reg,
         cv_folds=cv_folds,
         n_trials=20,
         include_hurdle=include_hurdle,
@@ -404,55 +420,52 @@ def _select_model_type_cv(
 
 
 def _select_feature_set_cv(
-    data: pd.DataFrame,
-    feature_sets: dict[str, list[str]],
+    raw_data: pd.DataFrame,
+    bins: tuple,
+    variables: list[str],
+    indicators: list[str],
     target_var: str,
+    multiplier: float,
+    z_threshold: float,
+    feature_sets: dict[str, list[str]],
     model_template,
     cv_folds: int,
-    weights: pd.Series | None,
 ) -> tuple[pd.DataFrame, dict]:
     """
     Select the best feature set using k-fold cross-validation with a fixed model type.
-
-    Args:
-        data: Processed dataset with all feature columns.
-        feature_sets: Dict mapping feature set names to lists of column names.
-        target_var: Target column name.
-        model_template: Unfitted model object to clone for each evaluation.
-        cv_folds: Number of cross-validation folds.
-        weights: Optional sample weights.
-
-    Returns:
-        Tuple of (results_df, best_feature_info) where best_feature_info contains
-        the feature set name, features list, and CV scores.
     """
     from sklearn.base import clone
 
-    y = data[target_var]
     kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=DEFAULT_RANDOM_STATE)
-
     feature_results = []
 
     for feature_name, features in feature_sets.items():
-        missing = [f for f in features if f not in data.columns]
-        if missing:
-            logger.warning(f"Skipping {feature_name}: missing columns {missing}")
-            continue
-
-        X = data[features]
-
         cv_scores = []
-        for train_idx, val_idx in kfold.split(X):
-            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
-            w_train = weights.iloc[train_idx] if weights is not None else None
-            w_val = weights.iloc[val_idx] if weights is not None else None
+        for train_idx, val_idx in kfold.split(raw_data):
+            raw_train, raw_val = raw_data.iloc[train_idx].copy(), raw_data.iloc[val_idx].copy()
+
+            train_agg = process_dataset(raw_train, bins, variables, indicators, target_var, multiplier, features, z_threshold)
+            val_agg = process_dataset(raw_val, bins, variables, indicators, target_var, multiplier, features, z_threshold)
+
+            missing_train = [f for f in features if f not in train_agg.columns]
+            if missing_train:
+                continue
+
+            X_train, y_train = train_agg[features], train_agg[target_var]
+            X_val, y_val = val_agg[features], val_agg[target_var]
+
+            w_train = train_agg["n_observations"] if "n_observations" in train_agg.columns else None
+            w_val = val_agg["n_observations"] if "n_observations" in val_agg.columns else None
 
             model_clone = clone(model_template)
             model_clone.fit(X_train, y_train, sample_weight=w_train)
             y_pred = model_clone.predict(X_val)
             fold_r2 = r2_score(y_val, y_pred, sample_weight=w_val)
             cv_scores.append(fold_r2)
+
+        if not cv_scores:
+            logger.warning(f"Skipping {feature_name}: execution failed internally.")
+            continue
 
         cv_mean = np.mean(cv_scores)
         cv_std = np.std(cv_scores)
@@ -500,44 +513,34 @@ def _prepare_pipeline_data(
     indicators: list[str],
     target_var: str,
     multiplier: float,
-) -> tuple[pd.DataFrame, list[str], dict[str, list[str]], pd.Series | None, float]:
-    """Filter booked records, process dataset, compute features/weights/zero_prop."""
+) -> tuple[pd.DataFrame, list[str], dict[str, list[str]]]:
+    """Filter booked records and determine base models."""
     var_reg, feature_sets = _generate_regression_variables(variables)
 
-    booked_data = data[data[Columns.STATUS_NAME] == StatusName.BOOKED.value]
-    logger.info(f"Booked records: {len(booked_data):,} of {len(data):,} total")
+    booked_data = data[data[Columns.STATUS_NAME] == StatusName.BOOKED.value].copy()
 
-    all_data = process_dataset(
-        data=booked_data,
-        bins=bins,
-        variables=variables,
-        indicators=indicators,
-        target_var=target_var,
-        multiplier=multiplier,
-        var_reg=var_reg,
-    )
+    # We remove records where the demographic variables or target indicators are null
+    req_cols = variables + indicators
+    booked_data = booked_data.dropna(subset=req_cols).copy()
 
-    weights = all_data["n_observations"] if "n_observations" in all_data.columns else None
-    zero_prop = (np.abs(all_data[target_var]) < 1e-10).mean()
-
-    logger.info(f"Processed data: {all_data.shape[0]} groups, {all_data.shape[1]} columns")
+    logger.info(f"Booked valid records: {len(booked_data):,} of {len(data):,} total")
     logger.info(f"Base features (var_reg): {var_reg}")
-    logger.info(f"Zero proportion: {zero_prop:.1%}")
-    if weights is not None:
-        logger.info(f"Weight range: [{weights.min():.0f}, {weights.max():.0f}]")
 
-    return all_data, var_reg, feature_sets, weights, zero_prop
+    return booked_data, var_reg, feature_sets
 
 
 def _select_best_model_and_features(
-    all_data: pd.DataFrame,
-    var_reg: list[str],
+    raw_data: pd.DataFrame,
+    bins: tuple,
     variables: list[str],
+    indicators: list[str],
+    multiplier: float,
+    z_threshold: float,
+    var_reg: list[str],
     feature_sets: dict[str, list[str]],
     target_var: str,
     cv_folds: int,
     include_hurdle: bool,
-    weights: pd.Series | None,
 ) -> tuple[pd.DataFrame, dict, pd.DataFrame, dict]:
     """Run model type CV + feature set CV, and Optuna tuning for tree models."""
     # Step 1: Tune Tree Models on Original Features
@@ -545,9 +548,13 @@ def _select_best_model_and_features(
     logger.info(f"STEP 2A: TUNE TREE MODELS ON ORIGINAL FEATURES ({cv_folds}-fold CV)")
     logger.info("-" * 40)
     tree_results_df, tree_models = tune_tree_models(
-        X=all_data[variables],
-        y=all_data[target_var],
-        weights=weights,
+        raw_data=raw_data,
+        bins=bins,
+        variables=variables,
+        indicators=indicators,
+        target_var=target_var,
+        multiplier=multiplier,
+        z_threshold=z_threshold,
         cv_folds=cv_folds,
         n_trials=30
     )
@@ -557,12 +564,16 @@ def _select_best_model_and_features(
     logger.info(f"STEP 2B: LINEAR/GLM MODEL TYPE SELECTION ({cv_folds}-fold CV)")
     logger.info("-" * 40)
     results_step1, best_model_type = _select_model_type_cv(
-        data=all_data,
-        var_reg=var_reg,
+        raw_data=raw_data,
+        bins=bins,
+        variables=variables,
+        indicators=indicators,
         target_var=target_var,
+        multiplier=multiplier,
+        z_threshold=z_threshold,
+        var_reg=var_reg,
         cv_folds=cv_folds,
         include_hurdle=include_hurdle,
-        weights=weights,
     )
 
     # Combine results to find the global winner
@@ -614,12 +625,16 @@ def _select_best_model_and_features(
         logger.info("-" * 40)
 
         results_step2, best_feature_info = _select_feature_set_cv(
-            data=all_data,
-            feature_sets=feature_sets,
+            raw_data=raw_data,
+            bins=bins,
+            variables=variables,
+            indicators=indicators,
             target_var=target_var,
+            multiplier=multiplier,
+            z_threshold=z_threshold,
+            feature_sets=feature_sets,
             model_template=best_model_template,
             cv_folds=cv_folds,
-            weights=weights,
         )
 
     return combined_results.drop(columns=["model_template"], errors="ignore"), best_model_type, results_step2, best_feature_info
@@ -658,11 +673,22 @@ def _compute_shap_values(
             # Linear models: exact and fast
             explainer = shap.LinearExplainer(model, X)
             shap_values = explainer.shap_values(X)
+        elif type(model).__name__ in ("XGBRegressor", "LGBMRegressor"):
+            # Tree models: exact and fast
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X)
         else:
             # Non-linear models (Hurdle, Tweedie): use sampling-based explainer
             # Use a small background sample for efficiency
             background = shap.sample(X, min(50, len(X)))
-            explainer = shap.KernelExplainer(model.predict, background)
+
+            # Wrap predict to prevent shap from trying to access/set sklearn-specific properties on the model
+            def safe_predict(data):
+                if isinstance(data, pd.DataFrame):
+                    return model.predict(data)
+                return model.predict(pd.DataFrame(data, columns=X.columns))
+
+            explainer = shap.KernelExplainer(safe_predict, background)
             shap_values = explainer.shap_values(X, nsamples=100)
 
         mean_abs_shap = np.abs(shap_values).mean(axis=0)
@@ -765,7 +791,7 @@ def inference_pipeline(
     indicators: list,
     target_var: str,
     multiplier: float,
-    cv_folds: int = 5,
+    cv_folds: int = 4,
     include_hurdle: bool = True,
     save_model: bool = True,
     model_base_path: str = "models",
@@ -825,9 +851,21 @@ def inference_pipeline(
     logger.info("STEP 1: DATA PREPARATION")
     logger.info("-" * 40)
 
-    all_data, var_reg, feature_sets, weights_all, zero_prop = _prepare_pipeline_data(
+    all_data, var_reg, feature_sets = _prepare_pipeline_data(
         data, bins, variables, indicators, target_var, multiplier
     )
+
+    # Global aggregation happens purely at the final stage for training/saving
+    final_agg = process_dataset(
+        all_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold=DEFAULT_Z_THRESHOLD
+    )
+    weights_all = final_agg["n_observations"] if "n_observations" in final_agg.columns else None
+    zero_prop = (np.abs(final_agg[target_var]) < 1e-10).mean()
+
+    logger.info(f"Processed full data scope: {final_agg.shape[0]} groups")
+    logger.info(f"Zero proportion: {zero_prop:.1%}")
+    if weights_all is not None:
+        logger.info(f"Weight range: [{weights_all.min():.0f}, {weights_all.max():.0f}]")
 
     # STEPS 2-3: MODEL TYPE + FEATURE SET SELECTION
     logger.info("-" * 40)
@@ -835,7 +873,17 @@ def inference_pipeline(
     logger.info("-" * 40)
 
     results_step1, best_model_type, results_step2, best_feature_info = _select_best_model_and_features(
-        all_data, var_reg, variables, feature_sets, target_var, cv_folds, include_hurdle, weights_all
+        raw_data=all_data,
+        bins=bins,
+        variables=variables,
+        indicators=indicators,
+        multiplier=multiplier,
+        z_threshold=DEFAULT_Z_THRESHOLD,
+        var_reg=var_reg,
+        feature_sets=feature_sets,
+        target_var=target_var,
+        cv_folds=cv_folds,
+        include_hurdle=include_hurdle,
     )
 
     best_model_name = best_model_type["name"]
@@ -847,7 +895,7 @@ def inference_pipeline(
     logger.info("-" * 40)
 
     final_model, full_r2 = _train_and_evaluate_final_model(
-        best_model_type["model_template"], all_data, final_features, target_var, weights_all
+        best_model_type["model_template"], final_agg, final_features, target_var, weights_all
     )
 
     logger.info(f"Final model: {best_model_name} + {best_feature_info['feature_set_name']}")
@@ -876,7 +924,7 @@ def inference_pipeline(
     }
 
     # SHAP interpretability (non-blocking)
-    shap_result = _compute_shap_values(final_model, all_data[final_features], final_features)
+    shap_result = _compute_shap_values(final_model, final_agg[final_features], final_features)
     if shap_result is not None:
         best_model_info["shap_values"] = shap_result["shap_values"]
         best_model_info["shap_feature_names"] = shap_result["feature_names"]
@@ -909,7 +957,7 @@ def inference_pipeline(
             best_model_info,
             best_model_type,
             best_feature_info,
-            all_data,
+            final_agg,
             target_var,
             multiplier,
             cv_folds,
@@ -932,7 +980,7 @@ def inference_pipeline(
             viz_output_path = str(images_dir / "prediction_surface.html")
         else:
             viz_output_path = None
-        fig = _create_pipeline_visualization(final_model, all_data, variables, target_var, final_features, viz_output_path)
+        fig = _create_pipeline_visualization(final_model, final_agg, variables, target_var, final_features, viz_output_path)
 
     # PIPELINE SUMMARY
     logger.info("=" * 80)
@@ -948,7 +996,7 @@ def inference_pipeline(
     logger.info("=" * 80)
 
     return {
-        "all_data": all_data,
+        "all_data": final_agg,
         "features": final_features,
         "var_reg": var_reg,
         "feature_sets": feature_sets,
@@ -1038,7 +1086,7 @@ def todu_average_inference(
     X = df_train[[feature_col]]
     y = df_train[target_col]
 
-    model = LinearRegression(fit_intercept=False)  # Forced through origin as per original code
+    model = LinearRegression(fit_intercept=True)  # Updated: Mathematical risk requires floating intercept bias
     model.fit(X, y)
 
     r_sq = model.score(X, y)

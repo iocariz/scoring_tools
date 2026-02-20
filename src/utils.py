@@ -394,7 +394,7 @@ def generate_cutoff_summary(
             safe_cutoff = float(cutoff) # Keep as inf or -inf
         else:
             safe_cutoff = None
-            
+
         row_data = {
             "segment": segment_name,
             "scenario": scenario_name,

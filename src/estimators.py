@@ -41,7 +41,7 @@ class HurdleRegressor(BaseEstimator, RegressorMixin):
     >>> from sklearn.linear_model import Ridge, LogisticRegression
     >>> hurdle = HurdleRegressor(
     ...     classifier=LogisticRegression(max_iter=1000),
-    ...     regressor=Ridge(alpha=0.5, fit_intercept=False)
+    ...     regressor=Ridge(alpha=0.5, fit_intercept=True)
     ... )
     >>> hurdle.fit(X_train, y_train, sample_weight=weights_train)
     >>> predictions = hurdle.predict(X_test)
@@ -71,7 +71,7 @@ class HurdleRegressor(BaseEstimator, RegressorMixin):
             self.classifier_ = clone(self.classifier)
 
         if self.regressor is None:
-            self.regressor_ = Ridge(alpha=0.5, fit_intercept=False)
+            self.regressor_ = Ridge(alpha=0.5, fit_intercept=True)
         else:
             self.regressor_ = clone(self.regressor)
 
