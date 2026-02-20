@@ -1,3 +1,4 @@
+
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -128,6 +129,26 @@ class OutputPaths:
             d.mkdir(parents=True, exist_ok=True)
 
 
+@dataclass
+class BinConfig:
+    """Configuration for a single binning variable.
+
+    Attributes:
+        source_col: Raw column name in the data (e.g. 'score_rf').
+        output_col: Name of the binned column created (e.g. 'sc_octroi_new_clus').
+        bin_edges: Bin boundary values (must have >= 2 elements).
+        invert: If True, bin indices are inverted (higher raw value = lower bin).
+    """
+
+    source_col: str
+    output_col: str
+    bin_edges: list[float]
+
+    def __post_init__(self) -> None:
+        if len(self.bin_edges) < 2:
+            raise ValueError(f"bin_edges for '{self.output_col}' must have at least 2 values")
+
+
 class PreprocessingSettings(BaseModel):
     """Configuration for preprocessing and overall pipeline settings."""
 
@@ -137,11 +158,25 @@ class PreprocessingSettings(BaseModel):
     keep_vars: list[str]
     indicators: list[str]
     segment_filter: str = "unknown"
-    octroi_bins: list[float]
-    efx_bins: list[float]
     date_ini_book_obs: str
     date_fin_book_obs: str
     variables: list[str]
+
+    # N-variable binning config: maps variable output name -> BinConfig
+    bins: dict[str, BinConfig] = Field(default_factory=dict)
+
+    # Dictionary of explicit direction overrides mapping variable name to direction (1 or -1)
+    # 1 indicates ascending risk (higher bin index = higher risk)
+    # -1 indicates descending risk (higher bin index = lower risk)
+    directions: dict[str, int] = Field(default_factory=dict)
+
+    # Inversion flags populated during preprocessing based on directions
+    inv_vars: list[str] = Field(default_factory=list)
+
+    # Legacy fields — still accepted for backward compatibility.
+    # Prefer using ``bins`` dict for new configs.
+    octroi_bins: list[float] = Field(default_factory=list)
+    efx_bins: list[float] = Field(default_factory=list)
 
     # Optional fields with defaults
     date_ini_book_obs_mr: str | None = None
@@ -156,7 +191,6 @@ class PreprocessingSettings(BaseModel):
     cz_config: dict[int, Any] = Field(default_factory=dict)
     log_level: str = "INFO"
     fixed_cutoffs: dict[str, Any] | None = None
-    inv_var1: bool = False
 
     # Reject inference settings
     reject_inference_method: Literal["none", "parceling"] = "none"
@@ -173,19 +207,15 @@ class PreprocessingSettings(BaseModel):
     @field_validator("variables")
     @classmethod
     def validate_variables_length(cls, v: list[str]) -> list[str]:
-        if len(v) != 2:
-            raise ValueError(f"'variables' must contain exactly 2 elements, got {len(v)}")
+        if len(v) < 2:
+            raise ValueError(f"'variables' must contain at least 2 elements, got {len(v)}")
         return v
 
     @field_validator("octroi_bins", "efx_bins")
     @classmethod
     def validate_bins_length(cls, v: list[float], info: Any) -> list[float]:
-        if len(v) < 2:
+        if v and len(v) < 2:
             raise ValueError(f"'{info.field_name}' must have at least 2 values")
-        # Convert infs here if needed, or keeping it raw and converting later.
-        # Original code used convert_bins to handle inf strings in python/json,
-        # but here we expect floats (including float('inf')).
-        # We'll allow standard floats.
         return v
 
     @field_validator("date_ini_book_obs", "date_fin_book_obs", "date_ini_book_obs_mr", "date_fin_book_obs_mr")
@@ -244,6 +274,31 @@ class PreprocessingSettings(BaseModel):
         val = getattr(self, field)
         return pd.to_datetime(val, dayfirst=False)
 
+    @model_validator(mode="after")
+    def _auto_populate_bins(self) -> "PreprocessingSettings":
+        """Auto-populate ``bins`` dict from legacy octroi_bins/efx_bins if not set."""
+        if self.bins:
+            # bins dict already provided explicitly — nothing to do
+            return self
+
+        # Legacy path: build bins from octroi_bins + efx_bins
+        if self.octroi_bins and self.efx_bins:
+            self.bins = {
+                self.variables[0]: BinConfig(
+                    source_col="score_rf",
+                    output_col=self.variables[0],
+                    bin_edges=self.octroi_bins,
+                ),
+                self.variables[1]: BinConfig(
+                    source_col="risk_score_rf",
+                    output_col=self.variables[1],
+                    bin_edges=self.efx_bins,
+                ),
+            }
+
+
+        return self
+
     @classmethod
     def from_toml(cls, config_path: str = "config.toml") -> "PreprocessingSettings":
         with open(config_path, "rb") as f:
@@ -256,8 +311,11 @@ class PreprocessingSettings(BaseModel):
         if "cz_config" in prep_config:
             prep_config["cz_config"] = {int(k): v for k, v in prep_config["cz_config"].items()}
 
-        # Handle infinite values in bins for pydantic validation if they come as strings
-        # (Though TOML handles floats, sometimes users might put strings for inf)
-        # We assume standard TOML floats or compatible types.
+        # Convert new-style TOML bins section into BinConfig objects
+        if "bins" in prep_config and isinstance(prep_config["bins"], dict):
+            converted_bins: dict[str, BinConfig] = {}
+            for var_name, bin_data in prep_config["bins"].items():
+                converted_bins[var_name] = BinConfig(**bin_data)
+            prep_config["bins"] = converted_bins
 
         return cls(**prep_config)

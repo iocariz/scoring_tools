@@ -388,12 +388,19 @@ def generate_cutoff_summary(
     for bin_val, col_name in bin_columns:
         cutoff = opt_row[col_name]
 
+        if pd.notna(cutoff) and np.isfinite(cutoff):
+            safe_cutoff = int(cutoff)
+        elif pd.notna(cutoff):
+            safe_cutoff = float(cutoff) # Keep as inf or -inf
+        else:
+            safe_cutoff = None
+            
         row_data = {
             "segment": segment_name,
             "scenario": scenario_name,
             f"{var0_name}_bin": int(bin_val),
             "var0_name": var0_name,
-            "cutoff_value": int(cutoff) if pd.notna(cutoff) else None,
+            "cutoff_value": safe_cutoff,
             "var1_name": var1_name,
             "risk_pct": risk_value,
             "production": production_value,

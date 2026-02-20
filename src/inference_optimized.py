@@ -39,6 +39,7 @@ from src.estimators import HurdleRegressor, TweedieGLM
 
 # Project imports
 from src.models import transform_variables
+from src.optuna_tuning import tune_tree_models, tune_linear_models
 from src.persistence import (
     save_model_with_metadata,
 )
@@ -67,50 +68,55 @@ def _generate_regression_variables(variables: list[str]) -> tuple[list[str], dic
     """
     Generate regression variable names dynamically.
 
+    For 2 variables: uses the legacy hardcoded feature sets for backward compatibility.
+    For N > 2 variables: builds feature sets at degree 1/2/3 from PolynomialFeatures
+    on [variables + complements].
+
     Args:
-        variables: List of base variable names [var0, var1]
+        variables: List of base variable names (len >= 2)
 
     Returns:
         Tuple of (var_reg, feature_sets) where:
-        - var_reg: Base feature set (3 features)
+        - var_reg: Base feature set
         - feature_sets: Dictionary of named feature sets for comparison
     """
-    var0, var1 = variables
-    s = SCORE_SCALE_MAX
+    if len(variables) == 2:
+        return _generate_regression_variables_2d(variables)
+    return _generate_regression_variables_nd(variables)
 
-    # Base features (3 features)
+
+def _generate_regression_variables_2d(variables: list[str]) -> tuple[list[str], dict[str, list[str]]]:
+    """Standard 2-variable feature set generation."""
+    var0, var1 = variables
+
     var_reg = [
         f"{var1}",
-        f"{s}-{var0}",
-        f"({s}-{var0}) x {var1}",
+        f"{var0}",
+        f"{var0}_{var1}",
     ]
 
-    # Squared terms
     squared_terms = [
         f"{var1}^2",
-        f"({s}-{var0})^2",
+        f"{var0}^2",
     ]
 
-    # Cubic terms
     cubic_terms = [
         f"{var1}^3",
-        f"({s}-{var0})^3",
+        f"{var0}^3",
     ]
 
-    # Additional interaction terms (created by transform_variables)
     extra_interactions = [
-        f"({s}-{var0})^2 x {var1}",
-        f"({s}-{var0}) x {var1}^2",
+        f"{var0}^2 x {var1}",
+        f"{var0} x {var1}^2",
     ]
 
-    # Simple two-variable set (no interaction)
     var_simple = [
         f"{var1}",
-        f"{s}-{var0}",
+        f"{var0}",
     ]
 
-    # Define distinct feature sets for comparison
     feature_sets = {
+        "original": list(variables),
         "simple": var_simple,
         "base": var_reg,
         "base + squared": var_reg + squared_terms,
@@ -119,6 +125,32 @@ def _generate_regression_variables(variables: list[str]) -> tuple[list[str], dic
         "base + interactions": var_reg + extra_interactions,
         "full": var_reg + squared_terms + cubic_terms + extra_interactions,
     }
+
+    return var_reg, feature_sets
+
+
+def _generate_regression_variables_nd(variables: list[str]) -> tuple[list[str], dict[str, list[str]]]:
+    """N-variable feature set generation using PolynomialFeatures naming."""
+    from sklearn.preprocessing import PolynomialFeatures
+
+    input_cols = list(variables)
+
+    feature_sets: dict[str, list[str]] = {}
+    var_reg: list[str] = []
+
+    for deg, label in [(1, "degree_1"), (2, "degree_2"), (3, "degree_3")]:
+        poly = PolynomialFeatures(degree=deg, include_bias=False)
+        poly.fit_transform(np.zeros((1, len(input_cols))))
+        names = list(poly.get_feature_names_out(input_cols))
+        # Remove raw variable names (already columns in df)
+        feature_names = [n for n in names if n not in variables]
+        feature_sets[label] = feature_names
+        if deg == 1:
+            var_reg = feature_names
+
+    # Also add a combined set
+    feature_sets["original"] = list(variables)
+    feature_sets["full"] = feature_sets["degree_3"]
 
     return var_reg, feature_sets
 
@@ -316,9 +348,8 @@ def _select_model_type_cv(
     """
     Select the best model type using k-fold cross-validation on base features.
 
-    Evaluates all candidate model types (Linear, Ridge, Lasso, ElasticNet,
-    and optionally Hurdle variants) using CV on var_reg features, and returns
-    the best model type based on mean CV R².
+    Evaluates candidate model types using automated Optuna tuning on var_reg features,
+    and returns the best model type based on mean CV R².
 
     Args:
         data: Processed dataset with features and target.
@@ -332,92 +363,24 @@ def _select_model_type_cv(
         Tuple of (results_df, best_model_info) where best_model_info contains
         the unfitted model object, name, and CV scores.
     """
-    from sklearn.base import clone
-
     X = data[var_reg]
     y = data[target_var]
 
-    # Build candidate models
-    alpha_values = {
-        "Ridge": [0.3, 0.5, 0.8, 1.2],
-        "Lasso": [0.01, 0.05, 0.1],
-        "ElasticNet": [(0.05, 0.5), (0.1, 0.5)],
-    }
-    tweedie_params = {
-        "power": [1.1, 1.5, 1.9],
-        "alpha": [0.1, 0.5, 1.0],
-    }
+    # Run Optuna tuning for all linear and GLM regression models
+    results_df, _ = tune_linear_models(
+        X=X,
+        y=y,
+        weights=weights,
+        cv_folds=cv_folds,
+        n_trials=20,
+        include_hurdle=include_hurdle,
+        random_state=DEFAULT_RANDOM_STATE
+    )
 
-    models = {"Linear Regression": LinearRegression(fit_intercept=False)}
-
-    for alpha in alpha_values["Ridge"]:
-        models[f"Ridge (α={alpha})"] = Ridge(alpha=alpha, fit_intercept=False)
-
-    for alpha in alpha_values["Lasso"]:
-        models[f"Lasso (α={alpha})"] = Lasso(alpha=alpha, fit_intercept=False)
-
-    for alpha, l1_ratio in alpha_values["ElasticNet"]:
-        models[f"ElasticNet (α={alpha}, l1={l1_ratio})"] = ElasticNet(
-            alpha=alpha, l1_ratio=l1_ratio, fit_intercept=False
-        )
-
-    # Add TweedieGLM models
-    for power in tweedie_params["power"]:
-        for alpha in tweedie_params["alpha"]:
-            models[f"Tweedie (p={power}, α={alpha})"] = TweedieGLM(power=power, alpha=alpha, link="log")
-
-    if include_hurdle:
-        for alpha in [0.3, 0.5, 0.8]:
-            models[f"Hurdle-Ridge (α={alpha})"] = HurdleRegressor(
-                classifier=LogisticRegression(max_iter=1000, random_state=DEFAULT_RANDOM_STATE),
-                regressor=Ridge(alpha=alpha, fit_intercept=False),
-            )
-        for alpha in [0.01, 0.05]:
-            models[f"Hurdle-Lasso (α={alpha})"] = HurdleRegressor(
-                classifier=LogisticRegression(max_iter=1000, random_state=DEFAULT_RANDOM_STATE),
-                regressor=Lasso(alpha=alpha, fit_intercept=False),
-            )
-
-    kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=DEFAULT_RANDOM_STATE)
-    results = []
-
-    for name, model_template in models.items():
-        try:
-            cv_scores = []
-            for train_idx, val_idx in kfold.split(X):
-                X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-                y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
-                w_train = weights.iloc[train_idx] if weights is not None else None
-                w_val = weights.iloc[val_idx] if weights is not None else None
-
-                model_clone = clone(model_template)
-                model_clone.fit(X_train, y_train, sample_weight=w_train)
-                y_pred = model_clone.predict(X_val)
-                fold_r2 = r2_score(y_val, y_pred, sample_weight=w_val)
-                cv_scores.append(fold_r2)
-
-            cv_mean = np.mean(cv_scores)
-            cv_std = np.std(cv_scores)
-
-            results.append(
-                {
-                    "Model": name,
-                    "CV Mean R²": cv_mean,
-                    "CV Std R²": cv_std,
-                    "model_template": model_template,
-                }
-            )
-        except (ValueError, np.linalg.LinAlgError, RuntimeError):
-            logger.error(f"Failed to evaluate {name}:")
-            logger.exception("CV evaluation failed")
-            continue
-
-    if not results:
+    if results_df.empty:
         raise RuntimeError(
-            "All models failed during cross-validation. Check your data for NaNs, infinite values, or shape mismatches."
+            "All linear/GLM models failed during cross-validation. Check your data for NaNs, infinites, or shape mismatches."
         )
-
-    results_df = pd.DataFrame(results).sort_values("CV Mean R²", ascending=False)
 
     # Log top results
     display_cols = ["Model", "CV Mean R²", "CV Std R²"]
@@ -569,13 +532,30 @@ def _prepare_pipeline_data(
 def _select_best_model_and_features(
     all_data: pd.DataFrame,
     var_reg: list[str],
+    variables: list[str],
     feature_sets: dict[str, list[str]],
     target_var: str,
     cv_folds: int,
     include_hurdle: bool,
     weights: pd.Series | None,
 ) -> tuple[pd.DataFrame, dict, pd.DataFrame, dict]:
-    """Run model type CV + feature set CV, return best model template + feature info."""
+    """Run model type CV + feature set CV, and Optuna tuning for tree models."""
+    # Step 1: Tune Tree Models on Original Features
+    logger.info("-" * 40)
+    logger.info(f"STEP 2A: TUNE TREE MODELS ON ORIGINAL FEATURES ({cv_folds}-fold CV)")
+    logger.info("-" * 40)
+    tree_results_df, tree_models = tune_tree_models(
+        X=all_data[variables],
+        y=all_data[target_var],
+        weights=weights,
+        cv_folds=cv_folds,
+        n_trials=30
+    )
+
+    # Step 2: Evaluate Linear/GLM models on var_reg
+    logger.info("-" * 40)
+    logger.info(f"STEP 2B: LINEAR/GLM MODEL TYPE SELECTION ({cv_folds}-fold CV)")
+    logger.info("-" * 40)
     results_step1, best_model_type = _select_model_type_cv(
         data=all_data,
         var_reg=var_reg,
@@ -585,23 +565,64 @@ def _select_best_model_and_features(
         weights=weights,
     )
 
-    best_model_name = best_model_type["name"]
-    best_model_template = best_model_type["model_template"]
+    # Combine results to find the global winner
+    combined_results = pd.concat([tree_results_df, results_step1], ignore_index=True)
+    combined_results = combined_results.sort_values("CV Mean R²", ascending=False)
 
-    logger.info("-" * 40)
-    logger.info(f"STEP 3: FEATURE SET SELECTION ({best_model_name}, {cv_folds}-fold CV)")
-    logger.info("-" * 40)
+    logger.info("Combined Model CV results:")
+    display_cols = ["Model", "CV Mean R²", "CV Std R²"]
+    logger.info(f"\n{combined_results[display_cols].head(10).to_string()}")
 
-    results_step2, best_feature_info = _select_feature_set_cv(
-        data=all_data,
-        feature_sets=feature_sets,
-        target_var=target_var,
-        model_template=best_model_template,
-        cv_folds=cv_folds,
-        weights=weights,
-    )
+    best_global_name = combined_results.iloc[0]["Model"]
 
-    return results_step1, best_model_type, results_step2, best_feature_info
+    if "Optuna Tuned" in best_global_name:
+        # A tree model won. We do not need step 3 for feature sets,
+        # tree models inherently use "original" feature set.
+        best_model_template = combined_results.iloc[0]["model_template"]
+        logger.info(f"Tree model '{best_global_name}' won overall! Skipping Step 3.")
+
+        # Override the outputs to fast-path using "original" features
+        best_model_type = {
+            "model_template": best_model_template,
+            "name": best_global_name,
+            "cv_mean_r2": combined_results.iloc[0]["CV Mean R²"],
+            "cv_std_r2": combined_results.iloc[0]["CV Std R²"],
+        }
+
+        # Simulate results of step 2 for tree models
+        results_step2 = pd.DataFrame([{
+            "Feature Set": "original",
+            "Num Features": len(variables),
+            "Features": variables,
+            "CV Mean R²": combined_results.iloc[0]["CV Mean R²"],
+            "CV Std R²": combined_results.iloc[0]["CV Std R²"],
+        }])
+
+        best_feature_info = {
+            "feature_set_name": "original",
+            "features": variables,
+            "cv_mean_r2": combined_results.iloc[0]["CV Mean R²"],
+            "cv_std_r2": combined_results.iloc[0]["CV Std R²"],
+        }
+    else:
+        # A linear/GLM model won. Proceed with Step 3.
+        best_model_name = best_model_type["name"]
+        best_model_template = best_model_type["model_template"]
+
+        logger.info("-" * 40)
+        logger.info(f"STEP 3: FEATURE SET SELECTION ({best_model_name}, {cv_folds}-fold CV)")
+        logger.info("-" * 40)
+
+        results_step2, best_feature_info = _select_feature_set_cv(
+            data=all_data,
+            feature_sets=feature_sets,
+            target_var=target_var,
+            model_template=best_model_template,
+            cv_folds=cv_folds,
+            weights=weights,
+        )
+
+    return combined_results.drop(columns=["model_template"], errors="ignore"), best_model_type, results_step2, best_feature_info
 
 
 def _train_and_evaluate_final_model(
@@ -814,7 +835,7 @@ def inference_pipeline(
     logger.info("-" * 40)
 
     results_step1, best_model_type, results_step2, best_feature_info = _select_best_model_and_features(
-        all_data, var_reg, feature_sets, target_var, cv_folds, include_hurdle, weights_all
+        all_data, var_reg, variables, feature_sets, target_var, cv_folds, include_hurdle, weights_all
     )
 
     best_model_name = best_model_type["name"]
@@ -1192,28 +1213,31 @@ def run_optimization_pipeline(
             data_sumary_desagregado[indicador + "_boo"] + data_sumary_desagregado[indicador + "_rep"]
         )
 
-    # Visualization
-    logger.info("Generating optimization visualization...")
-    fig = go.Figure()
-    data_surf = data_sumary_desagregado.copy()
-    data_surf["b2_ever_h6"] = calculate_b2_ever_h6(data_surf["todu_30ever_h6"], data_surf["todu_amt_pile_h6"])
-    data_surf_pivot = data_surf.pivot(index=VARIABLES[1], columns=VARIABLES[0], values="b2_ever_h6")
+    # Visualization (only for 2-variable case)
+    if len(VARIABLES) == 2:
+        logger.info("Generating optimization visualization...")
+        fig = go.Figure()
+        data_surf = data_sumary_desagregado.copy()
+        data_surf["b2_ever_h6"] = calculate_b2_ever_h6(data_surf["todu_30ever_h6"], data_surf["todu_amt_pile_h6"], as_percentage=True)
+        data_surf_pivot = data_surf.pivot(index=VARIABLES[1], columns=VARIABLES[0], values="b2_ever_h6")
 
-    fig = fig.add_trace(
-        go.Surface(x=data_surf_pivot.columns, y=data_surf_pivot.index, z=data_surf_pivot.values, colorscale="turbo")
-    )
-
-    styles.apply_plotly_style(fig, title="B2 Ever H6 vs. Octroi and Risk Score", width=1500, height=700)
-
-    fig.update_layout(
-        scene=dict(
-            xaxis=dict(title=VARIABLES[0]),
-            yaxis=dict(title=VARIABLES[1]),
-            zaxis=dict(title=var_target),
-            aspectratio=dict(x=1, y=1, z=1),
+        fig = fig.add_trace(
+            go.Surface(x=data_surf_pivot.columns, y=data_surf_pivot.index, z=data_surf_pivot.values, colorscale="turbo")
         )
-    )
-    fig.write_html(b2_output_path)
-    logger.info(f"Optimization visualization saved to {b2_output_path}")
+
+        styles.apply_plotly_style(fig, title="B2 Ever H6 vs. Octroi and Risk Score", width=1500, height=700)
+
+        fig.update_layout(
+            scene=dict(
+                xaxis=dict(title=VARIABLES[0]),
+                yaxis=dict(title=VARIABLES[1]),
+                zaxis=dict(title=var_target),
+                aspectratio=dict(x=1, y=1, z=1),
+            )
+        )
+        fig.write_html(b2_output_path)
+        logger.info(f"Optimization visualization saved to {b2_output_path}")
+    else:
+        logger.info(f"Skipping 3D surface visualization for {len(VARIABLES)}-variable case")
 
     return data_sumary_desagregado

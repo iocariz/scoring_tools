@@ -316,7 +316,7 @@ def plot_monitoring_dashboard(period_result: dict, output_dir: Path) -> Path:
     for score_name, score_arr in scores_dict.items():
         color = SCORE_COLORS.get(score_name, "#95A5A6")
         plot_roc_curve(ax_roc, y_true, score_arr, name=score_name, color=color)
-    
+
     ax_roc.plot([0, 1], [0, 1], "k--", lw=1.5, label="Random")
     ax_roc.set_xlabel("False Positive Rate", fontsize=12)
     ax_roc.set_ylabel("True Positive Rate", fontsize=12)

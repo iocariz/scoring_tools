@@ -50,10 +50,6 @@ def compute_monthly_metrics(
     df["year_month"] = df[date_column].dt.to_period("M")
     df["_is_booked"] = df[Columns.STATUS_NAME] == StatusName.BOOKED.value
 
-    # Build aggregation dict
-    agg_dict = {
-        "_is_booked": ["sum", "count"],
-    }
     # Production metrics (booked-only will be handled post-agg)
     has_oa_amt = Columns.OA_AMT in df.columns
     has_risk = Columns.TODU_30EVER_H6 in df.columns and Columns.TODU_AMT_PILE_H6 in df.columns
@@ -80,7 +76,7 @@ def compute_monthly_metrics(
     if has_risk and grouped_booked is not None:
         risk_agg = grouped_booked[[Columns.TODU_30EVER_H6, Columns.TODU_AMT_PILE_H6]].sum()
         result["risk_rate"] = calculate_b2_ever_h6(
-            risk_agg[Columns.TODU_30EVER_H6], risk_agg[Columns.TODU_AMT_PILE_H6]
+            risk_agg[Columns.TODU_30EVER_H6], risk_agg[Columns.TODU_AMT_PILE_H6], as_percentage=True
         )
 
     # Score metrics from booked records

@@ -15,14 +15,13 @@ Key functions:
 import traceback
 from typing import TYPE_CHECKING, Any
 
-from src.config import OutputPaths
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from loguru import logger
 
 from src import styles
+from src.config import OutputPaths
 from src.constants import PSI_UNSTABLE_THRESHOLD, StatusName
 from src.inference_optimized import run_optimization_pipeline
 from src.models import calculate_B2
@@ -35,7 +34,10 @@ if TYPE_CHECKING:
 
 
 def calculate_metrics_from_cuts(
-    data_summary_desagregado: pd.DataFrame, optimal_solution_df: pd.DataFrame | None, variables: list[str]
+    data_summary_desagregado: pd.DataFrame, 
+    optimal_solution_df: pd.DataFrame | None, 
+    variables: list[str],
+    inv_vars: list[str] | None = None
 ) -> pd.DataFrame | None:
     """
     Generates the Risk Production Summary Table by applying optimal cuts to aggregated data.
@@ -62,8 +64,8 @@ def calculate_metrics_from_cuts(
             elif str(bin_val) in optimal_solution_df.columns:
                 cut_map[bin_val] = opt_sol_row[str(bin_val)]
             else:
-                logger.warning(f"Warning: Bin {bin_val} not found in optimal solution columns. Using default/max.")
-                cut_map[bin_val] = np.inf
+                logger.warning(f"Warning: Bin {bin_val} not found in optimal solution columns. Defaulting to strict rejection.")
+                cut_map[bin_val] = np.inf if (inv_vars and var1_col in inv_vars) else -np.inf
 
         logger.info(f"Optimal Cuts: {cut_map}")
 
@@ -72,7 +74,13 @@ def calculate_metrics_from_cuts(
 
         # Vectorized mapping of cuts
         df["cut_limit"] = df[var0_col].map(cut_map)
-        df["passes_cut"] = df[var1_col] <= df["cut_limit"]
+
+        if inv_vars and var1_col in inv_vars:
+            # If var1 is inverted (higher bin = safer), cut_map contains the MINIMUM accepted bin
+            df["passes_cut"] = df[var1_col] >= df["cut_limit"]
+        else:
+            # Default (higher bin = riskier), cut_map contains the MAXIMUM accepted bin
+            df["passes_cut"] = df[var1_col] <= df["cut_limit"]
 
         summary_data = []
 
@@ -81,7 +89,7 @@ def calculate_metrics_from_cuts(
             prod = subset[f"oa_amt_h0{suffix}"].sum()
             risk_num = subset[f"todu_30ever_h6{suffix}"].sum()
             risk_den = subset[f"todu_amt_pile_h6{suffix}"].sum()
-            b2_ever = float(np.nan_to_num(calculate_b2_ever_h6(risk_num, risk_den)))
+            b2_ever = float(np.nan_to_num(calculate_b2_ever_h6(risk_num, risk_den, as_percentage=True)))
             return prod, b2_ever, risk_num, risk_den
 
         # Actual (All Booked)
@@ -129,7 +137,7 @@ def calculate_metrics_from_cuts(
         opt_prod = (actual_prod - so_prod) + si_prod
         opt_rn = (actual_rn - so_rn) + si_rn
         opt_rd = (actual_rd - so_rd) + si_rd
-        opt_risk = float(np.nan_to_num(calculate_b2_ever_h6(opt_rn, opt_rd)))
+        opt_risk = float(np.nan_to_num(calculate_b2_ever_h6(opt_rn, opt_rd, as_percentage=True)))
 
         summary_data.append(
             {
@@ -347,7 +355,7 @@ def process_mr_period(
         data_surf_mr = data_summary_desagregado_mr.copy()
 
         data_surf_mr["b2_ever_h6"] = calculate_b2_ever_h6(
-            data_surf_mr["todu_30ever_h6"], data_surf_mr["todu_amt_pile_h6"]
+            data_surf_mr["todu_30ever_h6"], data_surf_mr["todu_amt_pile_h6"], as_percentage=True
         )
 
         data_surf_pivot_mr = data_surf_mr.pivot(index=VARIABLES[1], columns=VARIABLES[0], values="b2_ever_h6")
@@ -390,7 +398,7 @@ def process_mr_period(
         # --- Generate Risk Production Summary Table for MR ---
         logger.info("Generating Risk Production Summary Table for MR period...")
 
-        mr_summary_table = calculate_metrics_from_cuts(data_summary_desagregado_mr, optimal_solution_df, VARIABLES)
+        mr_summary_table = calculate_metrics_from_cuts(data_summary_desagregado_mr, optimal_solution_df, VARIABLES, settings.inv_vars)
 
         if mr_summary_table is not None:
             mr_summary_path = output.mr_risk_production_summary_csv(file_suffix)

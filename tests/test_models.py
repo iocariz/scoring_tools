@@ -72,9 +72,8 @@ class TestTransformVariables:
         assert "var1^2" in result.columns
         assert "var0^3" in result.columns
         assert "var1^3" in result.columns
-        assert "9-var0" in result.columns
-        assert "9-var1" in result.columns
-        assert "(9-var0) x var1" in result.columns
+        assert "var0^2 x var1" in result.columns
+        assert "var0 x var1^2" in result.columns
 
     def test_interaction_term(self):
         df = pd.DataFrame({"a": [2, 3], "b": [4, 5]})
@@ -87,12 +86,6 @@ class TestTransformVariables:
         result = transform_variables(df, ["a", "b"])
         assert result["a^2"].iloc[0] == 9
         assert result["a^2"].iloc[1] == 16
-
-    def test_complement_term(self):
-        df = pd.DataFrame({"a": [2, 5], "b": [3, 7]})
-        result = transform_variables(df, ["a", "b"])
-        assert result["9-a"].iloc[0] == 7
-        assert result["9-a"].iloc[1] == 4
 
     def test_preserves_original_columns(self):
         df = pd.DataFrame({"x": [1], "y": [2]})
@@ -226,39 +219,18 @@ class TestCalculateRiskValues:
 
 
 class TestTransformVariablesEdgeCases:
-    def test_zero_values_complement(self):
-        """When var0 values are all 0, the complement column should equal SCORE_SCALE_MAX."""
-        df = pd.DataFrame({"var0": [0, 0, 0], "var1": [0, 0, 0]})
-        result = transform_variables(df, ["var0", "var1"])
-        expected_col = f"{SCORE_SCALE_MAX}-var0"
-        assert (result[expected_col] == SCORE_SCALE_MAX).all()
-
-    def test_max_values_complement(self):
-        """When var0 values are all SCORE_SCALE_MAX, the complement should be 0."""
-        df = pd.DataFrame({"var0": [SCORE_SCALE_MAX] * 3, "var1": [SCORE_SCALE_MAX] * 3})
-        result = transform_variables(df, ["var0", "var1"])
-        expected_col = f"{SCORE_SCALE_MAX}-var0"
-        assert (result[expected_col] == 0).all()
-
     def test_all_columns_created(self):
         """Verify all expected columns are created by transform_variables."""
         df = pd.DataFrame({"var0": [1, 2], "var1": [3, 4]})
         result = transform_variables(df, ["var0", "var1"])
-        s = SCORE_SCALE_MAX
         expected_new_columns = [
             "var0_var1",
             "var0^2",
             "var1^2",
             "var0^3",
             "var1^3",
-            f"{s}-var0",
-            f"{s}-var1",
-            f"({s}-var0) x var1",
-            f"({s}-var0)^2 x var1",
-            f"({s}-var0) x var1^2",
-            f"({s}-var0)^2",
-            f"({s}-var1)^2",
-            f"({s}-var0)^3",
+            "var0^2 x var1",
+            "var0 x var1^2",
         ]
         for col in expected_new_columns:
             assert col in result.columns, f"Missing expected column: {col}"

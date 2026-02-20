@@ -1,21 +1,592 @@
 """
 Optimization utilities for credit risk scoring.
 
-This module contains functions for generating feasible solutions,
-calculating KPIs, and finding Pareto-optimal cutoffs.
+This module provides:
+- MILP-based N-variable Pareto frontier optimization (via scipy.optimize.milp)
+- Optional pymoo GA fallback for very large grids
+- Fixed cutoff creation and validation
+- CellGrid helper for N-dimensional bin grids
 """
 
-import gc
-from itertools import combinations_with_replacement
+from dataclasses import dataclass, field
+from itertools import combinations_with_replacement, product
 
 import numpy as np
 import pandas as pd
-from joblib import Parallel, delayed
 from loguru import logger
-from tqdm import tqdm
+from scipy import sparse
+from scipy.optimize import LinearConstraint, milp
 
 from .constants import DEFAULT_RISK_MULTIPLIER
-from .utils import MAX_PARALLEL_JOBS, calculate_b2_ever_h6, optimize_dtypes
+from .utils import calculate_b2_ever_h6
+
+# =============================================================================
+# CellGrid — builds the N-dimensional grid from data_summary_desagregado
+# =============================================================================
+
+
+@dataclass
+class CellGrid:
+    """N-dimensional bin grid with per-cell KPI data.
+
+    Attributes:
+        variables: Ordered variable names.
+        values_per_var: Dict mapping var name → sorted unique bin values.
+        cell_index: Dict mapping cell coordinate tuple → flat index.
+        cell_data: DataFrame with one row per cell, ordered by flat index.
+        shape: Tuple of bin counts per variable.
+    """
+
+    variables: list[str]
+    values_per_var: dict[str, list]
+    cell_index: dict[tuple, int] = field(default_factory=dict, repr=False)
+    cell_data: pd.DataFrame = field(default_factory=pd.DataFrame, repr=False)
+    shape: tuple[int, ...] = ()
+
+    @classmethod
+    def from_summary(cls, data_summary_desagregado: pd.DataFrame, variables: list[str]) -> "CellGrid":
+        """Build grid from aggregated summary data."""
+        values_per_var = {var: sorted(data_summary_desagregado[var].unique()) for var in variables}
+        shape = tuple(len(values_per_var[v]) for v in variables)
+
+        # Build cell_index: tuple of bin values → flat int
+        all_combos = list(product(*(values_per_var[v] for v in variables)))
+        cell_index = {combo: idx for idx, combo in enumerate(all_combos)}
+
+        # Build cell_data aligned to flat index
+        # Left-join all combos with actual data to handle missing cells (fill 0)
+        grid_df = pd.DataFrame(all_combos, columns=variables)
+        cell_data = grid_df.merge(data_summary_desagregado, on=variables, how="left").fillna(0)
+
+        return cls(
+            variables=variables,
+            values_per_var=values_per_var,
+            cell_index=cell_index,
+            cell_data=cell_data,
+            shape=shape,
+        )
+
+    @property
+    def n_cells(self) -> int:
+        return len(self.cell_index)
+
+
+# =============================================================================
+# Monotonicity constraints
+# =============================================================================
+
+
+def _build_monotonicity_constraints(grid: CellGrid, inv_vars: list[str]) -> sparse.csc_matrix:
+    """Build sparse A matrix for monotonicity: A @ x <= 0.
+
+    For each dimension d and each pair of adjacent cells along d:
+      x[riskier_cell] - x[safer_cell] <= 0
+
+    This ensures riskier cells are rejected before safer ones: if a safer
+    cell is rejected (x=0), all riskier cells must also be rejected.
+
+    Direction convention:
+      - Default (variable NOT in inv_vars): higher bin index = riskier.
+      - Inverted (variable IN inv_vars): higher bin index = safer.
+
+    For the legacy 2-variable setup:
+      - var0 (internal score, BinConfig.invert=False): higher bin = safer → IN inv_vars
+      - var1 (external score, BinConfig.invert=True): higher bin = riskier → NOT in inv_vars
+
+    Returns:
+        Sparse CSC matrix of shape (n_constraints, n_cells).
+    """
+    rows, cols, vals = [], [], []
+    constraint_idx = 0
+
+    for d, var in enumerate(grid.variables):
+        n_vals = len(grid.values_per_var[var])
+        inverted = var in inv_vars
+
+        # Iterate over all cells, build constraint with neighbor along dim d
+        for combo, flat_idx in grid.cell_index.items():
+            pos_in_dim = grid.values_per_var[var].index(combo[d])
+            if pos_in_dim + 1 >= n_vals:
+                continue  # no neighbor
+
+            # Build neighbor combo
+            neighbor_list = list(combo)
+            neighbor_list[d] = grid.values_per_var[var][pos_in_dim + 1]
+            neighbor = tuple(neighbor_list)
+            neighbor_idx = grid.cell_index.get(neighbor)
+            if neighbor_idx is None:
+                continue
+
+            # Convention: higher index along dimension = riskier (unless inverted)
+            # Constraint: x[riskier] <= x[safer]
+            # i.e. x[riskier] - x[safer] <= 0
+            if inverted:
+                # Higher bin = safer → riskier is lower bin (flat_idx)
+                riskier_idx = flat_idx
+                safer_idx = neighbor_idx
+            else:
+                # Higher bin = riskier → riskier is neighbor
+                riskier_idx = neighbor_idx
+                safer_idx = flat_idx
+
+            rows.extend([constraint_idx, constraint_idx])
+            cols.extend([riskier_idx, safer_idx])
+            vals.extend([1.0, -1.0])
+            constraint_idx += 1
+
+    if constraint_idx == 0:
+        return sparse.csc_matrix((0, grid.n_cells))
+
+    return sparse.csc_matrix(
+        (vals, (rows, cols)),
+        shape=(constraint_idx, grid.n_cells),
+    )
+
+
+# =============================================================================
+# MILP solver
+# =============================================================================
+
+
+def milp_solve_cutoffs(
+    grid: CellGrid,
+    target_risk: float,
+    inv_vars: list[str],
+    multiplier: float,
+) -> np.ndarray | None:
+    """Solve single MILP: maximize production subject to risk budget + monotonicity.
+
+    Args:
+        grid: CellGrid with cell_data containing per-cell KPI columns.
+        target_risk: Max allowed risk (percentage, e.g. 1.5 means 1.5%).
+        inv_vars: Variables with inverted risk ordering.
+        multiplier: Risk multiplier (typically 7).
+
+    Returns:
+        Binary mask array (1=accept, 0=reject) for each cell, or None if infeasible.
+    """
+    n = grid.n_cells
+    cell = grid.cell_data
+
+    # Objective: maximize production = minimize -production
+    production = cell["oa_amt_h0"].values.astype(float)
+    c = -production
+
+    # Risk budget constraint (linearized ratio):
+    #   multiplier * sum(todu_30ever_h6[i] * x[i]) / sum(todu_amt_pile_h6[i] * x[i]) <= target_risk/100
+    # Linearized:
+    #   sum((multiplier * todu_30ever_h6[i] - target_risk/100 * todu_amt_pile_h6[i]) * x[i]) <= 0
+    todu_30 = cell["todu_30ever_h6"].values.astype(float)
+    todu_amt = cell["todu_amt_pile_h6"].values.astype(float)
+    risk_coeffs = multiplier * todu_30 - (target_risk / 100.0) * todu_amt
+
+    # Monotonicity constraints: A_mono @ x <= 0
+    A_mono = _build_monotonicity_constraints(grid, inv_vars)
+
+    # Stack risk constraint row on top of monotonicity
+    risk_row = sparse.csc_matrix(risk_coeffs.reshape(1, -1))
+    if A_mono.shape[0] > 0:
+        A = sparse.vstack([risk_row, A_mono], format="csc")
+    else:
+        A = risk_row
+
+    n_constraints = A.shape[0]
+    b_u = np.zeros(n_constraints)
+    b_l = np.full(n_constraints, -np.inf)
+
+    constraints = LinearConstraint(A, b_l, b_u)
+    integrality = np.ones(n)  # all binary
+
+    from scipy.optimize import Bounds
+
+    bounds = Bounds(lb=np.zeros(n), ub=np.ones(n))
+
+    result = milp(
+        c=c,
+        constraints=constraints,
+        integrality=integrality,
+        bounds=bounds,
+        options={"time_limit": 30},
+    )
+
+    if not result.success:
+        return None
+
+    return np.round(result.x).astype(int)
+
+
+# =============================================================================
+# KPI evaluation
+# =============================================================================
+
+
+def evaluate_solution(
+    mask: np.ndarray,
+    grid: CellGrid,
+    indicators: list[str],
+    multiplier: float,
+) -> dict:
+    """Compute KPIs for a single acceptance mask.
+
+    For accepted cells: sums base, _boo, and _rep columns.
+    Computes _cut = total_boo - accepted_boo for each indicator.
+    Computes b2_ever_h6 for each suffix group.
+    """
+    cell = grid.cell_data
+    accepted = mask.astype(bool)
+
+    result: dict = {}
+
+    # Sum base, _boo, _rep columns for accepted cells
+    for suffix in ["", "_boo", "_rep"]:
+        for ind in indicators:
+            col = f"{ind}{suffix}" if suffix else ind
+            if col in cell.columns:
+                result[col] = float(cell.loc[accepted, col].sum())
+
+    # Compute _cut = total_boo - accepted_boo for each indicator
+    for ind in indicators:
+        boo_col = f"{ind}_boo"
+        if boo_col in cell.columns:
+            total_boo = float(cell[boo_col].sum())
+            accepted_boo = result.get(boo_col, 0.0)
+            result[f"{ind}_cut"] = max(total_boo - accepted_boo, 0.0)
+
+    # Compute b2_ever_h6 for each suffix
+    for suffix in ["", "_boo", "_rep", "_cut"]:
+        t30 = f"todu_30ever_h6{suffix}"
+        tamt = f"todu_amt_pile_h6{suffix}"
+        if t30 in result and tamt in result:
+            result[f"b2_ever_h6{suffix}"] = float(
+                calculate_b2_ever_h6(result[t30], result[tamt], multiplier=multiplier, as_percentage=True)
+            )
+
+    return result
+
+
+# =============================================================================
+# Pareto frontier
+# =============================================================================
+
+
+def trace_pareto_frontier(
+    data_summary_desagregado: pd.DataFrame,
+    variables: list[str],
+    inv_vars: list[str],
+    multiplier: float,
+    indicators: list[str],
+    n_points: int = 50,
+) -> tuple[pd.DataFrame, CellGrid, list[np.ndarray]]:
+    """Sweep risk targets, solve MILP at each, filter to Pareto-optimal set.
+
+    Args:
+        data_summary_desagregado: Aggregated data by variable combinations.
+        variables: List of variable names.
+        inv_vars: Variables with inverted risk ordering.
+        multiplier: Risk multiplier.
+        indicators: Indicator column names.
+        n_points: Number of risk targets to sweep.
+
+    Returns:
+        Tuple of (pareto_df, grid, masks) where pareto_df has KPI columns for each
+        Pareto-optimal solution, grid is the CellGrid used, and masks is a list
+        of binary acceptance masks (one per Pareto solution).
+    """
+    grid = CellGrid.from_summary(data_summary_desagregado, variables)
+
+    # Determine risk sweep range
+    # Max risk = all cells accepted
+    all_t30 = grid.cell_data["todu_30ever_h6"].sum()
+    all_tamt = grid.cell_data["todu_amt_pile_h6"].sum()
+    max_risk = float(calculate_b2_ever_h6(all_t30, all_tamt, multiplier=multiplier, as_percentage=True))
+    if np.isnan(max_risk) or max_risk <= 0:
+        max_risk = 20.0  # fallback
+
+    risk_targets = np.linspace(0.01, max_risk * 1.1, n_points)
+
+    solutions = []
+    all_masks: list[np.ndarray] = []
+    seen_masks: set[tuple] = set()
+
+    logger.info(f"MILP Pareto sweep: {n_points} risk targets in [0.01, {max_risk * 1.1:.2f}%]")
+
+    for target in risk_targets:
+        mask = milp_solve_cutoffs(grid, target, inv_vars, multiplier)
+        if mask is None:
+            continue
+
+        mask_key = tuple(mask.tolist())
+        if mask_key in seen_masks:
+            continue
+        seen_masks.add(mask_key)
+
+        kpis = evaluate_solution(mask, grid, indicators, multiplier)
+        solutions.append(kpis)
+        all_masks.append(mask)
+
+    if not solutions:
+        logger.warning("No feasible MILP solutions found. Attempting GA fallback...")
+        return _ga_pareto_fallback(grid, inv_vars, multiplier, indicators, n_points)
+
+    df = pd.DataFrame(solutions)
+
+    # Sort by risk, keep track of original indices for mask alignment
+    sort_idx = df["b2_ever_h6"].argsort().values
+    df = df.iloc[sort_idx].reset_index(drop=True)
+    all_masks = [all_masks[i] for i in sort_idx]
+
+    # Pareto filter: for ascending risk, production must be non-decreasing
+    cummax = df["oa_amt_h0"].cummax()
+    pareto_mask = df["oa_amt_h0"] >= cummax
+    pareto_indices = pareto_mask[pareto_mask].index.tolist()
+
+    df = df[pareto_mask].reset_index(drop=True)
+    pareto_masks = [all_masks[i] for i in pareto_indices]
+
+    logger.info(f"Pareto frontier: {len(df)} solutions (from {len(solutions)} unique MILP solves)")
+
+    return df, grid, pareto_masks
+
+
+# =============================================================================
+# Mask → cutoff conversion (for backward-compat visualization / bootstrap)
+# =============================================================================
+
+
+def mask_to_cutoffs(
+    mask: np.ndarray,
+    grid: CellGrid,
+    inv_vars: list[str],
+) -> dict[str, dict]:
+    """Convert binary mask to per-variable cutoff values.
+
+    For 2-variable case, returns the classic var0-bin → var1-cutoff mapping.
+    For N-variable case, returns per-dimension cutoff dicts.
+
+    Returns:
+        Dict mapping each variable name to a dict of bin_value → cutoff_limit.
+    """
+    if len(grid.variables) != 2:
+        # N>2: for each dimension, find the max accepted bin for each
+        # combination of the other dimensions. This is a simplification.
+        logger.info("mask_to_cutoffs: N>2 variable case, returning per-dimension projections")
+
+    result = {}
+    # For 2-var case, build classic cut_map: var0_bin -> max var1 accepted
+    if len(grid.variables) == 2:
+        var0, var1 = grid.variables
+        v0_vals = grid.values_per_var[var0]
+        v1_vals = grid.values_per_var[var1]
+
+        cut_map = {}
+        for v0 in v0_vals:
+            # Find max var1 value that is accepted for this var0
+            max_v1 = None
+            for v1 in v1_vals:
+                combo = (v0, v1)
+                idx = grid.cell_index.get(combo)
+                if idx is not None and mask[idx] == 1:
+                    if var1 in inv_vars:
+                        # For inverted: find min accepted
+                        if max_v1 is None or v1 < max_v1:
+                            max_v1 = v1
+                    else:
+                        if max_v1 is None or v1 > max_v1:
+                            max_v1 = v1
+                            
+            if max_v1 is None:
+                max_v1 = np.inf if var1 in inv_vars else -np.inf
+                
+            cut_map[float(v0)] = float(max_v1)
+
+        result[var0] = cut_map
+    else:
+        # For each variable, project the mask
+        for d, var in enumerate(grid.variables):
+            cut_map = {}
+            for val in grid.values_per_var[var]:
+                # Check if any cell with this value is accepted
+                accepted = False
+                for combo, idx in grid.cell_index.items():
+                    if combo[d] == val and mask[idx] == 1:
+                        accepted = True
+                        break
+                cut_map[float(val)] = 1.0 if accepted else 0.0
+            result[var] = cut_map
+
+    return result
+
+
+def mask_to_solution_df(
+    mask: np.ndarray,
+    grid: CellGrid,
+    inv_vars: list[str],
+    kpis: dict,
+    sol_fac: int = 0,
+) -> pd.DataFrame:
+    """Convert a mask + KPIs into a solution DataFrame compatible with legacy format.
+
+    For 2-var case: columns are [sol_fac, bin1, bin2, ..., KPI columns].
+    """
+    cutoffs = mask_to_cutoffs(mask, grid, inv_vars)
+
+    if len(grid.variables) == 2:
+        var0 = grid.variables[0]
+        row_data = {"sol_fac": sol_fac}
+        for bin_val, cutoff_val in cutoffs[var0].items():
+            row_data[bin_val] = cutoff_val
+        # Add KPI columns
+        for k, v in kpis.items():
+            if k not in ("_mask", "_mask_arr") and not isinstance(v, np.ndarray):
+                row_data[k] = v
+        return pd.DataFrame([row_data])
+    else:
+        # N-var: store acceptance mask info
+        row_data = {"sol_fac": sol_fac}
+        for k, v in kpis.items():
+            if k not in ("_mask", "_mask_arr") and not isinstance(v, np.ndarray):
+                row_data[k] = v
+        return pd.DataFrame([row_data])
+
+
+def add_bin_columns(
+    pareto_df: pd.DataFrame,
+    masks: list[np.ndarray],
+    grid: CellGrid,
+    inv_vars: list[str],
+) -> pd.DataFrame:
+    """Add per-var0-bin cutoff columns to Pareto DataFrame for 2-var backward compat.
+
+    For 2-var case: adds a column per var0 bin value, where the value is the max
+    accepted var1 bin for that var0 bin. Also adds sol_fac column.
+
+    For N>2: adds sol_fac column only (bin columns not applicable).
+
+    Args:
+        pareto_df: DataFrame with KPI columns from trace_pareto_frontier.
+        masks: List of binary acceptance masks, one per row.
+        grid: CellGrid used during optimization.
+        inv_vars: Variables with inverted risk ordering.
+
+    Returns:
+        DataFrame with bin columns and sol_fac added.
+    """
+    df = pareto_df.copy()
+
+    if len(grid.variables) == 2:
+        var0 = grid.variables[0]
+        v0_vals = grid.values_per_var[var0]
+
+        # Initialize bin columns
+        for v0 in v0_vals:
+            df[float(v0)] = 0.0
+
+        for i, mask in enumerate(masks):
+            cutoffs = mask_to_cutoffs(mask, grid, inv_vars)
+            if var0 in cutoffs:
+                for bin_val, cutoff_val in cutoffs[var0].items():
+                    df.at[i, bin_val] = cutoff_val
+
+    # Add sol_fac column at the beginning
+    df.insert(0, "sol_fac", range(len(df)))
+
+    return df
+
+
+# =============================================================================
+# GA fallback (pymoo)
+# =============================================================================
+
+
+def _ga_pareto_fallback(
+    grid: CellGrid,
+    inv_vars: list[str],
+    multiplier: float,
+    indicators: list[str],
+    n_points: int,
+) -> tuple[pd.DataFrame, CellGrid, list[np.ndarray]]:
+    """Fallback GA solver using pymoo. Returns empty DataFrame if pymoo not available."""
+    try:
+        from pymoo.algorithms.soo.nonconvex.ga import GA
+        from pymoo.core.problem import Problem
+        from pymoo.optimize import minimize
+        from pymoo.termination import get_termination
+    except ImportError:
+        logger.warning("pymoo not installed. Cannot use GA fallback. Returning empty Pareto set.")
+        return pd.DataFrame(), grid, []
+
+    logger.info("Running GA fallback for Pareto frontier...")
+
+    cell = grid.cell_data
+    todu_30 = cell["todu_30ever_h6"].values.astype(float)
+    todu_amt = cell["todu_amt_pile_h6"].values.astype(float)
+    production = cell["oa_amt_h0"].values.astype(float)
+    A_mono = _build_monotonicity_constraints(grid, inv_vars)
+
+    all_t30 = todu_30.sum()
+    all_tamt = todu_amt.sum()
+    max_risk = float(calculate_b2_ever_h6(all_t30, all_tamt, multiplier=multiplier, as_percentage=True))
+    if np.isnan(max_risk) or max_risk <= 0:
+        max_risk = 20.0
+
+    solutions = []
+    all_masks: list[np.ndarray] = []
+    seen_masks: set[tuple] = set()
+
+    for target in np.linspace(0.01, max_risk * 1.1, n_points):
+        risk_coeffs = multiplier * todu_30 - (target / 100.0) * todu_amt
+
+        class CutoffProblem(Problem):
+            def __init__(self, _risk_coeffs=risk_coeffs):
+                super().__init__(n_var=grid.n_cells, n_obj=1, n_ieq_constr=1 + A_mono.shape[0], xl=0, xu=1)
+                self._risk_coeffs = _risk_coeffs
+
+            def _evaluate(self, X, out, *args, **kwargs):
+                X_round = np.round(X)
+                out["F"] = -(X_round @ production)
+                risk_g = X_round @ self._risk_coeffs
+                mono_g = (A_mono @ X_round.T).T
+                out["G"] = np.column_stack([risk_g.reshape(-1, 1), mono_g])
+
+        problem = CutoffProblem()
+        algorithm = GA(pop_size=100)
+        termination = get_termination("n_gen", 50)
+
+        res = minimize(problem, algorithm, termination, seed=42, verbose=False)
+
+        if res.X is not None:
+            mask = np.round(res.X).astype(int)
+            mask_key = tuple(mask.tolist())
+            if mask_key not in seen_masks:
+                seen_masks.add(mask_key)
+                kpis = evaluate_solution(mask, grid, indicators, multiplier)
+                solutions.append(kpis)
+                all_masks.append(mask)
+
+    if not solutions:
+        logger.warning("GA fallback also found no solutions.")
+        return pd.DataFrame(), grid, []
+
+    df = pd.DataFrame(solutions)
+
+    sort_idx = df["b2_ever_h6"].argsort().values
+    df = df.iloc[sort_idx].reset_index(drop=True)
+    all_masks = [all_masks[i] for i in sort_idx]
+
+    cummax = df["oa_amt_h0"].cummax()
+    pareto_mask = df["oa_amt_h0"] >= cummax
+    pareto_indices = pareto_mask[pareto_mask].index.tolist()
+
+    df = df[pareto_mask].reset_index(drop=True)
+    pareto_masks = [all_masks[i] for i in pareto_indices]
+
+    logger.info(f"GA Pareto frontier: {len(df)} solutions")
+    return df, grid, pareto_masks
+
+
+# =============================================================================
+# Fixed cutoff creation (kept from legacy, generalized)
+# =============================================================================
 
 
 def _build_cutoff_dataframe(
@@ -149,29 +720,14 @@ def create_fixed_cutoff_solution(
 
     Args:
         fixed_cutoffs: Dictionary mapping variable names to cutoff lists.
-            For a 2-variable system with var0 bins [1,2,3,4]:
-            {
-                "sc_octroi_new_clus": [1, 2, 3, 4],  # var0 bin values
-                "new_efx_clus": [2, 2, 3, 4]         # var1 cutoff for each var0 bin
-            }
-            The var1 list specifies the maximum var1 value to accept for each var0 bin.
         variables: List of two variable names [var0, var1].
         values_var0: Array/list of bin values for the first variable.
         values_var1: Optional array/list of bin values for the second variable.
-            If provided, validates that cutoffs are within data range.
-        strict_validation: If True, raise errors instead of warnings for
-            bin mismatches and validation issues. Default False.
-        inv_var1: If True, the var1 cutoffs represent minimum values to accept
-            (inverted logic). Affects monotonicity validation direction.
+        strict_validation: If True, raise errors instead of warnings.
+        inv_var1: If True, the var1 cutoffs use inverted logic.
 
     Returns:
-        DataFrame with single row containing:
-        - sol_fac: Solution identifier (0 for fixed cutoffs)
-        - Columns for each var0 bin value containing the var1 cutoff limit
-
-    Raises:
-        ValueError: If cutoffs don't match expected structure or lengths,
-            or if strict_validation is True and validation fails.
+        DataFrame with single row containing sol_fac + bin cutoff columns.
     """
     var0_bins, var1_cutoffs = _validate_cutoff_dict_structure(fixed_cutoffs, variables)
     _validate_bins_match_data(var0_bins, values_var0, strict_validation)
@@ -184,116 +740,43 @@ def create_fixed_cutoff_solution(
     return df
 
 
+# =============================================================================
+# Legacy API — kept for backward compatibility during transition
+# =============================================================================
+
+
 def get_fact_sol(
     values_var0: list[float],
     values_var1: list[float],
     inv_var1: bool = False,
     chunk_size: int = 10000,
 ) -> pd.DataFrame:
-    """
-    Generate all feasible solutions (cut combinations) with monotonicity constraint.
+    """Generate all feasible solutions with monotonicity constraint (legacy 2-var)."""
+    from .utils import optimize_dtypes
 
-    Optimized using numpy-based combination generation for memory efficiency.
+    n_bins = len(values_var0)
+    cut_values = np.array(sorted(set([0] + list(values_var1))))
 
-    Args:
-        values_var0: Bin indices (columns in output)
-        values_var1: Possible cut values for each bin
-        inv_var1: If True, cuts must be monotonically decreasing; otherwise increasing
-        chunk_size: Unused, kept for backward compatibility
+    logger.info("--Getting feasible solutions (legacy enumeration)")
+    logger.info(f"Bins: {n_bins}, Cut values: {len(cut_values)}")
 
-    Returns:
-        DataFrame with columns ['sol_fac'] + values_var0, where each row is a valid combination
-    """
-    try:
-        n_bins = len(values_var0)
-        # Include 0 as a possible cut, and deduplicate + sort
-        cut_values = np.array(sorted(set([0] + list(values_var1))))
-
-        logger.info("--Getting feasible solutions")
-        logger.info(f"Bins: {n_bins}, Cut values: {len(cut_values)}")
-
-        # Generate monotonically non-decreasing combinations using numpy
-        # combinations_with_replacement returns indices we can use directly
-        n_values = len(cut_values)
-
-        # Use numpy to generate combinations more efficiently
-        # Create array directly from combinations_with_replacement
-        comb_indices = np.array(
-            list(combinations_with_replacement(range(n_values), n_bins)),
-            dtype=np.int16,
-        )
-        combinations_array = cut_values[comb_indices]
-
-        logger.info(f"Number of feasible solutions: {len(combinations_array):,}")
-
-        # If inv_var1, we need monotonically decreasing, so reverse each row
-        if inv_var1:
-            combinations_array = combinations_array[:, ::-1]
-
-        # Create DataFrame with bin indices as column names
-        df_v = pd.DataFrame(combinations_array, columns=values_var0)
-        df_v = optimize_dtypes(df_v)
-
-        # Add solution index
-        df_v.insert(0, "sol_fac", np.arange(len(df_v), dtype=np.int32))
-
-        return df_v
-
-    except (ValueError, MemoryError) as e:
-        logger.error(f"Error in get_fact_sol: {str(e)}")
-        raise
-
-
-def process_kpi_chunk(
-    chunk_data: pd.DataFrame,
-    values_var0: list[float],
-    data_sumary_desagregado: pd.DataFrame,
-    variables: list[str],
-    inv_var1: bool = False,
-) -> pd.DataFrame:
-    """Process a chunk of data for KPI calculation (picklable helper)"""
-    # Melt the chunk
-    chunk_melt = chunk_data.melt(
-        id_vars=["sol_fac"],
-        value_vars=values_var0,
-        var_name=variables[0],
-        value_name=f"{variables[1]}_lim",
+    n_values = len(cut_values)
+    comb_indices = np.array(
+        list(combinations_with_replacement(range(n_values), n_bins)),
+        dtype=np.int16,
     )
+    combinations_array = cut_values[comb_indices]
 
-    # Ensure numeric types
-    chunk_melt[variables[0]] = chunk_melt[variables[0]].astype(float)
+    logger.info(f"Number of feasible solutions: {len(combinations_array):,}")
 
-    # Get distinct combinations
-    chunk_distinct = chunk_melt.drop_duplicates(subset=[variables[0], f"{variables[1]}_lim"])[
-        [variables[0], f"{variables[1]}_lim"]
-    ]
-
-    # Merge with summary data
-    data_sumary = chunk_distinct.merge(data_sumary_desagregado, how="left", on=variables[0])
-
-    # Apply filters
     if inv_var1:
-        data_sumary = data_sumary[data_sumary[variables[1]] > data_sumary[f"{variables[1]}_lim"]]
-    else:
-        data_sumary = data_sumary[data_sumary[variables[1]] <= data_sumary[f"{variables[1]}_lim"]]
+        combinations_array = combinations_array[:, ::-1]
 
-    # Identify numeric columns for aggregation
-    numeric_cols = data_sumary.select_dtypes(include=[np.number]).columns
-    agg_dict = {col: "sum" for col in numeric_cols if col not in [variables[0], f"{variables[1]}_lim"]}
+    df_v = pd.DataFrame(combinations_array, columns=values_var0)
+    df_v = optimize_dtypes(df_v)
+    df_v.insert(0, "sol_fac", np.arange(len(df_v), dtype=np.int32))
 
-    # Group and aggregate
-    data_sumary = data_sumary.groupby([variables[0], f"{variables[1]}_lim"]).agg(agg_dict).reset_index()
-
-    # Merge back with chunk data and aggregate by solution
-    chunk_result = (
-        chunk_melt.merge(data_sumary, how="left", on=[variables[0], f"{variables[1]}_lim"])
-        .fillna(0)
-        .groupby("sol_fac", observed=True)
-        .agg(agg_dict)
-        .reset_index()
-    )
-
-    return chunk_result
+    return df_v
 
 
 def kpi_of_fact_sol(
@@ -305,136 +788,109 @@ def kpi_of_fact_sol(
     inv_var1: bool = False,
     chunk_size: int = 1000,
 ) -> pd.DataFrame:
-    """
-    Calculate KPIs for all feasible solutions by applying cuts to aggregated data.
+    """Calculate KPIs for all feasible solutions (legacy 2-var)."""
+    import gc
 
-    For each feasible solution (defined by cut points), calculates aggregate KPIs
-    by matching records to cut points and summing indicators. Uses parallel
-    processing to efficiently handle large solution spaces.
+    from joblib import Parallel, delayed
+    from tqdm import tqdm
 
-    Args:
-        df_v: DataFrame of feasible solutions from get_fact_sol(), with columns
-            for solution ID and cut points for each bin.
-        values_var0: Array of bin values for the first variable.
-        data_sumary_desagregado: Aggregated data with indicators by variable combinations.
-            Expected columns: variables, indicators with '_boo' and '_rep' suffixes.
-        variables: List of two variable names [var0, var1].
-        indicadores: List of indicator column names to aggregate.
-        inv_var1: If True, apply inverse ordering for var1 (decreasing cuts).
-        chunk_size: Number of solutions to process per parallel chunk.
+    from .utils import MAX_PARALLEL_JOBS
 
-    Returns:
-        DataFrame with one row per solution containing:
-        - sol_fac: Solution identifier
-        - Aggregated indicators with suffixes: _boo (booked), _rep (repesca), _cut (rejected)
-        - Calculated b2_ever_h6 metrics for each suffix
-        Sorted by b2_ever_h6 (risk) and oa_amt_h0 (production).
-
-    Raises:
-        Exception: If parallel processing or aggregation fails.
-    """
-    try:
-        logger.info("--Calculating KPIs for feasible solutions")
-
-        # Prepare chunks
-        chunks = [df_v.iloc[i : i + chunk_size] for i in range(0, len(df_v), chunk_size)]
-
-        # Parallel Processing
-        # n_jobs=-1 uses all available cores
-        chunks_results = Parallel(n_jobs=MAX_PARALLEL_JOBS)(
-            delayed(process_kpi_chunk)(chunk, values_var0, data_sumary_desagregado, variables, inv_var1)
-            for chunk in tqdm(chunks, desc="Processing chunks (Parallel)")
+    def _process_kpi_chunk(chunk_data, vals_v0, data_sumary, vars_, inv_):
+        chunk_melt = chunk_data.melt(
+            id_vars=["sol_fac"], value_vars=vals_v0, var_name=vars_[0], value_name=f"{vars_[1]}_lim"
+        )
+        chunk_melt[vars_[0]] = chunk_melt[vars_[0]].astype(float)
+        chunk_distinct = chunk_melt.drop_duplicates(subset=[vars_[0], f"{vars_[1]}_lim"])[[vars_[0], f"{vars_[1]}_lim"]]
+        ds = chunk_distinct.merge(data_sumary, how="left", on=vars_[0])
+        if inv_:
+            ds = ds[ds[vars_[1]] > ds[f"{vars_[1]}_lim"]]
+        else:
+            ds = ds[ds[vars_[1]] <= ds[f"{vars_[1]}_lim"]]
+        numeric_cols = ds.select_dtypes(include=[np.number]).columns
+        agg_dict = {col: "sum" for col in numeric_cols if col not in [vars_[0], f"{vars_[1]}_lim"]}
+        ds = ds.groupby([vars_[0], f"{vars_[1]}_lim"]).agg(agg_dict).reset_index()
+        return (
+            chunk_melt.merge(ds, how="left", on=[vars_[0], f"{vars_[1]}_lim"])
+            .fillna(0)
+            .groupby("sol_fac", observed=True)
+            .agg(agg_dict)
+            .reset_index()
         )
 
-        # Combine results from all chunks
-        if not chunks_results:
-            return pd.DataFrame()
+    logger.info("--Calculating KPIs for feasible solutions")
+    chunks = [df_v.iloc[i : i + chunk_size] for i in range(0, len(df_v), chunk_size)]
 
-        # Combine chunks efficiently
-        final_result = pd.concat(chunks_results, ignore_index=True)
-        del chunks_results
-        gc.collect()
+    chunks_results = Parallel(n_jobs=MAX_PARALLEL_JOBS)(
+        delayed(_process_kpi_chunk)(chunk, values_var0, data_sumary_desagregado, variables, inv_var1)
+        for chunk in tqdm(chunks, desc="Processing chunks (Parallel)")
+    )
 
-        # Group combined results
-        final_result = final_result.groupby("sol_fac", observed=True).sum().reset_index()
+    if not chunks_results:
+        return pd.DataFrame()
 
-        # Calculate cut metrics
-        for kpi in indicadores:
-            raw_cut = data_sumary_desagregado[f"{kpi}_boo"].sum() - final_result[f"{kpi}_boo"]
-            neg_count = (raw_cut < 0).sum()
-            if neg_count > 0:
-                logger.warning(
-                    f"{kpi}_cut has {neg_count} negative values (min={raw_cut.min():.2f}). "
-                    f"This may indicate double-counting in KPI aggregation. Clipping to 0."
-                )
-            final_result[f"{kpi}_cut"] = raw_cut.clip(lower=0)
+    final_result = pd.concat(chunks_results, ignore_index=True)
+    del chunks_results
+    gc.collect()
 
-        # Calculate B2 metrics
-        metrics = ["", "_cut", "_rep", "_boo"]
-        for metric in metrics:
-            todu_30 = f"todu_30ever_h6{metric}"
-            todu_amt = f"todu_amt_pile_h6{metric}"
-            if todu_30 in final_result.columns and todu_amt in final_result.columns:
-                final_result[f"b2_ever_h6{metric}"] = calculate_b2_ever_h6(
-                    final_result[todu_30].astype(float),
-                    final_result[todu_amt].replace(0, np.nan).astype(float),
-                    multiplier=DEFAULT_RISK_MULTIPLIER,
-                    as_percentage=True,
-                ).fillna(0)
+    final_result = final_result.groupby("sol_fac", observed=True).sum().reset_index()
 
-        return final_result.sort_values(["b2_ever_h6", "oa_amt_h0"])
+    for kpi in indicadores:
+        raw_cut = data_sumary_desagregado[f"{kpi}_boo"].sum() - final_result[f"{kpi}_boo"]
+        neg_count = (raw_cut < 0).sum()
+        if neg_count > 0:
+            logger.warning(f"{kpi}_cut has {neg_count} negative values. Clipping to 0.")
+        final_result[f"{kpi}_cut"] = raw_cut.clip(lower=0)
 
-    except (ValueError, KeyError) as e:
-        logger.error(f"Error in kpi_of_fact_sol: {str(e)}")
-        raise
+    for metric in ["", "_cut", "_rep", "_boo"]:
+        t30 = f"todu_30ever_h6{metric}"
+        tamt = f"todu_amt_pile_h6{metric}"
+        if t30 in final_result.columns and tamt in final_result.columns:
+            final_result[f"b2_ever_h6{metric}"] = calculate_b2_ever_h6(
+                final_result[t30].astype(float),
+                final_result[tamt].replace(0, np.nan).astype(float),
+                multiplier=DEFAULT_RISK_MULTIPLIER,
+                as_percentage=True,
+            ).fillna(0)
 
-
-def process_optimal_chunk(df_chunk: pd.DataFrame, data_sumary: pd.DataFrame) -> pd.DataFrame | None:
-    """Process a chunk for optimal solution finding"""
-    chunk_result = df_chunk.merge(data_sumary, how="inner", on="sol_fac")
-
-    if chunk_result.empty:
-        return None
-    return chunk_result
+    return final_result.sort_values(["b2_ever_h6", "oa_amt_h0"])
 
 
 def get_optimal_solutions(df_v: pd.DataFrame, data_sumary: pd.DataFrame, chunk_size: int = 1000) -> pd.DataFrame:
-    """Memory-optimized version of get_optimal_solutions with parallel processing"""
-    try:
-        logger.info("--Getting optimal solutions")
+    """Find Pareto-optimal solutions (legacy 2-var)."""
+    import gc
 
-        # Sort and deduplicate efficiently
-        data_sumary = data_sumary.sort_values(by=["b2_ever_h6", "oa_amt_h0"])
-        data_sumary = data_sumary.drop_duplicates(subset=["b2_ever_h6"], keep="last")
+    from joblib import Parallel, delayed
+    from tqdm import tqdm
 
-        # Find Pareto optimal solutions using vectorized cummax
-        cummax = data_sumary["oa_amt_h0"].cummax()
-        pareto_mask = data_sumary["oa_amt_h0"] >= cummax
-        data_sumary = data_sumary[pareto_mask]
+    from .utils import MAX_PARALLEL_JOBS, optimize_dtypes
 
-        # Merge in chunks
-        chunks = [df_v.iloc[i : i + chunk_size] for i in range(0, len(df_v), chunk_size)]
+    logger.info("--Getting optimal solutions")
 
-        # Parallel Processing
-        chunks_results = Parallel(n_jobs=MAX_PARALLEL_JOBS)(
-            delayed(process_optimal_chunk)(chunk, data_sumary.reset_index())
-            for chunk in tqdm(chunks, desc="Processing chunks (Parallel)")
-        )
+    data_sumary = data_sumary.sort_values(by=["b2_ever_h6", "oa_amt_h0"])
+    data_sumary = data_sumary.drop_duplicates(subset=["b2_ever_h6"], keep="last")
 
-        # Filter None results
-        chunks_results = [res for res in chunks_results if res is not None]
+    cummax = data_sumary["oa_amt_h0"].cummax()
+    pareto_mask = data_sumary["oa_amt_h0"] >= cummax
+    data_sumary = data_sumary[pareto_mask]
 
-        # Combine results
-        final_result = pd.concat(chunks_results, ignore_index=True)
-        del chunks_results
-        gc.collect()
+    chunks = [df_v.iloc[i : i + chunk_size] for i in range(0, len(df_v), chunk_size)]
 
-        # Optimize final datatypes
-        final_result = optimize_dtypes(final_result)
+    def _process_chunk(df_chunk, ds):
+        result = df_chunk.merge(ds, how="inner", on="sol_fac")
+        return result if not result.empty else None
 
-        logger.info(f"Number of optimal solutions: {len(final_result):,}")
-        return final_result.sort_values(by=["b2_ever_h6", "oa_amt_h0"])
+    chunks_results = Parallel(n_jobs=MAX_PARALLEL_JOBS)(
+        delayed(_process_chunk)(chunk, data_sumary.reset_index())
+        for chunk in tqdm(chunks, desc="Processing chunks (Parallel)")
+    )
 
-    except (ValueError, KeyError) as e:
-        logger.error(f"Error in get_optimal_solutions: {str(e)}")
-        raise
+    chunks_results = [res for res in chunks_results if res is not None]
+    final_result = pd.concat(chunks_results, ignore_index=True)
+    del chunks_results
+    gc.collect()
+
+    final_result = optimize_dtypes(final_result)
+
+    logger.info(f"Number of optimal solutions: {len(final_result):,}")
+    return final_result.sort_values(by=["b2_ever_h6", "oa_amt_h0"])

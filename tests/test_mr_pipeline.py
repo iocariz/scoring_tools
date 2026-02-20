@@ -101,11 +101,11 @@ class TestCalculateMetricsFromCuts:
         """Test Risk (b2_ever_h6) calculation for Actual."""
         result = calculate_metrics_from_cuts(sample_data, optimal_solution_df, variables)
 
-        # Risk = 7 * sum(num) / sum(den)
+        # Risk = 7 * sum(num) / sum(den) * 100 (percentage)
         # Num = 10+20+30+40 = 100
         # Den = 100+200+300+400 = 1000
-        # Risk = 7 * 100 / 1000 = 0.7
-        assert np.isclose(result.loc[0, "Risk (%)"], 0.7)
+        # Risk = 7 * 100 / 1000 * 100 = 70.0
+        assert np.isclose(result.loc[0, "Risk (%)"], 70.0)
 
     def test_none_solution(self, sample_data, variables):
         """Test handling of None solution."""

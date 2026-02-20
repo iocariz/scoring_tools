@@ -49,7 +49,7 @@ def config():
     """Create a sample configuration."""
     return PreprocessingSettings(
         keep_vars=["mis_date", "status_name", "risk_score_rf", "score_rf", "reject_reason"],
-        indicators=["oa_amt", "oa_amt_h0"],
+        indicators=["oa_amt", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"],
         segment_filter="test_segment",
         octroi_bins=[-np.inf, 350, 400, 450, np.inf],
         efx_bins=[-np.inf, 20, 50, 80, np.inf],

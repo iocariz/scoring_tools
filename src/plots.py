@@ -379,11 +379,14 @@ class RiskProductionVisualizer:
         data_summary_disaggregated: pd.DataFrame,
         data_summary_sample_no_opt: pd.DataFrame,
         variables: list[str],
-        values_var0: np.ndarray,
-        values_var1: np.ndarray,
         optimum_risk: float,
         tasa_fin: float,
+        *,
+        values_per_var: dict[str, list | np.ndarray] | None = None,
+        values_var0: np.ndarray | list | None = None,
+        values_var1: np.ndarray | list | None = None,
         target_sol_fac: int | None = None,
+        directions: dict[str, int] | None = None,
     ):
         """
         Initialize the RiskProductionVisualizer.
@@ -393,11 +396,13 @@ class RiskProductionVisualizer:
                 b2_ever_h6, oa_amt_h0, and cut values for each bin.
             data_summary_disaggregated: Disaggregated booked data with '_boo' suffixes.
             data_summary_sample_no_opt: Sample of non-optimal solutions for context.
-            variables: List of two variable names [var0, var1].
-            values_var0: Array of bin values for first variable.
-            values_var1: Array of bin values for second variable.
+            variables: List of variable names (at least 2).
             optimum_risk: Target risk level (%) for automatic solution selection.
             tasa_fin: Financing rate (used for repesca calculations).
+            values_per_var: Dict mapping variable names to sorted bin values.
+                Preferred over values_var0/values_var1.
+            values_var0: (Legacy) Array of bin values for first variable.
+            values_var1: (Legacy) Array of bin values for second variable.
             target_sol_fac: Optional specific solution ID to select instead of
                 using optimum_risk threshold.
         """
@@ -405,12 +410,23 @@ class RiskProductionVisualizer:
         self.data_summary_disaggregated = data_summary_disaggregated
         self.data_summary_sample_no_opt = data_summary_sample_no_opt
         self.variables = variables
-        self.values_var0 = values_var0
-        self.values_var1 = values_var1
         self.optimum_risk = optimum_risk
         self.tasa_fin = tasa_fin
 
+        # Derive values_var0/values_var1 from values_per_var or legacy params
+        if values_per_var is not None:
+            self.values_per_var = values_per_var
+            self.values_var0 = values_per_var[variables[0]]
+            self.values_var1 = values_per_var[variables[1]] if len(variables) > 1 else []
+        else:
+            self.values_var0 = values_var0 if values_var0 is not None else []
+            self.values_var1 = values_var1 if values_var1 is not None else []
+            self.values_per_var = {variables[0]: self.values_var0}
+            if len(variables) > 1:
+                self.values_per_var[variables[1]] = self.values_var1
+
         self.target_sol_fac = target_sol_fac
+        self.directions = directions or {}
 
         # Calculate initial metrics
         self.calculate_initial_metrics()
@@ -439,6 +455,33 @@ class RiskProductionVisualizer:
         self.lim_inf_B2 = 0
         self.lim_sup_OA = self.data_summary["oa_amt_h0"].max()
         self.lim_inf_OA = 0
+
+        # For N>2 variables: marginalize disaggregated data to first 2 variables for heatmap
+        self._is_2d = len(self.variables) == 2
+        if not self._is_2d:
+            var0, var1 = self.variables[0], self.variables[1]
+            numeric_cols = [
+                c
+                for c in self.data_summary_disaggregated.columns
+                if c not in self.variables and pd.api.types.is_numeric_dtype(self.data_summary_disaggregated[c])
+            ]
+            agg_dict = dict.fromkeys(numeric_cols, "sum")
+            self._heatmap_data = self.data_summary_disaggregated.groupby([var0, var1]).agg(agg_dict).reset_index()
+            # Recompute b2 and text for marginalized data
+            self._heatmap_data["b2_ever_h6"] = calculate_b2_ever_h6(
+                self._heatmap_data["todu_30ever_h6"],
+                self._heatmap_data["todu_amt_pile_h6"],
+                as_percentage=True,
+            )
+            self._heatmap_data["text"] = self._heatmap_data.apply(
+                lambda x: f"{x['oa_amt_h0'] / 1e6:,.2f}M {x['b2_ever_h6'] / 100:.2%}", axis=1
+            )
+            logger.info(
+                f"N>2 variables ({len(self.variables)}): heatmap marginalized to "
+                f"{var0} x {var1} (extra dimensions summed)"
+            )
+        else:
+            self._heatmap_data = self.data_summary_disaggregated
 
         # Create meshgrid for heatmap
         self.xx, self.yy = np.meshgrid(self.values_var0, self.values_var1)
@@ -517,16 +560,17 @@ class RiskProductionVisualizer:
 
     def _add_heatmap_traces(self):
         """Add heatmap traces to the figure"""
+        heatmap_data = self._heatmap_data
         # Main heatmap
         self.fig.add_trace(
             go.Heatmap(
-                x=self.data_summary_disaggregated[self.variables[0]],
-                y=self.data_summary_disaggregated[self.variables[1]],
-                z=self.data_summary_disaggregated["b2_ever_h6"],
+                x=heatmap_data[self.variables[0]],
+                y=heatmap_data[self.variables[1]],
+                z=heatmap_data["b2_ever_h6"],
                 colorscale=[(0.00, "rgba(255,255,255,1)"), (1.00, "rgba(157,13,20,1)")],
                 zmin=0,
                 zmax=20,
-                text=self.data_summary_disaggregated["text"],
+                text=heatmap_data["text"],
                 texttemplate="%{text}",
             ),
             row=1,
@@ -549,10 +593,18 @@ class RiskProductionVisualizer:
         self.fig.update_layout(legend=dict(y=0.1, x=0.33))
 
         # Update axes
+        var0_dir = self.directions.get(self.variables[0], 1)
+        var0_label = f"{self.variables[0]} (Higher = {'Riskier' if var0_dir == 1 else 'Safer'})"
+
+        var1_label = self.variables[1]
+        if len(self.variables) > 1:
+            var1_dir = self.directions.get(self.variables[1], 1)
+            var1_label = f"{self.variables[1]} (Higher = {'Riskier' if var1_dir == 1 else 'Safer'})"
+
         self.fig.update_xaxes(title_text="OA AMT (€)", range=[self.lim_inf_OA, self.lim_sup_OA], row=1, col=1)
-        self.fig.update_xaxes(title_text=self.variables[0], dtick=1, row=1, col=2)
+        self.fig.update_xaxes(title_text=var0_label, dtick=1, row=1, col=2)
         self.fig.update_yaxes(title_text="B2 ever H6 (%€)", range=[self.lim_inf_B2, self.lim_sup_B2], row=1, col=1)
-        self.fig.update_yaxes(title_text=self.variables[1], dtick=1, row=1, col=2)
+        self.fig.update_yaxes(title_text=var1_label, dtick=1, row=1, col=2)
 
         # Apply the update logic statically here
         self._apply_static_update()
@@ -586,7 +638,7 @@ class RiskProductionVisualizer:
         return data_filtered
 
     def _apply_static_update(self):
-        """Update the visualization based on cz2024 value"""
+        """Update the visualization based on selected solution"""
         # Filter data based on risk level
         data_filtered = self._get_selected_solution_row()
 
@@ -595,19 +647,16 @@ class RiskProductionVisualizer:
         ].values[0, :]
         B2, OA, B2_CUT, OA_CUT, B2_REP, OA_REP = metrics
 
-        # Update cut-off mask
-        CUT_OFF = data_filtered[self.values_var0].values[0]
-        z_mask = (self.yy <= CUT_OFF) * 1
+        # Update cut-off mask (only for 2-var case where bin columns exist)
+        if self._is_2d:
+            CUT_OFF = data_filtered[self.values_var0].values[0]
+            z_mask = (self.yy <= CUT_OFF) * 1
+        else:
+            # N>2: no mask overlay (bin columns don't apply)
+            z_mask = np.zeros_like(self.yy)
 
-        # Update visualization
-        # In original code: self.fig.data[5].z = z_mask (Trace 5 is the mask heatmap)
-        # self.fig.data[3].update(x=[OA], y=[B2]) (Trace 3 is Optimum selected point)
-
-        # We need to rely on the order of traces added in create_figure
-        # _add_scatter_traces adds 4 traces (0, 1, 2, 3)
+        # Trace indices: _add_scatter_traces adds 4 traces (0, 1, 2, 3)
         # _add_heatmap_traces adds 2 traces (4, 5)
-        # So trace 5 is indeed the mask trace.
-
         self.fig.data[5].z = z_mask
         self.fig.data[3].update(x=[OA], y=[B2])
 
@@ -659,11 +708,11 @@ class RiskProductionVisualizer:
         summary_data = {
             "Metric": ["Actual", "Swap-in", "Swap-out", "Optimum selected", "Summary"],
             "Risk (%)": [
-                max(self.B2_0 / 100, 0.000001),
-                max(B2_REP / 100, 0.000001),
-                max(B2_CUT / 100, 0.000001),
-                max(B2 / 100, 0.000001),
-                (B2 - self.B2_0) / 100,
+                max(self.B2_0, 0.000001),
+                max(B2_REP, 0.000001),
+                max(B2_CUT, 0.000001),
+                max(B2, 0.000001),
+                B2 - self.B2_0,
             ],
             "Production (€)": [self.OA_0, OA_REP, OA_CUT, OA, OA - self.OA_0],
             "Production (%)": [

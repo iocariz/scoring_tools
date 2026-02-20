@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from sklearn import tree as sktree
+from sklearn.preprocessing import PolynomialFeatures
 from sklearn.tree import DecisionTreeClassifier
 
 from .constants import DEFAULT_MIN_SAMPLES_LEAF, SCORE_SCALE_MAX, Columns, StatusName
@@ -122,48 +123,60 @@ def calculate_financing_rates(data, date_ini_demand, lm=6):
     return mean_financing_rate / 100
 
 
-def transform_variables(df: pd.DataFrame, variables: list[str]) -> pd.DataFrame:
+def transform_variables(df: pd.DataFrame, variables: list[str], degree: int = 3) -> pd.DataFrame:
     """
     Apply polynomial and interaction transformations to create regression features.
 
-    Creates the following features from two input variables (var0, var1):
-    - Interaction: var0 * var1
-    - Squares: var0^2, var1^2
-    - Cubes: var0^3, var1^3
-    - Complements: 9-var0, 9-var1
-    - Complement interactions: (9-var0) x var1, etc.
+    For **2 variables**: uses the legacy hardcoded feature set for exact backward
+    compatibility (interaction, squares, cubes, complements).
+
+    For **N > 2 variables**: computes complements (SCORE_SCALE_MAX - var) for each
+    variable, then applies ``PolynomialFeatures(degree=degree)`` on
+    ``[variables + complements]`` to generate all polynomial and interaction terms.
 
     Args:
         df: Input DataFrame containing the base variables.
-        variables: List of two variable names [var0, var1] to transform.
+        variables: List of variable names to transform (len >= 2).
+        degree: Polynomial degree (only used for N > 2). Default 3.
 
     Returns:
         DataFrame with original columns plus all transformed features.
-
-    Note:
-        The complement (SCORE_SCALE_MAX - var) is used because risk scores typically
-        range 0-SCORE_SCALE_MAX, where SCORE_SCALE_MAX represents the best credit quality.
     """
-    # Destructure the variables for clarity
+    if len(variables) == 2:
+        return _transform_variables_2d(df, variables)
+    return _transform_variables_nd(df, variables, degree)
+
+
+def _transform_variables_2d(df: pd.DataFrame, variables: list[str]) -> pd.DataFrame:
+    """Standard 2-variable transform."""
     var0, var1 = variables
 
-    # Compute transformations directly without repeated assignments
     df[f"{var0}_{var1}"] = df[var0] * df[var1]
     df[f"{var0}^2"] = df[var0] ** 2
     df[f"{var1}^2"] = df[var1] ** 2
     df[f"{var0}^3"] = df[var0] ** 3
     df[f"{var1}^3"] = df[var1] ** 3
 
-    # Computing transformations related to (SCORE_SCALE_MAX - var0)
-    s = SCORE_SCALE_MAX
-    df[f"{s}-{var0}"] = s - df[var0]
-    df[f"{s}-{var1}"] = s - df[var1]
-    df[f"({s}-{var0}) x {var1}"] = df[f"{s}-{var0}"] * df[var1]
-    df[f"({s}-{var0})^2 x {var1}"] = df[f"{s}-{var0}"] ** 2 * df[var1]
-    df[f"({s}-{var0}) x {var1}^2"] = df[f"{s}-{var0}"] * df[var1] ** 2
-    df[f"({s}-{var0})^2"] = df[f"{s}-{var0}"] ** 2
-    df[f"({s}-{var1})^2"] = df[f"{s}-{var1}"] ** 2
-    df[f"({s}-{var0})^3"] = df[f"{s}-{var0}"] ** 3
+    df[f"{var0}^2 x {var1}"] = df[var0] ** 2 * df[var1]
+    df[f"{var0} x {var1}^2"] = df[var0] * df[var1] ** 2
+
+    return df
+
+
+def _transform_variables_nd(df: pd.DataFrame, variables: list[str], degree: int = 3) -> pd.DataFrame:
+    """N-variable transform using PolynomialFeatures."""
+    # Build feature matrix: [variables]
+    input_cols = list(variables)
+    X = df[input_cols].values
+
+    poly = PolynomialFeatures(degree=degree, include_bias=False, interaction_only=False)
+    X_poly = poly.fit_transform(X)
+    feature_names = poly.get_feature_names_out(input_cols)
+
+    # Add polynomial features (skip columns already present in df)
+    for i, fname in enumerate(feature_names):
+        if fname not in df.columns:
+            df[fname] = X_poly[:, i]
 
     return df
 
@@ -176,6 +189,8 @@ def preprocess_data(
     indicadores: list[str],
     var_target: str,
     multiplier: float,
+    *,
+    bins_config: dict | None = None,
 ) -> pd.DataFrame:
     """
     Preprocess data by creating a grid and aggregating booked records.
@@ -186,18 +201,29 @@ def preprocess_data(
 
     Args:
         data: Input DataFrame with raw records.
-        octroi_limits: Bin boundaries for the first variable (octroi).
-        efx_limits: Bin boundaries for the second variable (efx).
-        variables: List of two variable names for grid dimensions.
+        octroi_limits: Bin boundaries for the first variable (legacy, 2-var).
+        efx_limits: Bin boundaries for the second variable (legacy, 2-var).
+        variables: List of variable names for grid dimensions.
         indicadores: List of indicator columns to aggregate (sum).
         var_target: Name of the target variable to calculate.
         multiplier: Multiplier for target calculation (typically 7 for b2_ever_h6).
+        bins_config: Optional dict mapping variable names to BinConfig objects.
+            When provided, the grid is built from all variables in bins_config
+            instead of using octroi_limits/efx_limits.
 
     Returns:
         DataFrame with grid, transformations, aggregated indicators, and target variable.
     """
-    # Creating a MultiIndex for efficient grid generation
-    index = pd.MultiIndex.from_product([range(len(octroi_limits) - 1), range(len(efx_limits) - 1)], names=variables)
+    # Build grid ranges per variable
+    if bins_config is not None:
+        ranges = []
+        for var in variables:
+            bc = bins_config[var]
+            ranges.append(range(len(bc.bin_edges) - 1))
+    else:
+        ranges = [range(len(octroi_limits) - 1), range(len(efx_limits) - 1)]
+
+    index = pd.MultiIndex.from_product(ranges, names=variables)
     data_train = pd.DataFrame(index=index).reset_index()
 
     data_train = transform_variables(data_train, variables)

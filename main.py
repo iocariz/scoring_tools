@@ -102,8 +102,8 @@ def main(
             )
             return data_clean, data_booked, data_demand, risk_inference, reg_todu_amt_pile
 
-        # Step 5: Optimization (feasible solutions, KPIs, Pareto front)
-        (data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_var0, values_var1) = (
+        # Step 5: Optimization (MILP Pareto frontier or fixed cutoffs)
+        (data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var) = (
             run_optimization_phase(
                 data_booked,
                 data_demand,
@@ -138,8 +138,7 @@ def main(
                 stress_factor=stress_factor,
                 tasa_fin=tasa_fin,
                 annual_coef_mr=annual_coef_mr,
-                values_var0=values_var0,
-                values_var1=values_var1,
+                values_per_var=values_per_var,
                 output=output,
             )
             cutoff_summaries.append(summary)

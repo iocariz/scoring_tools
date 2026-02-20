@@ -55,22 +55,22 @@ class ConsolidatedMetrics:
     optimum_risk_ci_lower: float = 0.0
     optimum_risk_ci_upper: float = 0.0
 
-    # Calculated risk properties
+    # Calculated risk properties (as percentage, e.g. 1.5 means 1.5%)
     @property
     def actual_risk(self) -> float:
-        return float(np.nan_to_num(calculate_b2_ever_h6(self.actual_todu_30ever_h6, self.actual_todu_amt_pile_h6, decimals=6)))
+        return float(np.nan_to_num(calculate_b2_ever_h6(self.actual_todu_30ever_h6, self.actual_todu_amt_pile_h6, as_percentage=True, decimals=6)))
 
     @property
     def optimum_risk(self) -> float:
-        return float(np.nan_to_num(calculate_b2_ever_h6(self.optimum_todu_30ever_h6, self.optimum_todu_amt_pile_h6, decimals=6)))
+        return float(np.nan_to_num(calculate_b2_ever_h6(self.optimum_todu_30ever_h6, self.optimum_todu_amt_pile_h6, as_percentage=True, decimals=6)))
 
     @property
     def swap_in_risk(self) -> float:
-        return float(np.nan_to_num(calculate_b2_ever_h6(self.swap_in_todu_30ever_h6, self.swap_in_todu_amt_pile_h6, decimals=6)))
+        return float(np.nan_to_num(calculate_b2_ever_h6(self.swap_in_todu_30ever_h6, self.swap_in_todu_amt_pile_h6, as_percentage=True, decimals=6)))
 
     @property
     def swap_out_risk(self) -> float:
-        return float(np.nan_to_num(calculate_b2_ever_h6(self.swap_out_todu_30ever_h6, self.swap_out_todu_amt_pile_h6, decimals=6)))
+        return float(np.nan_to_num(calculate_b2_ever_h6(self.swap_out_todu_30ever_h6, self.swap_out_todu_amt_pile_h6, as_percentage=True, decimals=6)))
 
     @property
     def production_delta(self) -> float:
@@ -87,7 +87,7 @@ class ConsolidatedMetrics:
         return self.optimum_risk - self.actual_risk
 
     def to_dict(self) -> dict[str, Any]:
-        # Risk values are converted to percentage format (0.1 -> 10%)
+        # Risk properties already return percentage (e.g. 7.0 means 7%)
         return {
             "group": self.group_name,
             "period": self.period,
@@ -95,19 +95,19 @@ class ConsolidatedMetrics:
             "n_segments": len(self.segments),
             "segments": ", ".join(self.segments),
             "actual_production": self.actual_production,
-            "actual_risk_pct": self.actual_risk * 100,
+            "actual_risk_pct": self.actual_risk,
             "actual_todu_30ever_h6": self.actual_todu_30ever_h6,
             "actual_todu_amt_pile_h6": self.actual_todu_amt_pile_h6,
             "optimum_production": self.optimum_production,
-            "optimum_risk_pct": self.optimum_risk * 100,
+            "optimum_risk_pct": self.optimum_risk,
             "optimum_todu_30ever_h6": self.optimum_todu_30ever_h6,
             "optimum_todu_amt_pile_h6": self.optimum_todu_amt_pile_h6,
             "swap_in_production": self.swap_in_production,
-            "swap_in_risk_pct": self.swap_in_risk * 100,
+            "swap_in_risk_pct": self.swap_in_risk,
             "swap_in_todu_30ever_h6": self.swap_in_todu_30ever_h6,
             "swap_in_todu_amt_pile_h6": self.swap_in_todu_amt_pile_h6,
             "swap_out_production": self.swap_out_production,
-            "swap_out_risk_pct": self.swap_out_risk * 100,
+            "swap_out_risk_pct": self.swap_out_risk,
             "swap_out_todu_30ever_h6": self.swap_out_todu_30ever_h6,
             "swap_out_todu_amt_pile_h6": self.swap_out_todu_amt_pile_h6,
             "production_delta": self.production_delta,

@@ -29,7 +29,6 @@ variables = ['sc_octroi_new_clus', 'new_efx_clus']
 multiplier = 7
 z_threshold = 3.0
 
-
 # Reject inference (optional) - adjusts predicted risk for score-rejected bins
 # based on per-bin acceptance rates to correct for selection bias.
 reject_inference_method = "parceling"  # "none" (default) or "parceling"
@@ -43,6 +42,13 @@ reject_max_risk_multiplier = 3.0      # upper cap for per-bin multiplier (1.0-10
 # new_efx_clus = [3, 4, 5, 6, 7, 8, 9, 10, 12, 15]                          # var1 cutoffs
 # strict_validation = false  # If true, raise errors instead of warnings for validation issues
 # run_all_scenarios = false  # If true, generate all scenarios (pessimistic/base/optimistic)
+
+[preprocessing.directions]
+# Explicitly define monotonicity for specific variables (1 = ascending risk, -1 = descending risk)
+# If not specified, the pipeline will auto-infer this based on empirical data correlation
+sc_octroi_new_clus = -1  # Legacy invert=False meant higher bin = safer (inverse)
+new_efx_clus = -1         # Legacy invert=True meant higher bin = riskier (ascending)
+
 
 [preprocessing.cz_config]
 2022 = 4.5

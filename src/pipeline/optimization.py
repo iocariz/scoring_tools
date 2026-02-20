@@ -9,10 +9,12 @@ from src.config import OutputPaths, PreprocessingSettings
 from src.inference_optimized import run_optimization_pipeline
 from src.mr_pipeline import process_mr_period
 from src.optimization_utils import (
+    add_bin_columns,
     create_fixed_cutoff_solution,
     get_fact_sol,
     get_optimal_solutions,
     kpi_of_fact_sol,
+    trace_pareto_frontier,
 )
 from src.plots import RiskProductionVisualizer
 from src.preprocess_improved import filter_by_date
@@ -36,7 +38,7 @@ def run_optimization_phase(
     settings: PreprocessingSettings,
     annual_coef: float,
     output: OutputPaths | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list, list]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, list]]:
     """Run the optimization pipeline: generate summary, find optimal cutoffs.
 
     Args:
@@ -52,7 +54,7 @@ def run_optimization_phase(
 
     Returns:
         Tuple of (data_summary_desagregado, data_summary, data_summary_sample_no_opt,
-                  values_var0, values_var1)
+                  values_per_var)
     """
     if output is None:
         output = OutputPaths()
@@ -76,9 +78,12 @@ def run_optimization_phase(
         reject_max_risk_multiplier=settings.reject_max_risk_multiplier,
     )
 
-    # Cutoff optimization
-    values_var0 = sorted(data_summary_desagregado[settings.variables[0]].unique())
-    values_var1 = sorted(data_summary_desagregado[settings.variables[1]].unique())
+    # Build values_per_var dict for all variables
+    values_per_var = {var: sorted(data_summary_desagregado[var].unique()) for var in settings.variables}
+
+    # Shorthand for 2-var backward compat
+    values_var0 = values_per_var[settings.variables[0]]
+    values_var1 = values_per_var[settings.variables[1]] if len(settings.variables) > 1 else []
 
     # Check for fixed cutoffs (skip optimization if provided)
     fixed_cutoffs = settings.fixed_cutoffs
@@ -90,7 +95,7 @@ def run_optimization_phase(
 
         # Get validation settings from config
         strict_validation = fixed_cutoffs.get("strict_validation", False)
-        inv_var1 = settings.inv_var1
+        inv_var1 = settings.variables[1] in settings.inv_vars
 
         # Create single solution from fixed cutoffs with enhanced validation
         df_v = create_fixed_cutoff_solution(
@@ -113,8 +118,6 @@ def run_optimization_phase(
         )
 
         # Merge df_v (with bin columns) into data_summary (with KPIs)
-        # This is done automatically by get_optimal_solutions in the optimization path,
-        # but must be done manually for fixed cutoffs since we skip optimization
         data_summary = data_summary.merge(df_v, on="sol_fac", how="left")
 
         # Log acceptance rate preview for fixed cutoffs
@@ -146,30 +149,37 @@ def run_optimization_phase(
         logger.debug(f"[{segment}] Fixed cutoff solution saved to {output.pareto_solutions_csv}")
 
     else:
-        # Get feasible solutions
-        df_v = get_fact_sol(values_var0=values_var0, values_var1=values_var1, chunk_size=10000)
-
-        # Calculate KPIs for feasible solutions
-        data_summary = kpi_of_fact_sol(
-            df_v=df_v,
-            values_var0=values_var0,
-            data_sumary_desagregado=data_summary_desagregado,
+        # MILP-based Pareto frontier optimization
+        pareto_df, grid, masks = trace_pareto_frontier(
+            data_summary_desagregado=data_summary_desagregado,
             variables=settings.variables,
-            indicadores=settings.indicators,
-            chunk_size=100000,
+            inv_vars=settings.inv_vars,
+            multiplier=settings.multiplier,
+            indicators=settings.indicators,
         )
 
-        # Sample non-optimal solutions for visualization
-        data_summary_sample_no_opt = data_summary.sample(min(10000, len(data_summary)))
+        if pareto_df.empty:
+            # Fallback to legacy enumeration if MILP produces no solutions
+            logger.warning(f"[{segment}] MILP produced no solutions, falling back to legacy enumeration")
+            df_v = get_fact_sol(values_var0=values_var0, values_var1=values_var1, chunk_size=10000)
+            data_summary = kpi_of_fact_sol(
+                df_v=df_v,
+                values_var0=values_var0,
+                data_sumary_desagregado=data_summary_desagregado,
+                variables=settings.variables,
+                indicadores=settings.indicators,
+                chunk_size=100000,
+            )
+            data_summary_sample_no_opt = data_summary.sample(min(10000, len(data_summary)))
+            data_summary = get_optimal_solutions(df_v=df_v, data_sumary=data_summary, chunk_size=100000)
+        else:
+            # Add bin columns for 2-var backward compat (cutoff extraction, viz, bootstrap)
+            data_summary = add_bin_columns(pareto_df, masks, grid, settings.inv_vars)
 
-        # Find optimal solutions
-        data_summary = get_optimal_solutions(
-            df_v=df_v,
-            data_sumary=data_summary,
-            chunk_size=100000,
-        )
+            # MILP doesn't enumerate all solutions, so non-optimal sample is empty
+            data_summary_sample_no_opt = pd.DataFrame(columns=["oa_amt_h0", "b2_ever_h6"])
 
-        # Save all Pareto-optimal solutions (for Cutoff Explorer risk slider)
+        # Save all Pareto-optimal solutions
         data_summary.to_csv(output.pareto_solutions_csv, index=False)
         logger.debug(f"[{segment}] Pareto solutions saved to {output.pareto_solutions_csv}")
 
@@ -186,16 +196,17 @@ def run_optimization_phase(
     )
 
     elapsed = time.perf_counter() - t0
-    mode = "fixed_cutoffs" if use_fixed_cutoffs else "pareto"
-    b2_min = data_summary["b2_ever_h6"].min()
-    b2_max = data_summary["b2_ever_h6"].max()
+    mode = "fixed_cutoffs" if use_fixed_cutoffs else "milp_pareto"
+    b2_min = data_summary["b2_ever_h6"].min() if not data_summary.empty else 0
+    b2_max = data_summary["b2_ever_h6"].max() if not data_summary.empty else 0
+    grid_desc = "x".join(str(len(values_per_var[v])) for v in settings.variables)
     logger.info(
         f"[{segment}] Optimization done | mode={mode} | "
-        f"{len(data_summary)} solutions | {len(values_var0)}x{len(values_var1)} grid | "
+        f"{len(data_summary)} solutions | {grid_desc} grid | "
         f"b2 range: [{b2_min:.2f}%, {b2_max:.2f}%] | optimum_risk={settings.optimum_risk:.1f}% | {elapsed:.1f}s"
     )
 
-    return data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_var0, values_var1
+    return data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var
 
 
 def run_scenario_analysis(
@@ -213,8 +224,7 @@ def run_scenario_analysis(
     stress_factor: float,
     tasa_fin: float,
     annual_coef_mr: float,
-    values_var0: list,
-    values_var1: list,
+    values_per_var: dict[str, list],
     output: OutputPaths | None = None,
 ) -> pd.DataFrame:
     """Run scenario analysis for a single risk threshold: visualization, MR processing, audit.
@@ -233,8 +243,7 @@ def run_scenario_analysis(
         stress_factor: Calculated stress factor
         tasa_fin: Financing/transformation rate
         annual_coef_mr: Annual coefficient for the MR period
-        values_var0: Sorted unique values for variable 0
-        values_var1: Sorted unique values for variable 1
+        values_per_var: Dict mapping variable names to sorted unique bin values
 
     Returns:
         Cutoff summary DataFrame for this scenario
@@ -246,15 +255,18 @@ def run_scenario_analysis(
     segment = settings.segment_filter
     current_risk = float(round(scenario_risk, 1))
 
+    # Extract values_var0 for 2-var backward compat (bootstrap, cutoff extraction)
+    values_var0 = values_per_var[settings.variables[0]]
+
     visualizer = RiskProductionVisualizer(
         data_summary=data_summary,
         data_summary_disaggregated=data_summary_desagregado,
         data_summary_sample_no_opt=data_summary_sample_no_opt,
         variables=settings.variables,
-        values_var0=values_var0,
-        values_var1=values_var1,
         optimum_risk=current_risk,
         tasa_fin=tasa_fin,
+        values_per_var=values_per_var,
+        directions=settings.directions,
     )
 
     suffix = f"_{scenario_name}"
@@ -299,6 +311,8 @@ def run_scenario_analysis(
         if mask_opt.any():
             summary_table.loc[mask_opt, "production_ci_lower"] = ci_data.get("production_ci_lower", 0.0)
             summary_table.loc[mask_opt, "production_ci_upper"] = ci_data.get("production_ci_upper", 0.0)
+            # CI risk values from bootstrap are raw ratio (multiplier * num / den).
+            # Convert to percentage to match the Risk (%) column.
             summary_table.loc[mask_opt, "risk_ci_lower"] = ci_data.get("risk_ci_lower", 0.0) * 100
             summary_table.loc[mask_opt, "risk_ci_upper"] = ci_data.get("risk_ci_upper", 0.0) * 100
 
@@ -385,7 +399,7 @@ def run_scenario_analysis(
     else:
         data_mr_period = pd.DataFrame(columns=data_clean.columns)
 
-    inv_var1 = settings.inv_var1
+    inv_var1 = settings.variables[1] in settings.inv_vars
 
     # Calculate n_months for each period (for annualization)
     date_ini_main = settings.get_date("date_ini_book_obs")

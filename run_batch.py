@@ -147,6 +147,7 @@ def run_segment_pipeline(
     model_path: str | None = None,
     skip_dq_checks: bool = False,
     preloaded_data: pd.DataFrame = None,
+    training_only: bool = False,
 ) -> bool:
     """
     Run the pipeline for a single segment.
@@ -162,6 +163,7 @@ def run_segment_pipeline(
         skip_dq_checks: If True, skip data quality checks.
         preloaded_data: Optional pre-loaded and standardized DataFrame. If provided,
                        skips loading data from file for faster batch processing.
+        training_only: Optional parameter. If True, skipping optimization and scenario generation.
 
     Returns:
         True if successful, False otherwise
@@ -199,6 +201,7 @@ def run_segment_pipeline(
                 model_path=resolved_model_path,
                 skip_dq_checks=skip_dq_checks,
                 preloaded_data=preloaded_data,
+                training_only=training_only,
             )
 
         if result is None:
@@ -356,6 +359,7 @@ def run_segments_sequential(
     reuse_models: bool = False,
     skip_dq_checks: bool = False,
     preloaded_data: pd.DataFrame = None,
+    training_only: bool = False,
 ) -> dict[str, bool]:
     """
     Run all segments sequentially, with supersegment support.
@@ -470,6 +474,7 @@ def run_segments_sequential(
                 model_path=model_path,
                 skip_dq_checks=skip_dq_checks,
                 preloaded_data=preloaded_data,
+                training_only=training_only,
             )
             results[segment_name] = success
 
@@ -491,6 +496,7 @@ def run_segments_parallel(
     reuse_models: bool = False,
     skip_dq_checks: bool = False,
     preloaded_data: pd.DataFrame = None,
+    training_only: bool = False,
 ) -> dict[str, bool]:
     """
     Run all segments in parallel, with supersegment support.
@@ -591,6 +597,7 @@ def run_segments_parallel(
                     model_path,
                     skip_dq_checks,
                     preloaded_data,
+                    training_only,
                 )
                 futures[future] = segment_name
 
@@ -765,6 +772,9 @@ def main():
     parser.add_argument(
         "--consolidate-only", action="store_true", help="Only generate consolidated report (skip running segments)"
     )
+    parser.add_argument(
+        "--training-only", action="store_true", help="Only run data quality and training"
+    )
 
     args = parser.parse_args()
 
@@ -882,6 +892,7 @@ def main():
             reuse_models=args.reuse_models,
             skip_dq_checks=args.skip_dq_checks,
             preloaded_data=preloaded_data,
+            training_only=args.training_only,
         )
     else:
         results = run_segments_sequential(
@@ -892,13 +903,14 @@ def main():
             reuse_models=args.reuse_models,
             skip_dq_checks=args.skip_dq_checks,
             preloaded_data=preloaded_data,
+            training_only=args.training_only,
         )
 
     # Print summary
     print_summary(results)
 
     # Generate consolidated report
-    if not args.no_consolidation:
+    if not args.no_consolidation and not args.training_only:
         successful_segments = {name: config for name, config in segments.items() if results.get(name, False)}
         if successful_segments:
             print(f"\n{'=' * 60}")
@@ -921,7 +933,7 @@ def main():
             print("\nNo successful segments to consolidate.")
 
     # Generate score discriminance report
-    if not args.no_consolidation and preloaded_data is not None:
+    if not args.no_consolidation and not args.training_only and preloaded_data is not None:
         print(f"\n{'=' * 60}")
         print("Generating Score Discriminance Report")
         print(f"{'=' * 60}")

@@ -82,10 +82,16 @@ def run_inference_phase(
         model_name = risk_inference["best_model_info"]["name"]
         logger.info(f"[{segment}] Model loaded | {model_name} | R2={r2_display} | from {model_path} | {elapsed:.1f}s")
     else:
+        # Build bins tuple from bins_config or legacy fields
+        if settings.bins:
+            bins_tuple = tuple(bc.bin_edges for bc in settings.bins.values())
+        else:
+            bins_tuple = (settings.octroi_bins, settings.efx_bins)
+
         # Train new model with feature selection
         risk_inference = inference_pipeline(
             data=data_clean,
-            bins=(settings.octroi_bins, settings.efx_bins),
+            bins=bins_tuple,
             variables=settings.variables,
             indicators=settings.indicators,
             target_var="b2_ever_h6",

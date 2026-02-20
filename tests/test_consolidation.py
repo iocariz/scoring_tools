@@ -281,9 +281,9 @@ class TestConsolidatedMetrics:
             actual_todu_amt_pile_h6=10000,
         )
 
-        # Risk = todu_30ever_h6 / todu_amt_pile_h6 * 7
-        # = 100 / 10000 * 7 = 0.07
-        assert np.isclose(metrics.actual_risk, 0.07)
+        # Risk = todu_30ever_h6 / todu_amt_pile_h6 * 7 * 100 (percentage)
+        # = 100 / 10000 * 7 * 100 = 7.0
+        assert np.isclose(metrics.actual_risk, 7.0)
 
     def test_risk_percentage_in_dict(self):
         """Test that risk is converted to percentage in to_dict()."""
@@ -299,7 +299,7 @@ class TestConsolidatedMetrics:
 
         result = metrics.to_dict()
 
-        # 0.07 * 100 = 7.0%
+        # actual_risk property returns percentage directly: 7.0%
         assert np.isclose(result["actual_risk_pct"], 7.0)
 
     def test_zero_denominator(self):

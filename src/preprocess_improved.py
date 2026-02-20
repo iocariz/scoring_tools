@@ -15,7 +15,7 @@ from loguru import logger
 from src.constants import RejectReason, StatusName
 
 if TYPE_CHECKING:
-    from src.config import PreprocessingSettings
+    from src.config import BinConfig, PreprocessingSettings
 
 
 def log_dataframe_stats(df: pd.DataFrame, name: str) -> None:
@@ -189,18 +189,29 @@ def _generate_bin_summary(data: pd.DataFrame, bin_col: str, source_col: str) -> 
     return summary
 
 
-def apply_binning_transformations(data: pd.DataFrame, octroi_bins: list[float], efx_bins: list[float]) -> pd.DataFrame:
+def apply_binning_transformations(
+    data: pd.DataFrame,
+    octroi_bins: list[float] | None = None,
+    efx_bins: list[float] | None = None,
+    *,
+    bins_config: dict[str, "BinConfig"] | None = None,
+) -> pd.DataFrame:
     """
     Apply binning transformations to the data.
+
+    Supports both the legacy 2-variable interface (octroi_bins/efx_bins) and
+    the new N-variable interface (bins_config dict).
 
     Parameters
     ----------
     data : pd.DataFrame
         Input data
-    octroi_bins : List[float]
-        Bin edges for octroi score
-    efx_bins : List[float]
-        Bin edges for efx (risk) score
+    octroi_bins : list[float], optional
+        Legacy bin edges for octroi score (mutually exclusive with bins_config)
+    efx_bins : list[float], optional
+        Legacy bin edges for efx (risk) score (mutually exclusive with bins_config)
+    bins_config : dict[str, BinConfig], optional
+        N-variable binning configuration mapping output column names to BinConfig.
 
     Returns
     -------
@@ -212,94 +223,91 @@ def apply_binning_transformations(data: pd.DataFrame, octroi_bins: list[float], 
     ValueError
         If required columns are missing or binning fails
     """
+    if bins_config is not None:
+        return _apply_binning_from_config(data, bins_config)
+
+    # Legacy path — original 2-variable behavior
+    if octroi_bins is None or efx_bins is None:
+        raise ValueError("Either bins_config or both octroi_bins/efx_bins must be provided")
+
+    from src.config import BinConfig
+
+    legacy_config = {
+        "sc_octroi_new_clus": BinConfig(
+            source_col="score_rf",
+            output_col="sc_octroi_new_clus",
+            bin_edges=octroi_bins,
+        ),
+        "new_efx_clus": BinConfig(
+            source_col="risk_score_rf",
+            output_col="new_efx_clus",
+            bin_edges=efx_bins,
+        ),
+    }
+    return _apply_binning_from_config(data, legacy_config)
+
+
+def _apply_binning_from_config(
+    data: pd.DataFrame,
+    bins_config: dict[str, "BinConfig"],
+) -> pd.DataFrame:
+    """Apply binning for each variable defined in bins_config."""
     start_time = time.time()
-    logger.info("Starting binning transformations")
-    logger.info(f"Octroi bins: {octroi_bins}")
-    logger.info(f"Efx bins: {efx_bins}")
+    logger.info(f"Starting binning transformations for {len(bins_config)} variable(s)")
 
-    if len(octroi_bins) < 2:
-        raise ValueError("octroi_bins must have at least 2 values")
-    if len(efx_bins) < 2:
-        raise ValueError("efx_bins must have at least 2 values")
+    # Validate required source columns
+    source_cols = [bc.source_col for bc in bins_config.values()]
+    validate_dataframe_columns(data, source_cols, "apply_binning_transformations")
 
-    # Validate required columns
-    validate_dataframe_columns(data, ["score_rf", "risk_score_rf"], "apply_binning_transformations")
-
-    # Create a copy to avoid modifying the original data
     transformed_data = data.copy()
 
-    # Apply octroi binning
-    logger.info("Applying octroi binning to 'score_rf'")
-    try:
-        transformed_data["sc_octroi_new_clus"] = pd.cut(
-            transformed_data["score_rf"], bins=octroi_bins, labels=False, include_lowest=True
-        )
+    for var_name, bc in bins_config.items():
+        logger.info(f"Applying binning '{bc.output_col}' from '{bc.source_col}' with {len(bc.bin_edges)} edges")
+        logger.info(f"  Bin edges: {bc.bin_edges}")
 
-        # Check for NaN values from binning
-        nan_count = transformed_data["sc_octroi_new_clus"].isna().sum()
-        if nan_count > 0:
-            logger.warning(f"{nan_count:,} records have NaN values after octroi binning")
-            score_min = transformed_data["score_rf"].min()
-            score_max = transformed_data["score_rf"].max()
-            logger.warning(f"score_rf range: [{score_min}, {score_max}]")
-            logger.warning(f"octroi_bins range: [{min(octroi_bins)}, {max(octroi_bins)}]")
+        if len(bc.bin_edges) < 2:
+            raise ValueError(f"{bc.output_col}: bin_edges must have at least 2 values")
 
-        # Adjust bins to 1-indexed
-        transformed_data["sc_octroi_new_clus"] = transformed_data["sc_octroi_new_clus"] + 1
-
-    except (ValueError, KeyError) as e:
-        logger.error(f"Error in octroi binning: {e}")
-        raise
-
-    # Apply efx binning
-    logger.info("Applying efx binning to 'risk_score_rf'")
-    try:
-        transformed_data["new_efx_clus"] = pd.cut(
-            transformed_data["risk_score_rf"], bins=efx_bins, labels=False, include_lowest=True
-        )
-
-        # Check for NaN values from binning (values outside efx bin range)
-        nan_count = transformed_data["new_efx_clus"].isna().sum()
-        if nan_count > 0:
-            nan_pct = nan_count / len(transformed_data)
-            score_min = transformed_data["risk_score_rf"].min()
-            score_max = transformed_data["risk_score_rf"].max()
-            logger.warning(
-                f"{nan_count:,} records ({nan_pct:.1%}) have NaN after efx binning. "
-                f"risk_score_rf range: [{score_min}, {score_max}], efx_bins: [{min(efx_bins)}, {max(efx_bins)}]"
+        try:
+            transformed_data[bc.output_col] = pd.cut(
+                transformed_data[bc.source_col],
+                bins=bc.bin_edges,
+                labels=False,
+                include_lowest=True,
             )
-            if nan_pct > 0.01:
-                raise ValueError(
-                    f"{nan_pct:.1%} of records fall outside efx bin range — exceeds 1% threshold. "
-                    f"Check efx_bins configuration or data quality."
+
+            nan_count = transformed_data[bc.output_col].isna().sum()
+            if nan_count > 0:
+                nan_pct = nan_count / len(transformed_data)
+                src_min = transformed_data[bc.source_col].min()
+                src_max = transformed_data[bc.source_col].max()
+                logger.warning(
+                    f"{nan_count:,} records ({nan_pct:.1%}) have NaN after {bc.output_col} binning. "
+                    f"{bc.source_col} range: [{src_min}, {src_max}], "
+                    f"bin_edges: [{min(bc.bin_edges)}, {max(bc.bin_edges)}]"
                 )
-            logger.warning(f"Dropping {nan_count:,} out-of-range records")
-            transformed_data = transformed_data.dropna(subset=["new_efx_clus"])
+                if nan_pct > 0.01:
+                    raise ValueError(
+                        f"{nan_pct:.1%} of records fall outside {bc.output_col} bin range — exceeds 1% threshold. "
+                        f"Check bin_edges configuration or data quality."
+                    )
+                logger.warning(f"Dropping {nan_count:,} out-of-range records")
+                transformed_data = transformed_data.dropna(subset=[bc.output_col])
 
-        # Adjust bins to 1-indexed
-        transformed_data["new_efx_clus"] = transformed_data["new_efx_clus"] + 1
+            # 1-indexed bins
+            transformed_data[bc.output_col] = transformed_data[bc.output_col] + 1
 
-        # Invert efx_clus (higher is better)
-        transformed_data["new_efx_clus"] = len(efx_bins) - transformed_data["new_efx_clus"]
+        except (ValueError, KeyError) as e:
+            logger.error(f"Error in {bc.output_col} binning: {e}")
+            raise
 
-    except (ValueError, KeyError) as e:
-        logger.error(f"Error in efx binning: {e}")
-        raise
+        # Log bin summary
+        logger.info("=" * 60)
+        logger.info(f"BIN SUMMARY: {bc.output_col} (from {bc.source_col})")
+        logger.info("=" * 60)
+        summary = _generate_bin_summary(transformed_data, bin_col=bc.output_col, source_col=bc.source_col)
+        logger.info(f"\n{summary.to_string(index=False)}")
 
-    # Generate and log bin summaries
-    logger.info("=" * 60)
-    logger.info("BIN SUMMARY: sc_octroi_new_clus (from score_rf)")
-    logger.info("=" * 60)
-    octroi_summary = _generate_bin_summary(transformed_data, bin_col="sc_octroi_new_clus", source_col="score_rf")
-    logger.info(f"\n{octroi_summary.to_string(index=False)}")
-
-    logger.info("=" * 60)
-    logger.info("BIN SUMMARY: new_efx_clus (from risk_score_rf)")
-    logger.info("=" * 60)
-    efx_summary = _generate_bin_summary(transformed_data, bin_col="new_efx_clus", source_col="risk_score_rf")
-    logger.info(f"\n{efx_summary.to_string(index=False)}")
-
-    # Log completion
     elapsed_time = time.time() - start_time
     logger.info(f"Binning transformations completed in {elapsed_time:.2f} seconds")
 
@@ -526,9 +534,14 @@ def _run_data_transformations(df: pd.DataFrame, settings: "PreprocessingSettings
     logger.info("=" * 80)
     data_clean = preprocess_data(df, settings.keep_vars, settings.indicators, settings.segment_filter)
 
-    if settings.octroi_bins and settings.efx_bins:
+    if settings.bins:
         logger.info("\n" + "=" * 80)
         logger.info("Step 2: Binning transformations")
+        logger.info("=" * 80)
+        data_clean = apply_binning_transformations(data_clean, bins_config=settings.bins)
+    elif settings.octroi_bins and settings.efx_bins:
+        logger.info("\n" + "=" * 80)
+        logger.info("Step 2: Binning transformations (legacy)")
         logger.info("=" * 80)
         data_clean = apply_binning_transformations(data_clean, settings.octroi_bins, settings.efx_bins)
     else:
@@ -586,6 +599,61 @@ def _filter_demand_for_period(
     return data_demand
 
 
+def _infer_monotonicity(data: pd.DataFrame, settings: "PreprocessingSettings") -> None:
+    """
+    Infer the monotonicity of binned variables with respect to the risk target.
+    Updates settings.directions and settings.inv_vars in place.
+    
+    1 = ascending risk (higher bin = riskier)
+    -1 = descending risk (higher bin = safer)
+    """
+    logger.info("\n" + "=" * 80)
+    logger.info("Step 7: Infer dynamic monotonicity for variables")
+    logger.info("=" * 80)
+
+    from src.utils import calculate_b2_ever_h6
+    import scipy.stats as stats
+    
+    for var in settings.variables:
+        if var in settings.directions:
+            direction = settings.directions[var]
+            logger.info(f"[{var}] Using explicitly configured direction: {direction}")
+        else:
+            # We calculate B2 risk empirically per bin on the booked records
+            # using todu_30ever_h6 and todu_amt_pile_h6
+            aggs = data.groupby(var, observed=True)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum()
+            b2_risks = calculate_b2_ever_h6(aggs["todu_30ever_h6"], aggs["todu_amt_pile_h6"])
+            
+            valid_idx = ~b2_risks.isna()
+            if sum(valid_idx) < 2:
+                logger.warning(f"[{var}] Not enough valid risk data to infer direction. Defaulting to ascending (1).")
+                direction = 1
+            else:
+                bin_vals = aggs.index[valid_idx].values
+                risk_vals = b2_risks[valid_idx].values
+                corr, _ = stats.spearmanr(bin_vals, risk_vals)
+                
+                # If correlation is highly erratic or perfectly flat, default to 1
+                if pd.isna(corr):
+                    direction = 1
+                    logger.warning(f"[{var}] Spearman correlation returned NaN. Defaulting to ascending (1).")
+                else:
+                    direction = 1 if corr >= 0 else -1
+                    logger.info(f"[{var}] Inferred direction: {direction} (Spearman corr: {corr:.3f})")
+                
+            settings.directions[var] = direction
+
+        # Update inv_vars mapping for the optimization engine
+        # In the optimization code, if a variable is in inv_vars, it means higher bin index = SAFER
+        # So if direction == -1 (descending risk, higher bin = safer), it should be IN inv_vars
+        if direction == -1 and var not in settings.inv_vars:
+            settings.inv_vars.append(var)
+            logger.info(f"[{var}] Added to inv_vars list for optimization monotonically descending constraint.")
+        elif direction == 1 and var in settings.inv_vars:
+            settings.inv_vars.remove(var)
+            logger.info(f"[{var}] Removed from inv_vars list.")
+
+
 def complete_preprocessing_pipeline(
     df: pd.DataFrame, settings: "PreprocessingSettings"
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -622,6 +690,9 @@ def complete_preprocessing_pipeline(
         data_clean = _run_data_transformations(df, settings)
         data_booked = _filter_booked_for_period(data_clean, settings.date_ini_book_obs, settings.date_fin_book_obs)
         data_demand = _filter_demand_for_period(data_clean, settings.date_ini_book_obs, settings.date_fin_book_obs)
+
+        # Dynamic monotonicity check using the booked population
+        _infer_monotonicity(data_booked, settings)
 
         # Log final statistics
         logger.info("\n" + "=" * 80)
