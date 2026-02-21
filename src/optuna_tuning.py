@@ -8,7 +8,7 @@ import pandas as pd
 from lightgbm import LGBMRegressor
 from loguru import logger
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, LogisticRegression, Ridge
-from sklearn.metrics import r2_score
+from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import KFold
 from xgboost import XGBRegressor
 
@@ -87,9 +87,9 @@ def tune_tree_models(
             model_clone.fit(X_train, y_train, sample_weight=w_train)
             pred = model_clone.predict(X_val)
             if len(y_val) >= 2:
-                scores.append(r2_score(y_val, pred, sample_weight=w_val))
+                scores.append(np.sqrt(mean_squared_error(y_val, pred, sample_weight=w_val)))
         if not scores:
-            return -np.inf, 0.0
+            return np.inf, 0.0
         return np.mean(scores), np.std(scores, ddof=1) / np.sqrt(len(scores))
 
     # --- XGBoost Study ---
@@ -109,7 +109,7 @@ def tune_tree_models(
         mean_score, _ = eval_model(model, raw_data, cv_folds, random_state)
         return mean_score
 
-    study_xgb = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=random_state))
+    study_xgb = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=random_state))
     study_xgb.optimize(objective_xgb, n_trials=n_trials, show_progress_bar=True)
 
     best_xgb_params = study_xgb.best_params
@@ -121,7 +121,7 @@ def tune_tree_models(
     # Fresh-seed eval mitigates fold-level overfitting but is not fully nested CV;
     # R² may be slightly optimistic due to hyperparameter selection on the same data.
     xgb_mean, xgb_std = eval_model(xgb_model, raw_data, cv_folds, fresh_seed)
-    logger.info(f"Best XGBoost CV R²: {xgb_mean:.4f} ± {xgb_std:.4f} (fresh-seed, not nested CV)")
+    logger.info(f"Best XGBoost CV RMSE: {xgb_mean:.4f} ± {xgb_std:.4f} (fresh-seed, not nested CV)")
 
     # --- LightGBM Study ---
     def objective_lgb(trial):
@@ -142,7 +142,7 @@ def tune_tree_models(
         mean_score, _ = eval_model(model, raw_data, cv_folds, random_state)
         return mean_score
 
-    study_lgb = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=random_state))
+    study_lgb = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=random_state))
     study_lgb.optimize(objective_lgb, n_trials=n_trials, show_progress_bar=True)
 
     best_lgb_params = study_lgb.best_params
@@ -153,13 +153,13 @@ def tune_tree_models(
 
     lgb_model = LGBMRegressor(**best_lgb_params)
     lgb_mean, lgb_std = eval_model(lgb_model, raw_data, cv_folds, fresh_seed)
-    logger.info(f"Best LightGBM CV R²: {lgb_mean:.4f} ± {lgb_std:.4f} (fresh-seed, not nested CV)")
+    logger.info(f"Best LightGBM CV RMSE: {lgb_mean:.4f} ± {lgb_std:.4f} (fresh-seed, not nested CV)")
 
     models = {"XGBoost (Optuna Tuned)": xgb_model, "LightGBM (Optuna Tuned)": lgb_model}
 
     results = [
-        {"Model": "XGBoost (Optuna Tuned)", "CV Mean R²": xgb_mean, "CV Std R²": xgb_std, "model_template": xgb_model},
-        {"Model": "LightGBM (Optuna Tuned)", "CV Mean R²": lgb_mean, "CV Std R²": lgb_std, "model_template": lgb_model},
+        {"Model": "XGBoost (Optuna Tuned)", "CV Mean RMSE": xgb_mean, "CV Std RMSE": xgb_std, "model_template": xgb_model},
+        {"Model": "LightGBM (Optuna Tuned)", "CV Mean RMSE": lgb_mean, "CV Std RMSE": lgb_std, "model_template": lgb_model},
     ]
     results_df = pd.DataFrame(results)
 
@@ -222,7 +222,7 @@ def tune_linear_models(
                 model.fit(X_train, y_train, sample_weight=w_train)
                 pred = model.predict(X_val)
                 if len(y_val) >= 2:
-                    scores.append(r2_score(y_val, pred, sample_weight=w_val))
+                    scores.append(np.sqrt(mean_squared_error(y_val, pred, sample_weight=w_val)))
             except (ValueError, np.linalg.LinAlgError, RuntimeError) as e:
                 raise optuna.exceptions.TrialPruned() from e
 
@@ -235,29 +235,29 @@ def tune_linear_models(
         try:
             return eval_model(model, raw_data, cv_folds, random_state)
         except Exception:
-            return -np.inf, 0.0
+            return np.inf, 0.0
 
     def safe_eval_fresh(model):
         try:
             return eval_model(model, raw_data, cv_folds, fresh_seed)
         except Exception:
-            return -np.inf, 0.0
+            return np.inf, 0.0
 
     results = []
     models = {}
 
     def optimize_and_evaluate(objective_func, create_model_func, name_func):
-        study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=random_state))
+        study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=random_state))
         try:
             study.optimize(objective_func, n_trials=n_trials, show_progress_bar=True)
-            if study.best_value == -np.inf:
+            if study.best_value == np.inf:
                 return
             best_model = create_model_func(study.best_params)
-            mean_r2, std_r2 = safe_eval_fresh(best_model)
-            if mean_r2 > -np.inf:
+            mean_rmse, std_rmse = safe_eval_fresh(best_model)
+            if mean_rmse < np.inf:
                 name = name_func(study.best_params)
                 results.append(
-                    {"Model": name, "CV Mean R²": mean_r2, "CV Std R²": std_r2, "model_template": best_model}
+                    {"Model": name, "CV Mean RMSE": mean_rmse, "CV Std RMSE": std_rmse, "model_template": best_model}
                 )
                 models[name] = best_model
         except ValueError:
@@ -267,9 +267,9 @@ def tune_linear_models(
     # 1. LinearRegression (baseline, no tuning needed)
     lin_model = LinearRegression(fit_intercept=True)
     lin_mean, lin_std = safe_eval_fresh(lin_model)
-    if lin_mean > -np.inf:
+    if lin_mean < np.inf:
         results.append(
-            {"Model": "Linear Regression", "CV Mean R²": lin_mean, "CV Std R²": lin_std, "model_template": lin_model}
+            {"Model": "Linear Regression", "CV Mean RMSE": lin_mean, "CV Std RMSE": lin_std, "model_template": lin_model}
         )
         models["Linear Regression"] = lin_model
 
@@ -371,8 +371,8 @@ def tune_linear_models(
     if not results:
         raise RuntimeError("All Optuna linear/GLM model tuned trials failed or were pruned.")
 
-    results_df = pd.DataFrame(results).sort_values("CV Mean R²", ascending=False)
+    results_df = pd.DataFrame(results).sort_values("CV Mean RMSE", ascending=True)
     # Ensure columns match expected upstream layout
-    results_df = results_df[["Model", "CV Mean R²", "CV Std R²", "model_template"]]
+    results_df = results_df[["Model", "CV Mean RMSE", "CV Std RMSE", "model_template"]]
 
     return results_df, models

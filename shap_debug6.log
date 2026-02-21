@@ -1,0 +1,1246 @@
+2026-02-21 08:55:51.768 | INFO     | __main__:load_and_standardize_data:75 - Attempting to preload data from data/demanda_direct_out.sas7bdat...
+2026-02-21 08:55:57.800 | INFO     | __main__:load_and_standardize_data:77 - Data loaded: 1,017,641 rows × 35 columns
+2026-02-21 08:55:57.800 | INFO     | __main__:load_and_standardize_data:80 - Standardizing column names...
+2026-02-21 08:55:57.800 | INFO     | __main__:load_and_standardize_data:84 - Standardizing categorical values...
+2026-02-21 08:56:01.432 | INFO     | __main__:load_and_standardize_data:88 - Data standardization complete.
+
+Processing 1 segment(s): ['premium']
+Output directory: output
+Mode: sequential
+
+============================================================
+Attempting to preload data (optimization)
+============================================================
+Data preloaded: 1,017,641 rows × 35 columns
+All segments will use preloaded data.
+
+
+============================================================
+PHASE 2: Running Segment Optimizations
+============================================================
+Segments:   0%|          | 0/1 [00:00<?]Segments:   0%|          | 0/1 [00:00<?]2026-02-21 08:56:01.441 | INFO     | __main__:run_segment_pipeline:184 - ================================================================================
+2026-02-21 08:56:01.441 | INFO     | __main__:run_segment_pipeline:185 - PROCESSING SEGMENT: premium
+2026-02-21 08:56:01.441 | INFO     | __main__:run_segment_pipeline:186 - ================================================================================
+2026-02-21 08:56:01.441 | INFO     | __main__:run_segment_pipeline:187 - Output directory: output/premium
+2026-02-21 08:56:01.441 | INFO     | __main__:run_segment_pipeline:191 - Segment filter: personal_loans,_fusion_and_tj_direct-premium-
+2026-02-21 08:56:01.441 | INFO     | __main__:run_segment_pipeline:192 - Optimum risk: 0.9
+2026-02-21 08:56:02.150 | DEBUG    | src.pipeline.config_loader:load_and_validate_config:21 - Configuration loaded from /Users/inigo_ocariz/src/scoring_tools/output/premium/config_segment.toml
+2026-02-21 08:56:02.150 | INFO     | src.pipeline.config_loader:load_and_validate_config:30 - Config validated | segment=personal_loans,_fusion_and_tj_direct-premium- | period=2024-07-01 to 2025-06-01 | annual_coef=1.00
+2026-02-21 08:56:02.170 | DEBUG    | src.data_manager:load_and_prepare_data:80 - Using pre-loaded data: 1,017,641 rows x 35 columns
+2026-02-21 08:56:02.245 | INFO     | src.schema:validate_raw_data:83 - Schema validation passed
+2026-02-21 08:56:02.245 | INFO     | src.data_manager:load_and_prepare_data:103 - Data ready | 1,017,641 rows x 35 cols | source=preloaded | 0.1s
+2026-02-21 08:56:02.245 | INFO     | src.data_quality:run_data_quality_checks:457 - Running data quality checks...
+2026-02-21 08:56:02.516 | WARNING  | src.pipeline.preprocessing:run_preprocessing_phase:48 - [personal_loans,_fusion_and_tj_direct-premium-] 1 data quality warnings. Proceeding with caution.
+
+============================================================
+DATA QUALITY REPORT
+============================================================
+
+WARNINGS:
+  ⚠ Numeric Outliers: Extreme outliers detected in 3 columns
+    - oa_amt: 28.01% outliers (z>5.0)
+    - todu_30ever_h6: 1.26% outliers (z>5.0)
+    - oa_amt_h0: 1.67% outliers (z>5.0)
+
+PASSED:
+  ✓ Required Columns: All 17 required columns present
+  ✓ Missing Values: No significant missing values
+  ✓ Segment Filter: Found 43,385 rows (4.3%) matching segment
+    - segment_filter: personal_loans,_fusion_and_tj_direct-premium-
+  ✓ Segment Size: Segment has 43,385 rows
+  ✓ Date Range: Data covers expected date range
+    - expected_range: 2024-07-01 to 2025-06-01
+    - actual_range: 2023-12-01 to 2025-12-01
+  ✓ Indicator Values: All 5 indicators have valid values
+  ✓ Booked Ratio: Booked ratio: 6.5% (66,020 of 1,017,641)
+  ✓ Duplicate Rows: No significant duplicates across all columns
+
+------------------------------------------------------------
+Data Quality: 8/9 passed, 1 warnings, 0 failures
+============================================================
+
+2026-02-21 08:56:02.518 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:731 - ================================================================================
+2026-02-21 08:56:02.518 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:732 - Starting complete preprocessing pipeline
+2026-02-21 08:56:02.518 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:733 - ================================================================================
+2026-02-21 08:56:02.518 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:734 - Input data shape: (1017641, 35)
+2026-02-21 08:56:02.518 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:735 - Observation period: 2024-07-01 to 2025-06-01
+2026-02-21 08:56:02.518 | INFO     | src.preprocess_improved:_run_data_transformations:542 - 
+================================================================================
+2026-02-21 08:56:02.518 | INFO     | src.preprocess_improved:_run_data_transformations:543 - Step 1: Basic filtering
+2026-02-21 08:56:02.518 | INFO     | src.preprocess_improved:_run_data_transformations:544 - ================================================================================
+2026-02-21 08:56:02.518 | INFO     | src.preprocess_improved:preprocess_data:103 - Starting data preprocessing with 1,017,641 records
+2026-02-21 08:56:02.518 | INFO     | src.preprocess_improved:preprocess_data:114 - Found 7 measure columns starting with 'm_ct_direct'
+2026-02-21 08:56:02.518 | INFO     | src.preprocess_improved:preprocess_data:122 - Applying filters: fuera_norma='n', fraud_flag='n', nature_holder!='legal', segment_cut_off='personal_loans,_fusion_and_tj_direct-premium-'
+2026-02-21 08:56:02.552 | INFO     | src.preprocess_improved:preprocess_data:147 - Filter applied in 0.03s. Removed 974,611 records (95.8%)
+2026-02-21 08:56:02.552 | INFO     | src.preprocess_improved:preprocess_data:151 - 43,030 records remaining
+2026-02-21 08:56:02.552 | INFO     | src.preprocess_improved:preprocess_data:157 - Selecting 21 columns
+2026-02-21 08:56:02.553 | INFO     | src.preprocess_improved:preprocess_data:162 - Preprocessing completed in 0.04 seconds
+2026-02-21 08:56:02.553 | INFO     | src.preprocess_improved:log_dataframe_stats:32 - Preprocessed data shape: (43030, 21)
+2026-02-21 08:56:02.553 | INFO     | src.preprocess_improved:log_dataframe_stats:33 - Preprocessed data columns: ['authorization_id', 'mis_date', 'status_name', 'risk_score_rf', 'se_decision_id', 'reject_reason', 'score_rf', 'segment_cut_off', 'early_bad', 'acct_booked_h0', 'oa_amt', 'todu_30ever_h6', 'todu_amt_pile_h6', 'oa_amt_h0', 'm_ct_direct_sc_nov23', 'm_ct_direct_sc_jan23', 'm_ct_direct_pacing_nov23', 'm_ct_direct_sc_conso25', 'm_ct_direct_sc_precon25', 'm_ct_direct_sc_fintonic25', 'm_ct_direct_sc_direct25_total']
+2026-02-21 08:56:02.554 | INFO     | src.preprocess_improved:log_dataframe_stats:36 - Preprocessed data missing values: 469657
+2026-02-21 08:56:02.554 | WARNING  | src.preprocess_improved:log_dataframe_stats:41 - Preprocessed data columns with missing values:
+reject_reason                    27153
+early_bad                           98
+acct_booked_h0                   35434
+todu_30ever_h6                   35434
+todu_amt_pile_h6                 35434
+oa_amt_h0                        35434
+m_ct_direct_sc_nov23             43030
+m_ct_direct_sc_jan23             43030
+m_ct_direct_pacing_nov23         43030
+m_ct_direct_sc_conso25           43030
+m_ct_direct_sc_precon25          43030
+m_ct_direct_sc_fintonic25        43030
+m_ct_direct_sc_direct25_total    42490
+dtype: int64
+2026-02-21 08:56:02.555 | INFO     | src.preprocess_improved:log_dataframe_stats:45 - Preprocessed data memory usage: 4.07 MB
+2026-02-21 08:56:02.560 | INFO     | src.preprocess_improved:_run_data_transformations:548 - 
+================================================================================
+2026-02-21 08:56:02.560 | INFO     | src.preprocess_improved:_run_data_transformations:549 - Step 2: Binning transformations
+2026-02-21 08:56:02.560 | INFO     | src.preprocess_improved:_run_data_transformations:550 - ================================================================================
+2026-02-21 08:56:02.560 | INFO     | src.preprocess_improved:_apply_binning_from_config:256 - Starting binning transformations for 2 variable(s)
+2026-02-21 08:56:02.560 | INFO     | src.preprocess_improved:_apply_binning_from_config:265 - Applying binning 'sc_octroi_new_clus' from 'score_rf' with 11 edges
+2026-02-21 08:56:02.560 | INFO     | src.preprocess_improved:_apply_binning_from_config:266 -   Bin edges: [-inf, 364.0, 370.0, 379.0, 382.0, 389.0, 397.0, 404.0, 416.0, 431.0, inf]
+2026-02-21 08:56:02.561 | INFO     | src.preprocess_improved:_apply_binning_from_config:315 - ============================================================
+2026-02-21 08:56:02.561 | INFO     | src.preprocess_improved:_apply_binning_from_config:316 - BIN SUMMARY: sc_octroi_new_clus (from score_rf)
+2026-02-21 08:56:02.561 | INFO     | src.preprocess_improved:_apply_binning_from_config:317 - ============================================================
+2026-02-21 08:56:02.562 | INFO     | src.preprocess_improved:_apply_binning_from_config:319 - 
+ bin   min   max  count
+   3 374.0 376.0    195
+   4 380.0 382.0    126
+   5 388.0 389.0   2358
+   6 391.0 395.0   1679
+   7 399.0 404.0   2744
+   8 407.0 416.0   7197
+   9 417.0 431.0   9724
+  10 433.0 508.0  19007
+2026-02-21 08:56:02.562 | INFO     | src.preprocess_improved:_apply_binning_from_config:265 - Applying binning 'new_efx_clus' from 'risk_score_rf' with 21 edges
+2026-02-21 08:56:02.562 | INFO     | src.preprocess_improved:_apply_binning_from_config:266 -   Bin edges: [-inf, 2.0, 7.0, 11.0, 16.0, 22.0, 27.0, 33.0, 38.0, 43.0, 47.0, 51.0, 56.0, 62.0, 68.0, 73.0, 78.0, 83.0, 89.0, 94.0, inf]
+2026-02-21 08:56:02.563 | INFO     | src.preprocess_improved:_apply_binning_from_config:315 - ============================================================
+2026-02-21 08:56:02.563 | INFO     | src.preprocess_improved:_apply_binning_from_config:316 - BIN SUMMARY: new_efx_clus (from risk_score_rf)
+2026-02-21 08:56:02.563 | INFO     | src.preprocess_improved:_apply_binning_from_config:317 - ============================================================
+2026-02-21 08:56:02.564 | INFO     | src.preprocess_improved:_apply_binning_from_config:319 - 
+ bin  min  max  count
+   1  0.0  2.0    749
+   2  3.0  7.0    898
+   3  8.0 11.0    542
+   4 12.0 16.0    902
+   5 17.0 22.0   1473
+   6 23.0 27.0   1539
+   7 28.0 33.0   2368
+   8 34.0 38.0   2046
+   9 39.0 43.0   2263
+  10 44.0 47.0   1762
+  11 48.0 51.0   1908
+  12 52.0 56.0   2294
+  13 57.0 62.0   2895
+  14 63.0 68.0   3160
+  15 69.0 73.0   2819
+  16 74.0 78.0   2828
+  17 79.0 83.0   2877
+  18 84.0 89.0   3579
+  19 90.0 94.0   3142
+  20 95.0 99.0   2986
+2026-02-21 08:56:02.564 | INFO     | src.preprocess_improved:_apply_binning_from_config:322 - Binning transformations completed in 0.00 seconds
+2026-02-21 08:56:02.564 | INFO     | src.preprocess_improved:_run_data_transformations:560 - 
+================================================================================
+2026-02-21 08:56:02.564 | INFO     | src.preprocess_improved:_run_data_transformations:561 - Step 3: Update oa_amt_h0
+2026-02-21 08:56:02.564 | INFO     | src.preprocess_improved:_run_data_transformations:562 - ================================================================================
+2026-02-21 08:56:02.564 | INFO     | src.preprocess_improved:update_oa_amt_h0:347 - Updating oa_amt_h0 values for non-booked records
+2026-02-21 08:56:02.565 | INFO     | src.preprocess_improved:update_oa_amt_h0:357 - Updating 35,336 records where status_name != 'booked' (82.1% of data)
+2026-02-21 08:56:02.565 | INFO     | src.preprocess_improved:update_oa_amt_h0:366 - Successfully updated 35,336 records
+2026-02-21 08:56:02.565 | INFO     | src.preprocess_improved:update_oa_amt_h0:370 - oa_amt_h0 update completed in 0.00 seconds
+2026-02-21 08:56:02.565 | INFO     | src.preprocess_improved:_run_data_transformations:565 - 
+================================================================================
+2026-02-21 08:56:02.565 | INFO     | src.preprocess_improved:_run_data_transformations:566 - Step 4: Update status and reject reasons
+2026-02-21 08:56:02.565 | INFO     | src.preprocess_improved:_run_data_transformations:567 - ================================================================================
+2026-02-21 08:56:02.565 | INFO     | src.preprocess_improved:update_status_and_reject_reason:480 - Updating status_name and reject_reason
+2026-02-21 08:56:02.566 | INFO     | src.preprocess_improved:update_status_and_reject_reason:488 - Found 7 direct measure columns
+2026-02-21 08:56:02.566 | INFO     | src.preprocess_improved:update_status_and_reject_reason:497 - Found 540 records with 'y' in direct measure columns (1.3% of data)
+2026-02-21 08:56:02.566 | INFO     | src.preprocess_improved:update_status_and_reject_reason:508 - Updating reject_reason for score measures: ['m_ct_direct_sc_nov23', 'm_ct_direct_sc_jan23', 'm_ct_direct_sc_conso25', 'm_ct_direct_sc_precon25', 'm_ct_direct_sc_fintonic25', 'm_ct_direct_sc_direct25_total']
+2026-02-21 08:56:02.566 | INFO     | src.preprocess_improved:update_status_and_reject_reason:513 - Found 540 records with 'y' in score measure columns (1.3% of data)
+2026-02-21 08:56:02.567 | INFO     | src.preprocess_improved:update_status_and_reject_reason:521 - status_name distribution after update:
+status_name
+canceled    19728
+rejected    16148
+booked       7154
+Name: count, dtype: int64
+2026-02-21 08:56:02.567 | INFO     | src.preprocess_improved:update_status_and_reject_reason:525 - reject_reason distribution after update:
+reject_reason
+03-budget              8696
+09-score               2097
+08-other               2040
+02-bureaux             1842
+04-customer_profile    1215
+01-customer_risk        478
+06-compliance            18
+07-product               18
+05-fraud                 13
+Name: count, dtype: int64
+2026-02-21 08:56:02.567 | INFO     | src.preprocess_improved:update_status_and_reject_reason:529 - Status and reject reason update completed in 0.00 seconds
+2026-02-21 08:56:02.567 | INFO     | src.preprocess_improved:_filter_booked_for_period:579 - 
+================================================================================
+2026-02-21 08:56:02.567 | INFO     | src.preprocess_improved:_filter_booked_for_period:580 - Step 5: Filter booked data by date
+2026-02-21 08:56:02.567 | INFO     | src.preprocess_improved:_filter_booked_for_period:581 - ================================================================================
+2026-02-21 08:56:02.567 | INFO     | src.preprocess_improved:_filter_booked_for_period:583 - Found 7,154 records with status_name='booked'
+2026-02-21 08:56:02.567 | INFO     | src.preprocess_improved:filter_by_date:401 - Filtering data by date range: 2024-07-01 to 2025-06-01
+2026-02-21 08:56:02.568 | INFO     | src.preprocess_improved:filter_by_date:436 - Date filter removed 3,972 records (55.5% of data)
+2026-02-21 08:56:02.568 | INFO     | src.preprocess_improved:filter_by_date:437 - Remaining records: 3,182
+2026-02-21 08:56:02.568 | INFO     | src.preprocess_improved:filter_by_date:443 - Date range in filtered data: 2024-07-01 to 2025-06-01
+2026-02-21 08:56:02.569 | INFO     | src.preprocess_improved:filter_by_date:447 - Monthly distribution:
+mis_date
+2024-07    295
+2024-08    284
+2024-09    308
+2024-10    301
+2024-11    280
+2024-12    239
+2025-01    278
+2025-02    240
+2025-03    238
+2025-04    216
+2025-05    243
+2025-06    260
+Freq: M, Name: count, dtype: int64
+2026-02-21 08:56:02.569 | INFO     | src.preprocess_improved:filter_by_date:453 - Date filtering completed in 0.00 seconds
+2026-02-21 08:56:02.569 | INFO     | src.preprocess_improved:_filter_demand_for_period:599 - 
+================================================================================
+2026-02-21 08:56:02.569 | INFO     | src.preprocess_improved:_filter_demand_for_period:600 - Step 6: Filter demand data by date
+2026-02-21 08:56:02.569 | INFO     | src.preprocess_improved:_filter_demand_for_period:601 - ================================================================================
+2026-02-21 08:56:02.569 | INFO     | src.preprocess_improved:filter_by_date:401 - Filtering data by date range: 2024-07-01 to 2025-06-01
+2026-02-21 08:56:02.570 | INFO     | src.preprocess_improved:filter_by_date:436 - Date filter removed 22,658 records (52.7% of data)
+2026-02-21 08:56:02.570 | INFO     | src.preprocess_improved:filter_by_date:437 - Remaining records: 20,372
+2026-02-21 08:56:02.570 | INFO     | src.preprocess_improved:filter_by_date:443 - Date range in filtered data: 2024-07-01 to 2025-06-01
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:filter_by_date:447 - Monthly distribution:
+mis_date
+2024-07    1659
+2024-08    1755
+2024-09    1731
+2024-10    1933
+2024-11    1768
+2024-12    1531
+2025-01    1689
+2025-02    1656
+2025-03    1691
+2025-04    1596
+2025-05    1724
+2025-06    1639
+Freq: M, Name: count, dtype: int64
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:filter_by_date:453 - Date filtering completed in 0.00 seconds
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:_infer_monotonicity:620 - 
+================================================================================
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:_infer_monotonicity:621 - Step 7: Infer dynamic monotonicity for variables (Weighted)
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:_infer_monotonicity:622 - ================================================================================
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:_infer_monotonicity:632 - [sc_octroi_new_clus] Using explicitly configured direction: -1
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:_infer_monotonicity:699 - [sc_octroi_new_clus] Added to inv_vars list for optimization monotonically descending constraint.
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:_infer_monotonicity:632 - [new_efx_clus] Using explicitly configured direction: -1
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:_infer_monotonicity:699 - [new_efx_clus] Added to inv_vars list for optimization monotonically descending constraint.
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:746 - 
+================================================================================
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:747 - Preprocessing pipeline completed successfully
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:748 - ================================================================================
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:749 - Final data_clean shape: (43030, 23)
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:750 - Final data_booked shape: (3182, 23)
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:751 - Final data_demand shape: (20372, 23)
+2026-02-21 08:56:02.571 | INFO     | src.preprocess_improved:complete_preprocessing_pipeline:754 - Total preprocessing time: 0.05 seconds (0.00 minutes)
+2026-02-21 08:56:02.649 | INFO     | src.pipeline.preprocessing:run_preprocessing_phase:67 - [personal_loans,_fusion_and_tj_direct-premium-] Preprocessing done | clean=43,030 booked=3,182 demand=20,372 | stress=1.6904 tasa_fin=23.38% | 0.4s
+2026-02-21 08:56:02.649 | INFO     | src.inference_optimized:inference_pipeline:965 - ================================================================================
+2026-02-21 08:56:02.649 | INFO     | src.inference_optimized:inference_pipeline:966 - INFERENCE PIPELINE (CV-based)
+2026-02-21 08:56:02.649 | INFO     | src.inference_optimized:inference_pipeline:967 - ================================================================================
+2026-02-21 08:56:02.649 | INFO     | src.inference_optimized:inference_pipeline:968 - Target: b2_ever_h6 | CV folds: 3 | Hurdle: True
+2026-02-21 08:56:02.649 | INFO     | src.inference_optimized:inference_pipeline:971 - ----------------------------------------
+2026-02-21 08:56:02.649 | INFO     | src.inference_optimized:inference_pipeline:972 - STEP 1: DATA PREPARATION
+2026-02-21 08:56:02.649 | INFO     | src.inference_optimized:inference_pipeline:973 - ----------------------------------------
+2026-02-21 08:56:02.650 | INFO     | src.inference_optimized:_prepare_pipeline_data:621 - Booked valid records: 7,056 of 43,030 total
+2026-02-21 08:56:02.650 | INFO     | src.inference_optimized:_prepare_pipeline_data:622 - Base features (var_reg): ['new_efx_clus', 'sc_octroi_new_clus', 'sc_octroi_new_clus_new_efx_clus']
+2026-02-21 08:56:02.653 | INFO     | src.inference_optimized:inference_pipeline:984 - Processed full data scope: 109 groups
+2026-02-21 08:56:02.653 | INFO     | src.inference_optimized:inference_pipeline:985 - Zero proportion: 68.8%
+2026-02-21 08:56:02.653 | INFO     | src.inference_optimized:inference_pipeline:987 - Weight range: [20223, 22146379]
+2026-02-21 08:56:02.653 | INFO     | src.inference_optimized:inference_pipeline:990 - ----------------------------------------
+2026-02-21 08:56:02.653 | INFO     | src.inference_optimized:inference_pipeline:991 - STEP 2: MODEL TYPE SELECTION (CV on var_reg)
+2026-02-21 08:56:02.653 | INFO     | src.inference_optimized:inference_pipeline:992 - ----------------------------------------
+2026-02-21 08:56:02.653 | INFO     | src.inference_optimized:_select_best_model_and_features:643 - ----------------------------------------
+2026-02-21 08:56:02.653 | INFO     | src.inference_optimized:_select_best_model_and_features:644 - STEP 2A: TUNE TREE MODELS ON ORIGINAL FEATURES (3-fold CV)
+2026-02-21 08:56:02.653 | INFO     | src.inference_optimized:_select_best_model_and_features:645 - ----------------------------------------
+2026-02-21 08:56:02.653 | INFO     | src.optuna_tuning:tune_tree_models:43 - Starting Optuna hyperparameter tuning for XGBoost and LightGBM (30 trials each)...
+
+  0%|          | 0/30 [00:00<?, ?it/s][A
+Best trial: 0. Best value: -0.334352:   0%|          | 0/30 [00:00<?, ?it/s][A
+Best trial: 0. Best value: -0.334352:   3%|▎         | 1/30 [00:00<00:05,  5.29it/s][A
+Best trial: 1. Best value: -0.227571:   3%|▎         | 1/30 [00:00<00:05,  5.29it/s][A
+Best trial: 1. Best value: -0.227571:   7%|▋         | 2/30 [00:00<00:04,  6.86it/s][A
+Best trial: 2. Best value: -0.227142:   7%|▋         | 2/30 [00:00<00:04,  6.86it/s][A
+Best trial: 2. Best value: -0.227142:  10%|█         | 3/30 [00:00<00:05,  4.90it/s][A
+Best trial: 2. Best value: -0.227142:  10%|█         | 3/30 [00:00<00:05,  4.90it/s][A
+Best trial: 2. Best value: -0.227142:  13%|█▎        | 4/30 [00:00<00:04,  5.23it/s][A
+Best trial: 4. Best value: -0.203521:  13%|█▎        | 4/30 [00:00<00:04,  5.23it/s][A
+Best trial: 4. Best value: -0.203521:  17%|█▋        | 5/30 [00:00<00:05,  4.76it/s][A
+Best trial: 5. Best value: -0.193192:  17%|█▋        | 5/30 [00:01<00:05,  4.76it/s][A
+Best trial: 5. Best value: -0.193192:  20%|██        | 6/30 [00:01<00:04,  5.17it/s][A
+Best trial: 5. Best value: -0.193192:  20%|██        | 6/30 [00:01<00:04,  5.17it/s][A
+Best trial: 5. Best value: -0.193192:  23%|██▎       | 7/30 [00:01<00:03,  5.99it/s][A
+Best trial: 7. Best value: -0.171794:  23%|██▎       | 7/30 [00:01<00:03,  5.99it/s][A
+Best trial: 7. Best value: -0.171794:  27%|██▋       | 8/30 [00:01<00:03,  6.69it/s][A
+Best trial: 7. Best value: -0.171794:  27%|██▋       | 8/30 [00:01<00:03,  6.69it/s][A
+Best trial: 7. Best value: -0.171794:  30%|███       | 9/30 [00:01<00:03,  6.79it/s][A
+Best trial: 7. Best value: -0.171794:  30%|███       | 9/30 [00:01<00:03,  6.79it/s][A
+Best trial: 7. Best value: -0.171794:  33%|███▎      | 10/30 [00:01<00:03,  5.25it/s][A
+Best trial: 7. Best value: -0.171794:  33%|███▎      | 10/30 [00:01<00:03,  5.25it/s][A
+Best trial: 7. Best value: -0.171794:  37%|███▋      | 11/30 [00:01<00:03,  6.14it/s][A
+Best trial: 7. Best value: -0.171794:  37%|███▋      | 11/30 [00:02<00:03,  6.14it/s][A
+Best trial: 7. Best value: -0.171794:  40%|████      | 12/30 [00:02<00:02,  6.14it/s][A
+Best trial: 7. Best value: -0.171794:  43%|████▎     | 13/30 [00:02<00:02,  6.92it/s][A
+Best trial: 7. Best value: -0.171794:  43%|████▎     | 13/30 [00:02<00:02,  6.92it/s][A
+Best trial: 7. Best value: -0.171794:  47%|████▋     | 14/30 [00:02<00:02,  6.95it/s][A
+Best trial: 7. Best value: -0.171794:  47%|████▋     | 14/30 [00:02<00:02,  6.95it/s][A
+Best trial: 7. Best value: -0.171794:  50%|█████     | 15/30 [00:02<00:02,  6.66it/s][A
+Best trial: 7. Best value: -0.171794:  50%|█████     | 15/30 [00:02<00:02,  6.66it/s][A
+Best trial: 7. Best value: -0.171794:  53%|█████▎    | 16/30 [00:02<00:02,  5.12it/s][A
+Best trial: 7. Best value: -0.171794:  53%|█████▎    | 16/30 [00:02<00:02,  5.12it/s][A
+Best trial: 7. Best value: -0.171794:  57%|█████▋    | 17/30 [00:03<00:02,  5.12it/s][A
+Best trial: 7. Best value: -0.171794:  60%|██████    | 18/30 [00:03<00:02,  5.78it/s][A
+Best trial: 7. Best value: -0.171794:  60%|██████    | 18/30 [00:03<00:02,  5.78it/s][A
+Best trial: 7. Best value: -0.171794:  63%|██████▎   | 19/30 [00:03<00:01,  6.28it/s][A
+Best trial: 7. Best value: -0.171794:  63%|██████▎   | 19/30 [00:03<00:01,  6.28it/s][A
+Best trial: 7. Best value: -0.171794:  67%|██████▋   | 20/30 [00:03<00:01,  5.38it/s][A
+Best trial: 7. Best value: -0.171794:  67%|██████▋   | 20/30 [00:03<00:01,  5.38it/s][A
+Best trial: 7. Best value: -0.171794:  70%|███████   | 21/30 [00:03<00:01,  5.60it/s][A
+Best trial: 7. Best value: -0.171794:  70%|███████   | 21/30 [00:03<00:01,  5.60it/s][A
+Best trial: 7. Best value: -0.171794:  73%|███████▎  | 22/30 [00:03<00:01,  6.30it/s][A
+Best trial: 22. Best value: -0.171057:  73%|███████▎  | 22/30 [00:03<00:01,  6.30it/s][A
+Best trial: 23. Best value: -0.17046:  77%|███████▋  | 23/30 [00:03<00:01,  6.30it/s] [A
+Best trial: 23. Best value: -0.17046:  80%|████████  | 24/30 [00:03<00:00,  7.25it/s][A
+Best trial: 24. Best value: -0.165126:  80%|████████  | 24/30 [00:04<00:00,  7.25it/s][A
+Best trial: 24. Best value: -0.165126:  83%|████████▎ | 25/30 [00:04<00:00,  7.51it/s][A
+Best trial: 25. Best value: -0.161662:  83%|████████▎ | 25/30 [00:04<00:00,  7.51it/s][A
+Best trial: 25. Best value: -0.161662:  87%|████████▋ | 26/30 [00:04<00:00,  7.90it/s][A
+Best trial: 25. Best value: -0.161662:  87%|████████▋ | 26/30 [00:04<00:00,  7.90it/s][A
+Best trial: 25. Best value: -0.161662:  90%|█████████ | 27/30 [00:04<00:00,  8.14it/s][A
+Best trial: 25. Best value: -0.161662:  90%|█████████ | 27/30 [00:04<00:00,  8.14it/s][A
+Best trial: 25. Best value: -0.161662:  93%|█████████▎| 28/30 [00:04<00:00,  7.73it/s][A
+Best trial: 25. Best value: -0.161662:  93%|█████████▎| 28/30 [00:04<00:00,  7.73it/s][A
+Best trial: 25. Best value: -0.161662:  97%|█████████▋| 29/30 [00:04<00:00,  7.56it/s][A
+Best trial: 25. Best value: -0.161662:  97%|█████████▋| 29/30 [00:04<00:00,  7.56it/s][A
+Best trial: 25. Best value: -0.161662: 100%|██████████| 30/30 [00:04<00:00,  7.67it/s][ABest trial: 25. Best value: -0.161662: 100%|██████████| 30/30 [00:04<00:00,  6.40it/s]
+2026-02-21 08:56:07.444 | INFO     | src.optuna_tuning:tune_tree_models:124 - Best XGBoost CV R²: -0.0559 ± 0.0179 (fresh-seed, not nested CV)
+
+  0%|          | 0/30 [00:00<?, ?it/s][A
+Best trial: 0. Best value: -0.286106:   0%|          | 0/30 [00:00<?, ?it/s][A
+Best trial: 0. Best value: -0.286106:   3%|▎         | 1/30 [00:00<00:03,  8.06it/s][A
+Best trial: 1. Best value: -0.160476:   3%|▎         | 1/30 [00:00<00:03,  8.06it/s][A
+Best trial: 1. Best value: -0.160476:   7%|▋         | 2/30 [00:00<00:03,  7.40it/s][A
+Best trial: 1. Best value: -0.160476:   7%|▋         | 2/30 [00:00<00:03,  7.40it/s][A
+Best trial: 1. Best value: -0.160476:  10%|█         | 3/30 [00:00<00:03,  7.40it/s][A
+Best trial: 1. Best value: -0.160476:  13%|█▎        | 4/30 [00:00<00:03,  7.40it/s][A
+Best trial: 1. Best value: -0.160476:  17%|█▋        | 5/30 [00:00<00:03,  7.40it/s][A
+Best trial: 1. Best value: -0.160476:  20%|██        | 6/30 [00:00<00:01, 18.74it/s][A
+Best trial: 1. Best value: -0.160476:  20%|██        | 6/30 [00:00<00:01, 18.74it/s][A
+Best trial: 1. Best value: -0.160476:  23%|██▎       | 7/30 [00:00<00:01, 18.74it/s][A
+Best trial: 1. Best value: -0.160476:  27%|██▋       | 8/30 [00:00<00:01, 18.74it/s][A
+Best trial: 1. Best value: -0.160476:  30%|███       | 9/30 [00:00<00:01, 18.74it/s][A
+Best trial: 1. Best value: -0.160476:  33%|███▎      | 10/30 [00:00<00:01, 18.74it/s][A
+Best trial: 1. Best value: -0.160476:  37%|███▋      | 11/30 [00:00<00:01, 17.08it/s][A
+Best trial: 11. Best value: -0.152772:  37%|███▋      | 11/30 [00:00<00:01, 17.08it/s][A
+Best trial: 12. Best value: -0.143298:  40%|████      | 12/30 [00:00<00:01, 17.08it/s][A
+Best trial: 12. Best value: -0.143298:  43%|████▎     | 13/30 [00:00<00:01, 13.38it/s][A
+Best trial: 12. Best value: -0.143298:  43%|████▎     | 13/30 [00:01<00:01, 13.38it/s][A
+Best trial: 12. Best value: -0.143298:  47%|████▋     | 14/30 [00:01<00:01, 13.38it/s][A
+Best trial: 12. Best value: -0.143298:  50%|█████     | 15/30 [00:01<00:01, 11.76it/s][A
+Best trial: 12. Best value: -0.143298:  50%|█████     | 15/30 [00:01<00:01, 11.76it/s][A
+Best trial: 12. Best value: -0.143298:  53%|█████▎    | 16/30 [00:01<00:01, 11.76it/s][A
+Best trial: 12. Best value: -0.143298:  57%|█████▋    | 17/30 [00:01<00:01, 10.69it/s][A
+Best trial: 12. Best value: -0.143298:  57%|█████▋    | 17/30 [00:01<00:01, 10.69it/s][A
+Best trial: 12. Best value: -0.143298:  60%|██████    | 18/30 [00:01<00:01, 10.69it/s][A
+Best trial: 12. Best value: -0.143298:  63%|██████▎   | 19/30 [00:01<00:00, 11.11it/s][A
+Best trial: 12. Best value: -0.143298:  63%|██████▎   | 19/30 [00:01<00:00, 11.11it/s][A
+Best trial: 12. Best value: -0.143298:  67%|██████▋   | 20/30 [00:01<00:00, 11.11it/s][A
+Best trial: 12. Best value: -0.143298:  70%|███████   | 21/30 [00:01<00:01,  8.80it/s][A
+Best trial: 12. Best value: -0.143298:  70%|███████   | 21/30 [00:02<00:01,  8.80it/s][A
+Best trial: 12. Best value: -0.143298:  73%|███████▎  | 22/30 [00:02<00:00,  8.85it/s][A
+Best trial: 12. Best value: -0.143298:  73%|███████▎  | 22/30 [00:02<00:00,  8.85it/s][A
+Best trial: 12. Best value: -0.143298:  77%|███████▋  | 23/30 [00:02<00:00,  8.85it/s][A
+Best trial: 12. Best value: -0.143298:  80%|████████  | 24/30 [00:02<00:00,  9.18it/s][A
+Best trial: 12. Best value: -0.143298:  80%|████████  | 24/30 [00:02<00:00,  9.18it/s][A
+Best trial: 12. Best value: -0.143298:  83%|████████▎ | 25/30 [00:02<00:00,  9.16it/s][A
+Best trial: 12. Best value: -0.143298:  83%|████████▎ | 25/30 [00:02<00:00,  9.16it/s][A
+Best trial: 12. Best value: -0.143298:  87%|████████▋ | 26/30 [00:02<00:00,  9.11it/s][A
+Best trial: 12. Best value: -0.143298:  87%|████████▋ | 26/30 [00:02<00:00,  9.11it/s][A
+Best trial: 12. Best value: -0.143298:  90%|█████████ | 27/30 [00:02<00:00,  9.26it/s][A
+Best trial: 12. Best value: -0.143298:  90%|█████████ | 27/30 [00:02<00:00,  9.26it/s][A
+Best trial: 12. Best value: -0.143298:  93%|█████████▎| 28/30 [00:02<00:00,  9.26it/s][A
+Best trial: 12. Best value: -0.143298:  97%|█████████▋| 29/30 [00:02<00:00, 11.17it/s][A
+Best trial: 12. Best value: -0.143298:  97%|█████████▋| 29/30 [00:02<00:00, 11.17it/s][ABest trial: 12. Best value: -0.143298: 100%|██████████| 30/30 [00:02<00:00, 10.66it/s]
+2026-02-21 08:56:10.374 | INFO     | src.optuna_tuning:tune_tree_models:156 - Best LightGBM CV R²: -0.0988 ± 0.0502 (fresh-seed, not nested CV)
+2026-02-21 08:56:10.374 | INFO     | src.inference_optimized:_select_best_model_and_features:660 - ----------------------------------------
+2026-02-21 08:56:10.375 | INFO     | src.inference_optimized:_select_best_model_and_features:661 - STEP 2B: LINEAR/GLM MODEL TYPE SELECTION (3-fold CV)
+2026-02-21 08:56:10.375 | INFO     | src.inference_optimized:_select_best_model_and_features:662 - ----------------------------------------
+2026-02-21 08:56:10.375 | INFO     | src.optuna_tuning:tune_linear_models:190 - Starting Optuna hyperparameter tuning for Linear/GLM models (20 trials each)...
+
+  0%|          | 0/20 [00:00<?, ?it/s][A
+Best trial: 0. Best value: -0.174446:   0%|          | 0/20 [00:00<?, ?it/s][A
+Best trial: 1. Best value: -0.174446:   5%|▌         | 1/20 [00:00<00:00, 30.97it/s][A
+Best trial: 1. Best value: -0.174446:  10%|█         | 2/20 [00:00<00:00, 41.50it/s][A
+Best trial: 1. Best value: -0.174446:  15%|█▌        | 3/20 [00:00<00:00, 46.80it/s][A
+Best trial: 1. Best value: -0.174446:  20%|██        | 4/20 [00:00<00:00, 50.01it/s][A
+Best trial: 1. Best value: -0.174446:  25%|██▌       | 5/20 [00:00<00:00, 52.10it/s][A
+Best trial: 1. Best value: -0.174446:  30%|███       | 6/20 [00:00<00:00, 53.62it/s][A
+Best trial: 1. Best value: -0.174446:  35%|███▌      | 7/20 [00:00<00:00, 62.54it/s][A
+Best trial: 1. Best value: -0.174446:  35%|███▌      | 7/20 [00:00<00:00, 62.54it/s][A
+Best trial: 1. Best value: -0.174446:  40%|████      | 8/20 [00:00<00:00, 62.54it/s][A
+Best trial: 1. Best value: -0.174446:  45%|████▌     | 9/20 [00:00<00:00, 62.54it/s][A
+Best trial: 10. Best value: -0.174446:  50%|█████     | 10/20 [00:00<00:00, 62.54it/s][A
+Best trial: 10. Best value: -0.174446:  55%|█████▌    | 11/20 [00:00<00:00, 62.54it/s][A
+Best trial: 10. Best value: -0.174446:  60%|██████    | 12/20 [00:00<00:00, 62.54it/s][A
+Best trial: 10. Best value: -0.174446:  65%|██████▌   | 13/20 [00:00<00:00, 62.54it/s][A
+Best trial: 10. Best value: -0.174446:  70%|███████   | 14/20 [00:00<00:00, 61.81it/s][A
+Best trial: 14. Best value: -0.174446:  70%|███████   | 14/20 [00:00<00:00, 61.81it/s][A
+Best trial: 14. Best value: -0.174446:  75%|███████▌  | 15/20 [00:00<00:00, 61.81it/s][A
+Best trial: 14. Best value: -0.174446:  80%|████████  | 16/20 [00:00<00:00, 61.81it/s][A
+Best trial: 14. Best value: -0.174446:  85%|████████▌ | 17/20 [00:00<00:00, 61.81it/s][A
+Best trial: 14. Best value: -0.174446:  90%|█████████ | 18/20 [00:00<00:00, 61.81it/s][A
+Best trial: 19. Best value: -0.174446:  95%|█████████▌| 19/20 [00:00<00:00, 61.81it/s][ABest trial: 19. Best value: -0.174446: 100%|██████████| 20/20 [00:00<00:00, 61.74it/s]
+
+  0%|          | 0/20 [00:00<?, ?it/s][A
+Best trial: 0. Best value: -0.154892:   0%|          | 0/20 [00:00<?, ?it/s][A
+Best trial: 0. Best value: -0.154892:   5%|▌         | 1/20 [00:00<00:00, 31.22it/s][A
+Best trial: 0. Best value: -0.154892:  10%|█         | 2/20 [00:00<00:00, 41.46it/s][A
+Best trial: 3. Best value: -0.149938:  15%|█▌        | 3/20 [00:00<00:00, 46.74it/s][A
+Best trial: 3. Best value: -0.149938:  20%|██        | 4/20 [00:00<00:00, 49.88it/s][A
+Best trial: 3. Best value: -0.149938:  25%|██▌       | 5/20 [00:00<00:00, 51.95it/s][A
+Best trial: 3. Best value: -0.149938:  30%|███       | 6/20 [00:00<00:00, 53.44it/s][A
+Best trial: 3. Best value: -0.149938:  35%|███▌      | 7/20 [00:00<00:00, 62.32it/s][A
+Best trial: 3. Best value: -0.149938:  35%|███▌      | 7/20 [00:00<00:00, 62.32it/s][A
+Best trial: 8. Best value: -0.149913:  40%|████      | 8/20 [00:00<00:00, 62.32it/s][A
+Best trial: 8. Best value: -0.149913:  45%|████▌     | 9/20 [00:00<00:00, 62.32it/s][A
+Best trial: 8. Best value: -0.149913:  50%|█████     | 10/20 [00:00<00:00, 62.32it/s][A
+Best trial: 8. Best value: -0.149913:  55%|█████▌    | 11/20 [00:00<00:00, 62.32it/s][A
+Best trial: 8. Best value: -0.149913:  60%|██████    | 12/20 [00:00<00:00, 62.32it/s][A
+Best trial: 8. Best value: -0.149913:  65%|██████▌   | 13/20 [00:00<00:00, 62.32it/s][A
+Best trial: 8. Best value: -0.149913:  70%|███████   | 14/20 [00:00<00:00, 59.73it/s][A
+Best trial: 8. Best value: -0.149913:  70%|███████   | 14/20 [00:00<00:00, 59.73it/s][A
+Best trial: 8. Best value: -0.149913:  75%|███████▌  | 15/20 [00:00<00:00, 59.73it/s][A
+Best trial: 8. Best value: -0.149913:  80%|████████  | 16/20 [00:00<00:00, 59.73it/s][A
+Best trial: 8. Best value: -0.149913:  85%|████████▌ | 17/20 [00:00<00:00, 59.73it/s][A
+Best trial: 8. Best value: -0.149913:  90%|█████████ | 18/20 [00:00<00:00, 59.73it/s][A
+Best trial: 8. Best value: -0.149913:  95%|█████████▌| 19/20 [00:00<00:00, 59.73it/s][A
+Best trial: 8. Best value: -0.149913: 100%|██████████| 20/20 [00:00<00:00, 59.77it/s][ABest trial: 8. Best value: -0.149913: 100%|██████████| 20/20 [00:00<00:00, 60.01it/s]
+
+  0%|          | 0/20 [00:00<?, ?it/s][A
+Best trial: 0. Best value: -0.15503:   0%|          | 0/20 [00:00<?, ?it/s][A
+Best trial: 1. Best value: -0.150667:   5%|▌         | 1/20 [00:00<00:00, 30.50it/s][A
+Best trial: 1. Best value: -0.150667:  10%|█         | 2/20 [00:00<00:00, 40.83it/s][A
+Best trial: 1. Best value: -0.150667:  15%|█▌        | 3/20 [00:00<00:00, 46.14it/s][A
+Best trial: 1. Best value: -0.150667:  20%|██        | 4/20 [00:00<00:00, 49.37it/s][A
+Best trial: 1. Best value: -0.150667:  25%|██▌       | 5/20 [00:00<00:00, 51.48it/s][A
+Best trial: 6. Best value: -0.149843:  30%|███       | 6/20 [00:00<00:00, 53.18it/s][A
+Best trial: 6. Best value: -0.149843:  35%|███▌      | 7/20 [00:00<00:00, 62.02it/s][A
+Best trial: 6. Best value: -0.149843:  35%|███▌      | 7/20 [00:00<00:00, 62.02it/s][A
+Best trial: 6. Best value: -0.149843:  40%|████      | 8/20 [00:00<00:00, 62.02it/s][A
+Best trial: 6. Best value: -0.149843:  45%|████▌     | 9/20 [00:00<00:00, 62.02it/s][A
+Best trial: 6. Best value: -0.149843:  50%|█████     | 10/20 [00:00<00:00, 62.02it/s][A
+Best trial: 6. Best value: -0.149843:  55%|█████▌    | 11/20 [00:00<00:00, 62.02it/s][A
+Best trial: 6. Best value: -0.149843:  60%|██████    | 12/20 [00:00<00:00, 62.02it/s][A
+Best trial: 6. Best value: -0.149843:  65%|██████▌   | 13/20 [00:00<00:00, 62.02it/s][A
+Best trial: 6. Best value: -0.149843:  70%|███████   | 14/20 [00:00<00:00, 61.44it/s][A
+Best trial: 6. Best value: -0.149843:  70%|███████   | 14/20 [00:00<00:00, 61.44it/s][A
+Best trial: 6. Best value: -0.149843:  75%|███████▌  | 15/20 [00:00<00:00, 61.44it/s][A
+Best trial: 6. Best value: -0.149843:  80%|████████  | 16/20 [00:00<00:00, 61.44it/s][A
+Best trial: 17. Best value: -0.149838:  85%|████████▌ | 17/20 [00:00<00:00, 61.44it/s][A
+Best trial: 17. Best value: -0.149838:  90%|█████████ | 18/20 [00:00<00:00, 61.44it/s][A
+Best trial: 17. Best value: -0.149838:  95%|█████████▌| 19/20 [00:00<00:00, 61.44it/s][ABest trial: 17. Best value: -0.149838: 100%|██████████| 20/20 [00:00<00:00, 60.68it/s]
+
+  0%|          | 0/20 [00:00<?, ?it/s][A
+Best trial: 0. Best value: -0.167233:   0%|          | 0/20 [00:00<?, ?it/s][A
+Best trial: 0. Best value: -0.167233:   5%|▌         | 1/20 [00:00<00:01, 17.16it/s][A
+Best trial: 0. Best value: -0.167233:  10%|█         | 2/20 [00:00<00:00, 23.76it/s][A
+Best trial: 3. Best value: -0.15874:  15%|█▌        | 3/20 [00:00<00:00, 28.06it/s] [A
+Best trial: 3. Best value: -0.15874:  20%|██        | 4/20 [00:00<00:00, 37.40it/s][A
+Best trial: 3. Best value: -0.15874:  20%|██        | 4/20 [00:00<00:00, 37.40it/s][A
+Best trial: 5. Best value: -0.151426:  25%|██▌       | 5/20 [00:00<00:00, 37.40it/s][A
+Best trial: 5. Best value: -0.151426:  30%|███       | 6/20 [00:00<00:00, 37.40it/s][A
+Best trial: 5. Best value: -0.151426:  35%|███▌      | 7/20 [00:00<00:00, 37.40it/s][A
+Best trial: 5. Best value: -0.151426:  40%|████      | 8/20 [00:00<00:00, 37.40it/s][A
+Best trial: 5. Best value: -0.151426:  45%|████▌     | 9/20 [00:00<00:00, 40.10it/s][A
+Best trial: 5. Best value: -0.151426:  45%|████▌     | 9/20 [00:00<00:00, 40.10it/s][A
+Best trial: 5. Best value: -0.151426:  50%|█████     | 10/20 [00:00<00:00, 40.10it/s][A
+Best trial: 5. Best value: -0.151426:  55%|█████▌    | 11/20 [00:00<00:00, 40.10it/s][A
+Best trial: 5. Best value: -0.151426:  60%|██████    | 12/20 [00:00<00:00, 40.10it/s][A
+Best trial: 5. Best value: -0.151426:  65%|██████▌   | 13/20 [00:00<00:00, 35.51it/s][A
+Best trial: 5. Best value: -0.151426:  65%|██████▌   | 13/20 [00:00<00:00, 35.51it/s][A
+Best trial: 5. Best value: -0.151426:  70%|███████   | 14/20 [00:00<00:00, 35.51it/s][A
+Best trial: 5. Best value: -0.151426:  75%|███████▌  | 15/20 [00:00<00:00, 35.51it/s][A
+Best trial: 5. Best value: -0.151426:  80%|████████  | 16/20 [00:00<00:00, 35.51it/s][A
+Best trial: 5. Best value: -0.151426:  85%|████████▌ | 17/20 [00:00<00:00, 35.51it/s][A
+Best trial: 5. Best value: -0.151426:  90%|█████████ | 18/20 [00:00<00:00, 38.82it/s][A
+Best trial: 5. Best value: -0.151426:  90%|█████████ | 18/20 [00:00<00:00, 38.82it/s][A
+Best trial: 5. Best value: -0.151426:  95%|█████████▌| 19/20 [00:00<00:00, 38.82it/s][ABest trial: 5. Best value: -0.151426: 100%|██████████| 20/20 [00:00<00:00, 38.79it/s]
+
+  0%|          | 0/20 [00:00<?, ?it/s][A
+Best trial: 0. Best value: -0.231767:   0%|          | 0/20 [00:00<?, ?it/s][A
+Best trial: 1. Best value: -0.231767:   5%|▌         | 1/20 [00:00<00:00, 22.01it/s][A
+Best trial: 1. Best value: -0.231767:  10%|█         | 2/20 [00:00<00:00, 29.53it/s][A
+Best trial: 1. Best value: -0.231767:  15%|█▌        | 3/20 [00:00<00:00, 33.32it/s][A
+Best trial: 1. Best value: -0.231767:  20%|██        | 4/20 [00:00<00:00, 35.42it/s][A
+Best trial: 1. Best value: -0.231767:  25%|██▌       | 5/20 [00:00<00:00, 44.26it/s][A
+Best trial: 1. Best value: -0.231767:  25%|██▌       | 5/20 [00:00<00:00, 44.26it/s][A
+Best trial: 1. Best value: -0.231767:  30%|███       | 6/20 [00:00<00:00, 44.26it/s][A
+Best trial: 1. Best value: -0.231767:  35%|███▌      | 7/20 [00:00<00:00, 44.26it/s][A
+Best trial: 1. Best value: -0.231767:  40%|████      | 8/20 [00:00<00:00, 44.26it/s][A
+Best trial: 1. Best value: -0.231767:  45%|████▌     | 9/20 [00:00<00:00, 44.26it/s][A
+Best trial: 1. Best value: -0.231767:  50%|█████     | 10/20 [00:00<00:00, 43.67it/s][A
+Best trial: 10. Best value: -0.231767:  50%|█████     | 10/20 [00:00<00:00, 43.67it/s][A
+Best trial: 10. Best value: -0.231767:  55%|█████▌    | 11/20 [00:00<00:00, 43.67it/s][A
+Best trial: 10. Best value: -0.231767:  60%|██████    | 12/20 [00:00<00:00, 43.67it/s][A
+Best trial: 10. Best value: -0.231767:  65%|██████▌   | 13/20 [00:00<00:00, 43.67it/s][A
+Best trial: 14. Best value: -0.231767:  70%|███████   | 14/20 [00:00<00:00, 43.67it/s][A
+Best trial: 14. Best value: -0.231767:  75%|███████▌  | 15/20 [00:00<00:00, 44.29it/s][A
+Best trial: 14. Best value: -0.231767:  75%|███████▌  | 15/20 [00:00<00:00, 44.29it/s][A
+Best trial: 14. Best value: -0.231767:  80%|████████  | 16/20 [00:00<00:00, 44.29it/s][A
+Best trial: 14. Best value: -0.231767:  85%|████████▌ | 17/20 [00:00<00:00, 44.29it/s][A
+Best trial: 14. Best value: -0.231767:  90%|█████████ | 18/20 [00:00<00:00, 44.29it/s][A
+Best trial: 19. Best value: -0.231767:  95%|█████████▌| 19/20 [00:00<00:00, 44.29it/s][A
+Best trial: 19. Best value: -0.231767: 100%|██████████| 20/20 [00:00<00:00, 44.74it/s][ABest trial: 19. Best value: -0.231767: 100%|██████████| 20/20 [00:00<00:00, 44.48it/s]
+
+  0%|          | 0/20 [00:00<?, ?it/s][A
+Best trial: 0. Best value: -0.18237:   0%|          | 0/20 [00:00<?, ?it/s][A
+Best trial: 1. Best value: -0.162561:   5%|▌         | 1/20 [00:00<00:00, 22.83it/s][A
+Best trial: 2. Best value: -0.158894:  10%|█         | 2/20 [00:00<00:00, 30.58it/s][A
+Best trial: 2. Best value: -0.158894:  15%|█▌        | 3/20 [00:00<00:00, 34.54it/s][A
+Best trial: 2. Best value: -0.158894:  20%|██        | 4/20 [00:00<00:00, 36.89it/s][A
+Best trial: 2. Best value: -0.158894:  25%|██▌       | 5/20 [00:00<00:00, 46.10it/s][A
+Best trial: 2. Best value: -0.158894:  25%|██▌       | 5/20 [00:00<00:00, 46.10it/s][A
+Best trial: 2. Best value: -0.158894:  30%|███       | 6/20 [00:00<00:00, 46.10it/s][A
+Best trial: 2. Best value: -0.158894:  35%|███▌      | 7/20 [00:00<00:00, 46.10it/s][A
+Best trial: 2. Best value: -0.158894:  40%|████      | 8/20 [00:00<00:00, 46.10it/s][A
+Best trial: 2. Best value: -0.158894:  45%|████▌     | 9/20 [00:00<00:00, 46.10it/s][A
+Best trial: 2. Best value: -0.158894:  50%|█████     | 10/20 [00:00<00:00, 45.20it/s][A
+Best trial: 2. Best value: -0.158894:  50%|█████     | 10/20 [00:00<00:00, 45.20it/s][A
+Best trial: 11. Best value: -0.155799:  55%|█████▌    | 11/20 [00:00<00:00, 45.20it/s][A
+Best trial: 11. Best value: -0.155799:  60%|██████    | 12/20 [00:00<00:00, 45.20it/s][A
+Best trial: 11. Best value: -0.155799:  65%|██████▌   | 13/20 [00:00<00:00, 45.20it/s][A
+Best trial: 11. Best value: -0.155799:  70%|███████   | 14/20 [00:00<00:00, 45.20it/s][A
+Best trial: 11. Best value: -0.155799:  75%|███████▌  | 15/20 [00:00<00:00, 44.74it/s][A
+Best trial: 11. Best value: -0.155799:  75%|███████▌  | 15/20 [00:00<00:00, 44.74it/s][A
+Best trial: 11. Best value: -0.155799:  80%|████████  | 16/20 [00:00<00:00, 44.74it/s][A
+Best trial: 11. Best value: -0.155799:  85%|████████▌ | 17/20 [00:00<00:00, 44.74it/s][A
+Best trial: 18. Best value: -0.154855:  90%|█████████ | 18/20 [00:00<00:00, 44.74it/s][A
+Best trial: 18. Best value: -0.154855:  95%|█████████▌| 19/20 [00:00<00:00, 44.74it/s][A
+Best trial: 18. Best value: -0.154855: 100%|██████████| 20/20 [00:00<00:00, 44.95it/s][ABest trial: 18. Best value: -0.154855: 100%|██████████| 20/20 [00:00<00:00, 45.02it/s]
+2026-02-21 08:56:12.903 | INFO     | src.inference_optimized:_select_model_type_cv:483 - Model type CV results:
+2026-02-21 08:56:12.903 | INFO     | src.inference_optimized:_select_model_type_cv:484 - 
+                                        Model  CV Mean R²  CV Std R²
+4       Tweedie (Optuna Tuned p=1.03, α=8.12)   -0.100048   0.081984
+3  ElasticNet (Optuna Tuned α=0.291, l1=0.25)   -0.112001   0.089129
+2                Lasso (Optuna Tuned α=0.064)   -0.114892   0.091551
+6         Hurdle-Lasso (Optuna Tuned α=0.237)   -0.123643   0.095624
+1                Ridge (Optuna Tuned α=9.844)   -0.159088   0.119308
+0                           Linear Regression   -0.159088   0.119308
+5         Hurdle-Ridge (Optuna Tuned α=9.844)   -0.229736   0.141737
+2026-02-21 08:56:12.904 | INFO     | src.inference_optimized:_apply_one_se_rule:98 - 1SE rule: selected 'Linear Regression' (R²=-0.1591) over 'Tweedie (Optuna Tuned p=1.03, α=8.12)' (R²=-0.1000±0.0820, threshold=-0.1820)
+2026-02-21 08:56:12.904 | INFO     | src.inference_optimized:_select_model_type_cv:499 - Best model type: Linear Regression
+2026-02-21 08:56:12.904 | INFO     | src.inference_optimized:_select_model_type_cv:500 -   CV R²: -0.1591 ± 0.1193
+2026-02-21 08:56:12.904 | INFO     | src.inference_optimized:_select_best_model_and_features:680 - Combined Model CV results:
+2026-02-21 08:56:12.904 | INFO     | src.inference_optimized:_select_best_model_and_features:682 - 
+                                        Model  CV Mean R²  CV Std R²
+0                      XGBoost (Optuna Tuned)   -0.055872   0.017938
+1                     LightGBM (Optuna Tuned)   -0.098838   0.050237
+2       Tweedie (Optuna Tuned p=1.03, α=8.12)   -0.100048   0.081984
+3  ElasticNet (Optuna Tuned α=0.291, l1=0.25)   -0.112001   0.089129
+4                Lasso (Optuna Tuned α=0.064)   -0.114892   0.091551
+5         Hurdle-Lasso (Optuna Tuned α=0.237)   -0.123643   0.095624
+6                Ridge (Optuna Tuned α=9.844)   -0.159088   0.119308
+7                           Linear Regression   -0.159088   0.119308
+8         Hurdle-Ridge (Optuna Tuned α=9.844)   -0.229736   0.141737
+2026-02-21 08:56:12.905 | INFO     | src.inference_optimized:_apply_one_se_rule:103 - 1SE rule: best model 'XGBoost (Optuna Tuned)' is also the simplest eligible
+2026-02-21 08:56:12.905 | INFO     | src.inference_optimized:_select_best_model_and_features:695 - Tree model 'XGBoost (Optuna Tuned)' won overall! Skipping Step 3.
+2026-02-21 08:56:12.905 | INFO     | src.inference_optimized:inference_pipeline:1013 - ----------------------------------------
+2026-02-21 08:56:12.905 | INFO     | src.inference_optimized:inference_pipeline:1014 - STEP 4: FINAL MODEL TRAINING (all data)
+2026-02-21 08:56:12.905 | INFO     | src.inference_optimized:inference_pipeline:1015 - ----------------------------------------
+2026-02-21 08:56:12.939 | INFO     | src.inference_optimized:inference_pipeline:1021 - Final model: XGBoost (Optuna Tuned) + original
+2026-02-21 08:56:12.939 | INFO     | src.inference_optimized:inference_pipeline:1022 -   CV R²: -0.0559 ± 0.0179
+2026-02-21 08:56:12.939 | INFO     | src.inference_optimized:inference_pipeline:1023 -   Train R² (in-sample): 0.1227
+2026-02-21 08:56:12.939 | INFO     | src.inference_optimized:inference_pipeline:1050 - ----------------------------------------
+2026-02-21 08:56:12.939 | INFO     | src.inference_optimized:inference_pipeline:1051 - STEP 5: MODEL SAVING
+2026-02-21 08:56:12.939 | INFO     | src.inference_optimized:inference_pipeline:1052 - ----------------------------------------
+2026-02-21 08:56:12.947 | INFO     | src.persistence:save_model_with_metadata:103 - ============================================================
+2026-02-21 08:56:12.947 | INFO     | src.persistence:save_model_with_metadata:104 - MODEL SAVED SUCCESSFULLY
+2026-02-21 08:56:12.947 | INFO     | src.persistence:save_model_with_metadata:105 - ============================================================
+2026-02-21 08:56:12.947 | INFO     | src.persistence:save_model_with_metadata:106 - Directory: models/model_20260221_085612
+2026-02-21 08:56:12.947 | INFO     | src.persistence:save_model_with_metadata:107 -    - Model: model.pkl
+2026-02-21 08:56:12.947 | INFO     | src.persistence:save_model_with_metadata:108 -    - Metadata: metadata.json
+2026-02-21 08:56:12.947 | INFO     | src.persistence:save_model_with_metadata:109 -    - Features: features.txt
+2026-02-21 08:56:12.947 | INFO     | src.persistence:save_model_with_metadata:110 -    - Summary: model_summary.txt
+2026-02-21 08:56:12.947 | INFO     | src.inference_optimized:_save_model_to_disk:868 - Model saved to: models/model_20260221_085612
+2026-02-21 08:56:13.270 | ERROR    | src.inference_optimized:_compute_shap_values:820 - SHAP computation failed (non-blocking):
+Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 793, in _compute_shap_values
+    explainer = shap.TreeExplainer(model)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/shap/explainers/_tree.py", line 278, in __init__
+    self.model = TreeEnsemble(model, self.data, self.data_missing, model_output)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/shap/explainers/_tree.py", line 1279, in __init__
+    self._set_xgboost_model_attributes(
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/shap/explainers/_tree.py", line 1506, in _set_xgboost_model_attributes
+    loader = XGBTreeModelLoader(self.original_model)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/shap/explainers/_tree.py", line 2104, in __init__
+    self.base_score = float(learner_model_param["base_score"])
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: could not convert string to float: '[1.4342305E-2]'
+
+SHAP EXCEPTION CAUGHT: Traceback (most recent call last):
+  File "/Users/inigo_ocariz/src/scoring_tools/src/inference_optimized.py", line 793, in _compute_shap_values
+    explainer = shap.TreeExplainer(model)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/shap/explainers/_tree.py", line 278, in __init__
+    self.model = TreeEnsemble(model, self.data, self.data_missing, model_output)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/shap/explainers/_tree.py", line 1279, in __init__
+    self._set_xgboost_model_attributes(
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/shap/explainers/_tree.py", line 1506, in _set_xgboost_model_attributes
+    loader = XGBTreeModelLoader(self.original_model)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inigo_ocariz/src/.venv/lib/python3.12/site-packages/shap/explainers/_tree.py", line 2104, in __init__
+    self.base_score = float(learner_model_param["base_score"])
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: could not convert string to float: '[1.4342305E-2]'
+
+2026-02-21 08:56:13.270 | INFO     | src.inference_optimized:inference_pipeline:1121 - ----------------------------------------
+2026-02-21 08:56:13.270 | INFO     | src.inference_optimized:inference_pipeline:1122 - STEP 6: 3D VISUALIZATION
+2026-02-21 08:56:13.270 | INFO     | src.inference_optimized:inference_pipeline:1123 - ----------------------------------------
+2026-02-21 08:56:13.270 | INFO     | src.inference_optimized:plot_3d_surface:354 - Creating 3D plot for sc_octroi_new_clus, new_efx_clus, b2_ever_h6
+2026-02-21 08:56:13.283 | INFO     | src.inference_optimized:_create_pipeline_visualization:894 - 3D surface plot created
+2026-02-21 08:56:13.292 | INFO     | src.inference_optimized:_create_pipeline_visualization:897 -   Plot saved to: images/prediction_surface.html
+2026-02-21 08:56:13.292 | INFO     | src.inference_optimized:inference_pipeline:1139 - ================================================================================
+2026-02-21 08:56:13.292 | INFO     | src.inference_optimized:inference_pipeline:1140 - PIPELINE SUMMARY
+2026-02-21 08:56:13.292 | INFO     | src.inference_optimized:inference_pipeline:1141 -   Model type (Step 1): XGBoost (Optuna Tuned) (CV R²: -0.0559)
+2026-02-21 08:56:13.292 | INFO     | src.inference_optimized:inference_pipeline:1142 -   Feature set (Step 2): original (CV R²: -0.0559 ± 0.0179)
+2026-02-21 08:56:13.292 | INFO     | src.inference_optimized:inference_pipeline:1146 -   Train R² (in-sample): 0.1227
+2026-02-21 08:56:13.292 | INFO     | src.inference_optimized:inference_pipeline:1148 -   Model saved: models/model_20260221_085612
+2026-02-21 08:56:13.292 | INFO     | src.inference_optimized:inference_pipeline:1149 - ================================================================================
+2026-02-21 08:56:13.292 | INFO     | src.inference_optimized:todu_average_inference:1192 - Calculating todu average inference...
+2026-02-21 08:56:13.297 | INFO     | src.inference_optimized:todu_average_inference:1230 - Dropped 3 outliers based on Z-threshold 3.0
+2026-02-21 08:56:13.364 | INFO     | src.inference_optimized:todu_average_inference:1255 - Model Coefficient: 4.2816
+2026-02-21 08:56:13.364 | INFO     | src.inference_optimized:todu_average_inference:1256 - Model R² (in-sample): 0.9951 | LOO-CV R²: 0.9945
+2026-02-21 08:56:13.364 | INFO     | src.inference_optimized:todu_average_inference:1265 - Trained model saved successfully to: models/todu_model.joblib
+2026-02-21 08:56:13.374 | INFO     | src.inference_optimized:todu_average_inference:1331 - Todu average inference plot saved to models/todu_avg_inference.html
+2026-02-21 08:56:13.374 | INFO     | src.pipeline.inference:run_inference_phase:123 - [personal_loans,_fusion_and_tj_direct-premium-] Inference done | XGBoost (Optuna Tuned) + original (XGBoost (Optuna Tuned)) | features=original | CV R2=-0.0559 +/- 0.0179 | 10.7s
+2026-02-21 08:56:13.374 | INFO     | src.inference_optimized:run_optimization_pipeline:1357 - Running optimization pipeline...
+2026-02-21 08:56:13.381 | INFO     | src.reject_inference:compute_acceptance_rates:77 - Acceptance rates exclude 6,896 non-score rejections (33.9% of demand). Bins with many non-score rejections may have overstated acceptance rates.
+2026-02-21 08:56:13.382 | INFO     | src.reject_inference:apply_parceling_adjustment:171 - Reject inference (parceling): adjusted 47/47 bins | avg multiplier=2.385 | max multiplier=2.500
+2026-02-21 08:56:13.384 | INFO     | src.inference_optimized:run_optimization_pipeline:1429 - Generating optimization visualization...
+2026-02-21 08:56:13.396 | INFO     | src.inference_optimized:run_optimization_pipeline:1452 - Optimization visualization saved to images/b2_ever_h6_vs_octroi_and_risk_score.html
+2026-02-21 08:56:13.398 | INFO     | src.optimization_utils:trace_pareto_frontier:317 - MILP Pareto sweep: 50 risk targets in [0.01, 2.12%]
+2026-02-21 08:56:13.625 | INFO     | src.optimization_utils:trace_pareto_frontier:359 - Pareto frontier: 29 solutions (from 30 unique MILP solves)
+2026-02-21 08:56:13.630 | INFO     | src.pipeline.optimization:run_optimization_phase:203 - [personal_loans,_fusion_and_tj_direct-premium-] Optimization done | mode=milp_pareto | 29 solutions | 8x20 grid | b2 range: [0.21%, 1.93%] | optimum_risk=0.9% | 0.3s
+2026-02-21 08:56:13.677 | INFO     | src.pipeline.optimization:run_scenario_analysis:278 - [personal_loans,_fusion_and_tj_direct-premium-] Scenario pessimistic | risk_threshold=0.8% | selected b2=0.68% | production=13,031,363
+2026-02-21 08:56:13.677 | INFO     | src.utils:calculate_bootstrap_intervals:289 - Calculating 95% CI with 1000 bootstraps...
+2026-02-21 08:56:14.570 | INFO     | src.pipeline.optimization:run_scenario_analysis:306 - [personal_loans,_fusion_and_tj_direct-premium-] Scenario pessimistic CI: {'production_ci_lower': np.float64(12162354.90725), 'production_ci_upper': np.float64(13995172.03125), 'risk_ci_lower': np.float64(0.0021835250000000013), 'risk_ci_upper': np.float64(0.012861524999999999)}
+2026-02-21 08:56:14.583 | INFO     | src.utils:generate_cutoff_summary:448 - Generated cutoff summary for segment 'personal_loans,_fusion_and_tj_direct-premium-', scenario 'pessimistic'
+2026-02-21 08:56:14.583 | INFO     | src.utils:generate_cutoff_summary:449 -   Bins: 8, Cutoff range: [13.0, inf]
+2026-02-21 08:56:14.583 | INFO     | src.mr_pipeline:process_mr_period:184 - Processing MR period data (suffix: '_pessimistic')...
+2026-02-21 08:56:14.583 | INFO     | src.preprocess_improved:filter_by_date:401 - Filtering data by date range: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:14.585 | INFO     | src.preprocess_improved:filter_by_date:436 - Date filter removed 32,335 records (75.1% of data)
+2026-02-21 08:56:14.585 | INFO     | src.preprocess_improved:filter_by_date:437 - Remaining records: 10,695
+2026-02-21 08:56:14.585 | INFO     | src.preprocess_improved:filter_by_date:443 - Date range in filtered data: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:14.586 | INFO     | src.preprocess_improved:filter_by_date:447 - Monthly distribution:
+mis_date
+2025-07    1848
+2025-08    1683
+2025-09    1741
+2025-10    1893
+2025-11    1808
+2025-12    1722
+Freq: M, Name: count, dtype: int64
+2026-02-21 08:56:14.586 | INFO     | src.preprocess_improved:filter_by_date:453 - Date filtering completed in 0.00 seconds
+2026-02-21 08:56:14.586 | INFO     | src.mr_pipeline:process_mr_period:210 - Calculating b2_ever_h6_tmp aggregated by ['sc_octroi_new_clus', 'new_efx_clus'] from initial period...
+2026-02-21 08:56:14.587 | INFO     | src.mr_pipeline:process_mr_period:223 - Merging b2_ever_h6_tmp into data_demand_mr...
+2026-02-21 08:56:14.588 | WARNING  | src.mr_pipeline:process_mr_period:238 - Found 5 booked accounts with null b2_ever_h6_tmp. These bin combinations exist in MR period but not in initial period. Inferring b2_ever_h6 using the risk model...
+2026-02-21 08:56:14.588 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(14)}
+2026-02-21 08:56:14.588 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(10)}
+2026-02-21 08:56:14.588 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(3), 'new_efx_clus': np.int64(18)}
+2026-02-21 08:56:14.589 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(17)}
+2026-02-21 08:56:14.589 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(12)}
+2026-02-21 08:56:14.591 | INFO     | src.mr_pipeline:process_mr_period:287 - Successfully inferred b2_ever_h6 for 5 booked accounts across 5 bin combinations using risk model
+2026-02-21 08:56:14.591 | INFO     | src.mr_pipeline:process_mr_period:307 - Calculating todu_amt_pile_h6 for booked accounts in MR period...
+2026-02-21 08:56:14.592 | INFO     | src.mr_pipeline:process_mr_period:323 - Calculating todu_30ever_h6 for booked accounts in MR period...
+2026-02-21 08:56:14.593 | INFO     | src.mr_pipeline:process_mr_period:338 - Applying full optimization pipeline to MR dataset...
+2026-02-21 08:56:14.593 | INFO     | src.inference_optimized:run_optimization_pipeline:1357 - Running optimization pipeline...
+2026-02-21 08:56:14.598 | INFO     | src.reject_inference:compute_acceptance_rates:77 - Acceptance rates exclude 3,383 non-score rejections (31.6% of demand). Bins with many non-score rejections may have overstated acceptance rates.
+2026-02-21 08:56:14.599 | INFO     | src.reject_inference:apply_parceling_adjustment:171 - Reject inference (parceling): adjusted 49/49 bins | avg multiplier=2.500 | max multiplier=2.500
+2026-02-21 08:56:14.601 | INFO     | src.inference_optimized:run_optimization_pipeline:1429 - Generating optimization visualization...
+2026-02-21 08:56:14.659 | INFO     | src.inference_optimized:run_optimization_pipeline:1452 - Optimization visualization saved to images/b2_ever_h6_vs_octroi_and_risk_score.html
+2026-02-21 08:56:14.661 | INFO     | src.mr_pipeline:process_mr_period:358 - MR summary data saved to data/data_summary_desagregado_mr_pessimistic.csv
+2026-02-21 08:56:14.661 | INFO     | src.mr_pipeline:process_mr_period:361 - Generating b2_ever_h6 visualization for MR dataset...
+2026-02-21 08:56:14.673 | INFO     | src.mr_pipeline:process_mr_period:400 - MR Visualization saved to images/b2_ever_h6_vs_octroi_and_risk_score_mr_pessimistic.html
+2026-02-21 08:56:14.673 | INFO     | src.mr_pipeline:process_mr_period:404 - Dropping b2_ever_h6_tmp from data_demand_mr and data_booked_mr...
+2026-02-21 08:56:14.673 | INFO     | src.mr_pipeline:process_mr_period:409 - Generating Risk Production Summary Table for MR period...
+2026-02-21 08:56:14.673 | INFO     | src.mr_pipeline:calculate_metrics_from_cuts:74 - Optimal Cuts: {np.int64(3): np.float64(inf), np.int64(4): np.float64(inf), np.int64(5): np.float64(inf), np.int64(6): np.float64(inf), np.int64(7): np.float64(inf), np.int64(8): np.float64(inf), np.int64(9): np.float64(inf), np.int64(10): np.float64(13.0)}
+2026-02-21 08:56:14.674 | INFO     | src.mr_pipeline:process_mr_period:418 - MR Risk Production Summary Table saved to data/risk_production_summary_table_mr_pessimistic.csv
+2026-02-21 08:56:14.675 | INFO     | src.mr_pipeline:process_mr_period:419 - MR Table:
+             Metric  Risk (%)  Production (€)  Production (%)  todu_30ever_h6  todu_amt_pile_h6
+0            Actual      1.67     50784256.32        1.000000   745916.336911      3.119091e+08
+1           Swap-in      0.00            0.00        0.000000        0.000000      0.000000e+00
+2          Swap-out      2.27     29701300.42        0.584853   617247.883618      1.900409e+08
+3  Optimum selected      0.74     21082955.90        0.415147   128668.453293      1.218682e+08
+2026-02-21 08:56:14.675 | INFO     | src.mr_pipeline:process_mr_period:422 - Calculating PSI/CSI stability metrics (Main vs MR)...
+2026-02-21 08:56:14.675 | INFO     | src.stability:calculate_stability_report:271 - Calculating stability metrics for 10 variables...
+2026-02-21 08:56:14.696 | INFO     | src.stability:calculate_stability_report:312 - Stability: 7/10 stable, 2 moderate, 1 unstable
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:99 - ======================================================================
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:100 - STABILITY REPORT (PSI/CSI)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:101 - ======================================================================
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:102 - Baseline:   Main Period (n=3,182)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:103 - Comparison: MR Period (n=2,103)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:108 - Overall PSI: 0.0022 ✓ (stable)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:118 - UNSTABLE (PSI >= 0.25):
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:120 -   ✗ todu_amt_pile_h6: PSI=1.6136 (unstable)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:118 - MODERATE (0.1 <= PSI < 0.25):
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:120 -   ⚠ oa_amt: PSI=0.1053 (moderate)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:120 -   ⚠ oa_amt_h0: PSI=0.1038 (moderate)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:118 - STABLE (PSI < 0.1):
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:120 -   ✓ risk_score_rf: PSI=0.0203 (stable)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:120 -   ✓ new_efx_clus: PSI=0.0199 (stable)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:120 -   ✓ score_rf: PSI=0.0096 (stable)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:120 -   ✓ sc_octroi_new_clus: PSI=0.0022 (stable)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:120 -   ✓ early_bad: PSI=0.0000 (stable)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:120 -   ✓ todu_30ever_h6: PSI=0.0000 (stable)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:120 -   ✓ acct_booked_h0: PSI=0.0000 (stable)
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:122 - ----------------------------------------------------------------------
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:123 - Stability: 7/10 stable, 2 moderate, 1 unstable
+2026-02-21 08:56:14.696 | INFO     | src.stability:print_report:124 - ======================================================================
+2026-02-21 08:56:14.718 | INFO     | src.stability:compare_main_vs_mr:471 - Stability dashboard saved to images/stability_report_pessimistic.html
+2026-02-21 08:56:14.718 | INFO     | src.mr_pipeline:process_mr_period:454 - Stability metrics saved to data/stability_psi_pessimistic.csv
+2026-02-21 08:56:14.720 | WARNING  | src.alerts:generate_drift_alerts:169 - [DRIFT ALERT] Variable 'todu_amt_pile_h6' shows significant drift (PSI=1.6136). Action required.
+2026-02-21 08:56:14.720 | INFO     | src.alerts:generate_drift_alerts:172 - Drift alerts generated for personal_loans,_fusion_and_tj_direct-premium-/MR: 1 critical, 2 warning, 8 info
+2026-02-21 08:56:14.720 | INFO     | src.mr_pipeline:process_mr_period:467 - Drift alerts saved to data/drift_alerts_pessimistic.json
+2026-02-21 08:56:14.720 | WARNING  | src.mr_pipeline:process_mr_period:473 - STABILITY WARNING: 1 variables show significant drift (PSI >= 0.25): ['todu_amt_pile_h6']
+2026-02-21 08:56:14.720 | INFO     | src.preprocess_improved:filter_by_date:401 - Filtering data by date range: 2024-07-01 to 2025-06-01
+2026-02-21 08:56:14.721 | INFO     | src.preprocess_improved:filter_by_date:436 - Date filter removed 22,658 records (52.7% of data)
+2026-02-21 08:56:14.721 | INFO     | src.preprocess_improved:filter_by_date:437 - Remaining records: 20,372
+2026-02-21 08:56:14.721 | INFO     | src.preprocess_improved:filter_by_date:443 - Date range in filtered data: 2024-07-01 to 2025-06-01
+2026-02-21 08:56:14.722 | INFO     | src.preprocess_improved:filter_by_date:447 - Monthly distribution:
+mis_date
+2024-07    1659
+2024-08    1755
+2024-09    1731
+2024-10    1933
+2024-11    1768
+2024-12    1531
+2025-01    1689
+2025-02    1656
+2025-03    1691
+2025-04    1596
+2025-05    1724
+2025-06    1639
+Freq: M, Name: count, dtype: int64
+2026-02-21 08:56:14.722 | INFO     | src.preprocess_improved:filter_by_date:453 - Date filtering completed in 0.00 seconds
+2026-02-21 08:56:14.722 | INFO     | src.preprocess_improved:filter_by_date:401 - Filtering data by date range: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:14.723 | INFO     | src.preprocess_improved:filter_by_date:436 - Date filter removed 32,335 records (75.1% of data)
+2026-02-21 08:56:14.723 | INFO     | src.preprocess_improved:filter_by_date:437 - Remaining records: 10,695
+2026-02-21 08:56:14.723 | INFO     | src.preprocess_improved:filter_by_date:443 - Date range in filtered data: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:14.724 | INFO     | src.preprocess_improved:filter_by_date:447 - Monthly distribution:
+mis_date
+2025-07    1848
+2025-08    1683
+2025-09    1741
+2025-10    1893
+2025-11    1808
+2025-12    1722
+Freq: M, Name: count, dtype: int64
+2026-02-21 08:56:14.724 | INFO     | src.preprocess_improved:filter_by_date:453 - Date filtering completed in 0.00 seconds
+2026-02-21 08:56:14.724 | INFO     | src.audit:save_audit_tables:278 - Generating audit table for main period - pessimistic
+2026-02-21 08:56:14.724 | INFO     | src.audit:generate_audit_table:151 - Cutoff map: {3.0: np.float64(inf), 4.0: np.float64(inf), 5.0: np.float64(inf), 6.0: np.float64(inf), 7.0: np.float64(inf), 8.0: np.float64(inf), 9.0: np.float64(inf), 10.0: np.float64(13.0)}
+2026-02-21 08:56:14.728 | INFO     | src.audit:generate_audit_table:204 - Annualization: 12 months -> coefficient 1.0000
+2026-02-21 08:56:14.728 | INFO     | src.audit:generate_audit_table:205 - Financing rate applied to swap-in: 23.38%
+2026-02-21 08:56:14.766 | INFO     | src.audit:save_audit_tables:291 - Main period audit saved to data/audit_pessimistic.csv
+2026-02-21 08:56:14.768 | INFO     | src.audit:save_audit_tables:296 - Main period audit summary:
+   classification  count  total_oa_amt
+0            keep    925  1.313807e+07
+1        rejected    528  4.972955e+06
+2  rejected_other  16662  2.322498e+08
+3        swap_out   2257  2.274378e+07
+2026-02-21 08:56:14.768 | INFO     | src.audit:save_audit_tables:299 - Generating audit table for MR period - pessimistic
+2026-02-21 08:56:14.768 | INFO     | src.audit:generate_audit_table:151 - Cutoff map: {3.0: np.float64(inf), 4.0: np.float64(inf), 5.0: np.float64(inf), 6.0: np.float64(inf), 7.0: np.float64(inf), 8.0: np.float64(inf), 9.0: np.float64(inf), 10.0: np.float64(13.0)}
+2026-02-21 08:56:14.771 | INFO     | src.audit:generate_audit_table:204 - Annualization: 6 months -> coefficient 2.0000
+2026-02-21 08:56:14.771 | INFO     | src.audit:generate_audit_table:205 - Financing rate applied to swap-in: 23.38%
+2026-02-21 08:56:14.792 | INFO     | src.audit:save_audit_tables:312 - MR period audit saved to data/audit_pessimistic_mr.csv
+2026-02-21 08:56:14.793 | INFO     | src.audit:save_audit_tables:317 - MR period audit summary:
+   classification  count  total_oa_amt
+0            keep    692  2.141935e+07
+1        rejected   1277  2.712520e+07
+2  rejected_other   7315  2.076641e+08
+3        swap_out   1411  3.002277e+07
+2026-02-21 08:56:14.794 | INFO     | src.pipeline.optimization:run_scenario_analysis:440 - [personal_loans,_fusion_and_tj_direct-premium-] Scenario pessimistic done | risk=0.8 | main=12mo MR=6mo | 1.2s
+2026-02-21 08:56:14.808 | INFO     | src.pipeline.optimization:run_scenario_analysis:278 - [personal_loans,_fusion_and_tj_direct-premium-] Scenario base | risk_threshold=0.9% | selected b2=0.84% | production=14,589,262
+2026-02-21 08:56:14.808 | INFO     | src.utils:calculate_bootstrap_intervals:289 - Calculating 95% CI with 1000 bootstraps...
+2026-02-21 08:56:14.977 | INFO     | src.pipeline.optimization:run_scenario_analysis:306 - [personal_loans,_fusion_and_tj_direct-premium-] Scenario base CI: {'production_ci_lower': np.float64(13684229.538999999), 'production_ci_upper': np.float64(15557843.954499999), 'risk_ci_lower': np.float64(0.002260975), 'risk_ci_upper': np.float64(0.017289899999999997)}
+2026-02-21 08:56:14.987 | INFO     | src.utils:generate_cutoff_summary:448 - Generated cutoff summary for segment 'personal_loans,_fusion_and_tj_direct-premium-', scenario 'base'
+2026-02-21 08:56:14.987 | INFO     | src.utils:generate_cutoff_summary:449 -   Bins: 8, Cutoff range: [14, 20]
+2026-02-21 08:56:14.995 | INFO     | src.mr_pipeline:process_mr_period:184 - Processing MR period data (suffix: '')...
+2026-02-21 08:56:14.995 | INFO     | src.preprocess_improved:filter_by_date:401 - Filtering data by date range: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:14.996 | INFO     | src.preprocess_improved:filter_by_date:436 - Date filter removed 32,335 records (75.1% of data)
+2026-02-21 08:56:14.996 | INFO     | src.preprocess_improved:filter_by_date:437 - Remaining records: 10,695
+2026-02-21 08:56:14.997 | INFO     | src.preprocess_improved:filter_by_date:443 - Date range in filtered data: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:14.997 | INFO     | src.preprocess_improved:filter_by_date:447 - Monthly distribution:
+mis_date
+2025-07    1848
+2025-08    1683
+2025-09    1741
+2025-10    1893
+2025-11    1808
+2025-12    1722
+Freq: M, Name: count, dtype: int64
+2026-02-21 08:56:14.997 | INFO     | src.preprocess_improved:filter_by_date:453 - Date filtering completed in 0.00 seconds
+2026-02-21 08:56:14.997 | INFO     | src.mr_pipeline:process_mr_period:210 - Calculating b2_ever_h6_tmp aggregated by ['sc_octroi_new_clus', 'new_efx_clus'] from initial period...
+2026-02-21 08:56:14.998 | INFO     | src.mr_pipeline:process_mr_period:223 - Merging b2_ever_h6_tmp into data_demand_mr...
+2026-02-21 08:56:15.000 | WARNING  | src.mr_pipeline:process_mr_period:238 - Found 5 booked accounts with null b2_ever_h6_tmp. These bin combinations exist in MR period but not in initial period. Inferring b2_ever_h6 using the risk model...
+2026-02-21 08:56:15.000 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(14)}
+2026-02-21 08:56:15.000 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(10)}
+2026-02-21 08:56:15.000 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(3), 'new_efx_clus': np.int64(18)}
+2026-02-21 08:56:15.000 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(17)}
+2026-02-21 08:56:15.000 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(12)}
+2026-02-21 08:56:15.002 | INFO     | src.mr_pipeline:process_mr_period:287 - Successfully inferred b2_ever_h6 for 5 booked accounts across 5 bin combinations using risk model
+2026-02-21 08:56:15.002 | INFO     | src.mr_pipeline:process_mr_period:307 - Calculating todu_amt_pile_h6 for booked accounts in MR period...
+2026-02-21 08:56:15.003 | INFO     | src.mr_pipeline:process_mr_period:323 - Calculating todu_30ever_h6 for booked accounts in MR period...
+2026-02-21 08:56:15.003 | INFO     | src.mr_pipeline:process_mr_period:338 - Applying full optimization pipeline to MR dataset...
+2026-02-21 08:56:15.003 | INFO     | src.inference_optimized:run_optimization_pipeline:1357 - Running optimization pipeline...
+2026-02-21 08:56:15.009 | INFO     | src.reject_inference:compute_acceptance_rates:77 - Acceptance rates exclude 3,383 non-score rejections (31.6% of demand). Bins with many non-score rejections may have overstated acceptance rates.
+2026-02-21 08:56:15.010 | INFO     | src.reject_inference:apply_parceling_adjustment:171 - Reject inference (parceling): adjusted 49/49 bins | avg multiplier=2.500 | max multiplier=2.500
+2026-02-21 08:56:15.011 | INFO     | src.inference_optimized:run_optimization_pipeline:1429 - Generating optimization visualization...
+2026-02-21 08:56:15.023 | INFO     | src.inference_optimized:run_optimization_pipeline:1452 - Optimization visualization saved to images/b2_ever_h6_vs_octroi_and_risk_score.html
+2026-02-21 08:56:15.025 | INFO     | src.mr_pipeline:process_mr_period:358 - MR summary data saved to data/data_summary_desagregado_mr.csv
+2026-02-21 08:56:15.025 | INFO     | src.mr_pipeline:process_mr_period:361 - Generating b2_ever_h6 visualization for MR dataset...
+2026-02-21 08:56:15.037 | INFO     | src.mr_pipeline:process_mr_period:400 - MR Visualization saved to images/b2_ever_h6_vs_octroi_and_risk_score_mr.html
+2026-02-21 08:56:15.037 | INFO     | src.mr_pipeline:process_mr_period:404 - Dropping b2_ever_h6_tmp from data_demand_mr and data_booked_mr...
+2026-02-21 08:56:15.038 | INFO     | src.mr_pipeline:process_mr_period:409 - Generating Risk Production Summary Table for MR period...
+2026-02-21 08:56:15.038 | INFO     | src.mr_pipeline:calculate_metrics_from_cuts:74 - Optimal Cuts: {np.int64(3): np.float64(20.0), np.int64(4): np.float64(20.0), np.int64(5): np.float64(20.0), np.int64(6): np.float64(19.0), np.int64(7): np.float64(19.0), np.int64(8): np.float64(19.0), np.int64(9): np.float64(19.0), np.int64(10): np.float64(14.0)}
+2026-02-21 08:56:15.039 | INFO     | src.mr_pipeline:process_mr_period:418 - MR Risk Production Summary Table saved to data/risk_production_summary_table_mr.csv
+2026-02-21 08:56:15.040 | INFO     | src.mr_pipeline:process_mr_period:419 - MR Table:
+             Metric  Risk (%)  Production (€)  Production (%)  todu_30ever_h6  todu_amt_pile_h6
+0            Actual      1.67     50784256.32         1.00000   745916.336911      3.119091e+08
+1           Swap-in      0.00            0.00         0.00000        0.000000      0.000000e+00
+2          Swap-out      2.34     27439264.62         0.54031   578349.979771      1.733477e+08
+3  Optimum selected      0.85     23344991.70         0.45969   167566.357140      1.385613e+08
+2026-02-21 08:56:15.040 | INFO     | src.mr_pipeline:process_mr_period:422 - Calculating PSI/CSI stability metrics (Main vs MR)...
+2026-02-21 08:56:15.040 | INFO     | src.stability:calculate_stability_report:271 - Calculating stability metrics for 10 variables...
+2026-02-21 08:56:15.060 | INFO     | src.stability:calculate_stability_report:312 - Stability: 7/10 stable, 2 moderate, 1 unstable
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:99 - ======================================================================
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:100 - STABILITY REPORT (PSI/CSI)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:101 - ======================================================================
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:102 - Baseline:   Main Period (n=3,182)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:103 - Comparison: MR Period (n=2,103)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:108 - Overall PSI: 0.0022 ✓ (stable)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:118 - UNSTABLE (PSI >= 0.25):
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:120 -   ✗ todu_amt_pile_h6: PSI=1.6136 (unstable)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:118 - MODERATE (0.1 <= PSI < 0.25):
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:120 -   ⚠ oa_amt: PSI=0.1053 (moderate)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:120 -   ⚠ oa_amt_h0: PSI=0.1038 (moderate)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:118 - STABLE (PSI < 0.1):
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:120 -   ✓ risk_score_rf: PSI=0.0203 (stable)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:120 -   ✓ new_efx_clus: PSI=0.0199 (stable)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:120 -   ✓ score_rf: PSI=0.0096 (stable)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:120 -   ✓ sc_octroi_new_clus: PSI=0.0022 (stable)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:120 -   ✓ early_bad: PSI=0.0000 (stable)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:120 -   ✓ todu_30ever_h6: PSI=0.0000 (stable)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:120 -   ✓ acct_booked_h0: PSI=0.0000 (stable)
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:122 - ----------------------------------------------------------------------
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:123 - Stability: 7/10 stable, 2 moderate, 1 unstable
+2026-02-21 08:56:15.060 | INFO     | src.stability:print_report:124 - ======================================================================
+2026-02-21 08:56:15.083 | INFO     | src.stability:compare_main_vs_mr:471 - Stability dashboard saved to images/stability_report.html
+2026-02-21 08:56:15.084 | INFO     | src.mr_pipeline:process_mr_period:454 - Stability metrics saved to data/stability_psi.csv
+2026-02-21 08:56:15.084 | WARNING  | src.alerts:generate_drift_alerts:169 - [DRIFT ALERT] Variable 'todu_amt_pile_h6' shows significant drift (PSI=1.6136). Action required.
+2026-02-21 08:56:15.084 | INFO     | src.alerts:generate_drift_alerts:172 - Drift alerts generated for personal_loans,_fusion_and_tj_direct-premium-/MR: 1 critical, 2 warning, 8 info
+2026-02-21 08:56:15.084 | INFO     | src.mr_pipeline:process_mr_period:467 - Drift alerts saved to data/drift_alerts.json
+2026-02-21 08:56:15.084 | WARNING  | src.mr_pipeline:process_mr_period:473 - STABILITY WARNING: 1 variables show significant drift (PSI >= 0.25): ['todu_amt_pile_h6']
+2026-02-21 08:56:15.084 | INFO     | src.mr_pipeline:process_mr_period:184 - Processing MR period data (suffix: '_base')...
+2026-02-21 08:56:15.084 | INFO     | src.preprocess_improved:filter_by_date:401 - Filtering data by date range: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:15.085 | INFO     | src.preprocess_improved:filter_by_date:436 - Date filter removed 32,335 records (75.1% of data)
+2026-02-21 08:56:15.085 | INFO     | src.preprocess_improved:filter_by_date:437 - Remaining records: 10,695
+2026-02-21 08:56:15.085 | INFO     | src.preprocess_improved:filter_by_date:443 - Date range in filtered data: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:15.086 | INFO     | src.preprocess_improved:filter_by_date:447 - Monthly distribution:
+mis_date
+2025-07    1848
+2025-08    1683
+2025-09    1741
+2025-10    1893
+2025-11    1808
+2025-12    1722
+Freq: M, Name: count, dtype: int64
+2026-02-21 08:56:15.086 | INFO     | src.preprocess_improved:filter_by_date:453 - Date filtering completed in 0.00 seconds
+2026-02-21 08:56:15.086 | INFO     | src.mr_pipeline:process_mr_period:210 - Calculating b2_ever_h6_tmp aggregated by ['sc_octroi_new_clus', 'new_efx_clus'] from initial period...
+2026-02-21 08:56:15.087 | INFO     | src.mr_pipeline:process_mr_period:223 - Merging b2_ever_h6_tmp into data_demand_mr...
+2026-02-21 08:56:15.088 | WARNING  | src.mr_pipeline:process_mr_period:238 - Found 5 booked accounts with null b2_ever_h6_tmp. These bin combinations exist in MR period but not in initial period. Inferring b2_ever_h6 using the risk model...
+2026-02-21 08:56:15.088 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(14)}
+2026-02-21 08:56:15.088 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(10)}
+2026-02-21 08:56:15.088 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(3), 'new_efx_clus': np.int64(18)}
+2026-02-21 08:56:15.088 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(17)}
+2026-02-21 08:56:15.088 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(12)}
+2026-02-21 08:56:15.091 | INFO     | src.mr_pipeline:process_mr_period:287 - Successfully inferred b2_ever_h6 for 5 booked accounts across 5 bin combinations using risk model
+2026-02-21 08:56:15.091 | INFO     | src.mr_pipeline:process_mr_period:307 - Calculating todu_amt_pile_h6 for booked accounts in MR period...
+2026-02-21 08:56:15.092 | INFO     | src.mr_pipeline:process_mr_period:323 - Calculating todu_30ever_h6 for booked accounts in MR period...
+2026-02-21 08:56:15.092 | INFO     | src.mr_pipeline:process_mr_period:338 - Applying full optimization pipeline to MR dataset...
+2026-02-21 08:56:15.092 | INFO     | src.inference_optimized:run_optimization_pipeline:1357 - Running optimization pipeline...
+2026-02-21 08:56:15.098 | INFO     | src.reject_inference:compute_acceptance_rates:77 - Acceptance rates exclude 3,383 non-score rejections (31.6% of demand). Bins with many non-score rejections may have overstated acceptance rates.
+2026-02-21 08:56:15.099 | INFO     | src.reject_inference:apply_parceling_adjustment:171 - Reject inference (parceling): adjusted 49/49 bins | avg multiplier=2.500 | max multiplier=2.500
+2026-02-21 08:56:15.100 | INFO     | src.inference_optimized:run_optimization_pipeline:1429 - Generating optimization visualization...
+2026-02-21 08:56:15.112 | INFO     | src.inference_optimized:run_optimization_pipeline:1452 - Optimization visualization saved to images/b2_ever_h6_vs_octroi_and_risk_score.html
+2026-02-21 08:56:15.113 | INFO     | src.mr_pipeline:process_mr_period:358 - MR summary data saved to data/data_summary_desagregado_mr_base.csv
+2026-02-21 08:56:15.113 | INFO     | src.mr_pipeline:process_mr_period:361 - Generating b2_ever_h6 visualization for MR dataset...
+2026-02-21 08:56:15.125 | INFO     | src.mr_pipeline:process_mr_period:400 - MR Visualization saved to images/b2_ever_h6_vs_octroi_and_risk_score_mr_base.html
+2026-02-21 08:56:15.125 | INFO     | src.mr_pipeline:process_mr_period:404 - Dropping b2_ever_h6_tmp from data_demand_mr and data_booked_mr...
+2026-02-21 08:56:15.125 | INFO     | src.mr_pipeline:process_mr_period:409 - Generating Risk Production Summary Table for MR period...
+2026-02-21 08:56:15.126 | INFO     | src.mr_pipeline:calculate_metrics_from_cuts:74 - Optimal Cuts: {np.int64(3): np.float64(20.0), np.int64(4): np.float64(20.0), np.int64(5): np.float64(20.0), np.int64(6): np.float64(19.0), np.int64(7): np.float64(19.0), np.int64(8): np.float64(19.0), np.int64(9): np.float64(19.0), np.int64(10): np.float64(14.0)}
+2026-02-21 08:56:15.127 | INFO     | src.mr_pipeline:process_mr_period:418 - MR Risk Production Summary Table saved to data/risk_production_summary_table_mr_base.csv
+2026-02-21 08:56:15.127 | INFO     | src.mr_pipeline:process_mr_period:419 - MR Table:
+             Metric  Risk (%)  Production (€)  Production (%)  todu_30ever_h6  todu_amt_pile_h6
+0            Actual      1.67     50784256.32         1.00000   745916.336911      3.119091e+08
+1           Swap-in      0.00            0.00         0.00000        0.000000      0.000000e+00
+2          Swap-out      2.34     27439264.62         0.54031   578349.979771      1.733477e+08
+3  Optimum selected      0.85     23344991.70         0.45969   167566.357140      1.385613e+08
+2026-02-21 08:56:15.127 | INFO     | src.mr_pipeline:process_mr_period:422 - Calculating PSI/CSI stability metrics (Main vs MR)...
+2026-02-21 08:56:15.127 | INFO     | src.stability:calculate_stability_report:271 - Calculating stability metrics for 10 variables...
+2026-02-21 08:56:15.148 | INFO     | src.stability:calculate_stability_report:312 - Stability: 7/10 stable, 2 moderate, 1 unstable
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:99 - ======================================================================
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:100 - STABILITY REPORT (PSI/CSI)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:101 - ======================================================================
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:102 - Baseline:   Main Period (n=3,182)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:103 - Comparison: MR Period (n=2,103)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:108 - Overall PSI: 0.0022 ✓ (stable)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:118 - UNSTABLE (PSI >= 0.25):
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:120 -   ✗ todu_amt_pile_h6: PSI=1.6136 (unstable)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:118 - MODERATE (0.1 <= PSI < 0.25):
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:120 -   ⚠ oa_amt: PSI=0.1053 (moderate)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:120 -   ⚠ oa_amt_h0: PSI=0.1038 (moderate)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:118 - STABLE (PSI < 0.1):
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:120 -   ✓ risk_score_rf: PSI=0.0203 (stable)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:120 -   ✓ new_efx_clus: PSI=0.0199 (stable)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:120 -   ✓ score_rf: PSI=0.0096 (stable)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:120 -   ✓ sc_octroi_new_clus: PSI=0.0022 (stable)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:120 -   ✓ early_bad: PSI=0.0000 (stable)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:120 -   ✓ todu_30ever_h6: PSI=0.0000 (stable)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:120 -   ✓ acct_booked_h0: PSI=0.0000 (stable)
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:122 - ----------------------------------------------------------------------
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:123 - Stability: 7/10 stable, 2 moderate, 1 unstable
+2026-02-21 08:56:15.148 | INFO     | src.stability:print_report:124 - ======================================================================
+2026-02-21 08:56:15.170 | INFO     | src.stability:compare_main_vs_mr:471 - Stability dashboard saved to images/stability_report_base.html
+2026-02-21 08:56:15.170 | INFO     | src.mr_pipeline:process_mr_period:454 - Stability metrics saved to data/stability_psi_base.csv
+2026-02-21 08:56:15.170 | WARNING  | src.alerts:generate_drift_alerts:169 - [DRIFT ALERT] Variable 'todu_amt_pile_h6' shows significant drift (PSI=1.6136). Action required.
+2026-02-21 08:56:15.170 | INFO     | src.alerts:generate_drift_alerts:172 - Drift alerts generated for personal_loans,_fusion_and_tj_direct-premium-/MR: 1 critical, 2 warning, 8 info
+2026-02-21 08:56:15.171 | INFO     | src.mr_pipeline:process_mr_period:467 - Drift alerts saved to data/drift_alerts_base.json
+2026-02-21 08:56:15.171 | WARNING  | src.mr_pipeline:process_mr_period:473 - STABILITY WARNING: 1 variables show significant drift (PSI >= 0.25): ['todu_amt_pile_h6']
+2026-02-21 08:56:15.171 | INFO     | src.preprocess_improved:filter_by_date:401 - Filtering data by date range: 2024-07-01 to 2025-06-01
+2026-02-21 08:56:15.172 | INFO     | src.preprocess_improved:filter_by_date:436 - Date filter removed 22,658 records (52.7% of data)
+2026-02-21 08:56:15.172 | INFO     | src.preprocess_improved:filter_by_date:437 - Remaining records: 20,372
+2026-02-21 08:56:15.172 | INFO     | src.preprocess_improved:filter_by_date:443 - Date range in filtered data: 2024-07-01 to 2025-06-01
+2026-02-21 08:56:15.173 | INFO     | src.preprocess_improved:filter_by_date:447 - Monthly distribution:
+mis_date
+2024-07    1659
+2024-08    1755
+2024-09    1731
+2024-10    1933
+2024-11    1768
+2024-12    1531
+2025-01    1689
+2025-02    1656
+2025-03    1691
+2025-04    1596
+2025-05    1724
+2025-06    1639
+Freq: M, Name: count, dtype: int64
+2026-02-21 08:56:15.173 | INFO     | src.preprocess_improved:filter_by_date:453 - Date filtering completed in 0.00 seconds
+2026-02-21 08:56:15.173 | INFO     | src.preprocess_improved:filter_by_date:401 - Filtering data by date range: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:15.174 | INFO     | src.preprocess_improved:filter_by_date:436 - Date filter removed 32,335 records (75.1% of data)
+2026-02-21 08:56:15.174 | INFO     | src.preprocess_improved:filter_by_date:437 - Remaining records: 10,695
+2026-02-21 08:56:15.174 | INFO     | src.preprocess_improved:filter_by_date:443 - Date range in filtered data: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:15.174 | INFO     | src.preprocess_improved:filter_by_date:447 - Monthly distribution:
+mis_date
+2025-07    1848
+2025-08    1683
+2025-09    1741
+2025-10    1893
+2025-11    1808
+2025-12    1722
+Freq: M, Name: count, dtype: int64
+2026-02-21 08:56:15.174 | INFO     | src.preprocess_improved:filter_by_date:453 - Date filtering completed in 0.00 seconds
+2026-02-21 08:56:15.175 | INFO     | src.audit:save_audit_tables:278 - Generating audit table for main period - base
+2026-02-21 08:56:15.175 | INFO     | src.audit:generate_audit_table:151 - Cutoff map: {3.0: np.float64(20.0), 4.0: np.float64(20.0), 5.0: np.float64(20.0), 6.0: np.float64(19.0), 7.0: np.float64(19.0), 8.0: np.float64(19.0), 9.0: np.float64(19.0), 10.0: np.float64(14.0)}
+2026-02-21 08:56:15.178 | INFO     | src.audit:generate_audit_table:204 - Annualization: 12 months -> coefficient 1.0000
+2026-02-21 08:56:15.178 | INFO     | src.audit:generate_audit_table:205 - Financing rate applied to swap-in: 23.38%
+2026-02-21 08:56:15.217 | INFO     | src.audit:save_audit_tables:291 - Main period audit saved to data/audit_base.csv
+2026-02-21 08:56:15.219 | INFO     | src.audit:save_audit_tables:296 - Main period audit summary:
+   classification  count  total_oa_amt
+0            keep   1170  1.474197e+07
+1        rejected    528  4.972955e+06
+2  rejected_other  16662  2.322498e+08
+3        swap_out   2012  2.113988e+07
+2026-02-21 08:56:15.220 | INFO     | src.audit:save_audit_tables:299 - Generating audit table for MR period - base
+2026-02-21 08:56:15.220 | INFO     | src.audit:generate_audit_table:151 - Cutoff map: {3.0: np.float64(20.0), 4.0: np.float64(20.0), 5.0: np.float64(20.0), 6.0: np.float64(19.0), 7.0: np.float64(19.0), 8.0: np.float64(19.0), 9.0: np.float64(19.0), 10.0: np.float64(14.0)}
+2026-02-21 08:56:15.222 | INFO     | src.audit:generate_audit_table:204 - Annualization: 6 months -> coefficient 2.0000
+2026-02-21 08:56:15.222 | INFO     | src.audit:generate_audit_table:205 - Financing rate applied to swap-in: 23.38%
+2026-02-21 08:56:15.243 | INFO     | src.audit:save_audit_tables:312 - MR period audit saved to data/audit_base_mr.csv
+2026-02-21 08:56:15.244 | INFO     | src.audit:save_audit_tables:317 - MR period audit summary:
+   classification  count  total_oa_amt
+0            keep    857  2.363860e+07
+1        rejected   1277  2.712520e+07
+2  rejected_other   7315  2.076641e+08
+3        swap_out   1246  2.780353e+07
+2026-02-21 08:56:15.245 | INFO     | src.pipeline.optimization:run_scenario_analysis:440 - [personal_loans,_fusion_and_tj_direct-premium-] Scenario base done | risk=0.9 | main=12mo MR=6mo | 0.5s
+2026-02-21 08:56:15.259 | INFO     | src.pipeline.optimization:run_scenario_analysis:278 - [personal_loans,_fusion_and_tj_direct-premium-] Scenario optimistic | risk_threshold=1.0% | selected b2=1.00% | production=20,737,516
+2026-02-21 08:56:15.259 | INFO     | src.utils:calculate_bootstrap_intervals:289 - Calculating 95% CI with 1000 bootstraps...
+2026-02-21 08:56:15.466 | INFO     | src.pipeline.optimization:run_scenario_analysis:306 - [personal_loans,_fusion_and_tj_direct-premium-] Scenario optimistic CI: {'production_ci_lower': np.float64(19818594.74475), 'production_ci_upper': np.float64(21661271.92625), 'risk_ci_lower': np.float64(0.004582575000000002), 'risk_ci_upper': np.float64(0.017062075)}
+2026-02-21 08:56:15.477 | INFO     | src.utils:generate_cutoff_summary:448 - Generated cutoff summary for segment 'personal_loans,_fusion_and_tj_direct-premium-', scenario 'optimistic'
+2026-02-21 08:56:15.477 | INFO     | src.utils:generate_cutoff_summary:449 -   Bins: 8, Cutoff range: [14, 19]
+2026-02-21 08:56:15.477 | INFO     | src.mr_pipeline:process_mr_period:184 - Processing MR period data (suffix: '_optimistic')...
+2026-02-21 08:56:15.477 | INFO     | src.preprocess_improved:filter_by_date:401 - Filtering data by date range: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:15.478 | INFO     | src.preprocess_improved:filter_by_date:436 - Date filter removed 32,335 records (75.1% of data)
+2026-02-21 08:56:15.478 | INFO     | src.preprocess_improved:filter_by_date:437 - Remaining records: 10,695
+2026-02-21 08:56:15.479 | INFO     | src.preprocess_improved:filter_by_date:443 - Date range in filtered data: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:15.479 | INFO     | src.preprocess_improved:filter_by_date:447 - Monthly distribution:
+mis_date
+2025-07    1848
+2025-08    1683
+2025-09    1741
+2025-10    1893
+2025-11    1808
+2025-12    1722
+Freq: M, Name: count, dtype: int64
+2026-02-21 08:56:15.479 | INFO     | src.preprocess_improved:filter_by_date:453 - Date filtering completed in 0.00 seconds
+2026-02-21 08:56:15.479 | INFO     | src.mr_pipeline:process_mr_period:210 - Calculating b2_ever_h6_tmp aggregated by ['sc_octroi_new_clus', 'new_efx_clus'] from initial period...
+2026-02-21 08:56:15.480 | INFO     | src.mr_pipeline:process_mr_period:223 - Merging b2_ever_h6_tmp into data_demand_mr...
+2026-02-21 08:56:15.481 | WARNING  | src.mr_pipeline:process_mr_period:238 - Found 5 booked accounts with null b2_ever_h6_tmp. These bin combinations exist in MR period but not in initial period. Inferring b2_ever_h6 using the risk model...
+2026-02-21 08:56:15.481 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(14)}
+2026-02-21 08:56:15.481 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(10)}
+2026-02-21 08:56:15.481 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(3), 'new_efx_clus': np.int64(18)}
+2026-02-21 08:56:15.481 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(17)}
+2026-02-21 08:56:15.482 | WARNING  | src.mr_pipeline:process_mr_period:244 -   Missing bin: {'sc_octroi_new_clus': np.int64(4), 'new_efx_clus': np.int64(12)}
+2026-02-21 08:56:15.484 | INFO     | src.mr_pipeline:process_mr_period:287 - Successfully inferred b2_ever_h6 for 5 booked accounts across 5 bin combinations using risk model
+2026-02-21 08:56:15.484 | INFO     | src.mr_pipeline:process_mr_period:307 - Calculating todu_amt_pile_h6 for booked accounts in MR period...
+2026-02-21 08:56:15.485 | INFO     | src.mr_pipeline:process_mr_period:323 - Calculating todu_30ever_h6 for booked accounts in MR period...
+2026-02-21 08:56:15.485 | INFO     | src.mr_pipeline:process_mr_period:338 - Applying full optimization pipeline to MR dataset...
+2026-02-21 08:56:15.485 | INFO     | src.inference_optimized:run_optimization_pipeline:1357 - Running optimization pipeline...
+2026-02-21 08:56:15.491 | INFO     | src.reject_inference:compute_acceptance_rates:77 - Acceptance rates exclude 3,383 non-score rejections (31.6% of demand). Bins with many non-score rejections may have overstated acceptance rates.
+2026-02-21 08:56:15.492 | INFO     | src.reject_inference:apply_parceling_adjustment:171 - Reject inference (parceling): adjusted 49/49 bins | avg multiplier=2.500 | max multiplier=2.500
+2026-02-21 08:56:15.494 | INFO     | src.inference_optimized:run_optimization_pipeline:1429 - Generating optimization visualization...
+2026-02-21 08:56:15.506 | INFO     | src.inference_optimized:run_optimization_pipeline:1452 - Optimization visualization saved to images/b2_ever_h6_vs_octroi_and_risk_score.html
+2026-02-21 08:56:15.507 | INFO     | src.mr_pipeline:process_mr_period:358 - MR summary data saved to data/data_summary_desagregado_mr_optimistic.csv
+2026-02-21 08:56:15.507 | INFO     | src.mr_pipeline:process_mr_period:361 - Generating b2_ever_h6 visualization for MR dataset...
+2026-02-21 08:56:15.520 | INFO     | src.mr_pipeline:process_mr_period:400 - MR Visualization saved to images/b2_ever_h6_vs_octroi_and_risk_score_mr_optimistic.html
+2026-02-21 08:56:15.520 | INFO     | src.mr_pipeline:process_mr_period:404 - Dropping b2_ever_h6_tmp from data_demand_mr and data_booked_mr...
+2026-02-21 08:56:15.520 | INFO     | src.mr_pipeline:process_mr_period:409 - Generating Risk Production Summary Table for MR period...
+2026-02-21 08:56:15.520 | INFO     | src.mr_pipeline:calculate_metrics_from_cuts:74 - Optimal Cuts: {np.int64(3): np.float64(19.0), np.int64(4): np.float64(18.0), np.int64(5): np.float64(17.0), np.int64(6): np.float64(17.0), np.int64(7): np.float64(16.0), np.int64(8): np.float64(14.0), np.int64(9): np.float64(14.0), np.int64(10): np.float64(14.0)}
+2026-02-21 08:56:15.522 | INFO     | src.mr_pipeline:process_mr_period:418 - MR Risk Production Summary Table saved to data/risk_production_summary_table_mr_optimistic.csv
+2026-02-21 08:56:15.522 | INFO     | src.mr_pipeline:process_mr_period:419 - MR Table:
+             Metric  Risk (%)  Production (€)  Production (%)  todu_30ever_h6  todu_amt_pile_h6
+0            Actual      1.67     50784256.32        1.000000   745916.336911      3.119091e+08
+1           Swap-in      0.00            0.00        0.000000        0.000000      0.000000e+00
+2          Swap-out      2.88     18160380.30        0.357599   463542.215593      1.126441e+08
+3  Optimum selected      0.99     32623876.02        0.642401   282374.121318      1.992649e+08
+2026-02-21 08:56:15.522 | INFO     | src.mr_pipeline:process_mr_period:422 - Calculating PSI/CSI stability metrics (Main vs MR)...
+2026-02-21 08:56:15.522 | INFO     | src.stability:calculate_stability_report:271 - Calculating stability metrics for 10 variables...
+2026-02-21 08:56:15.543 | INFO     | src.stability:calculate_stability_report:312 - Stability: 7/10 stable, 2 moderate, 1 unstable
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:99 - ======================================================================
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:100 - STABILITY REPORT (PSI/CSI)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:101 - ======================================================================
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:102 - Baseline:   Main Period (n=3,182)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:103 - Comparison: MR Period (n=2,103)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:108 - Overall PSI: 0.0022 ✓ (stable)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:118 - UNSTABLE (PSI >= 0.25):
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:120 -   ✗ todu_amt_pile_h6: PSI=1.6136 (unstable)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:118 - MODERATE (0.1 <= PSI < 0.25):
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:120 -   ⚠ oa_amt: PSI=0.1053 (moderate)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:120 -   ⚠ oa_amt_h0: PSI=0.1038 (moderate)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:118 - STABLE (PSI < 0.1):
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:120 -   ✓ risk_score_rf: PSI=0.0203 (stable)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:120 -   ✓ new_efx_clus: PSI=0.0199 (stable)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:120 -   ✓ score_rf: PSI=0.0096 (stable)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:120 -   ✓ sc_octroi_new_clus: PSI=0.0022 (stable)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:120 -   ✓ early_bad: PSI=0.0000 (stable)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:120 -   ✓ todu_30ever_h6: PSI=0.0000 (stable)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:120 -   ✓ acct_booked_h0: PSI=0.0000 (stable)
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:122 - ----------------------------------------------------------------------
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:123 - Stability: 7/10 stable, 2 moderate, 1 unstable
+2026-02-21 08:56:15.543 | INFO     | src.stability:print_report:124 - ======================================================================
+2026-02-21 08:56:15.565 | INFO     | src.stability:compare_main_vs_mr:471 - Stability dashboard saved to images/stability_report_optimistic.html
+2026-02-21 08:56:15.566 | INFO     | src.mr_pipeline:process_mr_period:454 - Stability metrics saved to data/stability_psi_optimistic.csv
+2026-02-21 08:56:15.566 | WARNING  | src.alerts:generate_drift_alerts:169 - [DRIFT ALERT] Variable 'todu_amt_pile_h6' shows significant drift (PSI=1.6136). Action required.
+2026-02-21 08:56:15.566 | INFO     | src.alerts:generate_drift_alerts:172 - Drift alerts generated for personal_loans,_fusion_and_tj_direct-premium-/MR: 1 critical, 2 warning, 8 info
+2026-02-21 08:56:15.566 | INFO     | src.mr_pipeline:process_mr_period:467 - Drift alerts saved to data/drift_alerts_optimistic.json
+2026-02-21 08:56:15.566 | WARNING  | src.mr_pipeline:process_mr_period:473 - STABILITY WARNING: 1 variables show significant drift (PSI >= 0.25): ['todu_amt_pile_h6']
+2026-02-21 08:56:15.566 | INFO     | src.preprocess_improved:filter_by_date:401 - Filtering data by date range: 2024-07-01 to 2025-06-01
+2026-02-21 08:56:15.567 | INFO     | src.preprocess_improved:filter_by_date:436 - Date filter removed 22,658 records (52.7% of data)
+2026-02-21 08:56:15.567 | INFO     | src.preprocess_improved:filter_by_date:437 - Remaining records: 20,372
+2026-02-21 08:56:15.567 | INFO     | src.preprocess_improved:filter_by_date:443 - Date range in filtered data: 2024-07-01 to 2025-06-01
+2026-02-21 08:56:15.568 | INFO     | src.preprocess_improved:filter_by_date:447 - Monthly distribution:
+mis_date
+2024-07    1659
+2024-08    1755
+2024-09    1731
+2024-10    1933
+2024-11    1768
+2024-12    1531
+2025-01    1689
+2025-02    1656
+2025-03    1691
+2025-04    1596
+2025-05    1724
+2025-06    1639
+Freq: M, Name: count, dtype: int64
+2026-02-21 08:56:15.568 | INFO     | src.preprocess_improved:filter_by_date:453 - Date filtering completed in 0.00 seconds
+2026-02-21 08:56:15.568 | INFO     | src.preprocess_improved:filter_by_date:401 - Filtering data by date range: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:15.569 | INFO     | src.preprocess_improved:filter_by_date:436 - Date filter removed 32,335 records (75.1% of data)
+2026-02-21 08:56:15.569 | INFO     | src.preprocess_improved:filter_by_date:437 - Remaining records: 10,695
+2026-02-21 08:56:15.569 | INFO     | src.preprocess_improved:filter_by_date:443 - Date range in filtered data: 2025-07-01 to 2025-12-01
+2026-02-21 08:56:15.570 | INFO     | src.preprocess_improved:filter_by_date:447 - Monthly distribution:
+mis_date
+2025-07    1848
+2025-08    1683
+2025-09    1741
+2025-10    1893
+2025-11    1808
+2025-12    1722
+Freq: M, Name: count, dtype: int64
+2026-02-21 08:56:15.570 | INFO     | src.preprocess_improved:filter_by_date:453 - Date filtering completed in 0.00 seconds
+2026-02-21 08:56:15.570 | INFO     | src.audit:save_audit_tables:278 - Generating audit table for main period - optimistic
+2026-02-21 08:56:15.570 | INFO     | src.audit:generate_audit_table:151 - Cutoff map: {3.0: np.float64(19.0), 4.0: np.float64(18.0), 5.0: np.float64(17.0), 6.0: np.float64(17.0), 7.0: np.float64(16.0), 8.0: np.float64(14.0), 9.0: np.float64(14.0), 10.0: np.float64(14.0)}
+2026-02-21 08:56:15.574 | INFO     | src.audit:generate_audit_table:204 - Annualization: 12 months -> coefficient 1.0000
+2026-02-21 08:56:15.574 | INFO     | src.audit:generate_audit_table:205 - Financing rate applied to swap-in: 23.38%
+2026-02-21 08:56:15.613 | INFO     | src.audit:save_audit_tables:291 - Main period audit saved to data/audit_optimistic.csv
+2026-02-21 08:56:15.616 | INFO     | src.audit:save_audit_tables:296 - Main period audit summary:
+   classification  count  total_oa_amt
+0            keep   1859  2.096717e+07
+1        rejected    528  4.972955e+06
+2  rejected_other  16662  2.322498e+08
+3        swap_out   1323  1.491467e+07
+2026-02-21 08:56:15.616 | INFO     | src.audit:save_audit_tables:299 - Generating audit table for MR period - optimistic
+2026-02-21 08:56:15.616 | INFO     | src.audit:generate_audit_table:151 - Cutoff map: {3.0: np.float64(19.0), 4.0: np.float64(18.0), 5.0: np.float64(17.0), 6.0: np.float64(17.0), 7.0: np.float64(16.0), 8.0: np.float64(14.0), 9.0: np.float64(14.0), 10.0: np.float64(14.0)}
+2026-02-21 08:56:15.618 | INFO     | src.audit:generate_audit_table:204 - Annualization: 6 months -> coefficient 2.0000
+2026-02-21 08:56:15.618 | INFO     | src.audit:generate_audit_table:205 - Financing rate applied to swap-in: 23.38%
+2026-02-21 08:56:15.639 | INFO     | src.audit:save_audit_tables:312 - MR period audit saved to data/audit_optimistic_mr.csv
+2026-02-21 08:56:15.641 | INFO     | src.audit:save_audit_tables:317 - MR period audit summary:
+   classification  count  total_oa_amt
+0            keep   1331  3.299148e+07
+1        rejected   1277  2.712520e+07
+2  rejected_other   7315  2.076641e+08
+3        swap_out    772  1.845064e+07
+2026-02-21 08:56:15.642 | INFO     | src.pipeline.optimization:run_scenario_analysis:440 - [personal_loans,_fusion_and_tj_direct-premium-] Scenario optimistic done | risk=1.0 | main=12mo MR=6mo | 0.4s
+2026-02-21 08:56:15.642 | INFO     | src.utils:consolidate_cutoff_summaries:517 - Consolidated cutoff summary saved to data/cutoff_summary_by_segment.csv
+2026-02-21 08:56:15.645 | INFO     | src.pipeline.optimization:_save_cutoff_summaries:515 - [personal_loans,_fusion_and_tj_direct-premium-] Cutoff summary:
+                                         segment     scenario  risk_pct   production  bin_3  bin_4  bin_5  bin_6  bin_7  bin_8  bin_9  bin_10
+0  personal_loans,_fusion_and_tj_direct-premium-         base      0.84  14589262.00   20.0   20.0   20.0   19.0   19.0   19.0   19.0    14.0
+1  personal_loans,_fusion_and_tj_direct-premium-   optimistic      1.00  20737515.68   19.0   18.0   17.0   17.0   16.0   14.0   14.0    14.0
+2  personal_loans,_fusion_and_tj_direct-premium-  pessimistic      0.68  13031363.27    inf    inf    inf    inf    inf    inf    inf    13.0
+2026-02-21 08:56:15.652 | INFO     | src.trends:compute_monthly_metrics:92 - Monthly metrics computed: 25 months, 43,030 total records
+2026-02-21 08:56:15.668 | INFO     | src.trends:plot_metric_trends:176 - Metric trends saved to images/metric_trends_personal_loans,_fusion_and_tj_direct-premium-.html
+2026-02-21 08:56:15.670 | INFO     | src.trends:detect_trend_changes:264 - Detected 4 anomalous months for 'approval_rate'
+2026-02-21 08:56:15.671 | WARNING  | main:main:167 - [personal_loans,_fusion_and_tj_direct-premium-] Trend anomalies detected in 4 month(s)
+2026-02-21 08:56:15.729 | INFO     | src.reporting:render_report:331 - Report written to report.html
+2026-02-21 08:56:15.729 | INFO     | main:main:183 - [personal_loans,_fusion_and_tj_direct-premium-] Report generated: report.html
+2026-02-21 08:56:15.729 | INFO     | main:main:188 - [personal_loans,_fusion_and_tj_direct-premium-] Pipeline complete | 3 scenarios | 13.6s total
+2026-02-21 08:56:15.729 | INFO     | __main__:run_segment_pipeline:215 - Pipeline completed successfully for segment: premium
+Segments:   0%|          | 0/1 [00:14<?]Segments: 100%|██████████| 1/1 [00:14<00:00]Segments: 100%|██████████| 1/1 [00:14<00:00]
+
+================================================================================
+BATCH PROCESSING SUMMARY
+================================================================================
+
+Total segments: 1
+Successful: 1
+Failed: 0
+
+Successful segments:
+  - premium
+
+================================================================================
+
+============================================================
+Generating Consolidated Report
+============================================================
+2026-02-21 08:56:15.729 | INFO     | src.consolidation:generate_consolidation_report:853 - Generating consolidated risk production report...
+2026-02-21 08:56:15.729 | INFO     | src.consolidation:consolidate_segments:518 - Consolidating data for scenarios: {'_optimistic': 'optimistic', '_base': 'base', '_pessimistic': 'pessimistic'}
+2026-02-21 08:56:15.733 | INFO     | src.consolidation:generate_consolidation_report:865 - Consolidated CSV saved to output/consolidated_risk_production.csv
+2026-02-21 08:56:15.755 | INFO     | src.consolidation:generate_consolidation_report:873 - Consolidated dashboard saved to output/consolidated_risk_production.html
+
+================================================================================
+CONSOLIDATED RISK PRODUCTION SUMMARY
+================================================================================
+
+────────────────────────────────────────
+SCENARIO: optimistic
+────────────────────────────────────────
+
+  MAIN Period:
+    Actual Production:  €35,445,624
+    Optimum Production: €20,737,516
+    Delta:              €-14,708,108 (-41.5%)
+    Risk:               1.75% → 1.00%
+
+  MR Period:
+    Actual Production:  €50,784,256
+    Optimum Production: €32,623,876
+    Delta:              €-18,160,380 (-35.8%)
+    Risk:               1.67% → 0.99%
+
+────────────────────────────────────────
+SCENARIO: base
+────────────────────────────────────────
+
+  MAIN Period:
+    Actual Production:  €35,445,624
+    Optimum Production: €14,589,262
+    Delta:              €-20,856,362 (-58.8%)
+    Risk:               1.75% → 0.84%
+
+  MR Period:
+    Actual Production:  €50,784,256
+    Optimum Production: €23,344,992
+    Delta:              €-27,439,265 (-54.0%)
+    Risk:               1.67% → 0.85%
+
+────────────────────────────────────────
+SCENARIO: pessimistic
+────────────────────────────────────────
+
+  MAIN Period:
+    Actual Production:  €35,445,624
+    Optimum Production: €13,031,363
+    Delta:              €-22,414,260 (-63.2%)
+    Risk:               1.75% → 0.68%
+
+  MR Period:
+    Actual Production:  €50,784,256
+    Optimum Production: €21,082,956
+    Delta:              €-29,701,300 (-58.5%)
+    Risk:               1.67% → 0.74%
+
+================================================================================
+
+Consolidated report saved to:
+  - output/consolidated_risk_production.csv
+  - output/consolidated_risk_production.html
+
+============================================================
+Generating HTML Reports
+============================================================
+2026-02-21 08:56:15.799 | INFO     | src.reporting:render_report:331 - Report written to output/premium/report.html
+2026-02-21 08:56:15.807 | INFO     | src.reporting:render_report:331 - Report written to output/consolidated_report.html
+
+HTML reports generated (2):
+  - premium: output/premium/report.html
+  - consolidated: output/consolidated_report.html
+
+============================================================
+Generating Score Discriminance Report
+============================================================
+2026-02-21 08:56:15.808 | INFO     | run_score_metrics:generate_score_discriminance_report:427 - Processing segment: premium
+/Users/inigo_ocariz/src/scoring_tools/run_score_metrics.py:137: UserWarning:
+
+[segment/premium/mr] 'early_bad' has 1 class(es) — skipping.
+
+2026-02-21 08:56:15.881 | WARNING  | run_score_metrics:generate_score_discriminance_report:457 - Supersegment 'no_premium': no member segments found — skipping.
+2026-02-21 08:56:15.881 | INFO     | run_score_metrics:generate_score_discriminance_report:505 - Score discriminance report saved to output/score_discriminance.csv
+2026-02-21 08:56:16.092 | INFO     | run_score_metrics:plot_score_discriminance:288 - Score discriminance plot saved to output/score_discriminance.png
+2026-02-21 08:56:16.093 | INFO     | run_score_metrics:generate_score_discriminance_report:529 - DeLong comparisons saved to output/delong_comparisons.csv
+2026-02-21 08:56:16.436 | INFO     | run_score_metrics:plot_monitoring_dashboard:378 - Monitoring dashboard saved to output/monitoring_segment_premium_main.png
+
+Score discriminance report saved to: output/score_discriminance.csv

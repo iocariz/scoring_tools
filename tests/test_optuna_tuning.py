@@ -36,4 +36,4 @@ def test_tune_tree_models_runs_without_crashing():
     assert len(results_df) == 2
     assert "XGBoost (Optuna Tuned)" in models
     assert "LightGBM (Optuna Tuned)" in models
-    assert "CV Mean R²" in results_df.columns
+    assert "CV Mean RMSE" in results_df.columns

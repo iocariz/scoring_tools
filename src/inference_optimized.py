@@ -70,24 +70,24 @@ def _apply_one_se_rule(results_df: pd.DataFrame, complexity_col: str) -> int:
     """Apply the one-standard-error rule: among models within 1 SE of the best,
     pick the simplest.
 
-    The 'CV Std R²' column is expected to contain the standard error of the
+    The 'CV Std RMSE' column is expected to contain the standard error of the
     mean (i.e., ``std(fold_scores, ddof=1) / sqrt(k)``), not the raw standard
     deviation of fold scores.
 
     Args:
-        results_df: DataFrame with 'CV Mean R²', 'CV Std R²', and complexity_col.
+        results_df: DataFrame with 'CV Mean RMSE', 'CV Std RMSE', and complexity_col.
         complexity_col: Column name with complexity metric (lower = simpler).
 
     Returns:
         Index of the selected row in results_df.
     """
-    best_idx = results_df["CV Mean R²"].idxmax()
-    best_mean = results_df.loc[best_idx, "CV Mean R²"]
-    best_se = results_df.loc[best_idx, "CV Std R²"]
-    threshold = best_mean - best_se
+    best_idx = results_df["CV Mean RMSE"].idxmin()
+    best_mean = results_df.loc[best_idx, "CV Mean RMSE"]
+    best_se = results_df.loc[best_idx, "CV Std RMSE"]
+    threshold = best_mean + best_se
 
     # Models within 1 SE of best
-    eligible = results_df[results_df["CV Mean R²"] >= threshold]
+    eligible = results_df[results_df["CV Mean RMSE"] <= threshold]
 
     # Pick simplest among eligible
     selected_idx = eligible[complexity_col].idxmin()
@@ -96,8 +96,8 @@ def _apply_one_se_rule(results_df: pd.DataFrame, complexity_col: str) -> int:
     best_name = results_df.loc[best_idx].get("Model", results_df.loc[best_idx].get("Feature Set", ""))
     if selected_idx != best_idx:
         logger.info(
-            f"1SE rule: selected '{selected_name}' (R²={results_df.loc[selected_idx, 'CV Mean R²']:.4f}) "
-            f"over '{best_name}' (R²={best_mean:.4f}±{best_se:.4f}, threshold={threshold:.4f})"
+            f"1SE rule: selected '{selected_name}' (RMSE={results_df.loc[selected_idx, 'CV Mean RMSE']:.4f}) "
+            f"over '{best_name}' (RMSE={best_mean:.4f}±{best_se:.4f}, threshold={threshold:.4f})"
         )
     else:
         logger.info(f"1SE rule: best model '{best_name}' is also the simplest eligible")
@@ -479,7 +479,7 @@ def _select_model_type_cv(
         )
 
     # Log top results
-    display_cols = ["Model", "CV Mean R²", "CV Std R²"]
+    display_cols = ["Model", "CV Mean RMSE", "CV Std RMSE"]
     logger.info("Model type CV results:")
     logger.info(f"\n{results_df[display_cols].head(10).to_string()}")
 
@@ -492,12 +492,12 @@ def _select_model_type_cv(
     best_model_info = {
         "model_template": best_row["model_template"],
         "name": best_row["Model"],
-        "cv_mean_r2": best_row["CV Mean R²"],
-        "cv_std_r2": best_row["CV Std R²"],
+        "cv_mean_rmse": best_row["CV Mean RMSE"],
+        "cv_std_rmse": best_row["CV Std RMSE"],
     }
 
     logger.info(f"Best model type: {best_model_info['name']}")
-    logger.info(f"  CV R²: {best_model_info['cv_mean_r2']:.4f} ± {best_model_info['cv_std_r2']:.4f}")
+    logger.info(f"  CV RMSE: {best_model_info['cv_mean_rmse']:.4f} ± {best_model_info['cv_std_rmse']:.4f}")
 
     return results_df, best_model_info
 
@@ -553,8 +553,9 @@ def _select_feature_set_cv(
             model_clone.fit(X_train, y_train, sample_weight=w_train)
             y_pred = model_clone.predict(X_val)
             if len(y_val) >= 2:
-                fold_r2 = r2_score(y_val, y_pred, sample_weight=w_val)
-                cv_scores.append(fold_r2)
+                from sklearn.metrics import mean_squared_error
+                fold_rmse = np.sqrt(mean_squared_error(y_val, y_pred, sample_weight=w_val))
+                cv_scores.append(fold_rmse)
 
         if not cv_scores:
             logger.warning(f"Skipping {feature_name}: execution failed internally.")
@@ -568,12 +569,12 @@ def _select_feature_set_cv(
                 "Feature Set": feature_name,
                 "Num Features": len(features),
                 "Features": features,
-                "CV Mean R²": cv_mean,
-                "CV Std R²": cv_std,
+                "CV Mean RMSE": cv_mean,
+                "CV Std RMSE": cv_std,
             }
         )
 
-        logger.info(f"  {feature_name} ({len(features)} features): CV R² = {cv_mean:.4f} ± {cv_std:.4f}")
+        logger.info(f"  {feature_name} ({len(features)} features): CV RMSE = {cv_mean:.4f} ± {cv_std:.4f}")
 
     if not feature_results:
         raise RuntimeError("All feature sets failed or were skipped. Check data columns.")
@@ -587,16 +588,16 @@ def _select_feature_set_cv(
     best_feature_info = {
         "feature_set_name": best_row["Feature Set"],
         "features": best_row["Features"],
-        "cv_mean_r2": best_row["CV Mean R²"],
-        "cv_std_r2": best_row["CV Std R²"],
+        "cv_mean_rmse": best_row["CV Mean RMSE"],
+        "cv_std_rmse": best_row["CV Std RMSE"],
     }
 
     # Log results table
-    display_cols = ["Feature Set", "Num Features", "CV Mean R²", "CV Std R²"]
+    display_cols = ["Feature Set", "Num Features", "CV Mean RMSE", "CV Std RMSE"]
     logger.info("Feature set CV results:")
     logger.info(f"\n{results_df[display_cols].to_string()}")
     logger.info(f"Best feature set: {best_feature_info['feature_set_name']}")
-    logger.info(f"  CV R²: {best_feature_info['cv_mean_r2']:.4f} ± {best_feature_info['cv_std_r2']:.4f}")
+    logger.info(f"  CV RMSE: {best_feature_info['cv_mean_rmse']:.4f} ± {best_feature_info['cv_std_rmse']:.4f}")
 
     return results_df, best_feature_info
 
@@ -675,10 +676,10 @@ def _select_best_model_and_features(
 
     # Combine results to find the global winner
     combined_results = pd.concat([tree_results_df, results_step1], ignore_index=True)
-    combined_results = combined_results.sort_values("CV Mean R²", ascending=False)
+    combined_results = combined_results.sort_values("CV Mean RMSE", ascending=True)
 
     logger.info("Combined Model CV results:")
-    display_cols = ["Model", "CV Mean R²", "CV Std R²"]
+    display_cols = ["Model", "CV Mean RMSE", "CV Std RMSE"]
     logger.info(f"\n{combined_results[display_cols].head(10).to_string()}")
 
     # Apply 1SE rule on combined tree+linear results
@@ -698,8 +699,8 @@ def _select_best_model_and_features(
         best_model_type = {
             "model_template": best_model_template,
             "name": best_global_name,
-            "cv_mean_r2": best_row["CV Mean R²"],
-            "cv_std_r2": best_row["CV Std R²"],
+            "cv_mean_rmse": best_row["CV Mean RMSE"],
+            "cv_std_rmse": best_row["CV Std RMSE"],
         }
 
         # Simulate results of step 2 for tree models
@@ -709,8 +710,8 @@ def _select_best_model_and_features(
                     "Feature Set": "original",
                     "Num Features": len(variables),
                     "Features": variables,
-                    "CV Mean R²": best_row["CV Mean R²"],
-                    "CV Std R²": best_row["CV Std R²"],
+                    "CV Mean RMSE": best_row["CV Mean RMSE"],
+                    "CV Std RMSE": best_row["CV Std RMSE"],
                 }
             ]
         )
@@ -718,8 +719,8 @@ def _select_best_model_and_features(
         best_feature_info = {
             "feature_set_name": "original",
             "features": variables,
-            "cv_mean_r2": best_row["CV Mean R²"],
-            "cv_std_r2": best_row["CV Std R²"],
+            "cv_mean_rmse": best_row["CV Mean RMSE"],
+            "cv_std_rmse": best_row["CV Std RMSE"],
         }
     else:
         # A linear/GLM model won. Proceed with Step 3.
@@ -790,21 +791,31 @@ def _compute_shap_values(
             shap_values = explainer.shap_values(X)
         elif type(model).__name__ in ("XGBRegressor", "LGBMRegressor"):
             # Tree models: exact and fast
-            explainer = shap.TreeExplainer(model)
-            shap_values = explainer.shap_values(X)
+            try:
+                explainer = shap.TreeExplainer(model)
+                shap_values = explainer.shap_values(X)
+            except ValueError as ve:
+                if "could not convert string to float" in str(ve):
+                    logger.warning("XGBoost/SHAP TreeExplainer incompatibility detected. Falling back to KernelExplainer.")
+                    background = shap.sample(X, min(50, len(X)))
+                    def safe_predict_tree(data):
+                        return model.predict(pd.DataFrame(data, columns=feature_names))
+                    explainer = shap.KernelExplainer(safe_predict_tree, background)
+                    shap_values = explainer.shap_values(X, nsamples=50)
+                else:
+                    raise
         else:
             # Non-linear models (Hurdle, Tweedie): use sampling-based explainer
             # Use a small background sample for efficiency
             background = shap.sample(X, min(50, len(X)))
 
-            # Wrap predict to prevent shap from trying to access/set sklearn-specific properties on the model
+            # KernelExplainer wrapper to ensure input is a DataFrame with correct feature names
             def safe_predict(data):
-                if isinstance(data, pd.DataFrame):
-                    return model.predict(data)
-                return model.predict(pd.DataFrame(data, columns=X.columns))
+                return model.predict(pd.DataFrame(data, columns=feature_names))
 
             explainer = shap.KernelExplainer(safe_predict, background)
-            shap_values = explainer.shap_values(X, nsamples=100)
+            # Using a very small sample size for KernelExplainer to ensure it finishes quickly and doesn't crash on high dims
+            shap_values = explainer.shap_values(X, nsamples=50)
 
         mean_abs_shap = np.abs(shap_values).mean(axis=0)
         logger.info(f"SHAP values computed: {shap_values.shape}")
@@ -815,8 +826,11 @@ def _compute_shap_values(
             "mean_abs_shap": mean_abs_shap,
         }
 
-    except (ImportError, ValueError, TypeError, AttributeError) as e:
-        logger.warning(f"SHAP computation failed (non-blocking): {e}")
+    except Exception as e:
+        import traceback
+        err_msg = traceback.format_exc()
+        logger.error(f"SHAP computation failed (non-blocking):\n{err_msg}")
+        print(f"SHAP EXCEPTION CAUGHT: {err_msg}")
         return None
 
 
@@ -836,8 +850,8 @@ def _save_model_to_disk(
 ) -> str:
     """Build metadata, save model with metadata, return path."""
     model_metadata = {
-        "cv_mean_r2": best_model_info["cv_mean_r2"],
-        "cv_std_r2": best_model_info["cv_std_r2"],
+        "cv_mean_rmse": best_model_info["cv_mean_rmse"],
+        "cv_std_rmse": best_model_info["cv_std_rmse"],
         "train_r2": best_model_info["train_r2"],
         "full_r2": best_model_info["train_r2"],  # Full and train R2 are identical because final model uses all data
         "cv_folds": cv_folds,
@@ -849,8 +863,8 @@ def _save_model_to_disk(
         "weighted_regression": best_model_info["weighted"],
         "is_hurdle": best_model_info["is_hurdle"],
         "zero_proportion": float(zero_prop),
-        "step1_cv_r2": best_model_type["cv_mean_r2"],
-        "step2_cv_r2": best_feature_info["cv_mean_r2"],
+        "step1_cv_rmse": best_model_type["cv_mean_rmse"],
+        "step2_cv_rmse": best_feature_info["cv_mean_rmse"],
     }
 
     if weights is not None:
@@ -955,8 +969,8 @@ def inference_pipeline(
         - feature_sets: Dictionary of all available feature sets
         - step1_results: Model type CV comparison results
         - step2_results: Feature set CV comparison results
-        - best_model_info: Final model details (model, name, cv_mean_r2,
-          cv_std_r2, train_r2, model_type, feature_set, weighted, is_hurdle)
+        - best_model_info: Final model details (model, name, cv_mean_rmse,
+          cv_std_rmse, train_r2, model_type, feature_set, weighted, is_hurdle)
         - model_path: Path to saved model (if save_model=True)
         - visualization: Plotly figure (if create_visualizations=True)
     """
@@ -1017,7 +1031,7 @@ def inference_pipeline(
     )
 
     logger.info(f"Final model: {best_model_name} + {best_feature_info['feature_set_name']}")
-    logger.info(f"  CV R²: {best_feature_info['cv_mean_r2']:.4f} ± {best_feature_info['cv_std_r2']:.4f}")
+    logger.info(f"  CV RMSE: {best_feature_info['cv_mean_rmse']:.4f} ± {best_feature_info['cv_std_rmse']:.4f}")
     logger.info(f"  Train R² (in-sample): {train_r2:.4f}")
 
     if hasattr(final_model, "coef_"):
@@ -1032,8 +1046,8 @@ def inference_pipeline(
     best_model_info = {
         "model": final_model,
         "name": f"{best_model_name} + {best_feature_info['feature_set_name']}",
-        "cv_mean_r2": best_feature_info["cv_mean_r2"],
-        "cv_std_r2": best_feature_info["cv_std_r2"],
+        "cv_mean_rmse": best_feature_info["cv_mean_rmse"],
+        "cv_std_rmse": best_feature_info["cv_std_rmse"],
         "train_r2": train_r2,
         "model_type": best_model_name,
         "feature_set": best_feature_info["feature_set_name"],
@@ -1041,26 +1055,6 @@ def inference_pipeline(
         "is_hurdle": isinstance(final_model, HurdleRegressor),
     }
 
-    # SHAP interpretability (non-blocking)
-    shap_result = _compute_shap_values(final_model, final_agg[final_features], final_features)
-    if shap_result is not None:
-        best_model_info["shap_values"] = shap_result["shap_values"]
-        best_model_info["shap_feature_names"] = shap_result["feature_names"]
-        best_model_info["mean_abs_shap"] = shap_result["mean_abs_shap"]
-
-        # Export SHAP summary plot (non-blocking)
-        try:
-            from src.plots import plot_shap_summary
-
-            shap_plot_path = str(Path(model_base_path) / "shap_summary.html")
-            plot_shap_summary(
-                shap_result["shap_values"],
-                shap_result["feature_names"],
-                output_path=shap_plot_path,
-            )
-            logger.info(f"SHAP summary plot saved to {shap_plot_path}")
-        except (ImportError, ValueError, OSError) as e:
-            logger.warning(f"SHAP plot export failed (non-blocking): {e}")
 
     # STEP 5: MODEL SAVING
     model_path = None
@@ -1084,6 +1078,55 @@ def inference_pipeline(
             model_base_path,
         )
 
+    # SHAP interpretability (non-blocking)
+    if model_path:
+        shap_result = _compute_shap_values(final_model, final_agg[final_features], final_features)
+        if shap_result is not None:
+            best_model_info["shap_values"] = shap_result["shap_values"]
+            best_model_info["shap_feature_names"] = shap_result["feature_names"]
+            best_model_info["mean_abs_shap"] = shap_result["mean_abs_shap"]
+
+            # Export SHAP summary plot (non-blocking)
+            try:
+                from src.plots import plot_shap_summary, plot_shap_dependence
+
+                images_dir = Path(model_path).parent.parent / "images"
+                images_dir.mkdir(parents=True, exist_ok=True)
+
+                shap_plot_path = str(images_dir / "shap_summary.html")
+                plot_shap_summary(
+                    shap_result["shap_values"],
+                    shap_result["feature_names"],
+                    output_path=shap_plot_path,
+                )
+                logger.info(f"SHAP summary plot saved to {shap_plot_path}")
+
+                # Top features for dependence plots
+                mean_abs_shap = shap_result["mean_abs_shap"]
+                feature_names = shap_result["feature_names"]
+                top_indices = np.argsort(mean_abs_shap)[::-1]
+                n_top_features = min(3, len(feature_names))
+
+                for i in range(n_top_features):
+                    top_feature_idx = top_indices[i]
+                    top_feature_name = feature_names[top_feature_idx]
+                    
+                    # Sanitize feature name for filename
+                    safe_feature_name = "".join(c for c in top_feature_name if c.isalnum() or c in "._-").rstrip()
+                    dependence_path = str(images_dir / f"shap_dependence_{safe_feature_name}.html")
+
+                    plot_shap_dependence(
+                        shap_values=shap_result["shap_values"],
+                        feature_names=feature_names,
+                        feature_data=final_agg[final_features],
+                        target_feature=top_feature_name,
+                        output_path=dependence_path,
+                    )
+                    logger.debug(f"SHAP dependence plot for '{top_feature_name}' saved to {dependence_path}")
+
+            except (ImportError, ValueError, OSError) as e:
+                logger.warning(f"SHAP plot export failed (non-blocking): {e}")
+
     # STEP 6: VISUALIZATION
     fig = None
     if create_visualizations and len(variables) == 2:
@@ -1102,13 +1145,15 @@ def inference_pipeline(
             final_model, final_agg, variables, target_var, final_features, viz_output_path
         )
 
+
+
     # PIPELINE SUMMARY
     logger.info("=" * 80)
     logger.info("PIPELINE SUMMARY")
-    logger.info(f"  Model type (Step 1): {best_model_name} (CV R²: {best_model_type['cv_mean_r2']:.4f})")
+    logger.info(f"  Model type (Step 1): {best_model_name} (CV RMSE: {best_model_type['cv_mean_rmse']:.4f})")
     logger.info(
         f"  Feature set (Step 2): {best_feature_info['feature_set_name']} "
-        f"(CV R²: {best_feature_info['cv_mean_r2']:.4f} ± {best_feature_info['cv_std_r2']:.4f})"
+        f"(CV RMSE: {best_feature_info['cv_mean_rmse']:.4f} ± {best_feature_info['cv_std_rmse']:.4f})"
     )
     logger.info(f"  Train R² (in-sample): {train_r2:.4f}")
     if model_path:

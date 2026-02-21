@@ -965,6 +965,71 @@ def plot_shap_summary(
     return fig
 
 
+def plot_shap_dependence(
+    shap_values: np.ndarray,
+    feature_names: list[str],
+    feature_data: pd.DataFrame,
+    target_feature: str,
+    output_path: str | None = None,
+) -> go.Figure:
+    """
+    Create a SHAP dependence plot for a specific feature.
+
+    Args:
+        shap_values: SHAP values array (n_samples, n_features).
+        feature_names: List of feature names matching the columns in feature_data.
+        feature_data: DataFrame containing the actual feature values.
+        target_feature: The name of the feature to plot.
+        output_path: Optional path to save HTML file.
+
+    Returns:
+        Plotly Figure.
+    """
+    if target_feature not in feature_names:
+        raise ValueError(f"Feature '{target_feature}' not found in feature names.")
+
+    feature_idx = feature_names.index(target_feature)
+    target_shap_values = shap_values[:, feature_idx]
+    target_feature_values = feature_data[target_feature].values
+
+    fig = go.Figure(
+        go.Scatter(
+            x=target_feature_values,
+            y=target_shap_values,
+            mode="markers",
+            marker=dict(
+                size=6,
+                color=styles.COLOR_PRIMARY,
+                opacity=0.7,
+                line=dict(width=0.5, color="white"),
+            ),
+            hovertemplate=(
+                f"<b>{target_feature}</b>: %{{x}}<br>"
+                "<b>SHAP Value</b>: %{y:.4f}<extra></extra>"
+            ),
+        )
+    )
+
+    styles.apply_plotly_style(
+        fig,
+        title=f"SHAP Dependence: {target_feature}",
+        width=900,
+        height=500,
+    )
+    
+    fig.update_layout(
+        xaxis_title=target_feature,
+        yaxis_title="SHAP Value",
+        plot_bgcolor="white",
+    )
+    
+    # Add zero line for reference
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+
+    if output_path:
+        fig.write_html(output_path)
+
+    return fig
 def _prepare_transformation_data(
     data: pd.DataFrame,
     date_col: str,

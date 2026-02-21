@@ -1,0 +1,39 @@
+2026-02-21 08:52:28.741 | DEBUG    | src.pipeline.config_loader:load_and_validate_config:21 - Configuration loaded from config.toml
+2026-02-21 08:52:28.742 | INFO     | src.pipeline.config_loader:load_and_validate_config:30 - Config validated | segment=unknown | period=2024-07-01 to 2025-06-01 | annual_coef=1.00
+2026-02-21 08:52:38.389 | DEBUG    | src.data_manager:load_and_prepare_data:90 - Column names and categorical values standardized
+2026-02-21 08:52:38.451 | INFO     | src.schema:validate_raw_data:83 - Schema validation passed
+2026-02-21 08:52:38.451 | INFO     | src.data_manager:load_and_prepare_data:103 - Data ready | 1,017,641 rows x 35 cols | source=data/demanda_direct_out.sas7bdat | 9.7s
+2026-02-21 08:52:38.451 | INFO     | src.data_quality:run_data_quality_checks:457 - Running data quality checks...
+2026-02-21 08:52:38.713 | ERROR    | src.pipeline.preprocessing:run_preprocessing_phase:44 - [unknown] Data quality validation failed. Use --skip-dq-checks to bypass.
+
+============================================================
+DATA QUALITY REPORT
+============================================================
+
+FAILURES:
+  ✗ Segment Filter: No data matches segment filter 'unknown'
+    - available_segments (top 10): {'personal_loans,_fusion_and_tj_direct-no_ob/no_fintonic-': 420302, 'personal_loans,_fusion_and_tj_direct-no_premium-c-d': 92233, 'personal_loans,_fusion_and_tj_direct-no_premium-e-f': 86681, 'personal_loans,_fusion_and_tj_direct-no_premium->=g': 84387, 'personal_loans,_fusion_and_tj_direct-openbanking-': 60077, 'personal_loans,_fusion_and_tj_direct-no_premium-a-b': 58259, 'consolidation-balconin-new/inactive-': 52934, 'personal_loans,_fusion_and_tj_direct-premium-': 43385, 'consolidation-balconin-no_premium-a-f': 41129, 'personal_loans,_fusion_and_tj_direct-precon_gold_and_silver-new/inactive,_a-e': 30401}
+  ✗ Segment Size: Segment too small: 0 rows (minimum: 100)
+    - row_count: 0
+    - minimum_required: 100
+
+WARNINGS:
+  ⚠ Numeric Outliers: Extreme outliers detected in 3 columns
+    - oa_amt: 28.01% outliers (z>5.0)
+    - todu_30ever_h6: 1.26% outliers (z>5.0)
+    - oa_amt_h0: 1.67% outliers (z>5.0)
+
+PASSED:
+  ✓ Required Columns: All 17 required columns present
+  ✓ Missing Values: No significant missing values
+  ✓ Date Range: Data covers expected date range
+    - expected_range: 2024-07-01 to 2025-06-01
+    - actual_range: 2023-12-01 to 2025-12-01
+  ✓ Indicator Values: All 5 indicators have valid values
+  ✓ Booked Ratio: Booked ratio: 6.5% (66,020 of 1,017,641)
+  ✓ Duplicate Rows: No significant duplicates across all columns
+
+------------------------------------------------------------
+Data Quality: 6/9 passed, 1 warnings, 2 failures
+============================================================
+

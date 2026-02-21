@@ -167,6 +167,10 @@ def get_scenario_paths(scenario: str, segment: str | None = None) -> dict[str, A
         "summary_data": data_dir / f"data_summary_desagregado{suffix}.csv",
     }
 
+    # SHAP resolution (might be in supersegment)
+    shap_prefix = get_shap_static_prefix(segment)
+    paths["shap_summary"] = f"{shap_prefix}/shap_summary.html"
+
     # Fallback to unsuffixed files for base scenario
     if scenario == "base":
         fallbacks = {
@@ -196,8 +200,60 @@ def get_scenario_paths(scenario: str, segment: str | None = None) -> dict[str, A
 def file_exists_for_viz(viz_path: str, segment: str | None = None) -> bool:
     """Check if a visualization file exists."""
     filename = viz_path.split("/")[-1]
+    # Check if this is a SHAP visualization request routing to a supersegment
+    if "_supersegment_" in viz_path:
+        # Extract supersegment name from path components
+        parts = viz_path.split("/")
+        superseg_folder = next((p for p in parts if p.startswith("_supersegment_")), None)
+        if superseg_folder:
+            return (OUTPUT_BASE / superseg_folder / "images" / filename).exists()
+
     images_dir = get_images_dir(segment)
     return (images_dir / filename).exists()
+
+
+def _resolve_supersegment(segment: str | None) -> str | None:
+    """Look up the supersegment name for *segment* from ``segments.toml``."""
+    if not segment:
+        return None
+    try:
+        import tomllib
+
+        with open("segments.toml", "rb") as f:
+            seg_config = tomllib.load(f).get("segments", {})
+            return seg_config.get(segment, {}).get("supersegment")
+    except Exception:
+        return None
+
+
+def get_shap_images_dir(segment: str | None = None) -> Path:
+    """Resolve the images directory for SHAP specifically (handles supersegments)."""
+    superseg = _resolve_supersegment(segment)
+    if superseg:
+        return OUTPUT_BASE / f"_supersegment_{superseg}" / "images"
+    return get_images_dir(segment)
+
+
+def get_shap_static_prefix(segment: str | None = None) -> str:
+    """Resolve the static prefix for SHAP specifically (handles supersegments)."""
+    superseg = _resolve_supersegment(segment)
+    if superseg:
+        return f"/static/_supersegment_{superseg}"
+    return f"/static/{segment}" if segment else "/static"
+
+
+def get_shap_dependence_features(segment: str | None = None) -> list[str]:
+    """Get list of features that have SHAP dependence plots available."""
+    images_dir = get_shap_images_dir(segment)
+    if not images_dir.exists():
+        return []
+
+    features = []
+    for f in images_dir.glob("shap_dependence_*.html"):
+        # Extrapolate feature name from 'shap_dependence_feature_name.html'
+        feature_name = f.stem.replace("shap_dependence_", "")
+        features.append(feature_name)
+    return sorted(features)
 
 
 def load_table(csv_path: Path) -> html.Div:
@@ -216,10 +272,14 @@ def load_table(csv_path: Path) -> html.Div:
     try:
         df = pd.read_csv(csv_path)
 
-        # Format numeric columns for better display
+        # Format numeric columns for better display.
+        # Risk (%) is already in percentage form (1.5 means 1.5%).
+        # Production (%) is a raw ratio (0.95 means 95%).
         for col in df.select_dtypes(include=["float64"]).columns:
-            if "Risk" in col or "%" in col:
-                df[col] = df[col].apply(lambda x: f"{x:.2%}" if pd.notna(x) and abs(x) < 1 else f"{x:.2f}%")
+            if "Risk" in col and "%" in col:
+                df[col] = df[col].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
+            elif "Production" in col and "%" in col:
+                df[col] = df[col].apply(lambda x: f"{x:.2%}" if pd.notna(x) else "")
             elif "Production" in col and "€" in col:
                 df[col] = df[col].apply(lambda x: f"€{x:,.0f}" if pd.notna(x) else "")
 
@@ -265,20 +325,34 @@ def get_comparison_data(segment: str | None = None) -> pd.DataFrame:
 
         try:
             # Main Period Metrics
+            # Risk (%) is already in percentage form (1.5 means 1.5%) — keep as-is.
+            # Production (%) is a raw ratio (0.95 means 95%) — keep as-is.
             if paths["main_csv"].exists():
                 df_main = pd.read_csv(paths["main_csv"])
                 opt_row = df_main[df_main["Metric"] == "Optimum selected"]
                 if not opt_row.empty:
-                    row["Main_Risk"] = opt_row["Risk (%)"].values[0]
-                    row["Main_Prod_Pct"] = opt_row["Production (%)"].values[0]
+                    row["Main_Risk"] = (
+                        opt_row["Risk (%)"].values[0] if not pd.isna(opt_row["Risk (%)"].values[0]) else None
+                    )
+                    row["Main_Prod_Pct"] = (
+                        opt_row["Production (%)"].values[0]
+                        if not pd.isna(opt_row["Production (%)"].values[0])
+                        else None
+                    )
 
             # MR Period Metrics
             if paths["mr_csv"].exists():
                 df_mr = pd.read_csv(paths["mr_csv"])
                 opt_row_mr = df_mr[df_mr["Metric"] == "Optimum selected"]
                 if not opt_row_mr.empty:
-                    row["MR_Risk"] = opt_row_mr["Risk (%)"].values[0]
-                    row["MR_Prod_Pct"] = opt_row_mr["Production (%)"].values[0]
+                    row["MR_Risk"] = (
+                        opt_row_mr["Risk (%)"].values[0] if not pd.isna(opt_row_mr["Risk (%)"].values[0]) else None
+                    )
+                    row["MR_Prod_Pct"] = (
+                        opt_row_mr["Production (%)"].values[0]
+                        if not pd.isna(opt_row_mr["Production (%)"].values[0])
+                        else None
+                    )
 
             data.append(row)
 
@@ -354,7 +428,7 @@ def create_comparison_charts(df_comp: pd.DataFrame) -> html.Div:
                 fig_sensitivity.add_annotation(
                     x=row["Scenario"],
                     y=y_pos,
-                    text=f"\u0394 {delta:+.2%}",
+                    text=f"\u0394 {delta:+.2f}pp",
                     showarrow=False,
                     yshift=15,
                     font=dict(size=10, color=color, weight="bold"),
@@ -400,13 +474,16 @@ def create_comparison_charts(df_comp: pd.DataFrame) -> html.Div:
     display_df = df_comp.drop(columns=["Scenario_Order"], errors="ignore").copy()
     for col in ["Main_Risk", "MR_Risk"]:
         if col in display_df.columns:
-            display_df[col] = display_df[col].apply(lambda x: f"{x:.2%}" if pd.notna(x) else "-")
+            display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "-")
     for col in ["Main_Prod_Pct", "MR_Prod_Pct"]:
         if col in display_df.columns:
             display_df[col] = display_df[col].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "-")
-    for col in ["Risk_Delta", "Prod_Delta"]:
+    for col in ["Risk_Delta"]:
         if col in display_df.columns:
-            display_df[col] = display_df[col].apply(lambda x: f"{x:+.2%}" if pd.notna(x) else "-")
+            display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}pp" if pd.notna(x) else "-")
+    for col in ["Prod_Delta"]:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:+.1%}" if pd.notna(x) else "-")
 
     return html.Div(
         [
@@ -459,9 +536,7 @@ def create_empty_state() -> html.Div:
 # --- KPI & UI Helper Functions ---
 
 
-def create_kpi_card(
-    title: str, value: str, delta: str = "", fmt: str = "", color_border: str = COLOR_PRIMARY
-) -> dbc.Col:
+def create_kpi_card(title: str, value: str, delta: str = "", color_border: str = COLOR_PRIMARY) -> dbc.Col:
     """Create a single KPI card with label, value, and colored delta."""
     delta_class = "neutral"
     if delta:
@@ -487,8 +562,14 @@ def create_kpi_card(
     )
 
 
-def create_kpi_row(main_csv_path: Path, mr_csv_path: Path) -> dbc.Row:
-    """Create a row of 4 KPI cards from main and MR CSV data."""
+def create_kpi_row(main_csv_path: Path, mr_csv_path: Path, comparison_label: str = "vs MR") -> dbc.Row:
+    """Create a row of 4 KPI cards from main and MR CSV data.
+
+    Args:
+        main_csv_path: Primary CSV (displayed as the main value).
+        mr_csv_path: Comparison CSV (used for delta calculation).
+        comparison_label: Label for the delta (e.g. "vs MR" or "vs Main").
+    """
     main_risk, main_prod_pct, main_prod_eur = None, None, None
     mr_risk, mr_prod_pct = None, None
 
@@ -497,8 +578,12 @@ def create_kpi_row(main_csv_path: Path, mr_csv_path: Path) -> dbc.Row:
             df = pd.read_csv(main_csv_path)
             opt = df[df["Metric"] == "Optimum selected"]
             if not opt.empty:
-                main_risk = opt["Risk (%)"].values[0]
-                main_prod_pct = opt["Production (%)"].values[0]
+                # Risk (%) is already percentage form (1.5 = 1.5%) — keep as-is.
+                # Production (%) is a raw ratio (0.95 = 95%) — keep as-is.
+                main_risk = opt["Risk (%)"].values[0] if not pd.isna(opt["Risk (%)"].values[0]) else None
+                main_prod_pct = (
+                    opt["Production (%)"].values[0] if not pd.isna(opt["Production (%)"].values[0]) else None
+                )
                 if "Production (€)" in df.columns:
                     main_prod_eur = opt["Production (€)"].values[0]
 
@@ -506,24 +591,30 @@ def create_kpi_row(main_csv_path: Path, mr_csv_path: Path) -> dbc.Row:
             df_mr = pd.read_csv(mr_csv_path)
             opt_mr = df_mr[df_mr["Metric"] == "Optimum selected"]
             if not opt_mr.empty:
-                mr_risk = opt_mr["Risk (%)"].values[0]
-                mr_prod_pct = opt_mr["Production (%)"].values[0]
+                mr_risk = opt_mr["Risk (%)"].values[0] if not pd.isna(opt_mr["Risk (%)"].values[0]) else None
+                mr_prod_pct = (
+                    opt_mr["Production (%)"].values[0] if not pd.isna(opt_mr["Production (%)"].values[0]) else None
+                )
     except Exception as e:
         logger.warning(f"Error loading KPI data: {e}")
 
-    # Build cards
-    risk_val = f"{main_risk:.2%}" if main_risk is not None else "N/A"
-    risk_delta = f"{main_risk - mr_risk:+.2%} vs MR" if main_risk is not None and mr_risk is not None else ""
+    # Build cards — risk is already in % form (1.5 = 1.5%), production is ratio (0.95 = 95%)
+    risk_val = f"{main_risk:.2f}%" if main_risk is not None else "N/A"
+    risk_delta = (
+        f"{main_risk - mr_risk:+.2f}pp {comparison_label}" if main_risk is not None and mr_risk is not None else ""
+    )
 
     prod_pct_val = f"{main_prod_pct:.1%}" if main_prod_pct is not None else "N/A"
     prod_pct_delta = (
-        f"{main_prod_pct - mr_prod_pct:+.1%} vs MR" if main_prod_pct is not None and mr_prod_pct is not None else ""
+        f"{main_prod_pct - mr_prod_pct:+.1%} {comparison_label}"
+        if main_prod_pct is not None and mr_prod_pct is not None
+        else ""
     )
 
     prod_eur_val = f"EUR {main_prod_eur:,.0f}" if main_prod_eur is not None else "N/A"
 
-    risk_delta_val = f"{main_risk - mr_risk:+.2%}" if main_risk is not None and mr_risk is not None else "N/A"
-    risk_delta_suffix = "vs MR" if main_risk is not None and mr_risk is not None else ""
+    risk_delta_val = f"{main_risk - mr_risk:+.2f}pp" if main_risk is not None and mr_risk is not None else "N/A"
+    risk_delta_suffix = comparison_label if main_risk is not None and mr_risk is not None else ""
 
     return dbc.Row(
         [
@@ -544,21 +635,22 @@ def load_table_with_formatting(csv_path: Path) -> html.Div:
     try:
         df = pd.read_csv(csv_path)
 
-        # Identify risk columns for conditional formatting
+        # Identify risk columns for conditional formatting.
+        # Risk (%) values are in percentage form (1.5 means 1.5%).
         style_data_conditional = []
         for col in df.columns:
-            if "Risk" in col or "%" in col:
+            if "Risk" in col and "%" in col:
                 # Values > 2% get red highlight
                 style_data_conditional.append(
                     {
-                        "if": {"column_id": col, "filter_query": f"{{{col}}} > 0.02"},
+                        "if": {"column_id": col, "filter_query": f"{{{col}}} > 2.0"},
                         "className": "cell-high-risk",
                     }
                 )
                 # Values < 1% get green highlight
                 style_data_conditional.append(
                     {
-                        "if": {"column_id": col, "filter_query": f"{{{col}}} < 0.01"},
+                        "if": {"column_id": col, "filter_query": f"{{{col}}} < 1.0"},
                         "className": "cell-low-risk",
                     }
                 )
@@ -782,16 +874,12 @@ def get_models_dir(segment: str | None = None) -> Path:
         direct = OUTPUT_BASE / segment / "models"
         if direct.exists() and any(direct.iterdir()):
             return direct
-        # Try supersegment fallback (e.g., _supersegment_no_premium for no_premium_*)
-        if "_" in segment:
-            prefix = segment.rsplit("_", 1)[0]
-        else:
-            prefix = segment
-        for item in OUTPUT_BASE.iterdir():
-            if item.is_dir() and item.name.startswith("_supersegment") and prefix in item.name:
-                models_dir = item / "models"
-                if models_dir.exists():
-                    return models_dir
+        # Try supersegment fallback via segments.toml
+        superseg = _resolve_supersegment(segment)
+        if superseg:
+            models_dir = OUTPUT_BASE / f"_supersegment_{superseg}" / "models"
+            if models_dir.exists():
+                return models_dir
         return direct
     # Single-run mode
     if (OUTPUT_BASE / "models").exists():
@@ -872,7 +960,6 @@ def create_model_details_content(segment: str | None = None) -> html.Div:
     model_dir = metadata.get("_model_dir", "")
     segment_display = f" - {segment}" if segment else ""
 
-    # Model info card (3-column layout)
     info_items = [
         ("Model Type", metadata.get("model_type", "N/A")),
         ("Features", str(metadata.get("num_features", "N/A"))),
@@ -889,6 +976,11 @@ def create_model_details_content(segment: str | None = None) -> html.Div:
         ),
         ("Weighted", str(metadata.get("weighted_regression", "N/A"))),
     ]
+
+    coefficients = parse_coefficients(model_dir)
+    intercept_val = next((c["coefficient"] for c in coefficients if c["feature"].lower() == "intercept"), "N/A")
+    if intercept_val != "N/A":
+        info_items.append(("Intercept", f"{intercept_val:.6f}"))
 
     info_cols = []
     for label, value in info_items:
@@ -908,62 +1000,57 @@ def create_model_details_content(segment: str | None = None) -> html.Div:
         className="mb-4",
     )
 
-    # Performance: R2 progress bars
-    r2_metrics = [
-        ("CV Mean R\u00b2", metadata.get("cv_mean_r2")),
+    # Performance metrics
+    perf_metrics = [
+        ("CV Mean RMSE", metadata.get("cv_mean_rmse")),
         ("Train R² (in-sample)", metadata.get("train_r2", metadata.get("full_r2"))),
-        ("Step 1 CV R\u00b2", metadata.get("step1_cv_r2")),
-        ("Step 2 CV R\u00b2", metadata.get("step2_cv_r2")),
+        ("LOO-CV R²", metadata.get("loo_r2")),
+        ("Step 1 CV RMSE", metadata.get("step1_cv_rmse")),
+        ("Step 2 CV RMSE", metadata.get("step2_cv_rmse")),
     ]
 
-    progress_items = []
-    for label, val in r2_metrics:
+    metric_items = []
+    for label, val in perf_metrics:
         if val is not None:
-            pct = max(0, min(100, val * 100))
-            color = "success" if pct >= 50 else "warning" if pct >= 20 else "danger"
-            progress_items.append(
+            metric_items.append(
                 html.Div(
-                    [
-                        html.Div(
-                            [html.Span(label, className="small"), html.Span(f"{val:.4f}", className="small float-end")],
-                            className="mb-1",
-                        ),
-                        dbc.Progress(value=pct, color=color, style={"height": "8px"}, className="mb-3"),
-                    ]
+                    [html.Span(label, className="small fw-bold"), html.Span(f"{val:.4f}", className="small float-end")],
+                    className="mb-2 border-bottom pb-1",
                 )
             )
 
     performance_card = dbc.Card(
         [
             dbc.CardHeader("Performance Metrics"),
-            dbc.CardBody(progress_items if progress_items else "No metrics available"),
+            dbc.CardBody(metric_items if metric_items else "No metrics available"),
         ],
         className="mb-4",
     )
 
-    # Coefficient chart
-    coefficients = parse_coefficients(model_dir)
     coef_chart = html.Div()
     if coefficients:
-        coef_df = pd.DataFrame(coefficients)
-        coef_df = coef_df.sort_values("coefficient")
-        colors = [COLOR_PRODUCTION if v >= 0 else COLOR_RISK for v in coef_df["coefficient"]]
+        # Exclude intercept from the main bar chart to avoid skewing the scale (it's often much larger)
+        coef_display = [c for c in coefficients if c["feature"].lower() != "intercept"]
+        if coef_display:
+            coef_df = pd.DataFrame(coef_display)
+            coef_df = coef_df.sort_values("coefficient")
+            colors = [COLOR_PRODUCTION if v >= 0 else COLOR_RISK for v in coef_df["coefficient"]]
 
-        fig_coef = go.Figure(
-            go.Bar(
-                x=coef_df["coefficient"],
-                y=coef_df["feature"],
-                orientation="h",
-                marker_color=colors,
+            fig_coef = go.Figure(
+                go.Bar(
+                    x=coef_df["coefficient"],
+                    y=coef_df["feature"],
+                    orientation="h",
+                    marker_color=colors,
+                )
             )
-        )
-        apply_plotly_style(fig_coef, title="Feature Coefficients", height=max(250, len(coefficients) * 40))
-        fig_coef.update_layout(margin=dict(l=200))
+            apply_plotly_style(fig_coef, title="Feature Coefficients", height=max(250, len(coef_display) * 40))
+            fig_coef.update_layout(margin=dict(l=200))
 
-        coef_chart = dbc.Card(
-            [dbc.CardHeader("Feature Coefficients"), dbc.CardBody(dcc.Graph(figure=fig_coef))],
-            className="mb-4",
-        )
+            coef_chart = dbc.Card(
+                [dbc.CardHeader("Feature Coefficients"), dbc.CardBody(dcc.Graph(figure=fig_coef))],
+                className="mb-4",
+            )
 
     # Parameters table
     model_params = metadata.get("model_params", {})
@@ -1006,13 +1093,34 @@ def create_model_details_content(segment: str | None = None) -> html.Div:
 
 def load_cutoff_data(
     scenario: str, segment: str | None = None
-) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None, list[str]]:
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None, list[str], list[str], float]:
     """
     Load data needed for cutoff explorer.
 
     Returns:
-        Tuple of (summary_data, optimal_solution, pareto_solutions, variables)
+        Tuple of (summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier)
     """
+    from src.config import PreprocessingSettings
+
+    # Extract inv_vars and multiplier from configuration, preferring the segment's own config.
+    # inv_vars is populated at runtime by preprocessing (_infer_monotonicity) and is never
+    # written to the TOML config.  We must derive it from the ``directions`` dict instead.
+    inv_vars = []
+    multiplier = 7.0
+    try:
+        config_candidates = []
+        if segment:
+            config_candidates.append(OUTPUT_BASE / segment / "config_segment.toml")
+        config_candidates.append(Path("config.toml"))
+        for config_path in config_candidates:
+            if config_path.exists():
+                settings = PreprocessingSettings.from_toml(str(config_path))
+                multiplier = settings.multiplier
+                # Derive inv_vars from directions: direction == -1 means higher bin = safer
+                inv_vars = [var for var, d in settings.directions.items() if d == -1]
+                break
+    except Exception as e:
+        logger.warning(f"Could not load config: {e}")
     paths = get_scenario_paths(scenario, segment)
     data_dir = get_data_dir(segment)
 
@@ -1040,11 +1148,16 @@ def load_cutoff_data(
     if pareto_path.exists():
         pareto_solutions = pd.read_csv(pareto_path)
 
-    return summary_data, optimal_solution, pareto_solutions, variables
+    return summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier
 
 
 def calculate_metrics_from_custom_cuts(
-    data: pd.DataFrame, cut_map: dict[int, int], var0_col: str, var1_col: str
+    data: pd.DataFrame,
+    cut_map: dict,
+    var0_col: str,
+    var1_col: str,
+    inv_vars: list[str] | None = None,
+    multiplier: float = 7.0,
 ) -> dict[str, Any]:
     """
     Calculate metrics for custom cutoff configuration.
@@ -1054,15 +1167,28 @@ def calculate_metrics_from_custom_cuts(
         cut_map: Dictionary mapping var0 bins to var1 cutoff values
         var0_col: First variable column name
         var1_col: Second variable column name
+        inv_vars: List of variables with inverted risk ordering
+        multiplier: Risk multiplier (default 7.0)
 
     Returns:
         Dictionary with calculated metrics
     """
+    if inv_vars is None:
+        inv_vars = []
+
     df = data.copy()
 
+    # Normalize cut_map keys to float to match data column types
+    cut_map_norm = {float(k): v for k, v in cut_map.items()}
+
     # Apply cuts
-    df["cut_limit"] = df[var0_col].map(cut_map)
-    df["passes_cut"] = df[var1_col] <= df["cut_limit"]
+    df["cut_limit"] = df[var0_col].astype(float).map(cut_map_norm)
+
+    # Respect the optimization direction (RMSE/error is typically an inv_var where higher score = lower risk)
+    if var1_col in inv_vars:
+        df["passes_cut"] = df[var1_col] >= df["cut_limit"]
+    else:
+        df["passes_cut"] = df[var1_col] <= df["cut_limit"]
 
     def calc_metrics(subset, suffix):
         prod_col = f"oa_amt_h0{suffix}"
@@ -1075,7 +1201,7 @@ def calculate_metrics_from_custom_cuts(
         prod = subset[prod_col].sum()
         risk_num = subset[risk_num_col].sum() if risk_num_col in subset.columns else 0
         risk_den = subset[risk_den_col].sum() if risk_den_col in subset.columns else 0
-        b2_ever = (risk_num / risk_den * 7) if risk_den > 0 else 0.0
+        b2_ever = (risk_num / risk_den * multiplier) if risk_den > 0 else 0.0
         return prod, b2_ever, risk_num, risk_den
 
     # Actual (All Booked)
@@ -1093,7 +1219,7 @@ def calculate_metrics_from_custom_cuts(
     opt_prod = (actual_prod - so_prod) + si_prod
     opt_rn = (actual_rn - so_rn) + si_rn
     opt_rd = (actual_rd - so_rd) + si_rd
-    opt_risk = (opt_rn / opt_rd * 7) if opt_rd > 0 else 0.0
+    opt_risk = (opt_rn / opt_rd * multiplier) if opt_rd > 0 else 0.0
 
     return {
         "actual_prod": actual_prod,
@@ -1110,7 +1236,9 @@ def calculate_metrics_from_custom_cuts(
 
 def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> html.Div:
     """Create the cutoff explorer tab layout."""
-    summary_data, optimal_solution, pareto_solutions, variables = load_cutoff_data(scenario, segment)
+    summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier = load_cutoff_data(
+        scenario, segment
+    )
 
     if summary_data is None or len(variables) < 2:
         return dbc.Alert(
@@ -1123,19 +1251,26 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
 
     var0_col, var1_col = variables[0], variables[1]
 
-    # Get unique bins
+    # Get unique bins (normalize to float for consistent key matching)
     bins = sorted(summary_data[var0_col].unique())
-    var1_max = int(summary_data[var1_col].max())
+    var1_bins = sorted(summary_data[var1_col].unique())
+    var1_max = int(max(var1_bins))
 
-    # Get optimal cutoffs
+    # Get optimal cutoffs — CSV columns may be strings like "1.0"
     optimal_cuts = {}
     if optimal_solution is not None and not optimal_solution.empty:
         opt_row = optimal_solution.iloc[0]
+        # Build a float→column_name lookup for numeric columns
+        col_float_map = {}
+        for col in optimal_solution.columns:
+            try:
+                col_float_map[float(col)] = col
+            except (ValueError, TypeError):
+                pass
         for bin_val in bins:
-            if bin_val in optimal_solution.columns:
-                optimal_cuts[bin_val] = int(opt_row[bin_val])
-            elif str(bin_val) in optimal_solution.columns:
-                optimal_cuts[bin_val] = int(opt_row[str(bin_val)])
+            col_name = col_float_map.get(float(bin_val))
+            if col_name is not None:
+                optimal_cuts[bin_val] = int(opt_row[col_name])
             else:
                 optimal_cuts[bin_val] = var1_max
 
@@ -1153,7 +1288,14 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
         # Convert Pareto solutions to list of dicts for storage
         pareto_data = pareto_solutions.to_dict("records")
 
-    # Create sliders for each bin
+    # Create sliders for each bin.
+    # Sliders use negated values so that 1 appears at the top and var1_max at the bottom
+    # (vertical sliders always put min at bottom; negating reverses the visual direction).
+    slider_marks = {-i: str(i) for i in range(1, var1_max + 1, max(1, var1_max // 5))}
+    # Always show endpoints
+    slider_marks[-1] = "1"
+    slider_marks[-var1_max] = str(var1_max)
+
     sliders = []
     for bin_val in bins:
         initial_value = optimal_cuts.get(bin_val, var1_max)
@@ -1163,14 +1305,13 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                     html.Label(f"Bin {int(bin_val)}", className="fw-bold text-center d-block"),
                     dcc.Slider(
                         id={"type": "cutoff-slider", "index": int(bin_val)},
-                        min=1,
-                        max=var1_max,
+                        min=-var1_max,
+                        max=-1,
                         step=1,
-                        value=initial_value,
-                        marks={i: str(i) for i in range(1, var1_max + 1, max(1, var1_max // 5))},
+                        value=-initial_value,
+                        marks=slider_marks,
                         vertical=True,
                         verticalHeight=200,
-                        tooltip={"placement": "right", "always_visible": True},
                     ),
                     html.Div(
                         f"Opt: {initial_value}",
@@ -1202,8 +1343,11 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                     "segment": segment,
                     "var0_col": var0_col,
                     "var1_col": var1_col,
-                    "optimal_cuts": {str(k): v for k, v in optimal_cuts.items()},
-                    "bins": [int(b) for b in bins],
+                    "optimal_cuts": {str(float(k)): v for k, v in optimal_cuts.items()},
+                    "inv_vars": inv_vars,
+                    "bins": [float(b) for b in bins],
+                    "var1_bins": [float(b) for b in var1_bins],
+                    "multiplier": multiplier,
                     "pareto_solutions": pareto_data,
                 },
             ),
@@ -1282,7 +1426,8 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                                         [
                                             html.P(
                                                 [
-                                                    f"Variable: {var0_col} (bins) → {var1_col} (max cutoff)",
+                                                    f"Variable: {var0_col} (bins) → {var1_col} "
+                                                    f"({'min accepted' if var1_col in inv_vars else 'max accepted'})",
                                                 ],
                                                 className="text-muted small",
                                             ),
@@ -1322,7 +1467,10 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                         [
                             dbc.Card(
                                 [
-                                    dbc.CardHeader("Cutoff Visualization (cells passing cut are highlighted)"),
+                                    dbc.CardHeader(
+                                        f"Cutoff Visualization — green = accepted "
+                                        f"({var1_col} {'≥' if var1_col in inv_vars else '≤'} cutoff)"
+                                    ),
                                     dbc.CardBody([dcc.Graph(id="cutoff-heatmap", style={"height": "400px"})]),
                                 ]
                             )
@@ -1333,6 +1481,109 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
             ),
         ]
     )
+
+
+def create_allocations_tab_content(scenario: str, segment: str | None) -> html.Div:
+    """Create the segment allocations tab layout."""
+    # The allocations make the most sense in a batch/global context,
+    # so we load the main consolidated report.
+    output_dir = Path(OUTPUT_BASE)
+    report_file = output_dir / "consolidated_risk_production.csv"
+
+    if not report_file.exists():
+        return dbc.Alert(
+            [
+                html.H4("Consolidated Report Not Found", className="alert-heading"),
+                html.P("This view requires batch processing results. Please run `run_batch.py`."),
+            ],
+            color="warning",
+        )
+
+    try:
+        df = pd.read_csv(report_file)
+
+        # Filter for the selected scenario and main period
+        df_filtered = df[(df["scenario"] == scenario) & (df["period"] == "main")].copy()
+
+        if df_filtered.empty:
+            return html.Div(f"No consolidated data available for scenario '{scenario}' in 'main' period.")
+
+        # Get only the base segments for the allocations treemap and bar chart
+        df_segs = df_filtered[df_filtered["n_segments"] == 1].copy()
+
+        # Extract supersegment and segment from group (format: "supersegment/segment")
+        # Handle cases where group is just a segment name
+        df_segs["supersegment"] = df_segs["group"].apply(lambda x: x.split("/")[0] if "/" in x else x)
+        df_segs["segment"] = df_segs["group"].apply(lambda x: x.split("/")[-1])
+
+        # Plotly Treemap raises an error if the root node (supersegment) is identical
+        # to the leaf node (segment) across all rows. We build the path dynamically.
+        if (df_segs["supersegment"] == df_segs["segment"]).all():
+            tree_path = ["segment"]
+        else:
+            tree_path = ["supersegment", "segment"]
+
+        if df_segs.empty:
+            return html.Div("No segment-level data available for allocations view.")
+
+        # Create Treemap for Optimum Production Allocation
+        fig_treemap = px.treemap(
+            df_segs,
+            path=tree_path,
+            values="optimum_production",
+            color="optimum_production",
+            color_continuous_scale="Viridis",
+            title=f"Optimum Production Allocation ({scenario.capitalize()})",
+        )
+        apply_plotly_style(fig_treemap, height=500)
+
+        # Create Comparative Bar Chart
+        fig_bar = go.Figure()
+
+        # Sort by actual production descending for cleaner look
+        df_sorted = df_segs.sort_values("actual_production", ascending=False)
+        segments = df_sorted["segment"]
+
+        fig_bar.add_trace(
+            go.Bar(name="Actual Production", x=segments, y=df_sorted["actual_production"], marker_color=COLOR_PRIMARY)
+        )
+
+        fig_bar.add_trace(
+            go.Bar(
+                name="Optimum Production", x=segments, y=df_sorted["optimum_production"], marker_color=COLOR_PRODUCTION
+            )
+        )
+
+        fig_bar.update_layout(
+            barmode="group",
+            title="Production Comparison by Segment",
+            xaxis_title="Segment",
+            yaxis_title="Production (€)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        apply_plotly_style(fig_bar, height=400)
+
+        return html.Div(
+            [
+                html.H4(f"Segment Allocations ({scenario.capitalize()})", className="mb-4"),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            dbc.Card([dbc.CardBody(dcc.Loading(dcc.Graph(figure=fig_treemap), type="default"))]),
+                            md=12,
+                            className="mb-4",
+                        ),
+                        dbc.Col(
+                            dbc.Card([dbc.CardBody(dcc.Loading(dcc.Graph(figure=fig_bar), type="default"))]), md=12
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to generate allocations view: {e}")
+        return html.Div(f"Error generating allocations view: {str(e)}")
 
 
 # --- Initialize Dash App ---
@@ -1433,6 +1684,8 @@ def create_layout():
                     dbc.Tab(label="MR Period (Recent)", tab_id="tab-mr", disabled=not has_data),
                     dbc.Tab(label="Cutoff Explorer", tab_id="tab-cutoff", disabled=not has_data),
                     dbc.Tab(label="Stability Analysis", tab_id="tab-stability", disabled=not has_data),
+                    dbc.Tab(label="Explainability (SHAP)", tab_id="tab-shap", disabled=not has_data),
+                    dbc.Tab(label="Segment Allocations", tab_id="tab-allocations", disabled=not has_data),
                     dbc.Tab(label="Audit Trail", tab_id="tab-audit", disabled=not has_data),
                     dbc.Tab(label="Model Details", tab_id="tab-model", disabled=not has_data),
                 ],
@@ -1487,6 +1740,8 @@ def update_scenarios_on_segment_change(segment: str | None):
         dbc.Tab(label="MR Period (Recent)", tab_id="tab-mr", disabled=not has_data),
         dbc.Tab(label="Cutoff Explorer", tab_id="tab-cutoff", disabled=not has_data),
         dbc.Tab(label="Stability Analysis", tab_id="tab-stability", disabled=not has_data),
+        dbc.Tab(label="Explainability (SHAP)", tab_id="tab-shap", disabled=not has_data),
+        dbc.Tab(label="Segment Allocations", tab_id="tab-allocations", disabled=not has_data),
         dbc.Tab(label="Audit Trail", tab_id="tab-audit", disabled=not has_data),
         dbc.Tab(label="Model Details", tab_id="tab-model", disabled=not has_data),
     ]
@@ -1551,7 +1806,7 @@ def render_content(active_tab: str, scenario: str | None, segment: str | None) -
         return html.Div(
             [
                 html.H4(f"MR Period Results ({scenario_display}{segment_display})", className="mb-4"),
-                create_kpi_row(paths["mr_csv"], paths["main_csv"]),
+                create_kpi_row(paths["mr_csv"], paths["main_csv"], comparison_label="vs Main"),
                 create_download_button("mr", "Download MR CSV"),
                 dbc.Card(
                     [dbc.CardHeader("Summary Metrics"), dbc.CardBody(load_table(paths["mr_csv"]))], className="mb-4"
@@ -1599,6 +1854,56 @@ def render_content(active_tab: str, scenario: str | None, segment: str | None) -
     elif active_tab == "tab-model":
         return create_model_details_content(segment)
 
+    elif active_tab == "tab-shap":
+        dependence_features = get_shap_dependence_features(segment)
+        dropdown_options = [{"label": f, "value": f} for f in dependence_features]
+        default_feature = dependence_features[0] if dependence_features else None
+
+        return html.Div(
+            [
+                html.H4(f"Explainability (SHAP) - {scenario_display}{segment_display}", className="mb-4"),
+                dbc.Card(
+                    [
+                        dbc.CardHeader("Global Feature Importance (Summary)"),
+                        dbc.CardBody(
+                            dcc.Loading(
+                                load_iframe(
+                                    paths["shap_summary"],
+                                    segment,
+                                    "SHAP summary plot not available. Ensure models were trained with SHAP generation enabled.",
+                                ),
+                                type="default",
+                            )
+                        ),
+                    ],
+                    className="mb-4",
+                ),
+                dbc.Card(
+                    [
+                        dbc.CardHeader("Feature Dependence Plots"),
+                        dbc.CardBody(
+                            [
+                                html.P("Select a feature to view its SHAP dependence plot:"),
+                                dcc.Dropdown(
+                                    id="shap-feature-dropdown",
+                                    options=dropdown_options,
+                                    value=default_feature,
+                                    clearable=False,
+                                    className="mb-3",
+                                ),
+                                dcc.Loading(html.Div(id="shap-dependence-container"), type="default"),
+                            ]
+                        ),
+                    ]
+                )
+                if dependence_features
+                else html.Div("No dependence plots available.", className="text-muted p-3"),
+            ]
+        )
+
+    elif active_tab == "tab-allocations":
+        return create_allocations_tab_content(scenario, segment)
+
     return html.Div("Select a tab", className="text-muted")
 
 
@@ -1619,23 +1924,37 @@ def update_cutoff_analysis(slider_values, store_data):
     segment = store_data.get("segment")
     var0_col = store_data["var0_col"]
     var1_col = store_data["var1_col"]
-    optimal_cuts = {int(k): v for k, v in store_data["optimal_cuts"].items()}
+    optimal_cuts = {float(k): v for k, v in store_data["optimal_cuts"].items()}
+    inv_vars = store_data.get("inv_vars", [])
     bins = store_data["bins"]
+    multiplier = store_data.get("multiplier", 7.0)
 
-    # Load data
-    summary_data, _, _, _ = load_cutoff_data(scenario, segment)
+    # Load summary data only (inv_vars already stored from initial load)
+    paths = get_scenario_paths(scenario, segment)
+    summary_data = None
+    if paths["summary_data"].exists():
+        try:
+            summary_data = pd.read_csv(paths["summary_data"])
+        except Exception:
+            pass
     if summary_data is None:
         empty_fig = go.Figure()
         return html.Div("Data not available"), empty_fig, empty_fig
 
-    # Build current cut map from sliders
-    current_cuts = {bins[i]: slider_values[i] for i in range(len(bins))}
+    # Build current cut map from sliders (keys as float to match data column types).
+    # Slider values are negated (for reversed direction), so negate back.
+    current_cuts = {float(bins[i]): -slider_values[i] for i in range(len(bins))}
 
     # Calculate metrics for current and optimal
-    current_metrics = calculate_metrics_from_custom_cuts(summary_data, current_cuts, var0_col, var1_col)
-    optimal_metrics = calculate_metrics_from_custom_cuts(summary_data, optimal_cuts, var0_col, var1_col)
+    current_metrics = calculate_metrics_from_custom_cuts(
+        summary_data, current_cuts, var0_col, var1_col, inv_vars, multiplier
+    )
+    optimal_metrics = calculate_metrics_from_custom_cuts(
+        summary_data, optimal_cuts, var0_col, var1_col, inv_vars, multiplier
+    )
 
     # Create results display
+    # Risk values are already in percentage form (e.g. 1.5 = 1.5%)
     risk_delta = current_metrics["opt_risk"] - optimal_metrics["opt_risk"]
     prod_delta = current_metrics["opt_prod_pct"] - optimal_metrics["opt_prod_pct"]
 
@@ -1650,8 +1969,8 @@ def update_cutoff_analysis(slider_values, store_data):
                     html.P(
                         [
                             html.Strong("Risk: "),
-                            f"{current_metrics['opt_risk']:.2%}",
-                            html.Span(f" ({risk_delta:+.2%})", style={"color": risk_color}, className="ms-1"),
+                            f"{current_metrics['opt_risk']:.2f}%",
+                            html.Span(f" ({risk_delta:+.2f}pp)", style={"color": risk_color}, className="ms-1"),
                         ]
                     ),
                     html.P(
@@ -1667,7 +1986,7 @@ def update_cutoff_analysis(slider_values, store_data):
             dbc.Col(
                 [
                     html.H6("Optimal Configuration", className="text-muted"),
-                    html.P([html.Strong("Risk: "), f"{optimal_metrics['opt_risk']:.2%}"]),
+                    html.P([html.Strong("Risk: "), f"{optimal_metrics['opt_risk']:.2f}%"]),
                     html.P([html.Strong("Production: "), f"{optimal_metrics['opt_prod_pct']:.1%}"]),
                 ],
                 md=6,
@@ -1675,7 +1994,7 @@ def update_cutoff_analysis(slider_values, store_data):
         ]
     )
 
-    # Create comparison chart
+    # Create comparison chart — risk is already in %, production ratio needs *100
     fig_chart = go.Figure()
 
     categories = ["Risk (%)", "Production (%)"]
@@ -1683,7 +2002,7 @@ def update_cutoff_analysis(slider_values, store_data):
         go.Bar(
             name="Current",
             x=categories,
-            y=[current_metrics["opt_risk"] * 100, current_metrics["opt_prod_pct"] * 100],
+            y=[current_metrics["opt_risk"], current_metrics["opt_prod_pct"] * 100],
             marker_color=COLOR_PRIMARY,
         )
     )
@@ -1691,7 +2010,7 @@ def update_cutoff_analysis(slider_values, store_data):
         go.Bar(
             name="Optimal",
             x=categories,
-            y=[optimal_metrics["opt_risk"] * 100, optimal_metrics["opt_prod_pct"] * 100],
+            y=[optimal_metrics["opt_risk"], optimal_metrics["opt_prod_pct"] * 100],
             marker_color=COLOR_PRODUCTION,
         )
     )
@@ -1706,12 +2025,19 @@ def update_cutoff_analysis(slider_values, store_data):
 
     # Create heatmap showing which cells pass/fail
     df = summary_data.copy()
-    df["cut_limit"] = df[var0_col].map(current_cuts)
-    df["passes"] = (df[var1_col] <= df["cut_limit"]).astype(int)
+    # Normalize keys to float for .map()
+    cuts_float = {float(k): v for k, v in current_cuts.items()}
+    df["cut_limit"] = df[var0_col].astype(float).map(cuts_float)
 
-    # Pivot for heatmap
+    # Respect the optimization direction
+    if var1_col in inv_vars:
+        df["passes"] = (df[var1_col] >= df["cut_limit"]).astype(int)
+    else:
+        df["passes"] = (df[var1_col] <= df["cut_limit"]).astype(int)
+
+    # Pivot for heatmap — ascending y-axis so origin is (1,1) at bottom-left
     pivot = df.pivot_table(index=var1_col, columns=var0_col, values="passes", aggfunc="first")
-    pivot = pivot.sort_index(ascending=False)
+    pivot = pivot.sort_index(ascending=True)
 
     fig_heatmap = go.Figure(
         data=go.Heatmap(
@@ -1725,15 +2051,25 @@ def update_cutoff_analysis(slider_values, store_data):
         )
     )
 
-    # Add cutoff line
+    # Add cutoff line — y-axis is ascending (1 at bottom, max at top)
+    y_vals_asc = list(pivot.index)  # ascending order
     for i, bin_val in enumerate(pivot.columns):
-        cut_val = current_cuts.get(int(bin_val), 9)
+        cut_val = cuts_float.get(float(bin_val))
+        if cut_val is None:
+            continue
+        if var1_col in inv_vars:
+            # passes when val >= cut_val → line below cut_val (between rejected below and accepted above)
+            pos = next((j for j, v in enumerate(y_vals_asc) if v >= cut_val), len(y_vals_asc))
+        else:
+            # passes when val <= cut_val → line above cut_val (between accepted below and rejected above)
+            pos = next((j for j, v in enumerate(y_vals_asc) if v > cut_val), len(y_vals_asc))
+        y_line = pos - 0.5
         fig_heatmap.add_shape(
             type="line",
             x0=i - 0.5,
             x1=i + 0.5,
-            y0=len(pivot.index) - cut_val - 0.5,
-            y1=len(pivot.index) - cut_val - 0.5,
+            y0=y_line,
+            y1=y_line,
             line=dict(color="red", width=3),
         )
 
@@ -1771,9 +2107,10 @@ def update_cutoffs_from_buttons(reset_clicks, apply_clicks, store_data, risk_val
     bins = store_data["bins"]
 
     if trigger_id == "reset-cutoffs-btn":
-        # Reset to original optimal values
-        optimal_cuts = {int(k): v for k, v in store_data["optimal_cuts"].items()}
-        return [optimal_cuts.get(bin_val, 9) for bin_val in bins]
+        # Reset to original optimal values (keys stored as str(float)).
+        # Return negated values for the reversed slider direction.
+        optimal_cuts = {float(k): v for k, v in store_data["optimal_cuts"].items()}
+        return [-optimal_cuts.get(float(bin_val), 9) for bin_val in bins]
 
     elif trigger_id == "apply-risk-btn":
         # Find closest Pareto-optimal solution to selected risk level
@@ -1793,21 +2130,23 @@ def update_cutoffs_from_buttons(reset_clicks, apply_clicks, store_data, risk_val
         if closest_solution is None:
             return current_values
 
-        # Extract cutoffs from the closest solution
+        # Extract cutoffs from the closest solution.
+        # CSV column names become string dict keys (e.g. "1.0"); try multiple key formats.
+        # Return negated values for the reversed slider direction.
         new_values = []
         for bin_val in bins:
-            # Try both integer and string keys
-            cutoff = (
-                closest_solution.get(bin_val)
-                or closest_solution.get(str(bin_val))
-                or closest_solution.get(float(bin_val))
-            )
+            cutoff = None
+            for key in [str(float(bin_val)), float(bin_val), str(int(bin_val)), int(bin_val), bin_val]:
+                val = closest_solution.get(key)
+                if val is not None:
+                    cutoff = val
+                    break
             if cutoff is not None:
-                new_values.append(int(cutoff))
+                new_values.append(-int(cutoff))
             else:
-                # Fallback to current value
+                # Fallback to current value (already negated)
                 idx = bins.index(bin_val)
-                new_values.append(current_values[idx] if idx < len(current_values) else 9)
+                new_values.append(current_values[idx] if idx < len(current_values) else -9)
 
         return new_values
 
@@ -1921,6 +2260,29 @@ def update_audit_period(period, scenario, segment):
     if not scenario:
         return html.Div("No scenario selected", className="text-muted")
     return create_audit_tab_content(scenario, segment, period)
+
+
+@app.callback(
+    Output("shap-dependence-container", "children"),
+    [Input("shap-feature-dropdown", "value")],
+    [State("segment-selector", "value")],
+    prevent_initial_call=False,
+)
+def update_shap_dependence(feature: str | None, segment: str | None) -> html.Div:
+    """Render the selected SHAP dependence plot."""
+    if not feature:
+        return html.Div("Select a feature to view its dependence plot.", className="text-muted")
+
+    static_prefix = get_shap_static_prefix(segment)
+    viz_path = f"{static_prefix}/shap_dependence_{feature}.html"
+
+    # Set segment=None in load_iframe so file_exists_for_viz routes through the _supersegment path correctly.
+    # Otherwise, file_exists_for_viz might try to check the raw segment images dir, though our recent fix there covers it.
+    return load_iframe(
+        viz_path,
+        segment,
+        f"SHAP dependence plot for '{feature}' not available.",
+    )
 
 
 def parse_args():
