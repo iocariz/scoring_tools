@@ -12,7 +12,11 @@ A credit risk scoring and portfolio optimization pipeline that processes loan ap
 - **Stability Analysis**: PSI/CSI drift detection between main and MR periods.
 - **Supersegments**: Trains shared models across related segments, then optimizes individually.
 - **Reject Inference**: Corrects selection bias for score-rejected applications using acceptance-rate-based parceling.
+- **Sensitivity Analysis**: Measures cutoff stability under risk perturbations, identifying per-cell flip thresholds.
+- **Marginal Impact**: Analytical O(N) computation of the production and risk impact of flipping each cell's accept/reject status.
+- **Cell-Level Confidence Intervals**: K-fold CV prediction intervals per grid cell, quantifying model uncertainty.
 - **Fixed Cutoffs**: Bypasses optimization to evaluate predefined cutoff configurations.
+- **Fixed-Cell Constraints**: Pin individual cells as forced-accept or forced-reject before re-optimizing.
 - **Global Allocation**: Distributes a portfolio-wide risk budget across segments using MILP or greedy solvers.
 - **Score Discriminance**: Gini, lift, precision-recall, ROC analysis, and DeLong pairwise model comparison.
 - **Trend Monitoring**: Monthly metric aggregation with SPC-based anomaly detection.
@@ -172,7 +176,7 @@ uv run python run_score_metrics.py [OPTIONS]
 
 ### 5. `dashboard.py` -- Interactive Results Dashboard
 
-Web-based Dash application for exploring pipeline results. Supports scenario comparison, main/MR period visualization, and interactive cutoff exploration.
+Web-based Dash application for exploring pipeline results. Supports scenario comparison, main/MR period visualization, interactive cutoff exploration with marginal impact heatmaps, uncertainty overlays, and pin mode for fixed-cell re-optimization.
 
 ```bash
 uv run python dashboard.py [OPTIONS]
@@ -255,7 +259,17 @@ For each scenario (pessimistic / base / optimistic):
 6. Generates audit tables (record-level classification: keep / swap-in / swap-out / rejected).
 7. Saves all outputs (CSVs, HTML visualizations).
 
-### Phase 7: Trend Analysis
+### Phase 7: Sensitivity Analysis (Optional)
+
+When `run_sensitivity = true` in configuration, runs after optimization:
+
+1. **Risk perturbation**: Scales the `todu_30ever_h6_rep` column by +/-5%, 10%, 20% and re-solves the MILP at each level.
+2. **Cell flip thresholds**: For each cell, finds the minimum perturbation that would flip its accept/reject status.
+3. **Marginal impact**: Analytically computes the production and risk change from flipping each individual cell.
+
+Outputs are saved to `sensitivity_analysis.csv`, `sensitivity_cell_detail.csv`, and `cell_marginal_impact.csv`.
+
+### Phase 8: Trend Analysis
 
 Computes monthly aggregated metrics (approval rate, production, risk) and detects anomalies using Statistical Process Control (rolling mean +/- n-sigma bounds).
 
@@ -312,6 +326,7 @@ optimum_risk = 1.1        # Target risk appetite in % (default: 1.1)
 risk_step = 0.1           # Scenario step: optimum_risk +/- risk_step (default: 0.1)
 n_months = 24             # Rolling window for transformation rate (default: 12)
 inv_var1 = false          # Invert var1 comparison: >= instead of <= (default: false)
+run_sensitivity = false   # Run sensitivity analysis after optimization (default: false)
 
 # Logging
 log_level = "INFO"        # default: "INFO"
@@ -499,6 +514,36 @@ After running all segments, `run_allocation.py` solves a portfolio-level optimiz
 - Per-segment and per-supersegment analysis
 - Main period and MR period comparison
 
+### Sensitivity Analysis
+
+Measures how stable the optimized cutoffs are under model risk uncertainty. The pipeline perturbs the risk indicator (`todu_30ever_h6_rep`) by configurable percentages, re-solves the MILP at each level, and compares the resulting masks:
+
+- **Aggregate summary**: Number of cells that flip, accept-to-reject vs reject-to-accept transitions, new production and risk at each perturbation level.
+- **Per-cell detail**: Minimum perturbation percentage at which each cell changes status, with flip direction.
+
+### Marginal Impact
+
+For each cell in the grid, analytically computes the effect of flipping its status (accept → reject or vice versa) on portfolio production and risk. Uses baseline sums computed once, then adjusts numerator/denominator per cell — O(N) total, not O(N²).
+
+Output columns: `delta_production` (EUR change), `delta_risk_pct` (percentage point change in `b2_ever_h6`), `cell_production`, `cell_risk`.
+
+### Cell-Level Confidence Intervals
+
+During model training, K-fold cross-validation produces per-cell prediction intervals:
+
+1. For each fold, train on the train split, aggregate the validation split by grid bins, and predict the target variable per cell.
+2. Across folds, compute mean, standard deviation, and confidence interval bounds per cell.
+
+Cells observed in fewer than 2 folds receive NaN intervals. Results are saved to `cell_level_ci.csv` and optionally displayed as uncertainty annotations on the dashboard heatmap.
+
+### Fixed-Cell Constraints
+
+Individual cells can be pinned as forced-accept or forced-reject before re-optimization. The MILP solver enforces these by setting `lb = ub = value` for pinned cells, while monotonicity and risk constraints remain active. If the constraints are contradictory (same cell pinned as both accept and reject, or pins make the risk target infeasible), the solver returns `None`.
+
+Available through:
+- **`solve_with_fixed_cells()`** in `src/optimization_utils.py` for programmatic use.
+- **Pin Mode** in the dashboard Cutoff Explorer: click cells to cycle through unpinned → accept → reject → unpinned, then re-optimize.
+
 ### Trend Analysis
 
 Monthly aggregation of approval rate, production volume, mean production, and risk metrics. Anomalies are detected using Statistical Process Control: months where the metric falls outside rolling mean +/- 2 standard deviations are flagged.
@@ -542,7 +587,8 @@ Monthly aggregation of approval rate, production volume, mean production, and ri
 | `estimators.py` | Custom estimators: `HurdleRegressor`, `TweedieGLM` |
 | `optuna_tuning.py` | Optuna hyperparameter tuning for tree and linear models |
 | `persistence.py` | Model serialization with metadata (save/load) |
-| `optimization_utils.py` | Feasible solution generation, KPI calculation, Pareto filtering |
+| `optimization_utils.py` | Feasible solution generation, KPI calculation, Pareto filtering, fixed-cell MILP |
+| `sensitivity.py` | Sensitivity analysis, risk perturbation, cell flip thresholds, marginal impact |
 | `reject_inference.py` | Acceptance rate computation and parceling adjustment |
 | `mr_pipeline.py` | MR period validation and metrics |
 | `stability.py` | PSI/CSI drift detection |
@@ -579,6 +625,9 @@ Monthly aggregation of approval rate, production volume, mean production, and ri
 | `data_summary_desagregado_mr_{scenario}.csv` | MR period bin-level data |
 | `stability_psi_{scenario}.csv` | Per-variable PSI values |
 | `drift_alerts_{scenario}.json` | Drift alert details |
+| `sensitivity_analysis.csv` | Sensitivity analysis results (if `run_sensitivity = true`) |
+| `sensitivity_cell_detail.csv` | Per-cell flip thresholds |
+| `cell_marginal_impact.csv` | Per-cell marginal production/risk impact |
 | `monthly_metrics_{segment}.csv` | Monthly aggregated metrics |
 | `trend_anomalies_{segment}.csv` | Detected trend anomalies |
 
@@ -601,6 +650,7 @@ Monthly aggregation of approval rate, production volume, mean production, and ri
 | `model_{timestamp}/model.joblib` | Trained risk model |
 | `model_{timestamp}/metadata.json` | CV scores, features, hyperparameters |
 | `model_{timestamp}/shap_summary.png` | SHAP feature importance |
+| `model_{timestamp}/cell_level_ci.csv` | Per-cell prediction confidence intervals |
 | `todu_model.joblib` | TODU amount regression model |
 | `todu_avg_inference.html` | TODU inference visualization |
 
@@ -735,6 +785,7 @@ uv run pytest --cov=src tests/
 | `test_utils.py` | Utility functions |
 | `test_persistence.py` | Model save/load |
 | `test_optuna_tuning.py` | Optuna hyperparameter tuning |
+| `test_sensitivity.py` | Sensitivity analysis, marginal impact, fixed-cell constraints |
 | `test_shap.py` | SHAP analysis |
 
 ### Adding a New Segment

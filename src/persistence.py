@@ -133,7 +133,9 @@ def _save_model_summary(version_path: Path, model, features: list[str], metadata
                 if key in metadata:
                     value = metadata.get(key, "N/A")
                     display_value = f"{value:.4f}" if isinstance(value, (int, float)) and not np.isnan(value) else value
-                    label = key.replace("_", " ").replace("cv ", "CV ").replace("r2", "R²").replace("rmse", "RMSE").title()
+                    label = (
+                        key.replace("_", " ").replace("cv ", "CV ").replace("r2", "R²").replace("rmse", "RMSE").title()
+                    )
                     label = label.replace("Rmse", "RMSE").replace("Loo ", "LOO-CV ")
                     f.write(f"{label}: {display_value}\n")
             f.write(f"CV Folds: {metadata.get('cv_folds', 'N/A')}\n")
@@ -150,13 +152,17 @@ def _save_model_summary(version_path: Path, model, features: list[str], metadata
         if hasattr(model, "coef_"):
             f.write("\nMODEL COEFFICIENTS:\n")
             f.write("-" * 30 + "\n")
-            
+
             # Print Intercept if it exists
             if hasattr(model, "intercept_"):
                 # Handle array-like intercepts (e.g. from some scikit-learn setups)
-                intercept_val = model.intercept_[0] if isinstance(model.intercept_, (np.ndarray, list)) and len(model.intercept_) > 0 else model.intercept_
+                intercept_val = (
+                    model.intercept_[0]
+                    if isinstance(model.intercept_, (np.ndarray, list)) and len(model.intercept_) > 0
+                    else model.intercept_
+                )
                 f.write(f"Intercept: {intercept_val:.6f}\n")
-                
+
             for feature, coef in zip(features, model.coef_):
                 f.write(f"{feature}: {coef:.6f}\n")
 

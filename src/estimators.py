@@ -69,14 +69,15 @@ class HurdleRegressor(BaseEstimator, RegressorMixin):
         feature_names_in_ = None
         if hasattr(X, "columns"):
             feature_names_in_ = X.columns
-            
+
         # Validate inputs (raises ValueError if NaNs are present)
         X, y = check_X_y(X, y, accept_sparse=True)
-        
+
         # If we had feature names, optionally restore X to a DataFrame to keep names
         # for sklearn models that warn without them (like Lasso, Ridge)
         if feature_names_in_ is not None:
             import pandas as pd
+
             X = pd.DataFrame(X, columns=feature_names_in_)
 
         # Initialize models if not provided
@@ -234,11 +235,6 @@ class TweedieGLM(BaseEstimator, RegressorMixin):
             self
         """
         from sklearn.linear_model import TweedieRegressor
-        
-        # Check if X has feature names (is a DataFrame)
-        feature_names_in_ = None
-        if hasattr(X, "columns"):
-            feature_names_in_ = X.columns
 
         self.regressor_ = TweedieRegressor(power=self.power, alpha=self.alpha, link=self.link, max_iter=self.max_iter)
 

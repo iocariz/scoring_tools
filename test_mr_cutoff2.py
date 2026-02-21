@@ -1,11 +1,10 @@
 import pandas as pd
-from src.mr_pipeline import calculate_metrics_from_cuts
 
 df_opt = pd.read_csv("output/premium/data/optimal_solution_base.csv")
 df_mr = pd.read_csv("output/premium/data/data_summary_desagregado_mr_base.csv")
 
-variables = ['sc_octroi_new_clus', 'new_efx_clus']
-inv_vars = [] # Actually we can pass []
+variables = ["sc_octroi_new_clus", "new_efx_clus"]
+inv_vars = []  # Actually we can pass []
 
 bins = sorted(df_mr[variables[0]].unique())
 print("Unique bins in MR data:", bins)

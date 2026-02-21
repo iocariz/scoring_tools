@@ -29,6 +29,9 @@ variables = ['sc_octroi_new_clus', 'new_efx_clus']
 multiplier = 7
 z_threshold = 3.0
 cv_folds = 3
+run_sensitivity = true
+sensitivity_levels = [-30, -20, -10, -5, 5, 10, 20, 30]
+
 
 # Reject inference (optional) - adjusts predicted risk for score-rejected bins
 # based on per-bin acceptance rates to correct for selection bias.

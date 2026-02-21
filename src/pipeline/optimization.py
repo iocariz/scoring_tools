@@ -489,6 +489,82 @@ def _compute_mr_annual_coef(settings: PreprocessingSettings) -> float:
     return annual_coef_mr
 
 
+def run_sensitivity_phase(
+    data_summary_desagregado: pd.DataFrame,
+    data_summary: pd.DataFrame,
+    settings: PreprocessingSettings,
+    output: OutputPaths | None = None,
+) -> None:
+    """Run sensitivity analysis on the base scenario (non-blocking).
+
+    Gated behind ``settings.run_sensitivity``. Saves results to CSV.
+
+    Args:
+        data_summary_desagregado: Aggregated summary data.
+        data_summary: Pareto-optimal solutions DataFrame.
+        settings: Configuration settings.
+        output: Output paths configuration.
+    """
+    if not settings.run_sensitivity:
+        return
+
+    if output is None:
+        output = OutputPaths()
+
+    segment = settings.segment_filter
+    logger.info(f"[{segment}] Running sensitivity analysis...")
+
+    try:
+        from src.optimization_utils import CellGrid, milp_solve_cutoffs
+        from src.sensitivity import compute_cell_marginal_impact, run_sensitivity_analysis, sensitivity_cell_detail
+
+        grid = CellGrid.from_summary(data_summary_desagregado, settings.variables)
+
+        # Get baseline mask from the base scenario's optimal solution
+        baseline_mask = milp_solve_cutoffs(grid, settings.optimum_risk, settings.inv_vars, settings.multiplier)
+        if baseline_mask is None:
+            logger.warning(f"[{segment}] Sensitivity: baseline solve infeasible, skipping")
+            return
+
+        # Run sensitivity analysis
+        sens_df = run_sensitivity_analysis(
+            data_summary_desagregado,
+            settings.variables,
+            settings.inv_vars,
+            settings.multiplier,
+            settings.indicators,
+            baseline_mask,
+            settings.optimum_risk,
+            perturbation_levels=settings.sensitivity_levels,
+        )
+        sens_path = output.sensitivity_analysis_csv("_base")
+        sens_df.to_csv(sens_path, index=False)
+        logger.info(f"[{segment}] Sensitivity analysis saved to {sens_path}")
+
+        # Cell-level sensitivity detail
+        cell_detail = sensitivity_cell_detail(
+            data_summary_desagregado,
+            settings.variables,
+            settings.inv_vars,
+            settings.multiplier,
+            settings.indicators,
+            baseline_mask,
+            settings.optimum_risk,
+            perturbation_levels=settings.sensitivity_levels,
+        )
+        cell_detail_path = output.sensitivity_analysis_csv("_cell_detail")
+        cell_detail.to_csv(cell_detail_path, index=False)
+
+        # Marginal impact
+        marginal_df = compute_cell_marginal_impact(grid, baseline_mask, settings.indicators, settings.multiplier)
+        marginal_path = output.cell_marginal_impact_csv("_base")
+        marginal_df.to_csv(marginal_path, index=False)
+        logger.info(f"[{segment}] Marginal impact saved to {marginal_path}")
+
+    except Exception as e:
+        logger.error(f"[{segment}] Sensitivity analysis failed (non-blocking): {e}")
+
+
 def _save_cutoff_summaries(
     cutoff_summaries: list[pd.DataFrame],
     settings: PreprocessingSettings,

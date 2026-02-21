@@ -23,6 +23,7 @@ from typing import Any
 
 import dash
 import dash_bootstrap_components as dbc
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -1093,12 +1094,14 @@ def create_model_details_content(segment: str | None = None) -> html.Div:
 
 def load_cutoff_data(
     scenario: str, segment: str | None = None
-) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None, list[str], list[str], float]:
+) -> tuple[
+    pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None, list[str], list[str], float, pd.DataFrame | None
+]:
     """
     Load data needed for cutoff explorer.
 
     Returns:
-        Tuple of (summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier)
+        Tuple of (summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier, cell_ci)
     """
     from src.config import PreprocessingSettings
 
@@ -1148,7 +1151,21 @@ def load_cutoff_data(
     if pareto_path.exists():
         pareto_solutions = pd.read_csv(pareto_path)
 
-    return summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier
+    # Load cell-level CI if available
+    cell_ci = None
+    models_dir = get_models_dir(segment)
+    if models_dir.exists():
+        # Search in model subdirectories for cell_level_ci.csv
+        ci_candidates = list(models_dir.glob("model_*/cell_level_ci.csv"))
+        if ci_candidates:
+            # Use the most recent one
+            ci_path = sorted(ci_candidates, reverse=True)[0]
+            try:
+                cell_ci = pd.read_csv(ci_path)
+            except Exception as e:
+                logger.warning(f"Could not load cell CI from {ci_path}: {e}")
+
+    return summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier, cell_ci
 
 
 def calculate_metrics_from_custom_cuts(
@@ -1236,7 +1253,7 @@ def calculate_metrics_from_custom_cuts(
 
 def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> html.Div:
     """Create the cutoff explorer tab layout."""
-    summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier = load_cutoff_data(
+    summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier, cell_ci = load_cutoff_data(
         scenario, segment
     )
 
@@ -1332,6 +1349,10 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
     risk_step = (risk_max - risk_min) / 4 if risk_max > risk_min else 0.25
     risk_marks = {round(risk_min + i * risk_step, 2): f"{round(risk_min + i * risk_step, 2):.2f}%" for i in range(5)}
 
+    # Serialize cell_ci for storage
+    cell_ci_data = cell_ci.to_dict("records") if cell_ci is not None and not cell_ci.empty else []
+    has_ci = len(cell_ci_data) > 0
+
     return html.Div(
         [
             html.H4(f"Cutoff Explorer ({scenario_display}{segment_display})", className="mb-4"),
@@ -1349,8 +1370,10 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                     "var1_bins": [float(b) for b in var1_bins],
                     "multiplier": multiplier,
                     "pareto_solutions": pareto_data,
+                    "cell_ci": cell_ci_data,
                 },
             ),
+            dcc.Store(id="pinned-cells-store", data={}),
             # Risk Level Selector
             dbc.Card(
                 [
@@ -1460,6 +1483,43 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                     ),
                 ]
             ),
+            # Heatmap controls row
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            dbc.Switch(
+                                id="show-uncertainty-toggle",
+                                label="Show Risk Uncertainty",
+                                value=False,
+                                className="mb-2",
+                            ),
+                        ],
+                        md=3,
+                        style={"display": "block" if has_ci else "none"},
+                    ),
+                    dbc.Col(
+                        [
+                            dbc.Switch(id="pin-mode-toggle", label="Pin Mode", value=False, className="mb-2"),
+                        ],
+                        md=3,
+                    ),
+                    dbc.Col(
+                        [
+                            dbc.Button(
+                                "Re-optimize with Pins",
+                                id="reoptimize-pin-btn",
+                                color="success",
+                                size="sm",
+                                className="mb-2",
+                            ),
+                            html.Span(id="pin-status", className="ms-2 small text-muted"),
+                        ],
+                        md=6,
+                    ),
+                ],
+                className="mt-3",
+            ),
             # Heatmap
             dbc.Row(
                 [
@@ -1472,6 +1532,25 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                                         f"({var1_col} {'≥' if var1_col in inv_vars else '≤'} cutoff)"
                                     ),
                                     dbc.CardBody([dcc.Graph(id="cutoff-heatmap", style={"height": "400px"})]),
+                                ]
+                            )
+                        ]
+                    )
+                ],
+                className="mt-3",
+            ),
+            # Marginal Impact Heatmap
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            dbc.Card(
+                                [
+                                    dbc.CardHeader(
+                                        "Marginal Impact — production change if cell is flipped "
+                                        "(green = gain, red = loss)"
+                                    ),
+                                    dbc.CardBody([dcc.Graph(id="marginal-impact-heatmap", style={"height": "400px"})]),
                                 ]
                             )
                         ]
@@ -1909,16 +1988,26 @@ def render_content(active_tab: str, scenario: str | None, segment: str | None) -
 
 # Cutoff Explorer callbacks
 @app.callback(
-    [Output("cutoff-results", "children"), Output("cutoff-chart", "figure"), Output("cutoff-heatmap", "figure")],
-    [Input({"type": "cutoff-slider", "index": dash.ALL}, "value"), Input("cutoff-data-store", "data")],
+    [
+        Output("cutoff-results", "children"),
+        Output("cutoff-chart", "figure"),
+        Output("cutoff-heatmap", "figure"),
+        Output("marginal-impact-heatmap", "figure"),
+    ],
+    [
+        Input({"type": "cutoff-slider", "index": dash.ALL}, "value"),
+        Input("cutoff-data-store", "data"),
+        Input("show-uncertainty-toggle", "value"),
+        Input("pinned-cells-store", "data"),
+    ],
     prevent_initial_call=False,
 )
-def update_cutoff_analysis(slider_values, store_data):
+def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_cells):
     """Update cutoff analysis when sliders change."""
     if not store_data or not slider_values:
         empty_fig = go.Figure()
         empty_fig.update_layout(annotations=[dict(text="No data available", x=0.5, y=0.5, showarrow=False)])
-        return html.Div("No data available"), empty_fig, empty_fig
+        return html.Div("No data available"), empty_fig, empty_fig, empty_fig
 
     scenario = store_data["scenario"]
     segment = store_data.get("segment")
@@ -1939,7 +2028,7 @@ def update_cutoff_analysis(slider_values, store_data):
             pass
     if summary_data is None:
         empty_fig = go.Figure()
-        return html.Div("Data not available"), empty_fig, empty_fig
+        return html.Div("Data not available"), empty_fig, empty_fig, empty_fig
 
     # Build current cut map from sliders (keys as float to match data column types).
     # Slider values are negated (for reversed direction), so negate back.
@@ -2073,6 +2162,45 @@ def update_cutoff_analysis(slider_values, store_data):
             line=dict(color="red", width=3),
         )
 
+    # Add uncertainty annotations if toggle is on and CI data is available
+    cell_ci_data = store_data.get("cell_ci", [])
+    if show_uncertainty and cell_ci_data:
+        ci_df = pd.DataFrame(cell_ci_data)
+        if var0_col in ci_df.columns and var1_col in ci_df.columns and "ci_upper" in ci_df.columns:
+            ci_df["ci_width"] = ci_df["ci_upper"] - ci_df["ci_lower"]
+            for _, ci_row in ci_df.iterrows():
+                v0 = ci_row[var0_col]
+                v1 = ci_row[var1_col]
+                width = ci_row["ci_width"]
+                if pd.notna(width):
+                    x_idx = list(pivot.columns).index(v0) if v0 in list(pivot.columns) else None
+                    y_idx = list(pivot.index).index(v1) if v1 in list(pivot.index) else None
+                    if x_idx is not None and y_idx is not None:
+                        fig_heatmap.add_annotation(
+                            x=str(int(v0)),
+                            y=str(int(v1)),
+                            text=f"\u00b1{width:.2f}",
+                            showarrow=False,
+                            font=dict(size=9, color="#333"),
+                        )
+
+    # Annotate pinned cells on heatmap
+    if pinned_cells:
+        for cell_key, pin_val in pinned_cells.items():
+            parts = cell_key.split(",")
+            if len(parts) == 2:
+                v0_str, v1_str = parts
+                marker = "\u2605" if pin_val == 1 else "\u2717"  # star for accept, X for reject
+                color = "#006400" if pin_val == 1 else "#8B0000"
+                fig_heatmap.add_annotation(
+                    x=v0_str.strip(),
+                    y=v1_str.strip(),
+                    text=marker,
+                    showarrow=False,
+                    font=dict(size=16, color=color),
+                    yshift=8,
+                )
+
     fig_heatmap.update_layout(
         xaxis_title=var0_col,
         yaxis_title=var1_col,
@@ -2080,7 +2208,66 @@ def update_cutoff_analysis(slider_values, store_data):
     )
     apply_plotly_style(fig_heatmap, height=380)
 
-    return results, fig_chart, fig_heatmap
+    # Marginal impact heatmap (analytical O(N))
+    fig_marginal = go.Figure()
+    try:
+        from src.optimization_utils import CellGrid
+        from src.sensitivity import compute_cell_marginal_impact
+
+        grid = CellGrid.from_summary(summary_data, [var0_col, var1_col])
+
+        # Build mask from current cuts
+        mask = np.zeros(grid.n_cells, dtype=int)
+        for combo, idx in grid.cell_index.items():
+            v0_val, v1_val = combo
+            cut = cuts_float.get(float(v0_val))
+            if cut is not None:
+                if var1_col in inv_vars:
+                    mask[idx] = 1 if v1_val >= cut else 0
+                else:
+                    mask[idx] = 1 if v1_val <= cut else 0
+
+        marginal_df = compute_cell_marginal_impact(
+            grid, mask, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], multiplier
+        )
+
+        # Pivot for heatmap
+        marginal_pivot = marginal_df.pivot_table(
+            index=var1_col, columns=var0_col, values="delta_production", aggfunc="first"
+        )
+        marginal_pivot = marginal_pivot.sort_index(ascending=True)
+
+        # Compute symmetric color range for diverging scale
+        abs_max = max(abs(marginal_pivot.values.min()), abs(marginal_pivot.values.max()), 1)
+
+        fig_marginal = go.Figure(
+            data=go.Heatmap(
+                z=marginal_pivot.values,
+                x=[str(int(c)) for c in marginal_pivot.columns],
+                y=[str(int(r)) for r in marginal_pivot.index],
+                colorscale=[[0, "#d32f2f"], [0.5, "#ffffff"], [1, "#388e3c"]],
+                zmin=-abs_max,
+                zmax=abs_max,
+                showscale=True,
+                colorbar=dict(title="EUR"),
+                hovertemplate=(
+                    f"{var0_col}: %{{x}}<br>{var1_col}: %{{y}}<br>Delta Production: €%{{z:,.0f}}<extra></extra>"
+                ),
+            )
+        )
+        fig_marginal.update_layout(
+            xaxis_title=var0_col,
+            yaxis_title=var1_col,
+            margin=dict(l=60, r=20, t=30, b=60),
+        )
+        apply_plotly_style(fig_marginal, height=380)
+    except Exception as e:
+        logger.warning(f"Marginal impact computation failed: {e}")
+        fig_marginal.update_layout(
+            annotations=[dict(text="Marginal impact not available", x=0.5, y=0.5, showarrow=False)]
+        )
+
+    return results, fig_chart, fig_heatmap, fig_marginal
 
 
 # Reset button callback
@@ -2192,6 +2379,130 @@ def update_risk_info(risk_value, store_data):
             html.Span(f"({len(pareto_solutions)} Pareto-optimal solutions available)", className="text-muted"),
         ]
     )
+
+
+# --- Pin Mode Callbacks ---
+
+
+@app.callback(
+    [Output("pinned-cells-store", "data"), Output("pin-status", "children")],
+    [Input("cutoff-heatmap", "clickData")],
+    [State("pin-mode-toggle", "value"), State("pinned-cells-store", "data"), State("cutoff-data-store", "data")],
+    prevent_initial_call=True,
+)
+def handle_cell_pin(click_data, pin_mode, pinned_cells, store_data):
+    """On heatmap click when pin mode is on, cycle cell: unpinned → accept → reject → unpinned."""
+    if not pin_mode or not click_data or not store_data:
+        n_pins = len(pinned_cells) if pinned_cells else 0
+        status_text = f"{n_pins} cell(s) pinned" if n_pins > 0 else ""
+        return pinned_cells or {}, status_text
+
+    if pinned_cells is None:
+        pinned_cells = {}
+
+    point = click_data["points"][0]
+    v0_str = str(point.get("x", ""))
+    v1_str = str(point.get("y", ""))
+    cell_key = f"{v0_str},{v1_str}"
+
+    current = pinned_cells.get(cell_key)
+    if current is None:
+        pinned_cells[cell_key] = 1  # pin as accept
+    elif current == 1:
+        pinned_cells[cell_key] = 0  # pin as reject
+    else:
+        del pinned_cells[cell_key]  # unpin
+
+    n_pins = len(pinned_cells)
+    n_accept = sum(1 for v in pinned_cells.values() if v == 1)
+    n_reject = sum(1 for v in pinned_cells.values() if v == 0)
+    status_text = f"{n_pins} pinned ({n_accept} accept, {n_reject} reject)" if n_pins > 0 else ""
+
+    return pinned_cells, status_text
+
+
+@app.callback(
+    Output({"type": "cutoff-slider", "index": dash.ALL}, "value", allow_duplicate=True),
+    [Input("reoptimize-pin-btn", "n_clicks")],
+    [
+        State("cutoff-data-store", "data"),
+        State("pinned-cells-store", "data"),
+        State("risk-level-slider", "value"),
+        State({"type": "cutoff-slider", "index": dash.ALL}, "value"),
+    ],
+    prevent_initial_call=True,
+)
+def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current_values):
+    """Re-optimize MILP with pinned cell constraints and update sliders."""
+    if not n_clicks or not store_data or not pinned_cells:
+        return current_values
+
+    try:
+        from src.optimization_utils import CellGrid, mask_to_cutoffs, solve_with_fixed_cells
+
+        scenario = store_data["scenario"]
+        segment = store_data.get("segment")
+        var0_col = store_data["var0_col"]
+        var1_col = store_data["var1_col"]
+        inv_vars = store_data.get("inv_vars", [])
+        bins = store_data["bins"]
+        multiplier = store_data.get("multiplier", 7.0)
+
+        # Load summary data
+        paths = get_scenario_paths(scenario, segment)
+        if not paths["summary_data"].exists():
+            return current_values
+        summary_data = pd.read_csv(paths["summary_data"])
+
+        grid = CellGrid.from_summary(summary_data, [var0_col, var1_col])
+
+        # Build fixed_accepts and fixed_rejects from pinned cells
+        fixed_accepts = []
+        fixed_rejects = []
+        for cell_key, pin_val in pinned_cells.items():
+            parts = cell_key.split(",")
+            if len(parts) == 2:
+                v0 = int(parts[0].strip())
+                v1 = int(parts[1].strip())
+                if pin_val == 1:
+                    fixed_accepts.append((v0, v1))
+                else:
+                    fixed_rejects.append((v0, v1))
+
+        target_risk = risk_value if risk_value else 1.0
+        mask, kpis = solve_with_fixed_cells(
+            grid,
+            target_risk,
+            inv_vars,
+            multiplier,
+            indicators=["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"],
+            fixed_accepts=fixed_accepts,
+            fixed_rejects=fixed_rejects,
+        )
+
+        if mask is None:
+            logger.warning("Re-optimization with pins: infeasible")
+            return current_values
+
+        # Convert mask to cutoff slider values
+        cutoffs = mask_to_cutoffs(mask, grid, inv_vars)
+        if var0_col not in cutoffs:
+            return current_values
+
+        new_values = []
+        for bin_val in bins:
+            cut = cutoffs[var0_col].get(float(bin_val))
+            if cut is not None and not (cut == float("inf") or cut == float("-inf")):
+                new_values.append(-int(cut))
+            else:
+                idx = bins.index(bin_val)
+                new_values.append(current_values[idx] if idx < len(current_values) else -9)
+
+        return new_values
+
+    except Exception as e:
+        logger.error(f"Re-optimize with pins failed: {e}")
+        return current_values
 
 
 # --- New Callbacks: Collapsible, Download, Audit Period ---

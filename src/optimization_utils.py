@@ -153,6 +153,7 @@ def milp_solve_cutoffs(
     target_risk: float,
     inv_vars: list[str],
     multiplier: float,
+    fixed_cells: dict[int, int] | None = None,
 ) -> np.ndarray | None:
     """Solve single MILP: maximize production subject to risk budget + monotonicity.
 
@@ -161,6 +162,8 @@ def milp_solve_cutoffs(
         target_risk: Max allowed risk (percentage, e.g. 1.5 means 1.5%).
         inv_vars: Variables with inverted risk ordering.
         multiplier: Risk multiplier (typically 7).
+        fixed_cells: Optional dict mapping flat cell index → value (0 or 1)
+            to pin specific cells as accepted/rejected.
 
     Returns:
         Binary mask array (1=accept, 0=reject) for each cell, or None if infeasible.
@@ -207,6 +210,14 @@ def milp_solve_cutoffs(
 
     bounds = Bounds(lb=np.zeros(n), ub=np.ones(n))
 
+    if fixed_cells:
+        lb = bounds.lb.copy()
+        ub = bounds.ub.copy()
+        for idx, val in fixed_cells.items():
+            lb[idx] = val
+            ub[idx] = val
+        bounds = Bounds(lb=lb, ub=ub)
+
     result = milp(
         c=c,
         constraints=constraints,
@@ -219,6 +230,50 @@ def milp_solve_cutoffs(
         return None
 
     return np.round(result.x).astype(int)
+
+
+def solve_with_fixed_cells(
+    grid: CellGrid,
+    target_risk: float,
+    inv_vars: list[str],
+    multiplier: float,
+    indicators: list[str],
+    fixed_accepts: list[tuple] | None = None,
+    fixed_rejects: list[tuple] | None = None,
+) -> tuple[np.ndarray | None, dict | None]:
+    """Solve MILP with pinned cells. Returns (mask, kpis) or (None, None).
+
+    Args:
+        grid: CellGrid with per-cell data.
+        target_risk: Max allowed risk (%).
+        inv_vars: Variables with inverted risk ordering.
+        multiplier: Risk multiplier.
+        indicators: Indicator column names for KPI evaluation.
+        fixed_accepts: List of cell coordinate tuples to pin as accepted (1).
+        fixed_rejects: List of cell coordinate tuples to pin as rejected (0).
+
+    Returns:
+        Tuple of (binary mask, KPI dict) or (None, None) if infeasible.
+    """
+    fixed_cells: dict[int, int] = {}
+    for coords in fixed_accepts or []:
+        idx = grid.cell_index.get(coords)
+        if idx is not None:
+            fixed_cells[idx] = 1
+    for coords in fixed_rejects or []:
+        idx = grid.cell_index.get(coords)
+        if idx is not None:
+            if idx in fixed_cells and fixed_cells[idx] == 1:
+                logger.warning(f"Cell {coords} pinned as both accept and reject — infeasible.")
+                return None, None
+            fixed_cells[idx] = 0
+
+    mask = milp_solve_cutoffs(grid, target_risk, inv_vars, multiplier, fixed_cells=fixed_cells)
+    if mask is None:
+        return None, None
+
+    kpis = evaluate_solution(mask, grid, indicators, multiplier)
+    return mask, kpis
 
 
 # =============================================================================

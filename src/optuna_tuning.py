@@ -158,8 +158,18 @@ def tune_tree_models(
     models = {"XGBoost (Optuna Tuned)": xgb_model, "LightGBM (Optuna Tuned)": lgb_model}
 
     results = [
-        {"Model": "XGBoost (Optuna Tuned)", "CV Mean RMSE": xgb_mean, "CV Std RMSE": xgb_std, "model_template": xgb_model},
-        {"Model": "LightGBM (Optuna Tuned)", "CV Mean RMSE": lgb_mean, "CV Std RMSE": lgb_std, "model_template": lgb_model},
+        {
+            "Model": "XGBoost (Optuna Tuned)",
+            "CV Mean RMSE": xgb_mean,
+            "CV Std RMSE": xgb_std,
+            "model_template": xgb_model,
+        },
+        {
+            "Model": "LightGBM (Optuna Tuned)",
+            "CV Mean RMSE": lgb_mean,
+            "CV Std RMSE": lgb_std,
+            "model_template": lgb_model,
+        },
     ]
     results_df = pd.DataFrame(results)
 
@@ -269,7 +279,12 @@ def tune_linear_models(
     lin_mean, lin_std = safe_eval_fresh(lin_model)
     if lin_mean < np.inf:
         results.append(
-            {"Model": "Linear Regression", "CV Mean RMSE": lin_mean, "CV Std RMSE": lin_std, "model_template": lin_model}
+            {
+                "Model": "Linear Regression",
+                "CV Mean RMSE": lin_mean,
+                "CV Std RMSE": lin_std,
+                "model_template": lin_model,
+            }
         )
         models["Linear Regression"] = lin_model
 

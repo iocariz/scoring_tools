@@ -740,3 +740,40 @@ class TestGAFallback:
             )
             assert result_df.empty
             assert result_masks == []
+
+
+# =============================================================================
+# MILP fixed_cells Tests
+# =============================================================================
+
+
+class TestMILPFixedCells:
+    """Tests for milp_solve_cutoffs with fixed_cells parameter."""
+
+    def test_fixed_accept_appears_in_result(self):
+        """A cell fixed as accepted (1) must appear as 1 in the result."""
+        df = _make_summary_2d(3, 4)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        # Fix cell (1,1) = index 0 as accepted
+        mask = milp_solve_cutoffs(grid, target_risk=50.0, inv_vars=[], multiplier=7, fixed_cells={0: 1})
+        assert mask is not None
+        assert mask[0] == 1
+
+    def test_fixed_reject_appears_in_result(self):
+        """A cell fixed as rejected (0) must appear as 0 in the result."""
+        df = _make_summary_2d(3, 4)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        # Fix cell (1,1) = index 0 as rejected
+        mask = milp_solve_cutoffs(grid, target_risk=50.0, inv_vars=[], multiplier=7, fixed_cells={0: 0})
+        assert mask is not None
+        assert mask[0] == 0
+
+    def test_empty_fixed_cells_same_as_none(self):
+        """Empty dict should produce same result as no fixed_cells."""
+        df = _make_summary_2d(3, 4)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        mask_none = milp_solve_cutoffs(grid, target_risk=20.0, inv_vars=[], multiplier=7)
+        mask_empty = milp_solve_cutoffs(grid, target_risk=20.0, inv_vars=[], multiplier=7, fixed_cells={})
+        assert mask_none is not None
+        assert mask_empty is not None
+        np.testing.assert_array_equal(mask_none, mask_empty)

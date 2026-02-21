@@ -105,6 +105,18 @@ class OutputPaths:
     def drift_alerts_json(self, suffix: str = "") -> str:
         return str(self.data_dir / f"drift_alerts{suffix}.json")
 
+    # -- sensitivity / marginal impact --
+
+    def sensitivity_analysis_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"sensitivity_analysis{suffix}.csv")
+
+    def cell_marginal_impact_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"cell_marginal_impact{suffix}.csv")
+
+    @property
+    def cell_ci_csv(self) -> str:
+        return str(self.models_dir / "cell_level_ci.csv")
+
     # -- trends --
 
     def monthly_metrics_csv(self, segment: str) -> str:
@@ -197,6 +209,10 @@ class PreprocessingSettings(BaseModel):
     cz_config: dict[int, Any] = Field(default_factory=dict)
     log_level: str = "INFO"
     fixed_cutoffs: dict[str, Any] | None = None
+
+    # Sensitivity analysis
+    run_sensitivity: bool = False
+    sensitivity_levels: list[float] = [-20, -10, -5, 5, 10, 20]
 
     # Reject inference settings
     reject_inference_method: Literal["none", "parceling"] = "none"

@@ -1003,10 +1003,7 @@ def plot_shap_dependence(
                 opacity=0.7,
                 line=dict(width=0.5, color="white"),
             ),
-            hovertemplate=(
-                f"<b>{target_feature}</b>: %{{x}}<br>"
-                "<b>SHAP Value</b>: %{y:.4f}<extra></extra>"
-            ),
+            hovertemplate=(f"<b>{target_feature}</b>: %{{x}}<br><b>SHAP Value</b>: %{{y:.4f}}<extra></extra>"),
         )
     )
 
@@ -1016,13 +1013,13 @@ def plot_shap_dependence(
         width=900,
         height=500,
     )
-    
+
     fig.update_layout(
         xaxis_title=target_feature,
         yaxis_title="SHAP Value",
         plot_bgcolor="white",
     )
-    
+
     # Add zero line for reference
     fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
 
@@ -1030,6 +1027,8 @@ def plot_shap_dependence(
         fig.write_html(output_path)
 
     return fig
+
+
 def _prepare_transformation_data(
     data: pd.DataFrame,
     date_col: str,

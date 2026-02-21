@@ -143,6 +143,16 @@ def main(
 
         _save_cutoff_summaries(cutoff_summaries, settings, output=output)
 
+        # Step 6b: Sensitivity analysis (optional, non-blocking)
+        from src.pipeline.optimization import run_sensitivity_phase
+
+        run_sensitivity_phase(
+            data_summary_desagregado=data_summary_desagregado,
+            data_summary=data_summary,
+            settings=settings,
+            output=output,
+        )
+
         # Step 7: Temporal trend analysis (non-blocking)
         try:
             from src.trends import compute_monthly_metrics, detect_trend_changes, plot_metric_trends

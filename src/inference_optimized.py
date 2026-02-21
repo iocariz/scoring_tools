@@ -283,9 +283,9 @@ def process_dataset(
         target_vals = processed_data[target_var]
         target_median = target_vals.median()
         target_mad = np.median(np.abs(target_vals - target_median))
-        
+
         if target_mad == 0:
-             target_mad = np.mean(np.abs(target_vals - target_median))
+            target_mad = np.mean(np.abs(target_vals - target_median))
 
         if target_mad > 0:
             z_scores = 0.6745 * np.abs(target_vals - target_median) / target_mad
@@ -554,6 +554,7 @@ def _select_feature_set_cv(
             y_pred = model_clone.predict(X_val)
             if len(y_val) >= 2:
                 from sklearn.metrics import mean_squared_error
+
                 fold_rmse = np.sqrt(mean_squared_error(y_val, y_pred, sample_weight=w_val))
                 cv_scores.append(fold_rmse)
 
@@ -600,6 +601,110 @@ def _select_feature_set_cv(
     logger.info(f"  CV RMSE: {best_feature_info['cv_mean_rmse']:.4f} ± {best_feature_info['cv_std_rmse']:.4f}")
 
     return results_df, best_feature_info
+
+
+def compute_cell_level_ci(
+    raw_data: pd.DataFrame,
+    bins: tuple,
+    variables: list[str],
+    indicators: list[str],
+    target_var: str,
+    multiplier: float,
+    z_threshold: float,
+    final_features: list[str],
+    model_template,
+    cv_folds: int = 5,
+    confidence_level: float = 0.95,
+) -> pd.DataFrame:
+    """K-fold CV per-cell prediction intervals.
+
+    For each fold: train on train split, aggregate val split by bins,
+    predict target_var per cell, record predictions.
+    Then per cell: compute mean, std, CI from cross-fold predictions.
+
+    Args:
+        raw_data: Raw (un-aggregated) booked data.
+        bins: Bin definitions.
+        variables: Grouping variable names.
+        indicators: Indicator columns to aggregate.
+        target_var: Target variable name.
+        multiplier: Multiplier for target calculation.
+        z_threshold: Outlier z-score threshold.
+        final_features: Feature columns for the model.
+        model_template: Unfitted sklearn estimator (will be cloned).
+        cv_folds: Number of cross-validation folds.
+        confidence_level: Confidence level for CI (default 0.95).
+
+    Returns:
+        DataFrame with columns: var0, var1, ..., pred_mean, pred_std,
+        ci_lower, ci_upper, n_folds_observed.
+        Cells with <2 fold observations get NaN CIs.
+    """
+    from collections import defaultdict
+
+    from scipy import stats
+    from sklearn.base import clone
+
+    kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=DEFAULT_RANDOM_STATE)
+    cell_predictions: dict[tuple, list[float]] = defaultdict(list)
+
+    for train_idx, val_idx in kfold.split(raw_data):
+        raw_train = raw_data.iloc[train_idx].copy()
+        raw_val = raw_data.iloc[val_idx].copy()
+
+        train_agg = process_dataset(
+            raw_train, bins, variables, indicators, target_var, multiplier, final_features, z_threshold
+        )
+        val_agg = process_dataset(
+            raw_val, bins, variables, indicators, target_var, multiplier, final_features, z_threshold
+        )
+
+        missing = [f for f in final_features if f not in train_agg.columns]
+        if missing or len(val_agg) < 1:
+            continue
+
+        X_train, y_train = train_agg[final_features], train_agg[target_var]
+        w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
+
+        model_clone = clone(model_template)
+        model_clone.fit(X_train, y_train, sample_weight=w_train)
+
+        X_val = val_agg[final_features]
+        preds = model_clone.predict(X_val)
+
+        # Record predictions per cell (keyed by variable tuple)
+        for i, (_, row) in enumerate(val_agg.iterrows()):
+            cell_key = tuple(row[v] for v in variables)
+            cell_predictions[cell_key].append(float(preds[i]))
+
+    # Build result DataFrame
+    alpha = 1 - confidence_level
+    z_val = stats.norm.ppf(1 - alpha / 2)
+
+    rows = []
+    for cell_key, preds_list in cell_predictions.items():
+        row = {variables[d]: cell_key[d] for d in range(len(variables))}
+        n_folds = len(preds_list)
+        row["n_folds_observed"] = n_folds
+        row["pred_mean"] = np.mean(preds_list)
+
+        if n_folds >= 2:
+            std = np.std(preds_list, ddof=1)
+            row["pred_std"] = std
+            row["ci_lower"] = row["pred_mean"] - z_val * std
+            row["ci_upper"] = row["pred_mean"] + z_val * std
+        else:
+            row["pred_std"] = np.nan
+            row["ci_lower"] = np.nan
+            row["ci_upper"] = np.nan
+
+        rows.append(row)
+
+    return (
+        pd.DataFrame(rows)
+        if rows
+        else pd.DataFrame(columns=variables + ["pred_mean", "pred_std", "ci_lower", "ci_upper", "n_folds_observed"])
+    )
 
 
 def _prepare_pipeline_data(
@@ -767,11 +872,11 @@ def _train_and_evaluate_final_model(
     final_model.fit(all_data[final_features], y_all, sample_weight=weights)
 
     y_all_pred = final_model.predict(all_data[final_features])
-    
+
     if len(y_all) >= 2:
         train_r2 = r2_score(y_all, y_all_pred, sample_weight=weights)
     else:
-        train_r2 = float('nan')
+        train_r2 = float("nan")
 
     return final_model, train_r2
 
@@ -796,10 +901,14 @@ def _compute_shap_values(
                 shap_values = explainer.shap_values(X)
             except ValueError as ve:
                 if "could not convert string to float" in str(ve):
-                    logger.warning("XGBoost/SHAP TreeExplainer incompatibility detected. Falling back to KernelExplainer.")
+                    logger.warning(
+                        "XGBoost/SHAP TreeExplainer incompatibility detected. Falling back to KernelExplainer."
+                    )
                     background = shap.sample(X, min(50, len(X)))
+
                     def safe_predict_tree(data):
                         return model.predict(pd.DataFrame(data, columns=feature_names))
+
                     explainer = shap.KernelExplainer(safe_predict_tree, background)
                     shap_values = explainer.shap_values(X, nsamples=50)
                 else:
@@ -826,8 +935,9 @@ def _compute_shap_values(
             "mean_abs_shap": mean_abs_shap,
         }
 
-    except Exception as e:
+    except Exception:
         import traceback
+
         err_msg = traceback.format_exc()
         logger.error(f"SHAP computation failed (non-blocking):\n{err_msg}")
         print(f"SHAP EXCEPTION CAUGHT: {err_msg}")
@@ -1055,7 +1165,6 @@ def inference_pipeline(
         "is_hurdle": isinstance(final_model, HurdleRegressor),
     }
 
-
     # STEP 5: MODEL SAVING
     model_path = None
     if save_model:
@@ -1088,7 +1197,7 @@ def inference_pipeline(
 
             # Export SHAP summary plot (non-blocking)
             try:
-                from src.plots import plot_shap_summary, plot_shap_dependence
+                from src.plots import plot_shap_dependence, plot_shap_summary
 
                 images_dir = Path(model_path).parent.parent / "images"
                 images_dir.mkdir(parents=True, exist_ok=True)
@@ -1110,7 +1219,7 @@ def inference_pipeline(
                 for i in range(n_top_features):
                     top_feature_idx = top_indices[i]
                     top_feature_name = feature_names[top_feature_idx]
-                    
+
                     # Sanitize feature name for filename
                     safe_feature_name = "".join(c for c in top_feature_name if c.isalnum() or c in "._-").rstrip()
                     dependence_path = str(images_dir / f"shap_dependence_{safe_feature_name}.html")
@@ -1126,6 +1235,28 @@ def inference_pipeline(
 
             except (ImportError, ValueError, OSError) as e:
                 logger.warning(f"SHAP plot export failed (non-blocking): {e}")
+
+    # CELL-LEVEL CI (non-blocking)
+    try:
+        cell_ci_df = compute_cell_level_ci(
+            raw_data=all_data,
+            bins=bins,
+            variables=variables,
+            indicators=indicators,
+            target_var=target_var,
+            multiplier=multiplier,
+            z_threshold=DEFAULT_Z_THRESHOLD,
+            final_features=final_features,
+            model_template=best_model_type["model_template"],
+            cv_folds=cv_folds,
+        )
+        if not cell_ci_df.empty and model_path:
+            ci_path = Path(model_path).parent / "cell_level_ci.csv"
+            cell_ci_df.to_csv(ci_path, index=False)
+            logger.info(f"Cell-level CI saved to {ci_path} ({len(cell_ci_df)} cells)")
+            best_model_info["cell_ci_path"] = str(ci_path)
+    except Exception as e:
+        logger.warning(f"Cell-level CI computation failed (non-blocking): {e}")
 
     # STEP 6: VISUALIZATION
     fig = None
@@ -1144,8 +1275,6 @@ def inference_pipeline(
         fig = _create_pipeline_visualization(
             final_model, final_agg, variables, target_var, final_features, viz_output_path
         )
-
-
 
     # PIPELINE SUMMARY
     logger.info("=" * 80)

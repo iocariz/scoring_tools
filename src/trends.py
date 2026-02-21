@@ -217,12 +217,12 @@ def detect_trend_changes(
 
     # Compute robust rolling stats: rolling median and rolling MAD
     rolling_median = df["value"].rolling(window=window, min_periods=window).median().shift(1)
-    
+
     # We need a custom rolling MAD function
     def mad(x):
         median = np.median(x)
         return np.median(np.abs(x - median))
-        
+
     rolling_mad = df["value"].rolling(window=window, min_periods=window).apply(mad, raw=True).shift(1)
 
     # For small windows, use t-distribution critical value instead of normal z
@@ -242,14 +242,14 @@ def detect_trend_changes(
 
     # Convert MAD to standard deviation equivalent: std = MAD / 0.6745
     rolling_std_est = rolling_mad / 0.6745
-    
+
     # Handle cases where MAD is 0 (e.g. constant values in window)
     # Fallback to standard deviation
     rolling_std_traditional = df["value"].rolling(window=window, min_periods=window).std().shift(1)
     rolling_std_est = rolling_std_est.fillna(rolling_std_traditional)
     rolling_std_est = np.where(rolling_std_est == 0, rolling_std_traditional, rolling_std_est)
 
-    df["rolling_mean"] = rolling_median # using median as the center line for robust SPC
+    df["rolling_mean"] = rolling_median  # using median as the center line for robust SPC
     df["upper_bound"] = rolling_median + effective_sigma * rolling_std_est
     df["lower_bound"] = rolling_median - effective_sigma * rolling_std_est
 
