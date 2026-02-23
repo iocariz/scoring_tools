@@ -358,6 +358,18 @@ risk_multiplier = clamp(1 + uplift_factor * reject_ratio, 1.0, max_multiplier)
 adjusted_todu_30ever_h6 = todu_30ever_h6 * risk_multiplier
 ```
 
+#### Reject Inference Optimizer (Optional)
+
+Grid-searches over RI parameters to find the pair that minimizes calibration error against the 1/acceptance_rate selection-bias model.
+
+```toml
+run_ri_optimizer = false               # Enable RI parameter optimization (default: false)
+ri_uplift_range = [0.0, 5.0]          # Search range for reject_uplift_factor
+ri_uplift_steps = 11                   # Grid steps for uplift_factor
+ri_max_mult_range = [1.0, 5.0]        # Search range for reject_max_risk_multiplier
+ri_max_mult_steps = 9                  # Grid steps for max_risk_multiplier
+```
+
 #### Fixed Cutoffs (Optional)
 
 Skip optimization and apply predefined cutoffs. Useful for regulatory scenarios or validating approved strategies.
@@ -499,6 +511,12 @@ For the selected optimal solution, the pipeline runs 1,000 bootstrap resamples o
 
 The model trains exclusively on booked (approved) applications, creating selection bias. The parceling method corrects this by computing the acceptance rate per (var0, var1) bin and applying a risk multiplier to score-rejected records. Bins with lower acceptance rates receive larger uplifts, capped at `reject_max_risk_multiplier`.
 
+#### RI Parameter Optimizer
+
+When `run_ri_optimizer = true`, the pipeline grid-searches over `(reject_uplift_factor, reject_max_risk_multiplier)` to find parameters that minimize **calibration error** against the 1/acceptance_rate selection model.
+
+The calibration target for each cell is `booked_risk / acceptance_rate`, based on the standard selection-bias model: if a bin accepts the least-risky fraction *a* of applicants, the true population risk is approximately `observed / a`. The optimizer selects parameters whose blended (booked + RI-corrected repesca) risk estimates best match these targets (exposure-weighted mean squared relative error). Ties within 5% of the minimum error are broken by maximizing production.
+
 ### Global Portfolio Allocation
 
 After running all segments, `run_allocation.py` solves a portfolio-level optimization: select one point from each segment's efficient frontier to maximize total production subject to a weighted-average global risk constraint. The MILP formulation uses binary decision variables and linear constraints. Per-segment risk bounds (`min_risk`, `max_risk` in `segments.toml`) are respected.
@@ -590,6 +608,7 @@ Monthly aggregation of approval rate, production volume, mean production, and ri
 | `optimization_utils.py` | Feasible solution generation, KPI calculation, Pareto filtering, fixed-cell MILP |
 | `sensitivity.py` | Sensitivity analysis, risk perturbation, cell flip thresholds, marginal impact |
 | `reject_inference.py` | Acceptance rate computation and parceling adjustment |
+| `reject_inference_optimizer.py` | Grid search over RI parameters minimizing calibration error |
 | `mr_pipeline.py` | MR period validation and metrics |
 | `stability.py` | PSI/CSI drift detection |
 | `trends.py` | Monthly metrics aggregation and anomaly detection |
@@ -780,6 +799,7 @@ uv run pytest --cov=src tests/
 | `test_audit.py` | Audit table generation |
 | `test_consolidation.py` | Multi-segment aggregation |
 | `test_reject_inference.py` | Reject inference adjustments |
+| `test_reject_inference_optimizer.py` | RI parameter optimizer and calibration error |
 | `test_metrics.py` | Score performance metrics |
 | `test_plots.py` | Visualization functions |
 | `test_utils.py` | Utility functions |
