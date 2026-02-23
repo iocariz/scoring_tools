@@ -113,6 +113,9 @@ class OutputPaths:
     def cell_marginal_impact_csv(self, suffix: str = "") -> str:
         return str(self.data_dir / f"cell_marginal_impact{suffix}.csv")
 
+    def ri_optimizer_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"ri_optimizer_results{suffix}.csv")
+
     @property
     def cell_ci_csv(self) -> str:
         return str(self.models_dir / "cell_level_ci.csv")
@@ -214,6 +217,13 @@ class PreprocessingSettings(BaseModel):
     run_sensitivity: bool = False
     sensitivity_levels: list[float] = [-20, -10, -5, 5, 10, 20]
 
+    # Reject inference parameter optimization
+    run_ri_optimizer: bool = False
+    ri_uplift_range: list[float] = [0.0, 5.0]
+    ri_max_mult_range: list[float] = [1.0, 5.0]
+    ri_uplift_steps: int = 11
+    ri_max_mult_steps: int = 9
+
     # Reject inference settings
     reject_inference_method: Literal["none", "parceling"] = "none"
     reject_uplift_factor: float = Field(default=1.5, ge=0.0, le=10.0)
@@ -238,6 +248,15 @@ class PreprocessingSettings(BaseModel):
     def validate_bins_length(cls, v: list[float], info: Any) -> list[float]:
         if v and len(v) < 2:
             raise ValueError(f"'{info.field_name}' must have at least 2 values")
+        return v
+
+    @field_validator("ri_uplift_range", "ri_max_mult_range")
+    @classmethod
+    def validate_ri_range(cls, v: list[float], info: Any) -> list[float]:
+        if len(v) != 2:
+            raise ValueError(f"'{info.field_name}' must have exactly 2 elements [min, max], got {len(v)}")
+        if v[0] >= v[1]:
+            raise ValueError(f"'{info.field_name}' min ({v[0]}) must be less than max ({v[1]})")
         return v
 
     @field_validator("date_ini_book_obs", "date_fin_book_obs", "date_ini_book_obs_mr", "date_fin_book_obs_mr")

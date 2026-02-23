@@ -14,6 +14,7 @@ from src.pipeline.optimization import (
     _compute_mr_annual_coef,
     _save_cutoff_summaries,
     run_optimization_phase,
+    run_ri_optimizer_phase,
     run_scenario_analysis,
 )
 from src.pipeline.preprocessing import run_preprocessing_phase
@@ -150,6 +151,19 @@ def main(
             data_summary_desagregado=data_summary_desagregado,
             data_summary=data_summary,
             settings=settings,
+            output=output,
+        )
+
+        # Step 6c: Reject inference parameter optimization (optional, non-blocking)
+        run_ri_optimizer_phase(
+            data_booked=data_booked,
+            data_demand=data_demand,
+            risk_inference=risk_inference,
+            reg_todu_amt_pile=reg_todu_amt_pile,
+            stress_factor=stress_factor,
+            tasa_fin=tasa_fin,
+            settings=settings,
+            annual_coef=annual_coef,
             output=output,
         )
 

@@ -565,6 +565,100 @@ def run_sensitivity_phase(
         logger.error(f"[{segment}] Sensitivity analysis failed (non-blocking): {e}")
 
 
+def run_ri_optimizer_phase(
+    data_booked: pd.DataFrame,
+    data_demand: pd.DataFrame,
+    risk_inference: dict,
+    reg_todu_amt_pile: Any,
+    stress_factor: float,
+    tasa_fin: float,
+    settings: PreprocessingSettings,
+    annual_coef: float,
+    output: OutputPaths | None = None,
+) -> dict | None:
+    """Run reject inference parameter optimization (non-blocking).
+
+    Gated behind ``settings.run_ri_optimizer``. Sweeps over
+    (reject_uplift_factor, reject_max_risk_multiplier) grid to find the pair
+    that maximizes production at the configured risk target.
+
+    Returns:
+        Best parameter dict, or None if disabled/failed.
+    """
+    if not settings.run_ri_optimizer:
+        return None
+
+    if settings.reject_inference_method == "none":
+        logger.warning("RI optimizer skipped: reject_inference_method is 'none'")
+        return None
+
+    if output is None:
+        output = OutputPaths()
+
+    segment = settings.segment_filter
+    logger.info(f"[{segment}] Running reject inference parameter optimization...")
+
+    try:
+        from src.inference_optimized import compute_pre_reject_inference_data
+        from src.reject_inference import compute_acceptance_rates
+        from src.reject_inference_optimizer import OptimizerInputs, run_reject_inference_optimization
+
+        # Step 1: Compute invariant pre-reject-inference data
+        booked_summary, repesca_pre_ri = compute_pre_reject_inference_data(
+            data_booked=data_booked,
+            data_demand=data_demand,
+            risk_inference=risk_inference,
+            reg_todu_amt_pile=reg_todu_amt_pile,
+            stressor=stress_factor,
+            indicators=settings.indicators,
+            variables=settings.variables,
+            annual_coef=annual_coef,
+        )
+
+        # Step 2: Compute acceptance rates
+        acceptance_rates = compute_acceptance_rates(data_demand, settings.variables)
+
+        # Step 3: Build optimizer inputs
+        optimizer_inputs = OptimizerInputs(
+            booked_summary=booked_summary,
+            repesca_pre_ri=repesca_pre_ri,
+            acceptance_rates=acceptance_rates,
+            tasa_fin=tasa_fin,
+            variables=settings.variables,
+            indicators=settings.indicators,
+            inv_vars=settings.inv_vars,
+            multiplier=settings.multiplier,
+        )
+
+        # Step 4: Run grid search
+        results_df, best_params = run_reject_inference_optimization(
+            optimizer_inputs,
+            risk_target=settings.optimum_risk,
+            uplift_range=tuple(settings.ri_uplift_range),
+            uplift_steps=settings.ri_uplift_steps,
+            max_mult_range=tuple(settings.ri_max_mult_range),
+            max_mult_steps=settings.ri_max_mult_steps,
+        )
+
+        # Step 5: Save results
+        csv_path = output.ri_optimizer_csv()
+        results_df.to_csv(csv_path, index=False)
+        logger.info(f"[{segment}] RI optimizer results saved to {csv_path}")
+
+        if best_params:
+            logger.info(
+                f"[{segment}] RI optimizer best params: "
+                f"uplift={best_params['uplift_factor']:.2f}, "
+                f"max_mult={best_params['max_risk_multiplier']:.2f}"
+            )
+
+        return best_params
+
+    except Exception as e:
+        logger.error(f"[{segment}] RI optimizer failed (non-blocking): {e}")
+        return None
+
+
 def _save_cutoff_summaries(
     cutoff_summaries: list[pd.DataFrame],
     settings: PreprocessingSettings,

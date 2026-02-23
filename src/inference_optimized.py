@@ -1476,6 +1476,53 @@ def todu_average_inference(
     return fig, model, r_sq
 
 
+def compute_pre_reject_inference_data(
+    data_booked: pd.DataFrame,
+    data_demand: pd.DataFrame,
+    risk_inference: dict,
+    reg_todu_amt_pile,
+    stressor: float,
+    *,
+    indicators: list[str],
+    variables: list[str],
+    annual_coef: float,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Compute booked summary (_boo suffix) and repesca summary (post-risk-model, pre-reject-inference).
+
+    These results are invariant to reject inference parameters and can be
+    computed once then reused across multiple parameter evaluations.
+
+    Returns:
+        Tuple of (booked_summary with _boo suffix, repesca_summary post-risk-model).
+    """
+    final_model = risk_inference["best_model_info"]["model"]
+    final_features = risk_inference["features"]
+
+    def _aggregate(data, status, reject_reason=None):
+        filtered_data = data[data[Columns.STATUS_NAME] == status]
+        if reject_reason:
+            filtered_data = filtered_data[filtered_data[Columns.REJECT_REASON] == reject_reason]
+        return (
+            filtered_data.groupby(variables)
+            .agg(dict.fromkeys(indicators, "sum"))
+            .mul(annual_coef)
+            .reset_index()[variables + indicators]
+        )
+
+    booked_summary = _aggregate(data_booked, StatusName.BOOKED.value)
+    booked_summary = booked_summary.rename(columns={i: i + Suffixes.BOOKED for i in indicators})
+
+    repesca_summary = _aggregate(data_demand, StatusName.REJECTED.value, "09-score")
+
+    from src.models import calculate_risk_values
+
+    repesca_summary = calculate_risk_values(
+        repesca_summary, final_model, reg_todu_amt_pile, variables, stressor, final_features
+    )[variables + indicators]
+
+    return booked_summary, repesca_summary
+
+
 def run_optimization_pipeline(
     data_booked,
     data_demand,
@@ -1497,41 +1544,22 @@ def run_optimization_pipeline(
     """
     logger.info("Running optimization pipeline...")
 
-    # Define variables needed for optimization
-    final_model = risk_inference["best_model_info"]["model"]
-    final_features = risk_inference["features"]
     var_target = "b2_ever_h6"
 
-    # Define Constants
     INDICADORES = indicators
     VARIABLES = variables
 
-    # Calculate aggregate data for booked and repesca cases
-    def calculate_aggregate_data(data, status, reject_reason=None):
-        filtered_data = data[data[Columns.STATUS_NAME] == status]
-        if reject_reason:
-            filtered_data = filtered_data[filtered_data[Columns.REJECT_REASON] == reject_reason]
-        return (
-            filtered_data.groupby(VARIABLES)
-            .agg(dict.fromkeys(INDICADORES, "sum"))
-            .mul(annual_coef)  # Multiply by annual coefficient
-            .reset_index()[VARIABLES + INDICADORES]
-        )
-
-    data_sumary_desagregado_booked = calculate_aggregate_data(data_booked, StatusName.BOOKED.value)
-    data_sumary_desagregado_booked = data_sumary_desagregado_booked.rename(
-        columns={i: i + Suffixes.BOOKED for i in INDICADORES}
+    # Compute invariant pre-reject-inference data
+    data_sumary_desagregado_booked, data_sumary_desagregado_repesca = compute_pre_reject_inference_data(
+        data_booked=data_booked,
+        data_demand=data_demand,
+        risk_inference=risk_inference,
+        reg_todu_amt_pile=reg_todu_amt_pile,
+        stressor=stressor,
+        indicators=INDICADORES,
+        variables=VARIABLES,
+        annual_coef=annual_coef,
     )
-
-    data_sumary_desagregado_repesca = calculate_aggregate_data(data_demand, StatusName.REJECTED.value, "09-score")
-
-    # Apply Risk Model to Repesca
-    # Note: calculate_risk_values is imported from src.models
-    from src.models import calculate_risk_values
-
-    data_sumary_desagregado_repesca = calculate_risk_values(
-        data_sumary_desagregado_repesca, final_model, reg_todu_amt_pile, VARIABLES, stressor, final_features
-    )[VARIABLES + INDICADORES]
 
     # Apply reject inference adjustment (after stressor, before tasa_fin)
     if reject_inference_method != "none":
