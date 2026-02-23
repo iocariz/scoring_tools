@@ -304,16 +304,33 @@ def process_mr_period(
             )
 
         # --- Calculate todu_amt_pile_h6 using inference model ---
-        logger.info("Calculating todu_amt_pile_h6 for booked accounts in MR period...")
+        # The inference model (reg_todu_amt_pile) was trained on SUMMED bins.
+        # To avoid multiplying the intercept by the number of loans, 
+        # we predict on the sum of oa_amt per bin and pro-rate the result.
+        logger.info("Calculating todu_amt_pile_h6 for booked accounts in MR period (bin-aggregated)...")
 
         data_demand_mr["todu_amt_pile_h6"] = np.nan
         booked_mask = (data_demand_mr["status_name"] == StatusName.BOOKED.value) & (data_demand_mr["oa_amt"].notna())
 
         if booked_mask.any():
-            X_pred = data_demand_mr.loc[booked_mask, ["oa_amt"]]
             try:
-                preds = reg_todu_amt_pile.predict(X_pred)
-                data_demand_mr.loc[booked_mask, "todu_amt_pile_h6"] = preds
+                # 1. Sum oa_amt per bin
+                bin_sums = data_demand_mr.loc[booked_mask].groupby(merge_keys)["oa_amt"].sum().reset_index()
+                
+                # 2. Predict on bin sums
+                bin_sums["todu_amt_pile_h6_bin"] = reg_todu_amt_pile.predict(bin_sums[["oa_amt"]])
+                
+                # 3. Map back to data_demand_mr, pro-rated by oa_amt
+                bin_sums_idx = bin_sums.set_index(merge_keys)
+                merged = data_demand_mr.loc[booked_mask, merge_keys + ["oa_amt"]].join(
+                    bin_sums_idx, on=merge_keys, rsuffix="_sum"
+                )
+                
+                # Safe division
+                divisor = merged["oa_amt_sum"].replace(0, np.nan)
+                preds = merged["todu_amt_pile_h6_bin"] * (merged["oa_amt"] / divisor)
+                
+                data_demand_mr.loc[booked_mask, "todu_amt_pile_h6"] = preds.fillna(0.0)
             except (ValueError, KeyError) as e:
                 logger.error(f"Error predicting todu_amt_pile_h6: {e}")
         else:
