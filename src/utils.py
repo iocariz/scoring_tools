@@ -208,6 +208,8 @@ def _bootstrap_worker(
     multiplier: float,
     random_state: int | None = None,
     inv_var1: bool = False,
+    annual_coef: float = 1.0,
+    repesca_production: float = 0.0,
 ) -> tuple[float, float]:
     """Worker function for bootstrap resampling."""
     # Resample with replacement
@@ -243,7 +245,8 @@ def _bootstrap_worker(
 
     # Use oa_amt_h0 to match the optimization pipeline metric
     prod_col = "oa_amt_h0" if "oa_amt_h0" in passed_df.columns else "oa_amt"
-    production = passed_df[prod_col].sum() if not passed_df.empty else 0.0
+    production_booked = passed_df[prod_col].sum() if not passed_df.empty else 0.0
+    production = (production_booked * annual_coef) + repesca_production
 
     risk_num = passed_df["todu_30ever_h6"].sum() if not passed_df.empty else 0.0
     risk_den = passed_df["todu_amt_pile_h6"].sum() if not passed_df.empty else 0.0
@@ -263,6 +266,8 @@ def calculate_bootstrap_intervals(
     random_state: int | None = 42,
     inv_var1: bool = False,
     model_cv_se_risk: float | None = None,
+    annual_coef: float = 1.0,
+    repesca_production: float = 0.0,
 ) -> dict[str, float]:
     """
     Calculate confidence intervals for Risk and Production using bootstrap resampling.
@@ -304,6 +309,8 @@ def calculate_bootstrap_intervals(
             multiplier,
             random_state=int(seed) if seed is not None else None,
             inv_var1=inv_var1,
+            annual_coef=annual_coef,
+            repesca_production=repesca_production,
         )
         for seed in seeds
     )

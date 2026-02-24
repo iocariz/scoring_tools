@@ -291,7 +291,30 @@ def run_scenario_analysis(
         elif str(float(bin_val)) in row:
             cut_map[float(bin_val)] = float(row[str(float(bin_val))])
 
-    inv_var1 = settings.variables[1] in settings.inv_vars
+    inv_var1 = settings.variables[1] in settings.inv_vars if len(settings.variables) > 1 else False
+
+    # Calculate main annual coef for production scaling
+    date_ini_main = settings.get_date("date_ini_book_obs")
+    date_fin_main = settings.get_date("date_fin_book_obs")
+    n_months_main_calc = (
+        (date_fin_main.year - date_ini_main.year) * 12 + (date_fin_main.month - date_ini_main.month) + 1
+    )
+    annual_coef_main = 12 / n_months_main_calc if n_months_main_calc > 0 else 1.0
+
+    # Calculate repesca_production from data_summary_desagregado based on cut_map
+    repesca_production = 0.0
+    if len(settings.variables) > 1 and "oa_amt_h0_rep" in data_summary_desagregado.columns:
+        var0 = settings.variables[0]
+        var1 = settings.variables[1]
+        fallback = float("inf") if inv_var1 else float("-inf")
+        full_cut_series = data_summary_desagregado[var0].map(cut_map).fillna(fallback)
+        if inv_var1:
+            passes = data_summary_desagregado[var1] >= full_cut_series
+        else:
+            passes = data_summary_desagregado[var1] <= full_cut_series
+        passed_desag = data_summary_desagregado[passes]
+        repesca_production = passed_desag["oa_amt_h0_rep"].sum()
+
     # Pass model CV SE so bootstrap CI accounts for model prediction uncertainty
     model_cv_se = risk_inference.get("cv_std_r2") if risk_inference else None
     ci_data = calculate_bootstrap_intervals(
@@ -302,6 +325,8 @@ def run_scenario_analysis(
         n_bootstraps=1000,
         inv_var1=inv_var1,
         model_cv_se_risk=model_cv_se,
+        annual_coef=annual_coef_main,
+        repesca_production=repesca_production,
     )
     logger.info(f"[{segment}] Scenario {scenario_name} CI: {ci_data}")
 
