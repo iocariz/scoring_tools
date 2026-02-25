@@ -240,13 +240,20 @@ def process_mr_period(
                     f"These bin combinations exist in MR period but not in initial period. "
                     f"Inferring b2_ever_h6 using the risk model..."
                 )
-                for _, row in missing_bins.iterrows():
-                    logger.warning(f"  Missing bin: {dict(row)}")
+                for bin_combo in missing_bins.itertuples(index=False):
+                    logger.warning(f"  Missing bin: {bin_combo._asdict()}")
 
                 # Use inference model to predict b2_ever_h6 for missing bins
                 try:
-                    final_model = risk_inference["best_model_info"]["model"]
-                    final_features = risk_inference["features"]
+                    best_model_info = risk_inference.get("best_model_info")
+                    if best_model_info is None:
+                        raise KeyError("'best_model_info' not found in risk_inference")
+                    final_model = best_model_info.get("model")
+                    if final_model is None:
+                        raise KeyError("'model' not found in risk_inference['best_model_info']")
+                    final_features = risk_inference.get("features")
+                    if final_features is None:
+                        raise KeyError("'features' not found in risk_inference")
 
                     # Create a DataFrame with missing bin combinations for prediction
                     missing_bins_df = missing_bins.copy()
@@ -305,7 +312,7 @@ def process_mr_period(
 
         # --- Calculate todu_amt_pile_h6 using inference model ---
         # The inference model (reg_todu_amt_pile) was trained on SUMMED bins.
-        # To avoid multiplying the intercept by the number of loans, 
+        # To avoid multiplying the intercept by the number of loans,
         # we predict on the sum of oa_amt per bin and pro-rate the result.
         logger.info("Calculating todu_amt_pile_h6 for booked accounts in MR period (bin-aggregated)...")
 
@@ -316,20 +323,20 @@ def process_mr_period(
             try:
                 # 1. Sum oa_amt per bin
                 bin_sums = data_demand_mr.loc[booked_mask].groupby(merge_keys)["oa_amt"].sum().reset_index()
-                
+
                 # 2. Predict on bin sums
                 bin_sums["todu_amt_pile_h6_bin"] = reg_todu_amt_pile.predict(bin_sums[["oa_amt"]])
-                
+
                 # 3. Map back to data_demand_mr, pro-rated by oa_amt
                 bin_sums_idx = bin_sums.set_index(merge_keys)
                 merged = data_demand_mr.loc[booked_mask, merge_keys + ["oa_amt"]].join(
                     bin_sums_idx, on=merge_keys, rsuffix="_sum"
                 )
-                
+
                 # Safe division
                 divisor = merged["oa_amt_sum"].replace(0, np.nan)
                 preds = merged["todu_amt_pile_h6_bin"] * (merged["oa_amt"] / divisor)
-                
+
                 data_demand_mr.loc[booked_mask, "todu_amt_pile_h6"] = preds.fillna(0.0)
             except (ValueError, KeyError) as e:
                 logger.error(f"Error predicting todu_amt_pile_h6: {e}")

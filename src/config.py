@@ -241,6 +241,9 @@ class PreprocessingSettings(BaseModel):
     def validate_variables_length(cls, v: list[str]) -> list[str]:
         if len(v) < 2:
             raise ValueError(f"'variables' must contain at least 2 elements, got {len(v)}")
+        if len(v) != len(set(v)):
+            duplicates = [x for x in v if v.count(x) > 1]
+            raise ValueError(f"'variables' must contain unique elements, found duplicates: {set(duplicates)}")
         return v
 
     @field_validator("octroi_bins", "efx_bins")

@@ -11,6 +11,7 @@ Produces portfolio-level views for executive reporting.
 """
 
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +57,7 @@ class ConsolidatedMetrics:
     optimum_risk_ci_upper: float = 0.0
 
     # Calculated risk properties (as percentage, e.g. 1.5 means 1.5%)
-    @property
+    @cached_property
     def actual_risk(self) -> float:
         return float(
             np.nan_to_num(
@@ -66,7 +67,7 @@ class ConsolidatedMetrics:
             )
         )
 
-    @property
+    @cached_property
     def optimum_risk(self) -> float:
         return float(
             np.nan_to_num(
@@ -76,7 +77,7 @@ class ConsolidatedMetrics:
             )
         )
 
-    @property
+    @cached_property
     def swap_in_risk(self) -> float:
         return float(
             np.nan_to_num(
@@ -86,7 +87,7 @@ class ConsolidatedMetrics:
             )
         )
 
-    @property
+    @cached_property
     def swap_out_risk(self) -> float:
         return float(
             np.nan_to_num(

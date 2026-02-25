@@ -722,7 +722,7 @@ def _prepare_pipeline_data(
 
     # We remove records where the demographic variables or target indicators are null
     req_cols = variables + indicators
-    booked_data = booked_data.dropna(subset=req_cols).copy()
+    booked_data = booked_data.dropna(subset=req_cols)
 
     logger.info(f"Booked valid records: {len(booked_data):,} of {len(data):,} total")
     logger.info(f"Base features (var_reg): {var_reg}")

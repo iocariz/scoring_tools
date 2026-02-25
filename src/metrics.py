@@ -148,7 +148,7 @@ def calculate_psi_by_period(
     end_date_act: pd.Timestamp,
     buckets: int = None,
     breakpoints: list = None,
-    show_plots: bool = True,
+    show_plots: bool = False,
 ) -> pd.DataFrame:
     """
     Calculate Population Stability Index (PSI) between reference and actual periods.
