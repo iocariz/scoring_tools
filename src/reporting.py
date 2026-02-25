@@ -181,6 +181,10 @@ def build_segment_report(
         opt_tbl = csv_to_html_table(output_paths.optimal_solution_csv(suffix))
         if opt_tbl:
             sa_section.tables.append(f"<h4>Optimal Cutoffs</h4>{opt_tbl}")
+        # N>2: acceptance grid per income bin
+        acc_div = extract_plotly_div(output_paths.acceptance_grid_html(suffix))
+        if acc_div:
+            sa_section.charts.append(acc_div)
         if sa_section.charts or sa_section.tables:
             sections.append(sa_section)
 

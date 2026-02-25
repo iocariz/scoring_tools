@@ -210,36 +210,34 @@ def _bootstrap_worker(
     inv_var1: bool = False,
     annual_coef: float = 1.0,
     repesca_production: float = 0.0,
+    mask: np.ndarray | None = None,
+    grid: object | None = None,
 ) -> tuple[float, float]:
     """Worker function for bootstrap resampling."""
     # Resample with replacement
     sample = df.sample(frac=1.0, replace=True, random_state=random_state)
 
-    # Apply cuts
-    var0 = variables[0]
-    var1 = variables[1]
+    # Apply cuts — N-dimensional mask-based path or legacy 2-var cut_map path
+    if mask is not None and grid is not None:
+        from src.optimization_utils import classify_by_mask
 
-    # Map cuts to each row based on var0 bin
-    # For missing bins, default to strict rejection:
-    #   non-inverted (var1 <= cutoff): fillna(-inf) → always rejects
-    #   inverted (var1 >= cutoff): fillna(+inf) → always rejects
-    fallback = np.inf if inv_var1 else -np.inf
-    full_cut_series = sample[var0].map(cut_map).fillna(fallback)
-
-    # Filter passed — inverted variables use >= (higher bin = safer)
-    if inv_var1:
-        passes = sample[var1] >= full_cut_series
+        passes = classify_by_mask(sample, mask, grid)
     else:
-        passes = sample[var1] <= full_cut_series
+        var0 = variables[0]
+        var1 = variables[1]
 
-    # Calculate metrics on passed (Production) and Risk (B2)
-    # Production: sum of filtered oa_amt (assuming oa_amt is the production column,
-    # usually it's oa_amt_h0 for optimization but we need to check what column to use.
-    # In optimization pipeline, we optimize 'oa_amt_h0'.
-    # But usually we want the Total Production of the SELECTED portfolio.
+        # Map cuts to each row based on var0 bin
+        # For missing bins, default to strict rejection:
+        #   non-inverted (var1 <= cutoff): fillna(-inf) → always rejects
+        #   inverted (var1 >= cutoff): fillna(+inf) → always rejects
+        fallback = np.inf if inv_var1 else -np.inf
+        full_cut_series = sample[var0].map(cut_map).fillna(fallback)
 
-    # Actually, Risk B2 is calculated using todu_30ever_h6 and todu_amt_pile_h6
-    # for the selected portfolio.
+        # Filter passed — inverted variables use >= (higher bin = safer)
+        if inv_var1:
+            passes = sample[var1] >= full_cut_series
+        else:
+            passes = sample[var1] <= full_cut_series
 
     passed_df = sample[passes]
 
@@ -268,6 +266,8 @@ def calculate_bootstrap_intervals(
     model_cv_se_risk: float | None = None,
     annual_coef: float = 1.0,
     repesca_production: float = 0.0,
+    mask: np.ndarray | None = None,
+    grid: object | None = None,
 ) -> dict[str, float]:
     """
     Calculate confidence intervals for Risk and Production using bootstrap resampling.
@@ -287,6 +287,8 @@ def calculate_bootstrap_intervals(
             resamples booked records and ignores model inference error on the
             rejected/swap-in population).  The total SE is computed as
             ``sqrt(bootstrap_se² + model_cv_se²)``.
+        mask: Optional binary acceptance mask for N-d classify_by_mask path.
+        grid: Optional CellGrid for N-d classify_by_mask path.
 
     Returns:
         Dictionary with lower/upper bounds for production and risk
@@ -311,6 +313,8 @@ def calculate_bootstrap_intervals(
             inv_var1=inv_var1,
             annual_coef=annual_coef,
             repesca_production=repesca_production,
+            mask=mask,
+            grid=grid,
         )
         for seed in seeds
     )
@@ -359,42 +363,57 @@ def generate_cutoff_summary(
     risk_value: float | None = None,
     production_value: float | None = None,
     ci_data: dict[str, float] | None = None,
+    mask: np.ndarray | None = None,
+    grid: object | None = None,
 ) -> pd.DataFrame:
     """
     Generate a readable summary of cutoff points by segment.
 
-    This function transforms the optimal solution into a human-readable format
-    showing the cutoff threshold for each bin of the first variable.
+    For 2-variable grids: produces the classic var0_bin → cutoff_value table.
+    For N>2 variable grids (when ``mask``/``grid`` are provided): produces a
+    cell-level table with one row per grid cell showing accepted/rejected.
 
     Args:
         optimal_solution_df: DataFrame containing the optimal solution with bin columns
-        variables: List of two variable names [var0, var1] used in the optimization
+        variables: List of variable names used in the optimization
         segment_name: Name of the segment being analyzed
         scenario_name: Name of the scenario (e.g., 'pessimistic', 'base', 'optimistic')
         risk_value: Optional risk (b2_ever_h6) value for this solution
         production_value: Optional production (oa_amt_h0) value for this solution
+        ci_data: Optional confidence interval data dict
+        mask: Optional binary acceptance mask (for N>2 cell-level summary)
+        grid: Optional CellGrid (for N>2 cell-level summary)
 
     Returns:
-        DataFrame with columns:
-        - segment: Segment name
-        - scenario: Scenario name
-        - var0_bin: Bin number of the first variable
-        - var0_name: Name of the first variable
-        - cutoff_value: Maximum value of var1 to accept for this bin
-        - var1_name: Name of the second variable
-        - risk_pct: Risk percentage (if provided)
-        - production: Production amount (if provided)
-
-    Example output:
-        segment     scenario  var0_bin  var0_name          cutoff_value  var1_name
-        loan_known  base      1         sc_octroi_new_clus  2            new_efx_clus
-        loan_known  base      2         sc_octroi_new_clus  4            new_efx_clus
-        ...
+        DataFrame with cutoff information.
     """
     if optimal_solution_df is None or optimal_solution_df.empty:
         logger.warning("No optimal solution provided for cutoff summary")
         return pd.DataFrame()
 
+    # N>2: produce cell-level summary from mask
+    if len(variables) > 2 and mask is not None and grid is not None:
+        from src.optimization_utils import CellGrid
+
+        if isinstance(grid, CellGrid):
+            cell_df = grid.cell_data[grid.variables].copy()
+            cell_df["accepted"] = mask
+            cell_df["segment"] = segment_name
+            cell_df["scenario"] = scenario_name
+            cell_df["risk_pct"] = risk_value
+            cell_df["production"] = production_value
+            if ci_data:
+                cell_df["production_ci_lower"] = ci_data.get("production_ci_lower")
+                cell_df["production_ci_upper"] = ci_data.get("production_ci_upper")
+                cell_df["risk_ci_lower"] = ci_data.get("risk_ci_lower", 0) * 100
+                cell_df["risk_ci_upper"] = ci_data.get("risk_ci_upper", 0) * 100
+            logger.info(
+                f"Generated N-d cutoff summary for segment '{segment_name}', scenario '{scenario_name}' "
+                f"({len(cell_df)} cells, {int(mask.sum())} accepted)"
+            )
+            return cell_df
+
+    # 2-variable path: classic var0_bin → cutoff_value table
     var0_name = variables[0] if len(variables) > 0 else "var0"
     var1_name = variables[1] if len(variables) > 1 else "var1"
 

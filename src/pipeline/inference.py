@@ -45,15 +45,18 @@ def run_inference_phase(
             r2_display = f"{metadata['cv_mean_r2']:.4f} +/- {metadata.get('cv_std_r2', 0.0):.4f}"
         else:
             r2_display = f"{metadata.get('test_r2', 0.0):.4f}"
+        model_variables = metadata.get("model_variables", settings.inference_variables)
         risk_inference = {
             "best_model_info": {
                 "model": model,
                 "name": metadata.get("model_type", "Unknown"),
                 "cv_mean_r2": metadata.get("cv_mean_r2", metadata.get("test_r2", 0.0)),
                 "cv_std_r2": metadata.get("cv_std_r2", 0.0),
+                "cv_std_rmse": metadata.get("cv_std_rmse", 0.0),
             },
             "features": features,
             "model_path": model_path,
+            "model_variables": model_variables,
         }
 
         # Load todu model from the models directory (sibling to model subdirectory)
@@ -82,17 +85,26 @@ def run_inference_phase(
         model_name = risk_inference["best_model_info"]["name"]
         logger.info(f"[{segment}] Model loaded | {model_name} | R2={r2_display} | from {model_path} | {elapsed:.1f}s")
     else:
-        # Build bins tuple from bins_config or legacy fields
+        inference_vars = settings.inference_variables
+
+        # Build bins tuple filtered to inference variables only
         if settings.bins:
-            bins_tuple = tuple(bc.bin_edges for bc in settings.bins.values())
+            inference_bins = {k: v for k, v in settings.bins.items() if k in inference_vars}
+            bins_tuple = tuple(bc.bin_edges for bc in inference_bins.values())
         else:
             bins_tuple = (settings.octroi_bins, settings.efx_bins)
+
+        if inference_vars != settings.variables:
+            logger.info(
+                f"[{segment}] Inference uses {len(inference_vars)} variables {inference_vars}, "
+                f"optimization uses {len(settings.variables)} variables {settings.variables}"
+            )
 
         # Train new model with feature selection
         risk_inference = inference_pipeline(
             data=data_clean,
             bins=bins_tuple,
-            variables=settings.variables,
+            variables=inference_vars,
             indicators=settings.indicators,
             target_var="b2_ever_h6",
             multiplier=settings.multiplier,

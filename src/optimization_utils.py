@@ -72,6 +72,37 @@ class CellGrid:
 
 
 # =============================================================================
+# classify_by_mask — N-dimensional record classification
+# =============================================================================
+
+
+def classify_by_mask(data: pd.DataFrame, mask: np.ndarray, grid: CellGrid) -> pd.Series:
+    """Classify records as accepted/rejected using a binary cell mask.
+
+    Maps each record in *data* to its grid cell via the binned variable columns
+    and looks up the mask value. Works for any number of dimensions.
+
+    Args:
+        data: DataFrame containing the binned variable columns (one per grid dimension).
+        mask: Binary array (1=accept, 0=reject) aligned with ``grid.cell_index``.
+        grid: CellGrid built from the same variables.
+
+    Returns:
+        Boolean Series aligned with *data* index (True = accepted).
+    """
+    # Build a lookup DataFrame from the grid with the mask column
+    lookup = grid.cell_data[grid.variables].copy()
+    lookup["_mask"] = mask
+
+    # Merge data with the lookup on the grid variables
+    merged = data[grid.variables].reset_index().merge(lookup, on=grid.variables, how="left")
+    merged = merged.set_index("index")
+
+    # Records with no matching cell default to rejected (0)
+    return merged["_mask"].fillna(0).astype(bool).reindex(data.index, fill_value=False)
+
+
+# =============================================================================
 # Monotonicity constraints
 # =============================================================================
 
@@ -396,8 +427,10 @@ def trace_pareto_frontier(
     df = df.iloc[sort_idx].reset_index(drop=True)
     all_masks = [all_masks[i] for i in sort_idx]
 
-    # Pareto filter: for ascending risk, production must be strictly increasing
-    # (except the first row which is always kept as the lowest-risk solution)
+    # Post-hoc Pareto dominance filter:
+    # A solution is dominated if another has lower-or-equal risk AND higher-or-equal production
+    # (with at least one strict inequality).  Sorted by ascending risk, so we keep solutions
+    # whose production is strictly > any previously kept solution's production.
     cummax = df["oa_amt_h0"].cummax()
     pareto_mask = df["oa_amt_h0"] >= cummax
     pareto_indices = pareto_mask[pareto_mask].index.tolist()
@@ -405,11 +438,37 @@ def trace_pareto_frontier(
     df = df[pareto_mask].reset_index(drop=True)
     pareto_masks = [all_masks[i] for i in pareto_indices]
 
-    # Remove dominated duplicates: same production but higher risk
+    # Remove dominated duplicates: same production but higher risk (keep lowest-risk)
     dup_mask = ~df["oa_amt_h0"].duplicated(keep="first")
     if not dup_mask.all():
+        n_removed = (~dup_mask).sum()
         df = df[dup_mask].reset_index(drop=True)
         pareto_masks = [m for m, keep in zip(pareto_masks, dup_mask) if keep]
+        logger.debug(f"Removed {n_removed} dominated solutions (same production, higher risk)")
+
+    # Final verification: strictly increasing production along the frontier
+    if len(df) > 1:
+        prod = df["oa_amt_h0"].values
+        risk = df["b2_ever_h6"].values
+        non_dominated = np.ones(len(df), dtype=bool)
+        for i in range(len(df)):
+            if not non_dominated[i]:
+                continue
+            for j in range(i + 1, len(df)):
+                if not non_dominated[j]:
+                    continue
+                # j dominates i if risk[j] <= risk[i] and prod[j] >= prod[i] (with at least one strict)
+                if risk[j] <= risk[i] and prod[j] >= prod[i] and (risk[j] < risk[i] or prod[j] > prod[i]):
+                    non_dominated[i] = False
+                    break
+                # i dominates j
+                if risk[i] <= risk[j] and prod[i] >= prod[j] and (risk[i] < risk[j] or prod[i] > prod[j]):
+                    non_dominated[j] = False
+        if not non_dominated.all():
+            n_dom = (~non_dominated).sum()
+            df = df[non_dominated].reset_index(drop=True)
+            pareto_masks = [m for m, keep in zip(pareto_masks, non_dominated) if keep]
+            logger.info(f"Post-hoc dominance filter removed {n_dom} dominated solution(s)")
 
     logger.info(f"Pareto frontier: {len(df)} solutions (from {len(solutions)} unique MILP solves)")
 

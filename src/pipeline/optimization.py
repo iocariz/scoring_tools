@@ -9,7 +9,9 @@ from src.config import OutputPaths, PreprocessingSettings
 from src.inference_optimized import run_optimization_pipeline
 from src.mr_pipeline import process_mr_period
 from src.optimization_utils import (
+    CellGrid,
     add_bin_columns,
+    classify_by_mask,
     create_fixed_cutoff_solution,
     get_fact_sol,
     get_optimal_solutions,
@@ -38,7 +40,7 @@ def run_optimization_phase(
     settings: PreprocessingSettings,
     annual_coef: float,
     output: OutputPaths | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, list]]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, list], CellGrid | None, list]:
     """Run the optimization pipeline: generate summary, find optimal cutoffs.
 
     Args:
@@ -54,7 +56,7 @@ def run_optimization_phase(
 
     Returns:
         Tuple of (data_summary_desagregado, data_summary, data_summary_sample_no_opt,
-                  values_per_var)
+                  values_per_var, grid, pareto_masks)
     """
     if output is None:
         output = OutputPaths()
@@ -89,7 +91,15 @@ def run_optimization_phase(
     fixed_cutoffs = settings.fixed_cutoffs
     use_fixed_cutoffs = fixed_cutoffs is not None and len(fixed_cutoffs) > 0
 
+    grid = None
+    pareto_masks: list = []
+
     if use_fixed_cutoffs:
+        if len(settings.variables) > 2:
+            raise ValueError(
+                f"[{segment}] Fixed cutoffs are only supported for 2-variable grids, "
+                f"but {len(settings.variables)} variables configured: {settings.variables}"
+            )
         logger.info(f"[{segment}] Using fixed cutoffs (skipping optimization)")
         logger.debug(f"[{segment}] Fixed cutoffs: {fixed_cutoffs}")
 
@@ -150,7 +160,7 @@ def run_optimization_phase(
 
     else:
         # MILP-based Pareto frontier optimization
-        pareto_df, grid, masks = trace_pareto_frontier(
+        pareto_df, grid, pareto_masks = trace_pareto_frontier(
             data_summary_desagregado=data_summary_desagregado,
             variables=settings.variables,
             inv_vars=settings.inv_vars,
@@ -160,6 +170,12 @@ def run_optimization_phase(
 
         if pareto_df.empty:
             # Fallback to legacy enumeration if MILP produces no solutions
+            if len(settings.variables) > 2:
+                logger.error(
+                    f"[{segment}] MILP produced no solutions and legacy fallback "
+                    "is not supported for >2 variables."
+                )
+                raise RuntimeError("MILP infeasible and no legacy fallback for N>2 variables.")
             logger.warning(f"[{segment}] MILP produced no solutions, falling back to legacy enumeration")
             df_v = get_fact_sol(values_var0=values_var0, values_var1=values_var1, chunk_size=10000)
             data_summary = kpi_of_fact_sol(
@@ -172,9 +188,11 @@ def run_optimization_phase(
             )
             data_summary_sample_no_opt = data_summary.sample(min(10000, len(data_summary)))
             data_summary = get_optimal_solutions(df_v=df_v, data_sumary=data_summary, chunk_size=100000)
+            grid = None
+            pareto_masks = []
         else:
             # Add bin columns for 2-var backward compat (cutoff extraction, viz, bootstrap)
-            data_summary = add_bin_columns(pareto_df, masks, grid, settings.inv_vars)
+            data_summary = add_bin_columns(pareto_df, pareto_masks, grid, settings.inv_vars)
 
             # MILP doesn't enumerate all solutions, so non-optimal sample is empty
             data_summary_sample_no_opt = pd.DataFrame(columns=["oa_amt_h0", "b2_ever_h6"])
@@ -206,7 +224,7 @@ def run_optimization_phase(
         f"b2 range: [{b2_min:.2f}%, {b2_max:.2f}%] | optimum_risk={settings.optimum_risk:.1f}% | {elapsed:.1f}s"
     )
 
-    return data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var
+    return data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var, grid, pareto_masks
 
 
 def run_scenario_analysis(
@@ -225,6 +243,8 @@ def run_scenario_analysis(
     tasa_fin: float,
     annual_coef_mr: float,
     values_per_var: dict[str, list],
+    grid: CellGrid | None = None,
+    pareto_masks: list | None = None,
     output: OutputPaths | None = None,
 ) -> pd.DataFrame:
     """Run scenario analysis for a single risk threshold: visualization, MR processing, audit.
@@ -244,6 +264,8 @@ def run_scenario_analysis(
         tasa_fin: Financing/transformation rate
         annual_coef_mr: Annual coefficient for the MR period
         values_per_var: Dict mapping variable names to sorted unique bin values
+        grid: CellGrid from MILP optimization (None for legacy/fixed-cutoff paths)
+        pareto_masks: List of binary masks from Pareto frontier (None for legacy)
 
     Returns:
         Cutoff summary DataFrame for this scenario
@@ -267,6 +289,8 @@ def run_scenario_analysis(
         tasa_fin=tasa_fin,
         values_per_var=values_per_var,
         directions=settings.directions,
+        pareto_masks=pareto_masks,
+        grid=grid,
     )
 
     suffix = f"_{scenario_name}"
@@ -280,18 +304,8 @@ def run_scenario_analysis(
         f"selected b2={selected_b2:.2f}% | production={selected_prod:,.0f}"
     )
 
-    # Create mapping of cuts from optimal solution
-    cut_map = {}
-    row = opt_sol.iloc[0]
-    for bin_val in values_var0:
-        if bin_val in row:
-            cut_map[float(bin_val)] = float(row[bin_val])
-        elif str(bin_val) in row:
-            cut_map[float(bin_val)] = float(row[str(bin_val)])
-        elif str(float(bin_val)) in row:
-            cut_map[float(bin_val)] = float(row[str(float(bin_val))])
-
     inv_var1 = settings.variables[1] in settings.inv_vars if len(settings.variables) > 1 else False
+    is_nd = len(settings.variables) > 2
 
     # Calculate main annual coef for production scaling
     date_ini_main = settings.get_date("date_ini_book_obs")
@@ -301,22 +315,48 @@ def run_scenario_analysis(
     )
     annual_coef_main = 12 / n_months_main_calc if n_months_main_calc > 0 else 1.0
 
-    # Calculate repesca_production from data_summary_desagregado based on cut_map
+    # Resolve the selected mask from the Pareto frontier (for N-d classify_by_mask usage)
+    selected_mask = None
+    if grid is not None and pareto_masks:
+        # Match the selected solution's sol_fac back to its mask index
+        selected_sol_fac = int(opt_sol.iloc[0].get("sol_fac", 0))
+        if 0 <= selected_sol_fac < len(pareto_masks):
+            selected_mask = pareto_masks[selected_sol_fac]
+
+    # Build cut_map for 2-var path (also used even in N-d as fallback for cut_map consumers)
+    cut_map: dict[float, float] = {}
+    if not is_nd:
+        row = opt_sol.iloc[0]
+        for bin_val in values_var0:
+            if bin_val in row:
+                cut_map[float(bin_val)] = float(row[bin_val])
+            elif str(bin_val) in row:
+                cut_map[float(bin_val)] = float(row[str(bin_val)])
+            elif str(float(bin_val)) in row:
+                cut_map[float(bin_val)] = float(row[str(float(bin_val))])
+
+    # Calculate repesca_production from data_summary_desagregado
     repesca_production = 0.0
-    if len(settings.variables) > 1 and "oa_amt_h0_rep" in data_summary_desagregado.columns:
-        var0 = settings.variables[0]
-        var1 = settings.variables[1]
-        fallback = float("inf") if inv_var1 else float("-inf")
-        full_cut_series = data_summary_desagregado[var0].map(cut_map).fillna(fallback)
-        if inv_var1:
-            passes = data_summary_desagregado[var1] >= full_cut_series
-        else:
-            passes = data_summary_desagregado[var1] <= full_cut_series
-        passed_desag = data_summary_desagregado[passes]
-        repesca_production = passed_desag["oa_amt_h0_rep"].sum()
+    if "oa_amt_h0_rep" in data_summary_desagregado.columns:
+        if is_nd and selected_mask is not None and grid is not None:
+            passes = classify_by_mask(data_summary_desagregado, selected_mask, grid)
+            repesca_production = data_summary_desagregado.loc[passes, "oa_amt_h0_rep"].sum()
+        elif not is_nd and len(settings.variables) > 1:
+            var0 = settings.variables[0]
+            var1 = settings.variables[1]
+            fallback = float("inf") if inv_var1 else float("-inf")
+            full_cut_series = data_summary_desagregado[var0].map(cut_map).fillna(fallback)
+            if inv_var1:
+                passes_2d = data_summary_desagregado[var1] >= full_cut_series
+            else:
+                passes_2d = data_summary_desagregado[var1] <= full_cut_series
+            repesca_production = data_summary_desagregado.loc[passes_2d, "oa_amt_h0_rep"].sum()
 
     # Pass model CV SE so bootstrap CI accounts for model prediction uncertainty
-    model_cv_se = risk_inference.get("cv_std_r2") if risk_inference else None
+    model_cv_se = None
+    if risk_inference:
+        best_info = risk_inference.get("best_model_info", {})
+        model_cv_se = best_info.get("cv_std_rmse") or best_info.get("cv_std_r2")
     ci_data = calculate_bootstrap_intervals(
         data_booked=data_booked,
         cut_map=cut_map,
@@ -327,6 +367,8 @@ def run_scenario_analysis(
         model_cv_se_risk=model_cv_se,
         annual_coef=annual_coef_main,
         repesca_production=repesca_production,
+        mask=selected_mask,
+        grid=grid,
     )
     logger.info(f"[{segment}] Scenario {scenario_name} CI: {ci_data}")
 
@@ -374,7 +416,22 @@ def run_scenario_analysis(
         risk_value=risk_pct,
         production_value=production,
         ci_data=ci_data,
+        mask=selected_mask if is_nd else None,
+        grid=grid if is_nd else None,
     )
+
+    # Generate acceptance grid visualization for N>2
+    if is_nd and selected_mask is not None and grid is not None:
+        try:
+            from src.plots import plot_acceptance_grid_nd
+
+            plot_acceptance_grid_nd(
+                mask=selected_mask,
+                grid=grid,
+                output_path=output.acceptance_grid_html(suffix),
+            )
+        except Exception as e:
+            logger.warning(f"[{segment}] Acceptance grid plot failed (non-blocking): {e}")
 
     if scenario_name == "base":
         # Also save as default filenames for backward compatibility
@@ -397,6 +454,8 @@ def run_scenario_analysis(
             optimal_solution_df=opt_sol,
             file_suffix="",
             output=output,
+            mask=selected_mask,
+            grid=grid,
         )
 
     # Scenario MR Processing
@@ -412,6 +471,8 @@ def run_scenario_analysis(
         optimal_solution_df=opt_sol,
         file_suffix=suffix,
         output=output,
+        mask=selected_mask,
+        grid=grid,
     )
 
     # Generate audit tables for this scenario
@@ -434,8 +495,6 @@ def run_scenario_analysis(
     inv_var1 = settings.variables[1] in settings.inv_vars
 
     # Calculate n_months for each period (for annualization)
-    date_ini_main = settings.get_date("date_ini_book_obs")
-    date_fin_main = settings.get_date("date_fin_book_obs")
     n_months_main = (date_fin_main.year - date_ini_main.year) * 12 + (date_fin_main.month - date_ini_main.month) + 1
 
     if settings.date_ini_book_obs_mr is not None and settings.date_fin_book_obs_mr is not None:
@@ -457,6 +516,8 @@ def run_scenario_analysis(
             financing_rate=tasa_fin,
             n_months_main=n_months_main,
             n_months_mr=n_months_mr,
+            mask=selected_mask,
+            grid=grid,
         )
     except Exception as e:
         logger.error(f"[{segment}] Audit table generation failed for {scenario_name} (non-blocking): {e}")
@@ -700,11 +761,18 @@ def _save_cutoff_summaries(
     )
 
     if not consolidated_cutoffs.empty:
-        wide_cutoffs = format_cutoff_summary_table(
-            cutoff_summary=consolidated_cutoffs,
-            variables=settings.variables,
-        )
-        wide_cutoffs.to_csv(output.cutoff_summary_wide_csv, index=False)
-        logger.debug(f"[{segment}] Cutoff summaries saved to {output.cutoff_summary_by_segment_csv}")
-
-        logger.info(f"[{segment}] Cutoff summary:\n{wide_cutoffs.to_string()}")
+        if len(settings.variables) > 2:
+            # N>2: cell-level summary, skip pivot (no cutoff_value column)
+            consolidated_cutoffs.to_csv(output.cutoff_summary_wide_csv, index=False)
+            logger.debug(f"[{segment}] Cell-level cutoff summaries saved to {output.cutoff_summary_wide_csv}")
+            accepted_count = consolidated_cutoffs["accepted"].sum() if "accepted" in consolidated_cutoffs.columns else 0
+            total_cells = len(consolidated_cutoffs)
+            logger.info(f"[{segment}] Cell-level cutoff summary: {int(accepted_count)}/{total_cells} cells accepted")
+        else:
+            wide_cutoffs = format_cutoff_summary_table(
+                cutoff_summary=consolidated_cutoffs,
+                variables=settings.variables,
+            )
+            wide_cutoffs.to_csv(output.cutoff_summary_wide_csv, index=False)
+            logger.debug(f"[{segment}] Cutoff summaries saved to {output.cutoff_summary_by_segment_csv}")
+            logger.info(f"[{segment}] Cutoff summary:\n{wide_cutoffs.to_string()}")

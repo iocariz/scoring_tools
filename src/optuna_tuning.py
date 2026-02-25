@@ -13,7 +13,7 @@ from sklearn.model_selection import KFold
 from xgboost import XGBRegressor
 
 from src.constants import DEFAULT_RANDOM_STATE
-from src.estimators import HurdleRegressor, TweedieGLM
+from src.estimators import HurdleRegressor, TweedieGLM, prepare_model_input
 
 # Disable optuna's default trial-level logging to keep the console clean
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -221,9 +221,10 @@ def tune_linear_models(
             if len(val_agg) < 3:
                 continue
 
-            # Extract generated features
-            X_train, y_train = train_agg[var_reg], train_agg[target_var]
-            X_val, y_val = val_agg[var_reg], val_agg[target_var]
+            # Extract generated features (prepare_model_input appends exposure for TweedieGLM)
+            X_train = prepare_model_input(train_agg, var_reg, model)
+            X_val = prepare_model_input(val_agg, var_reg, model)
+            y_train, y_val = train_agg[target_var], val_agg[target_var]
 
             w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
             w_val = val_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in val_agg.columns else None
@@ -330,17 +331,21 @@ def tune_linear_models(
         name_func=lambda p: f"ElasticNet (Optuna Tuned α={p['alpha']:.3f}, l1={p['l1_ratio']:.2f})",
     )
 
-    # 5. TweedieGLM
+    # 5. TweedieGLM (with exposure offset for proper rate modeling)
     def objective_tweedie(trial):
         power = trial.suggest_float("power", 1.01, 1.99)
         alpha = trial.suggest_float("alpha", 0.01, 10.0, log=True)
-        model = TweedieGLM(power=power, alpha=alpha, link="log")
+        model = TweedieGLM(
+            power=power, alpha=alpha, link="log", exposure_col="todu_amt_pile_h6", multiplier=multiplier
+        )
         mean_score, _ = safe_eval(model)
         return mean_score
 
     optimize_and_evaluate(
         objective_func=objective_tweedie,
-        create_model_func=lambda p: TweedieGLM(power=p["power"], alpha=p["alpha"], link="log"),
+        create_model_func=lambda p: TweedieGLM(
+            power=p["power"], alpha=p["alpha"], link="log", exposure_col="todu_amt_pile_h6", multiplier=multiplier
+        ),
         name_func=lambda p: f"Tweedie (Optuna Tuned p={p['power']:.2f}, α={p['alpha']:.2f})",
     )
 

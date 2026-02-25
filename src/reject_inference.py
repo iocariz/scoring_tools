@@ -159,7 +159,7 @@ def apply_parceling_adjustment(
     # Warn about bins with extreme adjustments or very few observations
     extreme_bins = (result["reject_risk_multiplier"] >= max_risk_multiplier * 0.9).sum()
     if extreme_bins > 0:
-        logger.warning(
+        logger.debug(
             f"Reject inference ({method}): {extreme_bins}/{len(result)} bins have multipliers "
             f"near or at the cap ({max_risk_multiplier:.1f}x). Consider reviewing reject_uplift_factor."
         )
@@ -168,7 +168,7 @@ def apply_parceling_adjustment(
 
     adjusted_bins = (result["reject_risk_multiplier"] > 1.0).sum()
     if adjusted_bins > 0:
-        logger.info(
+        logger.debug(
             f"Reject inference (parceling): adjusted {adjusted_bins}/{len(result)} bins | "
             f"avg multiplier={result['reject_risk_multiplier'].mean():.3f} | "
             f"max multiplier={result['reject_risk_multiplier'].max():.3f}"

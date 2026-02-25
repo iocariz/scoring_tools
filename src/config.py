@@ -85,6 +85,9 @@ class OutputPaths:
     def cutoff_summary_wide_csv(self) -> str:
         return str(self.data_dir / "cutoff_summary_wide.csv")
 
+    def acceptance_grid_html(self, suffix: str = "") -> str:
+        return str(self.images_dir / f"acceptance_grid{suffix}.html")
+
     # -- MR pipeline --
 
     def mr_summary_csv(self, suffix: str = "") -> str:
@@ -157,16 +160,25 @@ class BinConfig:
         source_col: Raw column name in the data (e.g. 'score_rf').
         output_col: Name of the binned column created (e.g. 'sc_octroi_new_clus').
         bin_edges: Bin boundary values (must have >= 2 elements).
-        invert: If True, bin indices are inverted (higher raw value = lower bin).
+            When empty and ``max_bins`` is set, edges are learned via supervised
+            splitting (``learn_income_bins``).
+        max_bins: Optional maximum number of bins for supervised edge learning.
+            Only used when ``bin_edges`` is empty. Triggers ``learn_income_bins``.
     """
 
     source_col: str
     output_col: str
-    bin_edges: list[float]
+    bin_edges: list[float] = field(default_factory=list)
+    max_bins: int | None = None
+    method: str = "quantile"
 
     def __post_init__(self) -> None:
-        if len(self.bin_edges) < 2:
+        if self.bin_edges and len(self.bin_edges) < 2:
             raise ValueError(f"bin_edges for '{self.output_col}' must have at least 2 values")
+        if not self.bin_edges and self.max_bins is None:
+            raise ValueError(
+                f"BinConfig for '{self.output_col}': either bin_edges or max_bins must be provided"
+            )
 
 
 class PreprocessingSettings(BaseModel):
@@ -181,6 +193,7 @@ class PreprocessingSettings(BaseModel):
     date_ini_book_obs: str
     date_fin_book_obs: str
     variables: list[str]
+    inference_variables: list[str] | None = None
 
     # N-variable binning config: maps variable output name -> BinConfig
     bins: dict[str, BinConfig] = Field(default_factory=dict)
@@ -321,24 +334,22 @@ class PreprocessingSettings(BaseModel):
     @model_validator(mode="after")
     def _auto_populate_bins(self) -> "PreprocessingSettings":
         """Auto-populate ``bins`` dict from legacy octroi_bins/efx_bins if not set."""
-        if self.bins:
-            # bins dict already provided explicitly — nothing to do
-            return self
-
-        # Legacy path: build bins from octroi_bins + efx_bins
+        # Merge legacy octroi_bins/efx_bins into bins dict for variables not already defined
         if self.octroi_bins and self.efx_bins:
-            self.bins = {
-                self.variables[0]: BinConfig(
+            var0 = self.variables[0]
+            var1 = self.variables[1]
+            if var0 not in self.bins:
+                self.bins[var0] = BinConfig(
                     source_col="score_rf",
-                    output_col=self.variables[0],
+                    output_col=var0,
                     bin_edges=self.octroi_bins,
-                ),
-                self.variables[1]: BinConfig(
+                )
+            if var1 not in self.bins:
+                self.bins[var1] = BinConfig(
                     source_col="risk_score_rf",
-                    output_col=self.variables[1],
+                    output_col=var1,
                     bin_edges=self.efx_bins,
-                ),
-            }
+                )
 
         if not self.bins:
             raise ValueError(
@@ -346,6 +357,23 @@ class PreprocessingSettings(BaseModel):
                 "both 'octroi_bins' and 'efx_bins' in your configuration."
             )
 
+        return self
+
+    @model_validator(mode="after")
+    def _default_inference_variables(self) -> "PreprocessingSettings":
+        """Default ``inference_variables`` to ``variables`` and validate."""
+        if self.inference_variables is None:
+            self.inference_variables = list(self.variables)
+        if len(self.inference_variables) < 2:
+            raise ValueError(
+                f"'inference_variables' must contain at least 2 elements, got {len(self.inference_variables)}"
+            )
+        if not set(self.inference_variables).issubset(set(self.variables)):
+            extra = set(self.inference_variables) - set(self.variables)
+            raise ValueError(
+                f"'inference_variables' must be a subset of 'variables', "
+                f"found extra: {extra}"
+            )
         return self
 
     @classmethod

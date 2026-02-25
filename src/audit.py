@@ -24,6 +24,8 @@ def generate_audit_table(
     inv_var1: bool = False,
     audit_columns: list[str] | None = None,
     n_months: int | None = None,
+    mask: np.ndarray | None = None,
+    grid: object | None = None,
 ) -> pd.DataFrame:
     """
     Generate an audit table with individual record classifications.
@@ -31,11 +33,13 @@ def generate_audit_table(
     Args:
         data: DataFrame with individual records (must include status_name, reject_reason, var0, var1).
         optimal_solution_df: DataFrame with optimal solution (first row used).
-        variables: List of two variable names [var0, var1].
+        variables: List of variable names [var0, var1, ...].
         financing_rate: Rate to multiply swap-in amounts (tasa_fin). Default 1.0.
-        inv_var1: If True, use >= comparison for var1 cutoff.
+        inv_var1: If True, use >= comparison for var1 cutoff (2-var path only).
         audit_columns: Columns to include in audit table. If None, uses defaults.
         n_months: Number of months in the period. Used to annualize amounts (12/n_months).
+        mask: Optional binary acceptance mask for N-d classify_by_mask path.
+        grid: Optional CellGrid for N-d classify_by_mask path.
 
     Returns:
         DataFrame with audit information for each record.
@@ -55,6 +59,10 @@ def generate_audit_table(
             var0_col,
             "oa_amt",
         ]
+        # Include extra variables for N>2
+        for v in variables[2:]:
+            if v not in audit_columns:
+                audit_columns.append(v)
 
     # Filter to columns that exist in data
     available_columns = [col for col in audit_columns if col in data.columns]
@@ -62,42 +70,48 @@ def generate_audit_table(
     if missing_columns:
         logger.warning(f"Audit columns not found in data: {missing_columns}")
 
-    # Extract cutoffs from optimal solution (first row)
-    opt_sol_row = optimal_solution_df.iloc[0]
+    # Determine passes_cut via mask (N-d) or cut_map (2-var)
+    if mask is not None and grid is not None:
+        from src.optimization_utils import classify_by_mask
 
-    # Build cut_map: var0_bin -> var1_cutoff
-    cut_map = {}
-    for col in optimal_solution_df.columns:
-        if col == "sol_fac":
-            continue
-        # Skip non-numeric columns (KPI columns like b2_ever_h6, oa_amt_h0)
-        try:
-            bin_val = float(col)
-            cut_map[bin_val] = opt_sol_row[col]
-        except (ValueError, TypeError):
-            continue
-
-    if not cut_map:
-        raise ValueError("No valid cutoff bins found in optimal_solution_df")
-
-    logger.info(f"Cutoff map: {cut_map}")
-
-    # Create audit DataFrame
-    audit_df = data[available_columns].copy()
-
-    # Add cutoff limit for each record
-    audit_df["cut_limit"] = data[var0_col].astype(float).map(cut_map)
-
-    # Vectorized classification (replaces row-by-row apply for ~10x speedup)
-    passes_cut: pd.Series
-    if inv_var1:
-        passes_cut = data[var1_col] >= audit_df["cut_limit"]
+        passes_cut = classify_by_mask(data, mask, grid)
+        # Create audit DataFrame
+        audit_df = data[available_columns].copy()
+        audit_df["cut_limit"] = np.nan  # not applicable for N-d
     else:
-        passes_cut = data[var1_col] <= audit_df["cut_limit"]
+        # Extract cutoffs from optimal solution (first row)
+        opt_sol_row = optimal_solution_df.iloc[0]
+
+        # Build cut_map: var0_bin -> var1_cutoff
+        cut_map = {}
+        for col in optimal_solution_df.columns:
+            if col == "sol_fac":
+                continue
+            try:
+                bin_val = float(col)
+                cut_map[bin_val] = opt_sol_row[col]
+            except (ValueError, TypeError):
+                continue
+
+        if not cut_map:
+            raise ValueError("No valid cutoff bins found in optimal_solution_df")
+
+        logger.info(f"Cutoff map: {cut_map}")
+
+        # Create audit DataFrame
+        audit_df = data[available_columns].copy()
+
+        # Add cutoff limit for each record
+        audit_df["cut_limit"] = data[var0_col].astype(float).map(cut_map)
+
+        # Vectorized classification
+        if inv_var1:
+            passes_cut = data[var1_col] >= audit_df["cut_limit"]
+        else:
+            passes_cut = data[var1_col] <= audit_df["cut_limit"]
 
     is_booked = data["status_name"] == StatusName.BOOKED.value
     if "reject_reason" in data.columns:
-        # Convert to object dtype first to safely handle Categorical columns with <NA>
         reject_reason_col = data["reject_reason"].astype(object).fillna("").astype(str)
     else:
         reject_reason_col = pd.Series("", index=data.index)
@@ -116,11 +130,12 @@ def generate_audit_table(
         default="rejected_other",
     )
 
-    # Handle rows with no cutoff found
-    no_cutoff = audit_df["cut_limit"].isna()
-    if no_cutoff.any():
-        logger.warning(f"{no_cutoff.sum()} records had no matching cutoff bin — classified as 'unknown'.")
-        audit_df.loc[no_cutoff, "classification"] = "unknown"
+    # Handle rows with no cutoff found (2-var path only)
+    if mask is None:
+        no_cutoff = audit_df["cut_limit"].isna()
+        if no_cutoff.any():
+            logger.warning(f"{no_cutoff.sum()} records had no matching cutoff bin — classified as 'unknown'.")
+            audit_df.loc[no_cutoff, "classification"] = "unknown"
 
     audit_df["passes_cut"] = passes_cut
 
@@ -185,6 +200,8 @@ def save_audit_tables(
     financing_rate: float = 1.0,
     n_months_main: int | None = None,
     n_months_mr: int | None = None,
+    mask: np.ndarray | None = None,
+    grid: object | None = None,
 ) -> dict[str, pd.DataFrame]:
     """
     Generate and save audit tables for main and MR periods.
@@ -193,13 +210,15 @@ def save_audit_tables(
         data_main: Main period data with individual records.
         data_mr: MR period data with individual records.
         optimal_solution_df: Optimal solution DataFrame.
-        variables: List of two variable names [var0, var1].
+        variables: List of variable names [var0, var1, ...].
         scenario_name: Scenario name (e.g., 'base', 'optimistic', 'pessimistic').
         output_dir: Directory to save audit tables.
-        inv_var1: If True, use >= comparison for var1 cutoff.
+        inv_var1: If True, use >= comparison for var1 cutoff (2-var path only).
         financing_rate: Rate to multiply swap-in amounts (tasa_fin). Default 1.0.
         n_months_main: Number of months in main period for annualization.
         n_months_mr: Number of months in MR period for annualization.
+        mask: Optional binary acceptance mask for N-d classify_by_mask path.
+        grid: Optional CellGrid for N-d classify_by_mask path.
 
     Returns:
         Dictionary with audit DataFrames for main and MR periods.
@@ -215,6 +234,8 @@ def save_audit_tables(
         financing_rate=financing_rate,
         inv_var1=inv_var1,
         n_months=n_months_main,
+        mask=mask,
+        grid=grid,
     )
 
     # Save main period audit
@@ -236,6 +257,8 @@ def save_audit_tables(
         financing_rate=financing_rate,
         inv_var1=inv_var1,
         n_months=n_months_mr,
+        mask=mask,
+        grid=grid,
     )
 
     # Save MR period audit

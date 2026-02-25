@@ -299,6 +299,14 @@ def plot_3d_graph(
     Returns:
         Plotly Figure object with 3D surface and scatter plots.
     """
+    if len(variables) > 2:
+        logger.info(f"plot_3d_graph: N>2 variables ({len(variables)}), marginalizing to first 2 for surface")
+        agg_cols = [f"{var_target}_pred", var_target]
+        agg_cols = [c for c in agg_cols if c in data_surf.columns]
+        data_surf = data_surf.groupby(variables[:2])[agg_cols].mean().reset_index()
+        data_train = data_train.groupby(variables[:2])[[var_target]].mean().reset_index()
+        variables = variables[:2]
+
     data_surf_pivot = data_surf.pivot(index=variables[1], columns=variables[0], values=f"{var_target}_pred")
 
     # gráfico
@@ -387,6 +395,8 @@ class RiskProductionVisualizer:
         values_var1: np.ndarray | list | None = None,
         target_sol_fac: int | None = None,
         directions: dict[str, int] | None = None,
+        pareto_masks: list[np.ndarray] | None = None,
+        grid: Any | None = None,
     ):
         """
         Initialize the RiskProductionVisualizer.
@@ -427,6 +437,8 @@ class RiskProductionVisualizer:
 
         self.target_sol_fac = target_sol_fac
         self.directions = directions or {}
+        self._pareto_masks = pareto_masks or []
+        self._nd_grid = grid
 
         # Calculate initial metrics
         self.calculate_initial_metrics()
@@ -647,12 +659,27 @@ class RiskProductionVisualizer:
         ].values[0, :]
         B2, OA, B2_CUT, OA_CUT, B2_REP, OA_REP = metrics
 
-        # Update cut-off mask (only for 2-var case where bin columns exist)
+        # Update cut-off mask
         if self._is_2d:
             CUT_OFF = data_filtered[self.values_var0].values[0]
             z_mask = (self.yy <= CUT_OFF) * 1
+        elif self._pareto_masks and self._nd_grid is not None:
+            # N>2: resolve selected mask from sol_fac, then project onto var0 × var1
+            sol_fac = int(data_filtered.iloc[0].get("sol_fac", 0))
+            if 0 <= sol_fac < len(self._pareto_masks):
+                selected_mask = self._pareto_masks[sol_fac]
+                var0, var1 = self.variables[0], self.variables[1]
+                cell_df = self._nd_grid.cell_data.copy()
+                cell_df["_m"] = selected_mask
+                # For each (var0, var1) pair, accepted if ANY higher-dim cell is accepted
+                proj = cell_df.groupby([var0, var1])["_m"].max().reset_index()
+                proj_pivot = proj.pivot(index=var1, columns=var0, values="_m").reindex(
+                    index=self.values_var1, columns=self.values_var0
+                ).fillna(0)
+                z_mask = proj_pivot.values
+            else:
+                z_mask = np.zeros_like(self.yy)
         else:
-            # N>2: no mask overlay (bin columns don't apply)
             z_mask = np.zeros_like(self.yy)
 
         # Trace indices: _add_scatter_traces adds 4 traces (0, 1, 2, 3)
@@ -1174,3 +1201,205 @@ def calculate_and_plot_transformation_rate(
         "monthly_amounts": monthly.drop(columns=["plot_date"]),
         "figure": fig,
     }
+
+
+# =============================================================================
+# Income bin diagnostics
+# =============================================================================
+
+
+def plot_income_bin_trends(
+    data: pd.DataFrame,
+    income_bin_col: str,
+    date_col: str = "mis_date",
+    target_col: str = "early_bad",
+    amount_col: str = "oa_amt",
+    output_path: str | None = None,
+) -> go.Figure:
+    """Plot volume and risk trends per income bin over time.
+
+    Produces a two-subplot Plotly figure:
+    - **Top**: Record count per income bin by month (grouped bars).
+    - **Bottom**: Bad rate (``target_col``) per income bin by month (line chart).
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Data with ``income_bin_col``, ``date_col``, ``target_col``, and ``amount_col``.
+    income_bin_col : str
+        Binned income column (e.g. ``"income_bin"``).
+    date_col : str
+        Date column (default ``"mis_date"``).
+    target_col : str
+        Binary target for bad rate (default ``"early_bad"``).
+    amount_col : str
+        Amount column for volume (default ``"oa_amt"``).
+    output_path : str | None
+        If provided, save figure as HTML.
+
+    Returns
+    -------
+    go.Figure
+    """
+    df = data.copy()
+    df["_month"] = pd.to_datetime(df[date_col]).dt.to_period("M").astype(str)
+
+    agg = (
+        df.groupby(["_month", income_bin_col])
+        .agg(count=(amount_col, "size"), total_amt=(amount_col, "sum"), bad_rate=(target_col, "mean"))
+        .reset_index()
+    )
+
+    bins_sorted = sorted(agg[income_bin_col].unique())
+
+    fig = make_subplots(rows=2, cols=1, subplot_titles=("Volume per Income Bin", "Bad Rate per Income Bin"))
+
+    for b in bins_sorted:
+        sub = agg[agg[income_bin_col] == b].sort_values("_month")
+        fig.add_trace(
+            go.Bar(x=sub["_month"], y=sub["count"], name=f"Bin {b}", legendgroup=str(b)),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=sub["_month"],
+                y=sub["bad_rate"],
+                mode="lines+markers",
+                name=f"Bin {b}",
+                legendgroup=str(b),
+                showlegend=False,
+            ),
+            row=2,
+            col=1,
+        )
+
+    fig.update_layout(barmode="group", height=700, width=1000, title_text="Income Bin Diagnostics")
+    fig.update_yaxes(title_text="Count", row=1, col=1)
+    fig.update_yaxes(title_text="Bad Rate", tickformat=".2%", row=2, col=1)
+    fig.update_xaxes(title_text="Month", row=2, col=1)
+
+    if output_path:
+        fig.write_html(output_path)
+        logger.info(f"Income bin diagnostics saved to {output_path}")
+
+    return fig
+
+
+def plot_acceptance_grid_nd(
+    mask: np.ndarray,
+    grid: Any,
+    output_path: str | None = None,
+) -> go.Figure:
+    """Plot acceptance heatmaps for a 3+-variable grid with risk annotations.
+
+    For each unique value of the 3rd variable, produces a var0 x var1 heatmap
+    coloured by risk (b2_ever_h6) with an acceptance overlay showing accepted
+    (blue border) vs rejected (red) cells.
+
+    Parameters
+    ----------
+    mask : np.ndarray
+        Binary acceptance mask aligned with ``grid.cell_index``.
+    grid : CellGrid
+        The N-dimensional cell grid.
+    output_path : str | None
+        If provided, save figure as HTML.
+
+    Returns
+    -------
+    go.Figure
+    """
+    n_vars = len(grid.variables)
+    if n_vars < 3:
+        logger.warning("plot_acceptance_grid_nd: requires >= 3 variables, skipping")
+        return go.Figure()
+
+    var0, var1, var2 = grid.variables[0], grid.variables[1], grid.variables[2]
+    v2_vals = grid.values_per_var[var2]
+
+    fig = make_subplots(
+        rows=2,
+        cols=len(v2_vals),
+        subplot_titles=[f"{var2} = {v}" for v in v2_vals] + [f"Risk — {var2} = {v}" for v in v2_vals],
+        vertical_spacing=0.12,
+    )
+
+    cell_df = grid.cell_data.copy()
+    cell_df["_mask"] = mask
+
+    # Compute per-cell b2_ever_h6 for risk annotations
+    if "todu_30ever_h6" in cell_df.columns and "todu_amt_pile_h6" in cell_df.columns:
+        from .utils import calculate_b2_ever_h6
+
+        cell_df["_b2"] = calculate_b2_ever_h6(
+            cell_df["todu_30ever_h6"], cell_df["todu_amt_pile_h6"], as_percentage=True
+        ).fillna(0)
+    else:
+        cell_df["_b2"] = 0.0
+
+    # Production text
+    if "oa_amt_h0" in cell_df.columns:
+        cell_df["_text"] = cell_df.apply(
+            lambda r: f"{'ACC' if r['_mask'] else 'REJ'}\n{r['oa_amt_h0'] / 1e6:,.1f}M\n{r['_b2']:.1f}%", axis=1
+        )
+    else:
+        cell_df["_text"] = cell_df["_mask"].map({1: "ACC", 0: "REJ"})
+
+    for col_idx, v2 in enumerate(v2_vals, start=1):
+        slice_df = cell_df[cell_df[var2] == v2]
+
+        # Row 1: Acceptance mask
+        pivot_mask = slice_df.pivot(index=var1, columns=var0, values="_mask").sort_index(ascending=True)
+        pivot_text = slice_df.pivot(index=var1, columns=var0, values="_text").sort_index(ascending=True)
+
+        fig.add_trace(
+            go.Heatmap(
+                x=[str(c) for c in pivot_mask.columns],
+                y=[str(r) for r in pivot_mask.index],
+                z=pivot_mask.values,
+                text=pivot_text.values,
+                texttemplate="%{text}",
+                colorscale=[(0, "rgba(157,13,20,0.6)"), (1, "rgba(33,150,243,0.6)")],
+                zmin=0,
+                zmax=1,
+                showscale=col_idx == 1,
+                colorbar=dict(title="Accepted", tickvals=[0, 1], ticktext=["No", "Yes"]) if col_idx == 1 else None,
+            ),
+            row=1,
+            col=col_idx,
+        )
+
+        # Row 2: Risk heatmap
+        pivot_risk = slice_df.pivot(index=var1, columns=var0, values="_b2").sort_index(ascending=True)
+        fig.add_trace(
+            go.Heatmap(
+                x=[str(c) for c in pivot_risk.columns],
+                y=[str(r) for r in pivot_risk.index],
+                z=pivot_risk.values,
+                colorscale=[(0, "rgba(255,255,255,1)"), (1, "rgba(157,13,20,1)")],
+                zmin=0,
+                showscale=col_idx == len(v2_vals),
+                colorbar=dict(title="b2 (%)") if col_idx == len(v2_vals) else None,
+            ),
+            row=2,
+            col=col_idx,
+        )
+
+        fig.update_xaxes(title_text=var0, row=1, col=col_idx)
+        fig.update_xaxes(title_text=var0, row=2, col=col_idx)
+        if col_idx == 1:
+            fig.update_yaxes(title_text=var1, row=1, col=col_idx)
+            fig.update_yaxes(title_text=var1, row=2, col=col_idx)
+
+    fig.update_layout(
+        title_text="Acceptance Grid & Risk by Income Bin",
+        height=700,
+        width=max(500 * len(v2_vals), 800),
+    )
+
+    if output_path:
+        fig.write_html(output_path)
+        logger.info(f"Acceptance grid saved to {output_path}")
+
+    return fig

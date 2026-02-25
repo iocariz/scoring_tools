@@ -22,6 +22,7 @@ from sklearn.preprocessing import PolynomialFeatures
 from sklearn.tree import DecisionTreeClassifier
 
 from .constants import DEFAULT_MIN_SAMPLES_LEAF, Columns, StatusName
+from .estimators import prepare_model_input
 from .utils import calculate_b2_ever_h6, calculate_todu_30ever_from_b2
 
 
@@ -264,7 +265,8 @@ def calculate_B2(
         DataFrame with transformed variables and 'b2_ever_h6' predictions.
     """
     data_out = transform_variables(df.copy(), variables)
-    data_out["b2_ever_h6"] = np.clip(stressor * model_risk.predict(data_out[var_reg]), a_min=0, a_max=None)
+    X = prepare_model_input(data_out, var_reg, model_risk)
+    data_out["b2_ever_h6"] = np.clip(stressor * model_risk.predict(X), a_min=0, a_max=None)
     return data_out
 
 

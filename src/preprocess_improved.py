@@ -9,8 +9,11 @@ import sys
 import time
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 from loguru import logger
+from sklearn.metrics import roc_auc_score
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 from src.constants import RejectReason, StatusName
 
@@ -187,6 +190,283 @@ def _generate_bin_summary(data: pd.DataFrame, bin_col: str, source_col: str) -> 
     summary.columns = ["bin", "min", "max", "count"]
     summary = summary.sort_values("bin")
     return summary
+
+
+def learn_quantile_bins(
+    data: pd.DataFrame,
+    source_col: str = "income_t1_m",
+    max_bins: int = 2,
+) -> list[float]:
+    """Learn bin edges from quantiles of the source column (unsupervised).
+
+    Uses equally-spaced quantiles so each bin has roughly the same number of
+    records.  This avoids using the target variable for feature engineering
+    and eliminates the risk of circularity / overfitting.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Population to compute quantiles on (typically all booked records).
+    source_col : str
+        Raw column name (default ``"income_t1_m"``).
+    max_bins : int
+        Number of bins (2 or 3).
+
+    Returns
+    -------
+    list[float]
+        Bin edges suitable for ``pd.cut``, e.g. ``[-inf, median, inf]``.
+
+    Raises
+    ------
+    ValueError
+        If required column is missing or has too few distinct values.
+    """
+    validate_dataframe_columns(data, [source_col], "learn_quantile_bins")
+
+    valid = data[source_col].dropna()
+    if len(valid) < max_bins * 2:
+        raise ValueError(f"learn_quantile_bins: only {len(valid)} valid records for '{source_col}'")
+
+    # Compute quantile edges (e.g. 2 bins → median, 3 bins → terciles)
+    quantiles = [i / max_bins for i in range(1, max_bins)]
+    thresholds = sorted(valid.quantile(quantiles).unique().tolist())
+
+    if not thresholds:
+        raise ValueError(
+            f"learn_quantile_bins: degenerate distribution for '{source_col}' "
+            f"— quantile splits produced no unique thresholds."
+        )
+
+    edges: list[float] = [-np.inf] + thresholds + [np.inf]
+    logger.info(
+        f"learn_quantile_bins: {len(thresholds)} split(s) for '{source_col}' "
+        f"(max_bins={max_bins}): thresholds={thresholds}"
+    )
+    logger.info(f"  Bin edges: {edges}")
+    return edges
+
+
+def learn_income_bins(
+    data_booked: pd.DataFrame,
+    source_col: str = "income_t1_m",
+    target_col: str = "early_bad",
+    max_bins: int = 2,
+    min_samples_leaf: int = 500,
+) -> list[float]:
+    """Learn optimal bin edges for an income variable using a supervised decision tree.
+
+    .. deprecated::
+        Use :func:`learn_quantile_bins` instead to avoid target-based feature
+        engineering circularity.  This function is kept for backward
+        compatibility and can be invoked explicitly via ``bin_method = "supervised"``.
+
+    Fits a ``DecisionTreeClassifier`` on *booked* data to find the split thresholds
+    that best separate ``target_col`` (typically ``early_bad``).
+
+    Parameters
+    ----------
+    data_booked : pd.DataFrame
+        Booked population with both ``source_col`` and ``target_col``.
+    source_col : str
+        Raw income column name (default ``"income_t1_m"``).
+    target_col : str
+        Binary target column (default ``"early_bad"``).
+    max_bins : int
+        Maximum number of bins (2 or 3). The tree is fitted with
+        ``max_leaf_nodes=max_bins``.
+    min_samples_leaf : int
+        Minimum samples per leaf node (guards against tiny bins).
+
+    Returns
+    -------
+    list[float]
+        Bin edges suitable for ``pd.cut``, e.g. ``[-inf, threshold, inf]``.
+
+    Raises
+    ------
+    ValueError
+        If required columns are missing or the tree produces no valid splits.
+    """
+    validate_dataframe_columns(data_booked, [source_col, target_col], "learn_income_bins")
+
+    valid = data_booked[[source_col, target_col]].dropna()
+    if len(valid) < min_samples_leaf * 2:
+        raise ValueError(
+            f"learn_income_bins: only {len(valid)} valid records — need at least {min_samples_leaf * 2}"
+        )
+
+    X = valid[[source_col]].values
+    y = valid[target_col].values.astype(int)
+
+    tree = DecisionTreeClassifier(
+        max_leaf_nodes=max_bins,
+        min_samples_leaf=min_samples_leaf,
+        random_state=42,
+    )
+    tree.fit(X, y)
+
+    # Extract split thresholds from tree internals
+    thresholds = sorted(
+        t for t in tree.tree_.threshold if t != -2.0  # -2.0 = leaf node sentinel
+    )
+
+    if not thresholds:
+        raise ValueError(
+            f"learn_income_bins: tree produced no splits for '{source_col}' → '{target_col}'. "
+            "Check data quality or reduce min_samples_leaf."
+        )
+
+    edges = [-np.inf] + thresholds + [np.inf]
+    logger.info(
+        f"learn_income_bins: {len(thresholds)} split(s) found for '{source_col}' "
+        f"(max_bins={max_bins}): thresholds={thresholds}"
+    )
+    logger.info(f"  Bin edges: {edges}")
+    return edges
+
+
+def learn_optimization_bins(
+    data_booked: pd.DataFrame,
+    source_col: str = "income_t1_m",
+    target_col: str = "early_bad",
+    weight_col: str = "oa_amt_h0",
+    max_bins: int = 2,
+    min_samples_leaf: int = 500,
+) -> list[float]:
+    """Learn bin edges that maximize production-weighted risk differentiation.
+
+    Fits a ``DecisionTreeRegressor`` on *booked* data with ``sample_weight``
+    set to the production column (``oa_amt_h0``), so the split maximizes the
+    production-weighted variance reduction in the risk target.  This gives the
+    MILP optimizer maximal leverage from the income dimension.
+
+    Parameters
+    ----------
+    data_booked : pd.DataFrame
+        Booked population with ``source_col``, ``target_col``, and optionally
+        ``weight_col``.
+    source_col : str
+        Raw column name (default ``"income_t1_m"``).
+    target_col : str
+        Risk target column (default ``"early_bad"``).
+    weight_col : str
+        Production weight column (default ``"oa_amt_h0"``).
+    max_bins : int
+        Maximum number of bins (default 2).
+    min_samples_leaf : int
+        Minimum samples per leaf node (default 500).
+
+    Returns
+    -------
+    list[float]
+        Bin edges suitable for ``pd.cut``, e.g. ``[-inf, threshold, inf]``.
+
+    Raises
+    ------
+    ValueError
+        If required columns are missing or the tree produces no valid splits.
+    """
+    validate_dataframe_columns(data_booked, [source_col, target_col], "learn_optimization_bins")
+
+    valid = data_booked[[source_col, target_col]].dropna()
+
+    # Determine sample weights
+    weights = None
+    if weight_col in data_booked.columns:
+        weight_values = data_booked.loc[valid.index, weight_col].fillna(0.0)
+        if weight_values.sum() > 0:
+            weights = weight_values.values
+            logger.info(f"learn_optimization_bins: using production weights from '{weight_col}'")
+        else:
+            logger.warning(f"learn_optimization_bins: '{weight_col}' is all zeros, falling back to unweighted")
+    else:
+        logger.warning(f"learn_optimization_bins: '{weight_col}' not found, falling back to unweighted")
+
+    if len(valid) < min_samples_leaf * 2:
+        raise ValueError(
+            f"learn_optimization_bins: only {len(valid)} valid records — need at least {min_samples_leaf * 2}"
+        )
+
+    X = valid[[source_col]].values
+    y = valid[target_col].values.astype(float)
+
+    tree = DecisionTreeRegressor(
+        max_leaf_nodes=max_bins,
+        min_samples_leaf=min_samples_leaf,
+        random_state=42,
+    )
+    tree.fit(X, y, sample_weight=weights)
+
+    # Extract split thresholds from tree internals
+    thresholds = sorted(
+        t for t in tree.tree_.threshold if t != -2.0  # -2.0 = leaf node sentinel
+    )
+
+    if not thresholds:
+        raise ValueError(
+            f"learn_optimization_bins: tree produced no splits for '{source_col}' → '{target_col}'. "
+            "Check data quality or reduce min_samples_leaf."
+        )
+
+    edges: list[float] = [-np.inf] + thresholds + [np.inf]
+    logger.info(
+        f"learn_optimization_bins: {len(thresholds)} split(s) found for '{source_col}' "
+        f"(max_bins={max_bins}): thresholds={thresholds}"
+    )
+    logger.info(f"  Bin edges: {edges}")
+    return edges
+
+
+def assess_binning_gini(
+    data: pd.DataFrame,
+    raw_col: str,
+    binned_col: str,
+    target_col: str,
+) -> dict[str, float]:
+    """Compare discriminatory power of a raw continuous column vs its binned version.
+
+    Computes the Gini coefficient (2 * AUC - 1) for both ``raw_col`` and
+    ``binned_col`` against ``target_col``, and reports the retention percentage.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Data containing all three columns.
+    raw_col : str
+        Name of the raw continuous column (e.g. ``"income_t1_m"``).
+    binned_col : str
+        Name of the binned column (e.g. ``"income_bin"``).
+    target_col : str
+        Binary target column (e.g. ``"early_bad"``).
+
+    Returns
+    -------
+    dict[str, float]
+        ``{"gini_raw": ..., "gini_binned": ..., "gini_retention_pct": ...}``
+    """
+    validate_dataframe_columns(data, [raw_col, binned_col, target_col], "assess_binning_gini")
+
+    valid = data[[raw_col, binned_col, target_col]].dropna()
+    y = valid[target_col].values.astype(int)
+
+    if len(np.unique(y)) < 2:
+        logger.warning("assess_binning_gini: target has a single class — Gini is undefined")
+        return {"gini_raw": 0.0, "gini_binned": 0.0, "gini_retention_pct": 0.0}
+
+    auc_raw = roc_auc_score(y, valid[raw_col].values)
+    gini_raw = 2 * auc_raw - 1
+
+    auc_binned = roc_auc_score(y, valid[binned_col].values)
+    gini_binned = 2 * auc_binned - 1
+
+    retention = (gini_binned / gini_raw * 100) if gini_raw != 0 else 0.0
+
+    logger.info(
+        f"assess_binning_gini: raw Gini={gini_raw:.4f}, binned Gini={gini_binned:.4f}, "
+        f"retention={retention:.1f}%"
+    )
+    return {"gini_raw": gini_raw, "gini_binned": gini_binned, "gini_retention_pct": retention}
 
 
 def apply_binning_transformations(
@@ -539,16 +819,68 @@ def _configure_pipeline_logging(log_level: str) -> None:
 
 def _run_data_transformations(df: pd.DataFrame, settings: "PreprocessingSettings") -> pd.DataFrame:
     """Run preprocess_data, apply_binning, update_oa_amt_h0, update_status."""
+    from src.config import BinConfig
+
     logger.info("\n" + "=" * 80)
     logger.info("Step 1: Basic filtering")
     logger.info("=" * 80)
     data_clean = preprocess_data(df, settings.keep_vars, settings.indicators, settings.segment_filter)
 
     if settings.bins:
+        # Learn bin edges for any BinConfig with max_bins but no bin_edges
+        for var_name, bc in settings.bins.items():
+            if not bc.bin_edges and bc.max_bins is not None:
+                from src.constants import StatusName
+
+                booked_mask = data_clean["status_name"] == StatusName.BOOKED.value
+                data_booked_for_bins = data_clean[booked_mask]
+
+                if bc.method == "optimization":
+                    logger.info(
+                        f"Learning bin edges for '{var_name}' using optimization splits (max_bins={bc.max_bins})"
+                    )
+                    learned_edges = learn_optimization_bins(
+                        data_booked_for_bins,
+                        source_col=bc.source_col,
+                        max_bins=bc.max_bins,
+                    )
+                else:
+                    logger.info(
+                        f"Learning bin edges for '{var_name}' using quantile splits (max_bins={bc.max_bins})"
+                    )
+                    learned_edges = learn_quantile_bins(
+                        data_booked_for_bins,
+                        source_col=bc.source_col,
+                        max_bins=bc.max_bins,
+                    )
+                # Replace BinConfig with one that has learned edges
+                settings.bins[var_name] = BinConfig(
+                    source_col=bc.source_col,
+                    output_col=bc.output_col,
+                    bin_edges=learned_edges,
+                    max_bins=bc.max_bins,
+                )
+
         logger.info("\n" + "=" * 80)
         logger.info("Step 2: Binning transformations")
         logger.info("=" * 80)
         data_clean = apply_binning_transformations(data_clean, bins_config=settings.bins)
+
+        # Gini assessment for variables that used supervised edge learning
+        for var_name, bc in settings.bins.items():
+            if bc.max_bins is not None and bc.source_col in data_clean.columns and bc.output_col in data_clean.columns:
+                booked_mask = data_clean["status_name"] == StatusName.BOOKED.value
+                data_booked_subset = data_clean[booked_mask]
+                if "early_bad" in data_booked_subset.columns and data_booked_subset["early_bad"].nunique() > 1:
+                    gini_result = assess_binning_gini(
+                        data_booked_subset, raw_col=bc.source_col, binned_col=bc.output_col, target_col="early_bad"
+                    )
+                    logger.info(
+                        f"Binning Gini assessment for '{var_name}': "
+                        f"raw={gini_result['gini_raw']:.4f}, "
+                        f"binned={gini_result['gini_binned']:.4f}, "
+                        f"retention={gini_result['gini_retention_pct']:.1f}%"
+                    )
     elif settings.octroi_bins and settings.efx_bins:
         logger.info("\n" + "=" * 80)
         logger.info("Step 2: Binning transformations (legacy)")

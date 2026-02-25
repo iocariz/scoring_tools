@@ -38,9 +38,14 @@ def calculate_metrics_from_cuts(
     optimal_solution_df: pd.DataFrame | None,
     variables: list[str],
     inv_vars: list[str] | None = None,
+    mask: np.ndarray | None = None,
+    grid: object | None = None,
 ) -> pd.DataFrame | None:
     """
     Generates the Risk Production Summary Table by applying optimal cuts to aggregated data.
+
+    For N>2 variables (when mask/grid are provided), uses classify_by_mask instead of
+    the 2-variable cut_map approach.
     """
     try:
         var0_col = variables[0]
@@ -51,40 +56,41 @@ def calculate_metrics_from_cuts(
             logger.warning("optimal_solution_df is missing or empty. Cannot calculate summary table.")
             return None
 
-        opt_sol_row = optimal_solution_df.iloc[0]  # Take the first (selected) solution
-
-        # Get unique bins from data
-        bins = sorted(data_summary_desagregado[var0_col].unique())
-        cut_map = {}
-
-        for bin_val in bins:
-            # Try to find the column matching the bin value
-            if bin_val in optimal_solution_df.columns:
-                cut_map[bin_val] = opt_sol_row[bin_val]
-            elif str(bin_val) in optimal_solution_df.columns:
-                cut_map[bin_val] = opt_sol_row[str(bin_val)]
-            elif str(float(bin_val)) in optimal_solution_df.columns:
-                cut_map[bin_val] = opt_sol_row[str(float(bin_val))]
-            else:
-                logger.warning(
-                    f"Warning: Bin {bin_val} not found in optimal solution columns. Defaulting to strict rejection."
-                )
-                cut_map[bin_val] = np.inf if (inv_vars and var1_col in inv_vars) else -np.inf
-
-        logger.info(f"Optimal Cuts: {cut_map}")
-
-        # 2. Apply cuts
         df = data_summary_desagregado.copy()
 
-        # Vectorized mapping of cuts
-        df["cut_limit"] = df[var0_col].map(cut_map)
+        # Determine passes_cut via mask (N-d) or cut_map (2-var)
+        if mask is not None and grid is not None:
+            from src.optimization_utils import classify_by_mask
 
-        if inv_vars and var1_col in inv_vars:
-            # If var1 is inverted (higher bin = safer), cut_map contains the MINIMUM accepted bin
-            df["passes_cut"] = df[var1_col] >= df["cut_limit"]
+            df["passes_cut"] = classify_by_mask(df, mask, grid)
         else:
-            # Default (higher bin = riskier), cut_map contains the MAXIMUM accepted bin
-            df["passes_cut"] = df[var1_col] <= df["cut_limit"]
+            opt_sol_row = optimal_solution_df.iloc[0]
+
+            # Get unique bins from data
+            bins = sorted(data_summary_desagregado[var0_col].unique())
+            cut_map = {}
+
+            for bin_val in bins:
+                if bin_val in optimal_solution_df.columns:
+                    cut_map[bin_val] = opt_sol_row[bin_val]
+                elif str(bin_val) in optimal_solution_df.columns:
+                    cut_map[bin_val] = opt_sol_row[str(bin_val)]
+                elif str(float(bin_val)) in optimal_solution_df.columns:
+                    cut_map[bin_val] = opt_sol_row[str(float(bin_val))]
+                else:
+                    logger.warning(
+                        f"Warning: Bin {bin_val} not found in optimal solution columns. Defaulting to strict rejection."
+                    )
+                    cut_map[bin_val] = np.inf if (inv_vars and var1_col in inv_vars) else -np.inf
+
+            logger.info(f"Optimal Cuts: {cut_map}")
+
+            df["cut_limit"] = df[var0_col].map(cut_map)
+
+            if inv_vars and var1_col in inv_vars:
+                df["passes_cut"] = df[var1_col] >= df["cut_limit"]
+            else:
+                df["passes_cut"] = df[var1_col] <= df["cut_limit"]
 
         summary_data = []
 
@@ -174,6 +180,8 @@ def process_mr_period(
     optimal_solution_df: pd.DataFrame | None = None,
     file_suffix: str = "",
     output: OutputPaths | None = None,
+    mask: np.ndarray | None = None,
+    grid: object | None = None,
 ) -> None:
     """
     Process the MR period data: filtering, inference, aggregation, visualization, and summary table.
@@ -296,6 +304,24 @@ def process_mr_period(
                         f"across {len(missing_bins)} bin combinations using risk model"
                     )
 
+                    # Diagnostic: fraction of MR production from imputed cells
+                    total_booked = booked_mask.sum()
+                    imputed_pct = null_count / max(total_booked, 1) * 100
+                    imputed_prod = data_demand_mr.loc[null_b2_mask, "oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0
+                    total_prod = data_demand_mr.loc[booked_mask, "oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0
+                    prod_pct = imputed_prod / max(total_prod, 1) * 100
+                    logger.info(
+                        f"  Imputed accounts: {null_count:,}/{total_booked:,} ({imputed_pct:.1f}%) "
+                        f"| Imputed production: {prod_pct:.1f}% of MR total"
+                    )
+                    if prod_pct > 20:
+                        logger.warning(
+                            f"HIGH IMPUTATION RATIO: {prod_pct:.1f}% of MR production comes from "
+                            f"imputed cells ({len(missing_bins)} missing bin combinations). "
+                            f"MR results may be unreliable — consider coarser binning or validating "
+                            f"imputed risk values against out-of-sample benchmarks."
+                        )
+
                 except (ValueError, KeyError, RuntimeError) as e:
                     logger.error(f"Error inferring b2_ever_h6 for missing bins: {e}")
                     raise ValueError(
@@ -382,46 +408,98 @@ def process_mr_period(
         logger.info(f"MR summary data saved to {summary_path}")
 
         # --- Visualize b2_ever_h6 for MR ---
-        logger.info("Generating b2_ever_h6 visualization for MR dataset...")
         VARIABLES = settings.variables
 
-        fig_mr = go.Figure()
         data_surf_mr = data_summary_desagregado_mr.copy()
-
         data_surf_mr["b2_ever_h6"] = calculate_b2_ever_h6(
             data_surf_mr["todu_30ever_h6"], data_surf_mr["todu_amt_pile_h6"], as_percentage=True
         )
 
-        data_surf_pivot_mr = data_surf_mr.pivot(index=VARIABLES[1], columns=VARIABLES[0], values="b2_ever_h6")
+        if len(VARIABLES) == 2:
+            logger.info("Generating b2_ever_h6 visualization for MR dataset...")
 
-        fig_mr.add_trace(
-            go.Surface(
-                x=data_surf_pivot_mr.columns,
-                y=data_surf_pivot_mr.index,
-                z=data_surf_pivot_mr.values,
-                colorscale="turbo",
+            fig_mr = go.Figure()
+
+            data_surf_pivot_mr = data_surf_mr.pivot(index=VARIABLES[1], columns=VARIABLES[0], values="b2_ever_h6")
+
+            fig_mr.add_trace(
+                go.Surface(
+                    x=data_surf_pivot_mr.columns,
+                    y=data_surf_pivot_mr.index,
+                    z=data_surf_pivot_mr.values,
+                    colorscale="turbo",
+                )
             )
-        )
 
-        styles.apply_plotly_style(
-            fig_mr,
-            title=f"B2 Ever H6 vs. Octroi and Risk Score (MR Period - Aggregated){file_suffix}",
-            width=1500,
-            height=700,
-        )
-
-        fig_mr.update_layout(
-            scene=dict(
-                xaxis=dict(title=VARIABLES[0]),
-                yaxis=dict(title=VARIABLES[1]),
-                zaxis=dict(title="b2_ever_h6"),
-                aspectratio=dict(x=1, y=1, z=1),
+            styles.apply_plotly_style(
+                fig_mr,
+                title=f"B2 Ever H6 vs. Octroi and Risk Score (MR Period - Aggregated){file_suffix}",
+                width=1500,
+                height=700,
             )
-        )
 
-        output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
-        fig_mr.write_html(output_plot_path_mr)
-        logger.info(f"MR Visualization saved to {output_plot_path_mr}")
+            fig_mr.update_layout(
+                scene=dict(
+                    xaxis=dict(title=VARIABLES[0]),
+                    yaxis=dict(title=VARIABLES[1]),
+                    zaxis=dict(title="b2_ever_h6"),
+                    aspectratio=dict(x=1, y=1, z=1),
+                )
+            )
+
+            output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
+            fig_mr.write_html(output_plot_path_mr)
+            logger.info(f"MR Visualization saved to {output_plot_path_mr}")
+        elif len(VARIABLES) >= 3:
+            logger.info(f"Generating per-slice MR heatmaps for {len(VARIABLES)}-variable grid...")
+            from plotly.subplots import make_subplots
+
+            var0, var1, var2 = VARIABLES[0], VARIABLES[1], VARIABLES[2]
+            v2_vals = sorted(data_surf_mr[var2].unique())
+
+            fig_mr = make_subplots(
+                rows=1,
+                cols=len(v2_vals),
+                subplot_titles=[f"{var2} = {v}" for v in v2_vals],
+            )
+
+            for col_idx, v2 in enumerate(v2_vals, start=1):
+                slice_df = data_surf_mr[data_surf_mr[var2] == v2]
+                pivot = slice_df.pivot(index=var1, columns=var0, values="b2_ever_h6").sort_index(ascending=True)
+                text_pivot = slice_df.copy()
+                text_pivot["_text"] = text_pivot.apply(
+                    lambda r: f"{r.get('oa_amt_h0', 0) / 1e6:,.1f}M\n{r['b2_ever_h6']:.1f}%", axis=1
+                )
+                text_piv = text_pivot.pivot(index=var1, columns=var0, values="_text").sort_index(ascending=True)
+
+                fig_mr.add_trace(
+                    go.Heatmap(
+                        x=[str(c) for c in pivot.columns],
+                        y=[str(r) for r in pivot.index],
+                        z=pivot.values,
+                        text=text_piv.values if not text_piv.empty else None,
+                        texttemplate="%{text}",
+                        colorscale=[(0, "rgba(255,255,255,1)"), (1, "rgba(157,13,20,1)")],
+                        zmin=0,
+                        showscale=col_idx == len(v2_vals),
+                    ),
+                    row=1,
+                    col=col_idx,
+                )
+                fig_mr.update_xaxes(title_text=var0, row=1, col=col_idx)
+                if col_idx == 1:
+                    fig_mr.update_yaxes(title_text=var1, row=1, col=col_idx)
+
+            styles.apply_plotly_style(
+                fig_mr,
+                title=f"B2 Ever H6 — MR Period (Aggregated){file_suffix}",
+                width=max(500 * len(v2_vals), 800),
+                height=500,
+            )
+
+            output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
+            fig_mr.write_html(output_plot_path_mr)
+            logger.info(f"MR per-slice visualization saved to {output_plot_path_mr}")
 
         # --- Cleanup ---
         if "b2_ever_h6_tmp" in data_demand_mr.columns:
@@ -433,7 +511,8 @@ def process_mr_period(
         logger.info("Generating Risk Production Summary Table for MR period...")
 
         mr_summary_table = calculate_metrics_from_cuts(
-            data_summary_desagregado_mr, optimal_solution_df, VARIABLES, settings.inv_vars
+            data_summary_desagregado_mr, optimal_solution_df, VARIABLES, settings.inv_vars,
+            mask=mask, grid=grid,
         )
 
         if mr_summary_table is not None:
@@ -445,22 +524,13 @@ def process_mr_period(
         # --- Calculate PSI/CSI Stability Metrics ---
         logger.info("Calculating PSI/CSI stability metrics (Main vs MR)...")
         try:
-            # Get numeric columns for stability analysis
-            stability_vars = []
-            for col in data_booked.columns:
-                if col in data_booked_mr.columns:
-                    if pd.api.types.is_numeric_dtype(data_booked[col]):
-                        # Exclude ID columns and date columns
-                        if not any(x in col.lower() for x in ["id", "date", "mis_"]):
-                            stability_vars.append(col)
-
-            # Include key score/cluster variables
-            key_vars = ["sc_octroi", "new_efx", "oa_amt", "risk_score_rf"]
-            stability_vars = list(set(stability_vars + [v for v in key_vars if v in data_booked.columns]))
+            # Get specific columns for stability analysis
+            requested_vars = ["score_rf", "risk_score_rf", "oa_amt"]
+            stability_vars = [v for v in requested_vars if v in data_booked.columns and v in data_booked_mr.columns]
 
             if stability_vars:
                 # Determine main score variable for overall PSI
-                score_var = "sc_octroi" if "sc_octroi" in stability_vars else stability_vars[0]
+                score_var = "risk_score_rf" if "risk_score_rf" in stability_vars else stability_vars[0]
 
                 stability_report = compare_main_vs_mr(
                     main_df=data_booked,

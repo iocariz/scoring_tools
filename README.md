@@ -15,6 +15,7 @@ A credit risk scoring and portfolio optimization pipeline that processes loan ap
 - **Sensitivity Analysis**: Measures cutoff stability under risk perturbations, identifying per-cell flip thresholds.
 - **Marginal Impact**: Analytical O(N) computation of the production and risk impact of flipping each cell's accept/reject status.
 - **Cell-Level Confidence Intervals**: K-fold CV prediction intervals per grid cell, quantifying model uncertainty.
+- **Optimization-Aware Binning**: Supervised bin splitting using production-weighted risk differentiation, giving the optimizer maximal leverage from additional dimensions (e.g., income).
 - **Fixed Cutoffs**: Bypasses optimization to evaluate predefined cutoff configurations.
 - **Fixed-Cell Constraints**: Pin individual cells as forced-accept or forced-reject before re-optimizing.
 - **Global Allocation**: Distributes a portfolio-wide risk budget across segments using MILP or greedy solvers.
@@ -220,7 +221,7 @@ Loads SAS data (`.sas7bdat`), standardizes column names (lowercase, underscores)
 
 1. **Data Quality Checks** -- Schema validation, missing values, outlier detection (Z-score), date range validation, categorical consistency.
 2. **Filtering** -- By segment (regex), date range, and application status (booked / score-rejected / other).
-3. **Feature Engineering** -- Bins continuous scores into cluster variables using configured bin edges.
+3. **Feature Engineering** -- Bins continuous scores into cluster variables using configured bin edges. When edges are learned automatically (`max_bins` without `bin_edges`), two methods are available: `"quantile"` (equal-count splits, default) and `"optimization"` (production-weighted risk split via `DecisionTreeRegressor`).
 4. **Stress Factor** -- Calculated from the worst 5% of booked applications as a risk correction.
 5. **Transformation Rate** -- Monthly financing rate over a rolling window (`n_months`).
 
@@ -292,7 +293,7 @@ keep_vars = ["authorization_id", "mis_date", "status_name", "risk_score_rf",
 # Indicator columns (targets and amounts)
 indicators = ["acct_booked_h0", "oa_amt", "todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"]
 
-# Grid variables (exactly 2)
+# Grid variables (2 or more; extra dimensions use bins config below)
 variables = ["sc_octroi_new_clus", "new_efx_clus"]
 
 # Bin edges for clustering (supports -inf / inf)
@@ -381,6 +382,29 @@ new_efx_clus = [3, 4, 5, 6, 7, 8, 9, 10, 12, 15]                            # va
 strict_validation = false   # true: raise errors; false: warnings (default: false)
 run_all_scenarios = false   # true: pessimistic/base/optimistic; false: base only (default: false)
 ```
+
+#### N-Variable Bins (Optional)
+
+Add extra optimization dimensions (e.g., income) via the `[preprocessing.bins.*]` section. Each entry defines a binning variable with automatic edge learning.
+
+```toml
+[preprocessing.bins.income_bin]
+source_col = "income_t1_m"       # Raw column name
+output_col = "income_bin"        # Binned column created in the DataFrame
+max_bins = 2                     # Number of bins (tree leaf nodes)
+method = "optimization"          # "quantile" (default) or "optimization"
+# bin_edges = [-inf, 3000.0, inf]  # Optional: fixed edges (skips learning)
+```
+
+| Field | Description |
+|:------|:------------|
+| `source_col` | Raw column name in the data |
+| `output_col` | Name of the binned column created |
+| `max_bins` | Number of bins when learning edges automatically |
+| `method` | `"quantile"`: equal-count splits (median for 2 bins). `"optimization"`: `DecisionTreeRegressor` weighted by `oa_amt_h0`, splitting where production-weighted risk rate differs most. |
+| `bin_edges` | Optional explicit edges. When set, `max_bins` and `method` are ignored. |
+
+The `"optimization"` method is designed for dimensions like income where equal-count splits often produce bins with similar risk rates. By weighting the tree by production (`oa_amt_h0`), the split maximizes the production-weighted risk differentiation, giving the MILP optimizer meaningful leverage from the extra dimension.
 
 ### `segments.toml` -- Batch Segment Configuration
 
@@ -599,7 +623,7 @@ Monthly aggregation of approval rate, production volume, mean production, and ri
 | `config.py` | `PreprocessingSettings` (Pydantic) and `OutputPaths` definitions |
 | `data_manager.py` | SAS data loading and column standardization |
 | `data_quality.py` | Schema validation, outlier detection, quality checks |
-| `preprocess_improved.py` | Date/segment filtering, feature engineering, binning |
+| `preprocess_improved.py` | Date/segment filtering, feature engineering, binning (quantile and optimization-aware) |
 | `inference_optimized.py` | Model training pipeline with feature selection and CV |
 | `models.py` | Variable transformations and risk calculations |
 | `estimators.py` | Custom estimators: `HurdleRegressor`, `TweedieGLM` |

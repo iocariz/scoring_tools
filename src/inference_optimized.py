@@ -34,7 +34,7 @@ from src.constants import (
     StatusName,
     Suffixes,
 )
-from src.estimators import HurdleRegressor
+from src.estimators import HurdleRegressor, prepare_model_input
 
 # Project imports
 from src.models import transform_variables
@@ -524,6 +524,7 @@ def _select_feature_set_cv(
 
     for feature_name, features in feature_sets.items():
         cv_scores = []
+        cv_r2_scores = []
         for train_idx, val_idx in kfold.split(raw_data):
             raw_train, raw_val = raw_data.iloc[train_idx].copy(), raw_data.iloc[val_idx].copy()
 
@@ -543,8 +544,9 @@ def _select_feature_set_cv(
                 logger.debug(f"Fold skipped for {feature_name}: only {len(val_agg)} validation bins")
                 continue
 
-            X_train, y_train = train_agg[features], train_agg[target_var]
-            X_val, y_val = val_agg[features], val_agg[target_var]
+            X_train = prepare_model_input(train_agg, features, model_template)
+            X_val = prepare_model_input(val_agg, features, model_template)
+            y_train, y_val = train_agg[target_var], val_agg[target_var]
 
             w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
             w_val = val_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in val_agg.columns else None
@@ -553,10 +555,12 @@ def _select_feature_set_cv(
             model_clone.fit(X_train, y_train, sample_weight=w_train)
             y_pred = model_clone.predict(X_val)
             if len(y_val) >= 2:
-                from sklearn.metrics import mean_squared_error
+                from sklearn.metrics import mean_squared_error, r2_score
 
                 fold_rmse = np.sqrt(mean_squared_error(y_val, y_pred, sample_weight=w_val))
                 cv_scores.append(fold_rmse)
+                fold_r2 = r2_score(y_val, y_pred, sample_weight=w_val)
+                cv_r2_scores.append(fold_r2)
 
         if not cv_scores:
             logger.warning(f"Skipping {feature_name}: execution failed internally.")
@@ -564,6 +568,8 @@ def _select_feature_set_cv(
 
         cv_mean = np.mean(cv_scores)
         cv_std = np.std(cv_scores, ddof=1) / np.sqrt(len(cv_scores))
+        cv_r2_mean = np.mean(cv_r2_scores) if cv_r2_scores else 0.0
+        cv_r2_std = (np.std(cv_r2_scores, ddof=1) / np.sqrt(len(cv_r2_scores))) if len(cv_r2_scores) > 1 else 0.0
 
         feature_results.append(
             {
@@ -572,6 +578,8 @@ def _select_feature_set_cv(
                 "Features": features,
                 "CV Mean RMSE": cv_mean,
                 "CV Std RMSE": cv_std,
+                "CV Mean R2": cv_r2_mean,
+                "CV Std R2": cv_r2_std,
             }
         )
 
@@ -591,14 +599,18 @@ def _select_feature_set_cv(
         "features": best_row["Features"],
         "cv_mean_rmse": best_row["CV Mean RMSE"],
         "cv_std_rmse": best_row["CV Std RMSE"],
+        "cv_mean_r2": best_row.get("CV Mean R2", 0.0),
+        "cv_std_r2": best_row.get("CV Std R2", 0.0),
     }
 
     # Log results table
-    display_cols = ["Feature Set", "Num Features", "CV Mean RMSE", "CV Std RMSE"]
+    display_cols = ["Feature Set", "Num Features", "CV Mean RMSE", "CV Std RMSE", "CV Mean R2"]
+    available_cols = [c for c in display_cols if c in results_df.columns]
     logger.info("Feature set CV results:")
-    logger.info(f"\n{results_df[display_cols].to_string()}")
+    logger.info(f"\n{results_df[available_cols].to_string()}")
     logger.info(f"Best feature set: {best_feature_info['feature_set_name']}")
     logger.info(f"  CV RMSE: {best_feature_info['cv_mean_rmse']:.4f} ± {best_feature_info['cv_std_rmse']:.4f}")
+    logger.info(f"  CV R²:   {best_feature_info['cv_mean_r2']:.4f} ± {best_feature_info['cv_std_r2']:.4f}")
 
     return results_df, best_feature_info
 
@@ -663,13 +675,14 @@ def compute_cell_level_ci(
         if missing or len(val_agg) < 1:
             continue
 
-        X_train, y_train = train_agg[final_features], train_agg[target_var]
+        X_train = prepare_model_input(train_agg, final_features, model_template)
+        y_train = train_agg[target_var]
         w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
 
         model_clone = clone(model_template)
         model_clone.fit(X_train, y_train, sample_weight=w_train)
 
-        X_val = val_agg[final_features]
+        X_val = prepare_model_input(val_agg, final_features, model_template)
         preds = model_clone.predict(X_val)
 
         # Record predictions per cell (keyed by variable tuple)
@@ -826,6 +839,8 @@ def _select_best_model_and_features(
             "features": variables,
             "cv_mean_rmse": best_row["CV Mean RMSE"],
             "cv_std_rmse": best_row["CV Std RMSE"],
+            "cv_mean_r2": best_row.get("CV Mean R2", 0.0),
+            "cv_std_r2": best_row.get("CV Std R2", 0.0),
         }
     else:
         # A linear/GLM model won. Proceed with Step 3.
@@ -869,9 +884,10 @@ def _train_and_evaluate_final_model(
 
     final_model = clone(best_model_template)
     y_all = all_data[target_var]
-    final_model.fit(all_data[final_features], y_all, sample_weight=weights)
+    X_all = prepare_model_input(all_data, final_features, final_model)
+    final_model.fit(X_all, y_all, sample_weight=weights)
 
-    y_all_pred = final_model.predict(all_data[final_features])
+    y_all_pred = final_model.predict(X_all)
 
     if len(y_all) >= 2:
         train_r2 = r2_score(y_all, y_all_pred, sample_weight=weights)
@@ -957,11 +973,14 @@ def _save_model_to_disk(
     zero_prop: float,
     weights: pd.Series | None,
     model_base_path: str,
+    model_variables: list[str] | None = None,
 ) -> str:
     """Build metadata, save model with metadata, return path."""
     model_metadata = {
         "cv_mean_rmse": best_model_info["cv_mean_rmse"],
         "cv_std_rmse": best_model_info["cv_std_rmse"],
+        "cv_mean_r2": best_model_info.get("cv_mean_r2", 0.0),
+        "cv_std_r2": best_model_info.get("cv_std_r2", 0.0),
         "train_r2": best_model_info["train_r2"],
         "full_r2": best_model_info["train_r2"],  # Full and train R2 are identical because final model uses all data
         "cv_folds": cv_folds,
@@ -976,6 +995,9 @@ def _save_model_to_disk(
         "step1_cv_rmse": best_model_type["cv_mean_rmse"],
         "step2_cv_rmse": best_feature_info["cv_mean_rmse"],
     }
+
+    if model_variables is not None:
+        model_metadata["model_variables"] = model_variables
 
     if weights is not None:
         model_metadata["weight_stats"] = {
@@ -1100,7 +1122,7 @@ def inference_pipeline(
     final_agg = process_dataset(
         all_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold=DEFAULT_Z_THRESHOLD
     )
-    weights_all = final_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in final_agg.columns else None
+    weights_all = final_agg["oa_amt_h0"] if "oa_amt_h0" in final_agg.columns else None
     zero_prop = (np.abs(final_agg[target_var]) < 1e-10).mean()
 
     logger.info(f"Processed full data scope: {final_agg.shape[0]} groups")
@@ -1158,6 +1180,8 @@ def inference_pipeline(
         "name": f"{best_model_name} + {best_feature_info['feature_set_name']}",
         "cv_mean_rmse": best_feature_info["cv_mean_rmse"],
         "cv_std_rmse": best_feature_info["cv_std_rmse"],
+        "cv_mean_r2": best_feature_info.get("cv_mean_r2", 0.0),
+        "cv_std_r2": best_feature_info.get("cv_std_r2", 0.0),
         "train_r2": train_r2,
         "model_type": best_model_name,
         "feature_set": best_feature_info["feature_set_name"],
@@ -1185,6 +1209,7 @@ def inference_pipeline(
             zero_prop,
             weights_all,
             model_base_path,
+            model_variables=variables,
         )
 
     # SHAP interpretability (non-blocking)
@@ -1298,6 +1323,7 @@ def inference_pipeline(
         "step2_results": results_step2,
         "best_model_info": best_model_info,
         "model_path": model_path,
+        "model_variables": variables,
         "visualization": fig,
     }
 
@@ -1486,17 +1512,24 @@ def compute_pre_reject_inference_data(
     indicators: list[str],
     variables: list[str],
     annual_coef: float,
+    model_variables: list[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Compute booked summary (_boo suffix) and repesca summary (post-risk-model, pre-reject-inference).
 
     These results are invariant to reject inference parameters and can be
     computed once then reused across multiple parameter evaluations.
 
+    Args:
+        model_variables: Variables the risk model was trained on. When fewer
+            than ``variables``, the model predicts using this subset while
+            aggregation still groups by all ``variables``.
+
     Returns:
         Tuple of (booked_summary with _boo suffix, repesca_summary post-risk-model).
     """
     final_model = risk_inference["best_model_info"]["model"]
     final_features = risk_inference["features"]
+    risk_vars = model_variables or variables
 
     def _aggregate(data, status, reject_reason=None):
         filtered_data = data[data[Columns.STATUS_NAME] == status]
@@ -1517,7 +1550,7 @@ def compute_pre_reject_inference_data(
     from src.models import calculate_risk_values
 
     repesca_summary = calculate_risk_values(
-        repesca_summary, final_model, reg_todu_amt_pile, variables, stressor, final_features
+        repesca_summary, final_model, reg_todu_amt_pile, risk_vars, stressor, final_features
     )[variables + indicators]
 
     return booked_summary, repesca_summary
@@ -1559,6 +1592,7 @@ def run_optimization_pipeline(
         indicators=INDICADORES,
         variables=VARIABLES,
         annual_coef=annual_coef,
+        model_variables=risk_inference.get("model_variables"),
     )
 
     # Apply reject inference adjustment (after stressor, before tasa_fin)

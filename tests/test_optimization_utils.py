@@ -12,6 +12,7 @@ from src.optimization_utils import (
     CellGrid,
     _build_monotonicity_constraints,
     add_bin_columns,
+    classify_by_mask,
     create_fixed_cutoff_solution,
     evaluate_solution,
     get_fact_sol,
@@ -777,3 +778,224 @@ class TestMILPFixedCells:
         assert mask_none is not None
         assert mask_empty is not None
         np.testing.assert_array_equal(mask_none, mask_empty)
+
+
+# =============================================================================
+# classify_by_mask Tests
+# =============================================================================
+
+
+class TestClassifyByMask:
+    def test_all_accepted_2d(self):
+        """All records should be accepted when mask is all-ones."""
+        df = _make_summary_2d(2, 3)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        mask = np.ones(grid.n_cells, dtype=int)
+
+        result = classify_by_mask(df, mask, grid)
+        assert result.all()
+
+    def test_none_accepted_2d(self):
+        """No records should be accepted when mask is all-zeros."""
+        df = _make_summary_2d(2, 3)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        mask = np.zeros(grid.n_cells, dtype=int)
+
+        result = classify_by_mask(df, mask, grid)
+        assert not result.any()
+
+    def test_partial_acceptance(self):
+        """classify_by_mask should accept only cells where mask=1."""
+        df = _make_summary_2d(2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        # Accept first 2 cells only
+        mask = np.array([1, 1, 0, 0])
+
+        result = classify_by_mask(df, mask, grid)
+        assert result.sum() == 2
+
+    def test_3d_all_accepted(self):
+        """classify_by_mask should work with 3 variables."""
+        df = _make_summary_3d(2, 3, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1", "var2"])
+        mask = np.ones(grid.n_cells, dtype=int)
+
+        result = classify_by_mask(df, mask, grid)
+        assert result.all()
+
+    def test_3d_partial(self):
+        """classify_by_mask should correctly classify 3D cells."""
+        df = _make_summary_3d(2, 2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1", "var2"])
+        # Accept first half, reject second half
+        mask = np.array([1, 1, 1, 1, 0, 0, 0, 0])
+
+        result = classify_by_mask(df, mask, grid)
+        assert result.sum() == 4
+        assert (~result).sum() == 4
+
+    def test_unmatched_records_rejected(self):
+        """Records not matching any grid cell should be rejected."""
+        df = _make_summary_2d(2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        mask = np.ones(grid.n_cells, dtype=int)
+
+        # Add a record with out-of-grid values
+        extra = pd.DataFrame({"var0": [99], "var1": [99], "oa_amt_h0": [1000]})
+        combined = pd.concat([df, extra], ignore_index=True)
+
+        result = classify_by_mask(combined, mask, grid)
+        # Original records accepted, extra record rejected
+        assert result.iloc[:-1].all()
+        assert not result.iloc[-1]
+
+    def test_returns_boolean_series(self):
+        """Result should be a boolean Series aligned with input index."""
+        df = _make_summary_2d(2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        mask = np.ones(grid.n_cells, dtype=int)
+
+        result = classify_by_mask(df, mask, grid)
+        assert isinstance(result, pd.Series)
+        assert result.dtype == bool
+        assert list(result.index) == list(df.index)
+
+
+# =============================================================================
+# learn_quantile_bins Tests
+# =============================================================================
+
+
+class TestLearnQuantileBins:
+    def test_basic_splitting_2_bins(self):
+        """With max_bins=2, should produce edges at the median."""
+        from src.preprocess_improved import learn_quantile_bins
+
+        rng = np.random.RandomState(42)
+        n = 2000
+        income = rng.uniform(1000, 5000, n)
+        data = pd.DataFrame({"income_t1_m": income})
+
+        edges = learn_quantile_bins(data, max_bins=2)
+        assert len(edges) == 3  # [-inf, median, inf]
+        assert edges[0] == -np.inf
+        assert edges[-1] == np.inf
+        # Threshold should be near median of uniform(1000, 5000) ≈ 3000
+        assert 2500 < edges[1] < 3500
+
+    def test_basic_splitting_3_bins(self):
+        """With max_bins=3, should produce 4 edges at terciles."""
+        from src.preprocess_improved import learn_quantile_bins
+
+        rng = np.random.RandomState(42)
+        n = 3000
+        income = rng.uniform(0, 9000, n)
+        data = pd.DataFrame({"income_t1_m": income})
+
+        edges = learn_quantile_bins(data, max_bins=3)
+        assert len(edges) == 4  # [-inf, q33, q67, inf]
+        assert edges[0] == -np.inf
+        assert edges[-1] == np.inf
+        # Thresholds should be near 3000 and 6000
+        assert 2500 < edges[1] < 3500
+        assert 5500 < edges[2] < 6500
+
+    def test_missing_column_raises(self):
+        """Should raise ValueError if required column is missing."""
+        from src.preprocess_improved import learn_quantile_bins
+
+        data = pd.DataFrame({"other": [1, 2, 3]})
+        with pytest.raises(ValueError, match="Missing required columns"):
+            learn_quantile_bins(data)
+
+    def test_too_few_records_raises(self):
+        """Should raise ValueError when data is too small."""
+        from src.preprocess_improved import learn_quantile_bins
+
+        data = pd.DataFrame({"income_t1_m": [100]})
+        with pytest.raises(ValueError, match="only 1 valid records"):
+            learn_quantile_bins(data, max_bins=2)
+
+
+# =============================================================================
+# learn_income_bins Tests (deprecated, kept for backward compat)
+# =============================================================================
+
+
+class TestLearnIncomeBins:
+    def test_basic_splitting(self):
+        """Should produce bin edges with splits between classes."""
+        from src.preprocess_improved import learn_income_bins
+
+        rng = np.random.RandomState(42)
+        n = 2000
+        income = np.concatenate([rng.normal(2000, 500, n // 2), rng.normal(5000, 500, n // 2)])
+        bad = np.concatenate([np.ones(n // 2), np.zeros(n // 2)])
+        data = pd.DataFrame({"income_t1_m": income, "early_bad": bad})
+
+        edges = learn_income_bins(data, max_bins=2, min_samples_leaf=100)
+        assert len(edges) == 3  # [-inf, threshold, inf]
+        assert edges[0] == -np.inf
+        assert edges[-1] == np.inf
+        # Threshold should be somewhere between the two distributions
+        assert 2500 < edges[1] < 4500
+
+    def test_max_bins_3(self):
+        """With max_bins=3, should produce 4 edges."""
+        from src.preprocess_improved import learn_income_bins
+
+        rng = np.random.RandomState(42)
+        n = 3000
+        income = np.concatenate([
+            rng.normal(1000, 200, n // 3),
+            rng.normal(3000, 200, n // 3),
+            rng.normal(6000, 200, n // 3),
+        ])
+        bad = np.concatenate([np.ones(n // 3), np.zeros(n // 3), np.zeros(n // 3)])
+        data = pd.DataFrame({"income_t1_m": income, "early_bad": bad})
+
+        edges = learn_income_bins(data, max_bins=3, min_samples_leaf=100)
+        assert len(edges) >= 3  # At least 3 edges (2 bins)
+        assert len(edges) <= 4  # At most 4 edges (3 bins)
+
+    def test_missing_column_raises(self):
+        """Should raise ValueError if required columns are missing."""
+        from src.preprocess_improved import learn_income_bins
+
+        data = pd.DataFrame({"other": [1, 2, 3]})
+        with pytest.raises(ValueError, match="Missing required columns"):
+            learn_income_bins(data)
+
+
+# =============================================================================
+# assess_binning_gini Tests
+# =============================================================================
+
+
+class TestAssessBinningGini:
+    def test_basic_gini(self):
+        """Gini retention should be between 0 and 100%."""
+        from src.preprocess_improved import assess_binning_gini
+
+        rng = np.random.RandomState(42)
+        n = 1000
+        raw = rng.uniform(0, 100, n)
+        target = (raw > 50).astype(int)
+        binned = (raw > 50).astype(int) + 1
+
+        data = pd.DataFrame({"raw": raw, "binned": binned, "target": target})
+        result = assess_binning_gini(data, "raw", "binned", "target")
+
+        assert "gini_raw" in result
+        assert "gini_binned" in result
+        assert "gini_retention_pct" in result
+        assert result["gini_raw"] > 0
+        assert result["gini_retention_pct"] > 0
+
+    def test_single_class_target(self):
+        """Should handle single-class target gracefully."""
+        from src.preprocess_improved import assess_binning_gini
+
+        data = pd.DataFrame({"raw": [1, 2, 3], "binned": [1, 1, 2], "target": [0, 0, 0]})
+        result = assess_binning_gini(data, "raw", "binned", "target")
+        assert result["gini_raw"] == 0.0

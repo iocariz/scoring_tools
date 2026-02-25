@@ -14,7 +14,7 @@ class DataValidationError(Exception):
 
 def load_data(df_path: str) -> pd.DataFrame:
     """Load data from SAS file."""
-    df = pd.read_sas(df_path, format="sas7bdat", encoding="utf-8")
+    df = pd.read_sas(df_path, format="sas7bdat", encoding="latin-1")
     return df
 
 
