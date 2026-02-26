@@ -397,6 +397,7 @@ class RiskProductionVisualizer:
         directions: dict[str, int] | None = None,
         pareto_masks: list[np.ndarray] | None = None,
         grid: Any | None = None,
+        multiplier: float = DEFAULT_RISK_MULTIPLIER,
     ):
         """
         Initialize the RiskProductionVisualizer.
@@ -415,6 +416,7 @@ class RiskProductionVisualizer:
             values_var1: (Legacy) Array of bin values for second variable.
             target_sol_fac: Optional specific solution ID to select instead of
                 using optimum_risk threshold.
+            multiplier: Risk multiplier for b2_ever_h6 calculation.
         """
         self.data_summary = data_summary
         self.data_summary_disaggregated = data_summary_disaggregated
@@ -439,6 +441,7 @@ class RiskProductionVisualizer:
         self.directions = directions or {}
         self._pareto_masks = pareto_masks or []
         self._nd_grid = grid
+        self.multiplier = multiplier
 
         # Calculate initial metrics
         self.calculate_initial_metrics()
@@ -457,7 +460,7 @@ class RiskProductionVisualizer:
         self.actual_todu_30 = tudu_30_ever
         self.actual_todu_amt = tudu_amt_pile
 
-        self.B2_0 = np.round(100 * DEFAULT_RISK_MULTIPLIER * tudu_30_ever / tudu_amt_pile, 2)
+        self.B2_0 = np.round(100 * self.multiplier * tudu_30_ever / tudu_amt_pile, 2)
 
         # Calculate OA_0
         self.OA_0 = self.data_summary_disaggregated["oa_amt_h0_boo"].sum()
@@ -483,6 +486,7 @@ class RiskProductionVisualizer:
             self._heatmap_data["b2_ever_h6"] = calculate_b2_ever_h6(
                 self._heatmap_data["todu_30ever_h6"],
                 self._heatmap_data["todu_amt_pile_h6"],
+                multiplier=self.multiplier,
                 as_percentage=True,
             )
             self._heatmap_data["text"] = self._heatmap_data.apply(
@@ -778,6 +782,7 @@ def plot_risk_vs_production(
     rolling_window: int = 6,
     plot_width: int = 1500,
     plot_height: int = 500,
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
 ) -> go.Figure:
     """
     Creates an interactive plot comparing risk metrics against production data over time
@@ -811,12 +816,13 @@ def plot_risk_vs_production(
 
     # Calculate risk percentages
     df_plot[Columns.B2_EVER_H6] = calculate_b2_ever_h6(
-        df_plot[Columns.TODU_30EVER_H6], df_plot[Columns.TODU_AMT_PILE_H6], as_percentage=True
+        df_plot[Columns.TODU_30EVER_H6], df_plot[Columns.TODU_AMT_PILE_H6], multiplier=multiplier, as_percentage=True
     )
 
     df_plot["b2_ever_h6_MA"] = calculate_b2_ever_h6(
         df_plot[f"{Columns.TODU_30EVER_H6}_MA{rolling_window}"],
         df_plot[f"{Columns.TODU_AMT_PILE_H6}_MA{rolling_window}"],
+        multiplier=multiplier,
         as_percentage=True,
     )
 
@@ -1545,6 +1551,7 @@ def plot_acceptance_grid_nd(
     mask: np.ndarray,
     grid: Any,
     output_path: str | None = None,
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
 ) -> go.Figure:
     """Plot acceptance heatmaps for a 3+-variable grid with risk annotations.
 
@@ -1588,7 +1595,7 @@ def plot_acceptance_grid_nd(
         from .utils import calculate_b2_ever_h6
 
         cell_df["_b2"] = calculate_b2_ever_h6(
-            cell_df["todu_30ever_h6"], cell_df["todu_amt_pile_h6"], as_percentage=True
+            cell_df["todu_30ever_h6"], cell_df["todu_amt_pile_h6"], multiplier=multiplier, as_percentage=True
         ).fillna(0)
     else:
         cell_df["_b2"] = 0.0

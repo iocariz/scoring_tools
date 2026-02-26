@@ -29,6 +29,7 @@ from src import styles
 from src.constants import (
     DEFAULT_N_POINTS_3D,
     DEFAULT_RANDOM_STATE,
+    DEFAULT_RISK_MULTIPLIER,
     DEFAULT_Z_THRESHOLD,
     Columns,
     StatusName,
@@ -1571,6 +1572,7 @@ def run_optimization_pipeline(
     reject_inference_method: str = "none",
     reject_uplift_factor: float = 1.5,
     reject_max_risk_multiplier: float = 3.0,
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
 ):
     """
     Runs the optimization pipeline: aggregates data, applies risk models, and generates visualizations.
@@ -1633,7 +1635,7 @@ def run_optimization_pipeline(
         fig = go.Figure()
         data_surf = data_sumary_desagregado.copy()
         data_surf["b2_ever_h6"] = calculate_b2_ever_h6(
-            data_surf["todu_30ever_h6"], data_surf["todu_amt_pile_h6"], as_percentage=True
+            data_surf["todu_30ever_h6"], data_surf["todu_amt_pile_h6"], multiplier=multiplier, as_percentage=True
         )
         data_surf_pivot = data_surf.pivot(index=VARIABLES[1], columns=VARIABLES[0], values="b2_ever_h6")
 

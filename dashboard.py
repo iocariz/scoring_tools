@@ -2193,8 +2193,8 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
     if paths["summary_data"].exists():
         try:
             summary_data = pd.read_csv(paths["summary_data"])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to load summary data from {paths['summary_data']}: {e}")
     if summary_data is None:
         empty_fig = go.Figure()
         return html.Div("Data not available"), empty_fig, empty_fig, empty_fig

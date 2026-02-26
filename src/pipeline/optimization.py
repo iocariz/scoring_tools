@@ -78,6 +78,7 @@ def run_optimization_phase(
         reject_inference_method=settings.reject_inference_method,
         reject_uplift_factor=settings.reject_uplift_factor,
         reject_max_risk_multiplier=settings.reject_max_risk_multiplier,
+        multiplier=settings.multiplier,
     )
 
     # Build values_per_var dict for all variables
@@ -290,6 +291,7 @@ def run_scenario_analysis(
         directions=settings.directions,
         pareto_masks=pareto_masks,
         grid=grid,
+        multiplier=settings.multiplier,
     )
 
     suffix = f"_{scenario_name}"
@@ -428,6 +430,7 @@ def run_scenario_analysis(
                 mask=selected_mask,
                 grid=grid,
                 output_path=output.acceptance_grid_html(suffix),
+                multiplier=settings.multiplier,
             )
         except Exception as e:
             logger.warning(f"[{segment}] Acceptance grid plot failed (non-blocking): {e}")

@@ -51,7 +51,9 @@ def run_preprocessing_phase(
     data_clean, data_booked, data_demand = complete_preprocessing_pipeline(data, settings)
 
     # Risk vs production plot
-    fig = plot_risk_vs_production(data_clean, settings.indicators, settings.cz_config, data_booked)
+    fig = plot_risk_vs_production(
+        data_clean, settings.indicators, settings.cz_config, data_booked, multiplier=settings.multiplier
+    )
     fig.write_html(output.risk_vs_production_html)
     logger.debug(f"[{segment}] Risk vs production plot saved to {output.risk_vs_production_html}")
 
