@@ -244,10 +244,13 @@ def detect_trend_changes(
     rolling_std_est = rolling_mad / 0.6745
 
     # Handle cases where MAD is 0 (e.g. constant values in window)
-    # Fallback to standard deviation
-    rolling_std_traditional = df["value"].rolling(window=window, min_periods=window).std().shift(1)
+    # Fallback to traditional rolling std; if that is also 0/NaN, use global std as last resort
+    rolling_std_traditional = df["value"].rolling(window=window, min_periods=max(2, window)).std().shift(1)
     rolling_std_est = rolling_std_est.fillna(rolling_std_traditional)
     rolling_std_est = np.where(rolling_std_est == 0, rolling_std_traditional, rolling_std_est)
+    global_std = df["value"].std()
+    if global_std > 0:
+        rolling_std_est = np.where(np.isnan(rolling_std_est) | (rolling_std_est == 0), global_std, rolling_std_est)
 
     df["rolling_mean"] = rolling_median  # using median as the center line for robust SPC
     df["upper_bound"] = rolling_median + effective_sigma * rolling_std_est

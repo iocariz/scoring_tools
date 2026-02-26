@@ -99,7 +99,8 @@ def calculate_metrics_from_cuts(
             prod = subset[f"oa_amt_h0{suffix}"].sum()
             risk_num = subset[f"todu_30ever_h6{suffix}"].sum()
             risk_den = subset[f"todu_amt_pile_h6{suffix}"].sum()
-            b2_ever = float(np.nan_to_num(calculate_b2_ever_h6(risk_num, risk_den, as_percentage=True)))
+            b2_ever_raw = calculate_b2_ever_h6(risk_num, risk_den, as_percentage=True)
+            b2_ever = float(b2_ever_raw) if pd.notna(b2_ever_raw) else None
             return prod, b2_ever, risk_num, risk_den
 
         # Actual (All Booked)
@@ -168,6 +169,89 @@ def calculate_metrics_from_cuts(
         return None
 
 
+def _mr_outcomes_available(data_demand_mr: pd.DataFrame) -> bool:
+    """Check if MR-period outcome columns exist and have non-null data."""
+    required = ["todu_30ever_h6", "todu_amt_pile_h6"]
+    return all(col in data_demand_mr.columns and data_demand_mr[col].notna().any() for col in required)
+
+
+def _compute_hybrid_mr_risk(
+    data_booked: pd.DataFrame,
+    data_demand_mr: pd.DataFrame,
+    merge_keys: list[str],
+    min_obs: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Compute per-bin ``b2_ever_h6_tmp`` using MR outcomes when sufficient, else main-period.
+
+    Returns
+    -------
+    merge_df : DataFrame
+        ``merge_keys`` + ``b2_ever_h6_tmp`` ready for merging into ``data_demand_mr``.
+    comparison_df : DataFrame
+        Per-bin diagnostic table with columns:
+        ``merge_keys``, ``b2_main``, ``b2_mr``, ``n_obs_main``, ``n_obs_mr``,
+        ``b2_ever_h6_tmp``, ``risk_source``, ``b2_delta``, ``b2_delta_pct``, ``mr_production``.
+    """
+    # --- Main-period aggregation (existing logic) ---
+    main_agg = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
+    main_agg["b2_main"] = calculate_b2_ever_h6(main_agg["todu_30ever_h6"], main_agg["todu_amt_pile_h6"]).fillna(0.0)
+    main_agg["n_obs_main"] = data_booked.groupby(merge_keys).size().reset_index(drop=True)
+    main_agg = main_agg[merge_keys + ["b2_main", "n_obs_main"]]
+
+    # --- MR-period aggregation ---
+    mr_booked = data_demand_mr[data_demand_mr["status_name"] == StatusName.BOOKED.value]
+    mr_agg = mr_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
+    mr_agg["b2_mr"] = calculate_b2_ever_h6(mr_agg["todu_30ever_h6"], mr_agg["todu_amt_pile_h6"]).fillna(0.0)
+    mr_agg["n_obs_mr"] = mr_booked.groupby(merge_keys).size().reset_index(drop=True)
+
+    # MR production per bin
+    if "oa_amt_h0" in mr_booked.columns:
+        mr_prod = mr_booked.groupby(merge_keys)["oa_amt_h0"].sum().reset_index()
+        mr_prod = mr_prod.rename(columns={"oa_amt_h0": "mr_production"})
+        mr_agg = mr_agg.merge(mr_prod, on=merge_keys, how="left")
+    else:
+        mr_agg["mr_production"] = 0.0
+
+    mr_agg = mr_agg[merge_keys + ["b2_mr", "n_obs_mr", "mr_production"]]
+
+    # --- Outer join ---
+    combined = main_agg.merge(mr_agg, on=merge_keys, how="outer")
+
+    # --- Choose source per bin ---
+    use_mr = combined["n_obs_mr"].fillna(0) >= min_obs
+    combined["b2_ever_h6_tmp"] = np.where(use_mr, combined["b2_mr"], combined["b2_main"])
+    combined["risk_source"] = np.where(use_mr, "mr_observed", "main_imputed")
+
+    # Bins only in MR (no main data) and below threshold: leave NaN for model fallback
+    only_mr_sparse = combined["b2_main"].isna() & ~use_mr
+    combined.loc[only_mr_sparse, "b2_ever_h6_tmp"] = np.nan
+    combined.loc[only_mr_sparse, "risk_source"] = "model_fallback"
+
+    # --- Comparison diagnostics ---
+    combined["b2_delta"] = combined["b2_mr"] - combined["b2_main"]
+    combined["b2_delta_pct"] = np.where(
+        combined["b2_main"].abs() > 1e-9,
+        combined["b2_delta"] / combined["b2_main"] * 100,
+        np.nan,
+    )
+
+    comparison_cols = merge_keys + [
+        "b2_main",
+        "b2_mr",
+        "n_obs_main",
+        "n_obs_mr",
+        "b2_ever_h6_tmp",
+        "risk_source",
+        "b2_delta",
+        "b2_delta_pct",
+        "mr_production",
+    ]
+    comparison_df = combined[comparison_cols].copy()
+
+    merge_df = combined[merge_keys + ["b2_ever_h6_tmp"]].copy()
+    return merge_df, comparison_df
+
+
 def process_mr_period(
     data_clean: pd.DataFrame,
     data_booked: pd.DataFrame,
@@ -197,6 +281,8 @@ def process_mr_period(
 
     try:
         indicators_mr = ["acct_booked_h0", "oa_amt", "oa_amt_h0"]
+        if settings.use_mr_outcomes:
+            indicators_mr += ["todu_30ever_h6", "todu_amt_pile_h6"]
         # Ensure merge keys (variables) are included
         merge_keys = settings.variables
         mr_cols = settings.keep_vars + indicators_mr + merge_keys
@@ -211,14 +297,51 @@ def process_mr_period(
 
         data_demand_mr = data_mr_period[available_mr_cols].copy()
 
-        # --- Calculate b2_ever_h6_tmp from initial period (data_booked) ---
-        # NOTE: MR risk uses training-period observed risk, not MR-period outcomes.
-        # This is appropriate when the MR observation horizon has not yet matured,
-        # but will not detect model degradation if MR outcome data is available.
-        logger.info(f"Calculating b2_ever_h6_tmp aggregated by {merge_keys} from initial period...")
-
+        # --- Calculate b2_ever_h6_tmp ---
         required_agg_cols = merge_keys + ["todu_30ever_h6", "todu_amt_pile_h6"]
-        if all(col in data_booked.columns for col in required_agg_cols):
+
+        if settings.use_mr_outcomes and _mr_outcomes_available(data_demand_mr):
+            # Hybrid mode: use MR observed risk where sufficient, else main-period
+            logger.info(
+                f"Hybrid MR risk: using MR outcomes where n_obs >= {settings.mr_min_obs_per_bin}, "
+                f"falling back to main-period for sparse bins."
+            )
+            merge_df, comparison_df = _compute_hybrid_mr_risk(
+                data_booked, data_demand_mr, merge_keys, settings.mr_min_obs_per_bin
+            )
+
+            # Save comparison CSV
+            comp_path = output.mr_risk_comparison_csv(file_suffix)
+            comparison_df.to_csv(comp_path, index=False)
+            logger.info(f"MR risk comparison saved to {comp_path}")
+
+            # Log bins with large deviations
+            has_both = comparison_df["b2_delta_pct"].notna()
+            large_dev = comparison_df.loc[has_both & (comparison_df["b2_delta_pct"].abs() > 20)]
+            if not large_dev.empty:
+                logger.warning(f"RISK DRIFT: {len(large_dev)} bins show >20% deviation between main and MR risk:")
+                for _, row in large_dev.iterrows():
+                    keys_str = ", ".join(f"{k}={row[k]}" for k in merge_keys)
+                    logger.warning(
+                        f"  {keys_str}: main={row['b2_main']:.4f}, mr={row['b2_mr']:.4f}, "
+                        f"delta={row['b2_delta_pct']:+.1f}%, source={row['risk_source']}"
+                    )
+
+            mr_source_counts = comparison_df["risk_source"].value_counts().to_dict()
+            logger.info(f"Hybrid risk sources: {mr_source_counts}")
+
+            logger.info("Merging b2_ever_h6_tmp into data_demand_mr...")
+            # Drop MR outcome columns to avoid conflicts with downstream todu prediction
+            data_demand_mr = data_demand_mr.drop(columns=["todu_30ever_h6", "todu_amt_pile_h6"], errors="ignore")
+            data_demand_mr = pd.merge(data_demand_mr, merge_df, on=merge_keys, how="left")
+
+            # Keep variable only for booked accounts
+            non_booked_mask = data_demand_mr["status_name"] != StatusName.BOOKED.value
+            data_demand_mr.loc[non_booked_mask, "b2_ever_h6_tmp"] = np.nan
+
+        elif all(col in data_booked.columns for col in required_agg_cols):
+            # Default mode: use main-period risk for all bins
+            logger.info(f"Calculating b2_ever_h6_tmp aggregated by {merge_keys} from initial period...")
             agg_data = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
 
             # Calculate b2_ever_h6_tmp
@@ -307,8 +430,16 @@ def process_mr_period(
                     # Diagnostic: fraction of MR production from imputed cells
                     total_booked = booked_mask.sum()
                     imputed_pct = null_count / max(total_booked, 1) * 100
-                    imputed_prod = data_demand_mr.loc[null_b2_mask, "oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0
-                    total_prod = data_demand_mr.loc[booked_mask, "oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0
+                    imputed_prod = (
+                        data_demand_mr.loc[null_b2_mask, "oa_amt_h0"].sum()
+                        if "oa_amt_h0" in data_demand_mr.columns
+                        else 0
+                    )
+                    total_prod = (
+                        data_demand_mr.loc[booked_mask, "oa_amt_h0"].sum()
+                        if "oa_amt_h0" in data_demand_mr.columns
+                        else 0
+                    )
                     prod_pct = imputed_prod / max(total_prod, 1) * 100
                     logger.info(
                         f"  Imputed accounts: {null_count:,}/{total_booked:,} ({imputed_pct:.1f}%) "
@@ -511,8 +642,12 @@ def process_mr_period(
         logger.info("Generating Risk Production Summary Table for MR period...")
 
         mr_summary_table = calculate_metrics_from_cuts(
-            data_summary_desagregado_mr, optimal_solution_df, VARIABLES, settings.inv_vars,
-            mask=mask, grid=grid,
+            data_summary_desagregado_mr,
+            optimal_solution_df,
+            VARIABLES,
+            settings.inv_vars,
+            mask=mask,
+            grid=grid,
         )
 
         if mr_summary_table is not None:
@@ -524,9 +659,16 @@ def process_mr_period(
         # --- Calculate PSI/CSI Stability Metrics ---
         logger.info("Calculating PSI/CSI stability metrics (Main vs MR)...")
         try:
-            # Get specific columns for stability analysis
+            # Prefer known score columns, fall back to any shared numeric columns
             requested_vars = ["score_rf", "risk_score_rf", "oa_amt"]
             stability_vars = [v for v in requested_vars if v in data_booked.columns and v in data_booked_mr.columns]
+            if not stability_vars:
+                shared_cols = set(data_booked.columns) & set(data_booked_mr.columns)
+                stability_vars = [
+                    c for c in shared_cols if data_booked[c].dtype.kind in ("f", "i") and c not in VARIABLES
+                ][:5]
+                if stability_vars:
+                    logger.info(f"Stability: using fallback numeric columns: {stability_vars}")
 
             if stability_vars:
                 # Determine main score variable for overall PSI

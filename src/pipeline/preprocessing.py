@@ -5,7 +5,7 @@ from loguru import logger
 
 from src.config import OutputPaths, PreprocessingSettings
 from src.data_quality import run_data_quality_checks
-from src.plots import calculate_and_plot_transformation_rate, plot_risk_vs_production
+from src.plots import calculate_and_plot_transformation_rate, plot_bin_threshold_diagnostic, plot_risk_vs_production
 from src.preprocess_improved import complete_preprocessing_pipeline
 from src.utils import calculate_stress_factor
 
@@ -54,6 +54,20 @@ def run_preprocessing_phase(
     fig = plot_risk_vs_production(data_clean, settings.indicators, settings.cz_config, data_booked)
     fig.write_html(output.risk_vs_production_html)
     logger.debug(f"[{segment}] Risk vs production plot saved to {output.risk_vs_production_html}")
+
+    # Bin threshold diagnostic charts (one per binning variable)
+    for _var_name, bc in settings.bins.items():
+        if bc.output_col in data_clean.columns:
+            try:
+                plot_bin_threshold_diagnostic(
+                    data_clean,
+                    bin_col=bc.output_col,
+                    bin_edges=bc.bin_edges or None,
+                    source_col=bc.source_col,
+                    output_path=output.bin_diagnostic_html(bc.output_col),
+                )
+            except Exception as e:
+                logger.warning(f"[{segment}] Bin diagnostic for '{bc.output_col}' failed (non-blocking): {e}")
 
     # Stress factor & transformation rate
     stress_factor = calculate_stress_factor(data_booked)

@@ -450,12 +450,14 @@ def aggregate_metrics(metrics_list: list[dict[str, dict[str, float]]]) -> dict[s
         aggregated[key]["production_ci_lower"] = combined_prod_mean - z_95 * combined_prod_se
         aggregated[key]["production_ci_upper"] = combined_prod_mean + z_95 * combined_prod_se
 
-        # Risk CIs: aggregate using exposure-weighted risk (already done for point estimate)
+        # Risk CIs: use the point estimate from the aggregated numerator/denominator
+        # (already computed correctly upstream), not the sum of segment means
         combined_risk_se = np.sqrt(sum(se**2 for se in risk_ses))
         if combined_risk_se > 0:
-            combined_risk_mean = sum(risk_means)
-            aggregated[key]["risk_ci_lower"] = combined_risk_mean - z_95 * combined_risk_se
-            aggregated[key]["risk_ci_upper"] = combined_risk_mean + z_95 * combined_risk_se
+            # Use the already-computed aggregated risk as the center, not sum(risk_means)
+            agg_risk_point = aggregated[key].get("optimum_risk", sum(risk_means))
+            aggregated[key]["risk_ci_lower"] = agg_risk_point - z_95 * combined_risk_se
+            aggregated[key]["risk_ci_upper"] = agg_risk_point + z_95 * combined_risk_se
         else:
             aggregated[key]["risk_ci_lower"] = 0
             aggregated[key]["risk_ci_upper"] = 0
@@ -509,7 +511,7 @@ def consolidate_segments(
     seen_names = {}
     for suffix in scenarios:
         name = scenario_name_map.get(suffix, "base")
-        if name not in seen_names or suffix:
+        if name not in seen_names:
             seen_names[name] = suffix
 
     # Rebuild scenarios list with deduplicated suffixes

@@ -209,10 +209,10 @@ def calculate_psi_by_period(
     df["Expected Percent"] = df["Expected Count"] / len(expected)
     df["Actual Percent"] = df["Actual Count"] / len(actual)
 
-    # Handle edge cases for computing PSI: replace zeros then re-normalize
+    # Replace exact zeros with epsilon to avoid log(0), then re-normalize
     epsilon = PSI_EPSILON
-    df["Expected Percent"] = df["Expected Percent"].replace(0, epsilon)
-    df["Actual Percent"] = df["Actual Percent"].replace(0, epsilon)
+    df["Expected Percent"] = df["Expected Percent"].where(df["Expected Percent"] > 0, epsilon)
+    df["Actual Percent"] = df["Actual Percent"].where(df["Actual Percent"] > 0, epsilon)
     df["Expected Percent"] = df["Expected Percent"] / df["Expected Percent"].sum()
     df["Actual Percent"] = df["Actual Percent"] / df["Actual Percent"].sum()
 
@@ -451,9 +451,11 @@ def calc_iv(df: pd.DataFrame, var: str, target: str) -> float:
     if total_bad == 0 or total_good == 0:
         return 0.0
 
-    df_tmp["perc_bad"] = (df_tmp["sum"] / total_bad).clip(lower=PSI_EPSILON)
-    df_tmp["perc_good"] = ((df_tmp["count"] - df_tmp["sum"]) / total_good).clip(lower=PSI_EPSILON)
-    # Re-normalize after clipping so distributions sum to 1.0
+    df_tmp["perc_bad"] = df_tmp["sum"] / total_bad
+    df_tmp["perc_good"] = (df_tmp["count"] - df_tmp["sum"]) / total_good
+    # Replace exact zeros with epsilon to avoid log(0), then re-normalize
+    df_tmp["perc_bad"] = df_tmp["perc_bad"].where(df_tmp["perc_bad"] > 0, PSI_EPSILON)
+    df_tmp["perc_good"] = df_tmp["perc_good"].where(df_tmp["perc_good"] > 0, PSI_EPSILON)
     df_tmp["perc_bad"] = df_tmp["perc_bad"] / df_tmp["perc_bad"].sum()
     df_tmp["perc_good"] = df_tmp["perc_good"] / df_tmp["perc_good"].sum()
     df_tmp["woe"] = np.log(df_tmp["perc_good"] / df_tmp["perc_bad"])

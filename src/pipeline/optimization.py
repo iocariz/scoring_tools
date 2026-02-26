@@ -172,8 +172,7 @@ def run_optimization_phase(
             # Fallback to legacy enumeration if MILP produces no solutions
             if len(settings.variables) > 2:
                 logger.error(
-                    f"[{segment}] MILP produced no solutions and legacy fallback "
-                    "is not supported for >2 variables."
+                    f"[{segment}] MILP produced no solutions and legacy fallback is not supported for >2 variables."
                 )
                 raise RuntimeError("MILP infeasible and no legacy fallback for N>2 variables.")
             logger.warning(f"[{segment}] MILP produced no solutions, falling back to legacy enumeration")
@@ -492,10 +491,8 @@ def run_scenario_analysis(
     else:
         data_mr_period = pd.DataFrame(columns=data_clean.columns)
 
-    inv_var1 = settings.variables[1] in settings.inv_vars
-
-    # Calculate n_months for each period (for annualization)
-    n_months_main = (date_fin_main.year - date_ini_main.year) * 12 + (date_fin_main.month - date_ini_main.month) + 1
+    # Reuse inv_var1 and n_months_main from earlier in this function
+    n_months_main = n_months_main_calc
 
     if settings.date_ini_book_obs_mr is not None and settings.date_fin_book_obs_mr is not None:
         date_ini_mr = settings.get_date("date_ini_book_obs_mr")

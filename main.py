@@ -164,7 +164,7 @@ def main(
         )
 
         # Step 6c: Reject inference parameter optimization (optional, non-blocking)
-        run_ri_optimizer_phase(
+        best_ri_params = run_ri_optimizer_phase(
             data_booked=data_booked,
             data_demand=data_demand,
             risk_inference=risk_inference,
@@ -175,6 +175,68 @@ def main(
             annual_coef=annual_coef,
             output=output,
         )
+
+        # Step 6d: Re-run optimization with tuned RI params if they changed
+        if best_ri_params:
+            old_uplift = settings.reject_uplift_factor
+            old_max_mult = settings.reject_max_risk_multiplier
+            new_uplift = best_ri_params["uplift_factor"]
+            new_max_mult = best_ri_params["max_risk_multiplier"]
+
+            if abs(old_uplift - new_uplift) > 0.01 or abs(old_max_mult - new_max_mult) > 0.01:
+                logger.info(
+                    f"[{segment}] RI optimizer found better params: "
+                    f"uplift {old_uplift:.2f} -> {new_uplift:.2f}, "
+                    f"max_mult {old_max_mult:.2f} -> {new_max_mult:.2f}. Re-running optimization."
+                )
+                settings.reject_uplift_factor = new_uplift
+                settings.reject_max_risk_multiplier = new_max_mult
+
+                (
+                    data_summary_desagregado,
+                    data_summary,
+                    data_summary_sample_no_opt,
+                    values_per_var,
+                    grid,
+                    pareto_masks,
+                ) = run_optimization_phase(
+                    data_booked,
+                    data_demand,
+                    risk_inference,
+                    reg_todu_amt_pile,
+                    stress_factor,
+                    tasa_fin,
+                    settings,
+                    annual_coef,
+                    output=output,
+                )
+
+                cutoff_summaries = []
+                for scenario_risk, scenario_name in scenarios:
+                    summary = run_scenario_analysis(
+                        scenario_risk,
+                        scenario_name,
+                        data_summary=data_summary,
+                        data_summary_desagregado=data_summary_desagregado,
+                        data_summary_sample_no_opt=data_summary_sample_no_opt,
+                        data_clean=data_clean,
+                        data_booked=data_booked,
+                        settings=settings,
+                        risk_inference=risk_inference,
+                        reg_todu_amt_pile=reg_todu_amt_pile,
+                        stress_factor=stress_factor,
+                        tasa_fin=tasa_fin,
+                        annual_coef_mr=annual_coef_mr,
+                        values_per_var=values_per_var,
+                        grid=grid,
+                        pareto_masks=pareto_masks,
+                        output=output,
+                    )
+                    cutoff_summaries.append(summary)
+
+                _save_cutoff_summaries(cutoff_summaries, settings, output=output)
+            else:
+                logger.info(f"[{segment}] RI optimizer confirmed current params are optimal")
 
         # Step 7: Temporal trend analysis (non-blocking)
         try:

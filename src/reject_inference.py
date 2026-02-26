@@ -141,8 +141,17 @@ def apply_parceling_adjustment(
         how="left",
     )
 
-    # Bins missing from acceptance_rates (no demand data) get no adjustment
-    result["acceptance_rate"] = result["acceptance_rate"].fillna(1.0)
+    # Bins missing from acceptance_rates (no demand data): use median observed rate
+    # as a conservative default (1.0 would mean "all accepted" = no adjustment)
+    median_rate = acceptance_rates["acceptance_rate"].median()
+    fallback_rate = median_rate if pd.notna(median_rate) and median_rate > 0 else 0.5
+    n_missing = result["acceptance_rate"].isna().sum()
+    if n_missing > 0:
+        logger.warning(
+            f"Parceling: {n_missing} repesca bin(s) have no demand data; "
+            f"filling acceptance_rate with median={fallback_rate:.3f}"
+        )
+    result["acceptance_rate"] = result["acceptance_rate"].fillna(fallback_rate)
 
     if method == "power":
         # Power-law: multiplier = (1 / acceptance_rate) ^ factor
@@ -185,6 +194,7 @@ def apply_reject_inference(
     *,
     reject_uplift_factor: float = 1.5,
     max_risk_multiplier: float = 3.0,
+    parceling_method: Literal["linear", "power"] = "linear",
 ) -> pd.DataFrame:
     """Dispatcher: apply reject-inference adjustment to repesca risk predictions.
 
@@ -203,6 +213,8 @@ def apply_reject_inference(
         Passed to :func:`apply_parceling_adjustment`.
     max_risk_multiplier:
         Passed to :func:`apply_parceling_adjustment`.
+    parceling_method:
+        ``"linear"`` or ``"power"``, passed to :func:`apply_parceling_adjustment`.
 
     Returns
     -------
@@ -224,6 +236,7 @@ def apply_reject_inference(
             variables,
             reject_uplift_factor=reject_uplift_factor,
             max_risk_multiplier=max_risk_multiplier,
+            method=parceling_method,
         )
 
     raise ValueError(f"Unknown reject inference method: {method!r}. Supported methods: 'none', 'parceling'.")

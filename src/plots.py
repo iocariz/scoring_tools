@@ -673,9 +673,11 @@ class RiskProductionVisualizer:
                 cell_df["_m"] = selected_mask
                 # For each (var0, var1) pair, accepted if ANY higher-dim cell is accepted
                 proj = cell_df.groupby([var0, var1])["_m"].max().reset_index()
-                proj_pivot = proj.pivot(index=var1, columns=var0, values="_m").reindex(
-                    index=self.values_var1, columns=self.values_var0
-                ).fillna(0)
+                proj_pivot = (
+                    proj.pivot(index=var1, columns=var0, values="_m")
+                    .reindex(index=self.values_var1, columns=self.values_var0)
+                    .fillna(0)
+                )
                 z_mask = proj_pivot.values
             else:
                 z_mask = np.zeros_like(self.yy)
@@ -1282,6 +1284,259 @@ def plot_income_bin_trends(
     if output_path:
         fig.write_html(output_path)
         logger.info(f"Income bin diagnostics saved to {output_path}")
+
+    return fig
+
+
+def _format_bin_edges(bin_edges: list[float]) -> list[str]:
+    """Format bin edges into human-readable interval labels (1-indexed).
+
+    Given edges ``[-inf, 350, 450, inf]`` returns:
+    ``["1: (-inf, 350]", "2: (350, 450]", "3: (450, inf)"]``
+    """
+    labels = []
+    for i in range(len(bin_edges) - 1):
+        lo, hi = bin_edges[i], bin_edges[i + 1]
+        lo_s = f"{lo:,.1f}" if np.isfinite(lo) else "-inf"
+        hi_s = f"{hi:,.1f}" if np.isfinite(hi) else "inf"
+        left = "(" if np.isfinite(lo) else "("
+        right = "]" if np.isfinite(hi) else ")"
+        labels.append(f"{i + 1}: {left}{lo_s}, {hi_s}{right}")
+    return labels
+
+
+def plot_bin_threshold_diagnostic(
+    data: pd.DataFrame,
+    bin_col: str,
+    date_col: str = "mis_date",
+    todu_30_col: str = Columns.TODU_30EVER_H6,
+    todu_amt_col: str = Columns.TODU_AMT_PILE_H6,
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
+    bin_edges: list[float] | None = None,
+    source_col: str | None = None,
+    output_path: str | None = None,
+) -> go.Figure:
+    """Bin threshold diagnostic: monthly + full-period volume, B2EverH6, and risk separation.
+
+    Validates that bin thresholds are correctly placed by checking:
+
+    1. **Population share** — bins should stay roughly balanced over time.
+    2. **Risk ordering** — bins should maintain monotone risk ordering across
+       all months.  Lines that cross indicate a poorly placed threshold.
+    3. **Risk separation** — the B2EverH6 ratio between adjacent bins should
+       stay consistently above 1 (or below 1, depending on direction).
+
+    A **"Full Period"** column is appended to the right of each panel,
+    showing the overall aggregation across all months.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Record-level data with ``bin_col``, ``date_col``, ``todu_30_col``,
+        and ``todu_amt_col``.
+    bin_col : str
+        Binned column name (e.g. ``"sc_octroi_new_clus"``).
+    date_col : str
+        Date column (default ``"mis_date"``).
+    todu_30_col : str
+        Numerator column for B2EverH6 (default ``"todu_30ever_h6"``).
+    todu_amt_col : str
+        Denominator column for B2EverH6 (default ``"todu_amt_pile_h6"``).
+    multiplier : float
+        Risk multiplier (default 7).
+    bin_edges : list[float] | None
+        Actual threshold values (e.g. ``[-inf, 350, 450, inf]``).
+        Shown in legend labels and title when provided.
+    source_col : str | None
+        Raw column name that was binned (e.g. ``"score_rf"``).
+        Used in title for context.
+    output_path : str | None
+        If provided, save figure as HTML.
+
+    Returns
+    -------
+    go.Figure
+    """
+    df = data.copy()
+    df["_month"] = pd.to_datetime(df[date_col]).dt.to_period("M").astype(str)
+
+    # Aggregate per month × bin
+    agg = (
+        df.groupby(["_month", bin_col])
+        .agg(
+            count=(date_col, "size"),
+            todu_30=(todu_30_col, "sum"),
+            todu_amt=(todu_amt_col, "sum"),
+        )
+        .reset_index()
+    )
+
+    # Full-period aggregate (all months combined)
+    full = (
+        df.groupby(bin_col)
+        .agg(
+            count=(date_col, "size"),
+            todu_30=(todu_30_col, "sum"),
+            todu_amt=(todu_amt_col, "sum"),
+        )
+        .reset_index()
+    )
+    full["_month"] = "Full Period"
+    full["b2_ever_h6"] = calculate_b2_ever_h6(
+        full["todu_30"], full["todu_amt"], multiplier=multiplier, as_percentage=True
+    )
+    full_total = full["count"].sum()
+    full["share_pct"] = full["count"] / full_total * 100 if full_total > 0 else 0.0
+
+    # Compute B2EverH6 per cell
+    agg["b2_ever_h6"] = calculate_b2_ever_h6(agg["todu_30"], agg["todu_amt"], multiplier=multiplier, as_percentage=True)
+
+    # Monthly totals for population share
+    monthly_totals = agg.groupby("_month")["count"].transform("sum")
+    agg["share_pct"] = agg["count"] / monthly_totals * 100
+
+    # Combine monthly + full period
+    agg = pd.concat([agg, full], ignore_index=True)
+
+    bins_sorted = sorted(agg[bin_col].unique())
+    n_bins = len(bins_sorted)
+    colors = [f"hsl({int(i * 360 / max(n_bins, 1))}, 70%, 50%)" for i in range(n_bins)]
+
+    # Build bin labels: include threshold ranges when bin_edges are provided
+    edge_labels = _format_bin_edges(bin_edges) if bin_edges and len(bin_edges) > 1 else None
+    bin_labels = {}
+    for i, b in enumerate(bins_sorted):
+        if edge_labels and i < len(edge_labels):
+            bin_labels[b] = f"Bin {edge_labels[i]}"
+        else:
+            bin_labels[b] = f"Bin {b}"
+
+    # Build title
+    title_parts = [f"Bin Threshold Diagnostic — {bin_col}"]
+    if source_col:
+        title_parts.append(f"(source: {source_col})")
+    if bin_edges:
+        finite_edges = [e for e in bin_edges if np.isfinite(e)]
+        if finite_edges:
+            edge_str = ", ".join(f"{e:,.1f}" for e in finite_edges)
+            title_parts.append(f"<br><sub>Thresholds: [{edge_str}]</sub>")
+    title_text = " ".join(title_parts)
+
+    fig = make_subplots(
+        rows=3,
+        cols=1,
+        subplot_titles=(
+            f"Population Share by {bin_col} (%)",
+            f"B2EverH6 (%) by {bin_col}",
+            "Risk Separation (adjacent bin ratio)",
+        ),
+        vertical_spacing=0.08,
+    )
+
+    months_sorted = sorted(m for m in agg["_month"].unique() if m != "Full Period")
+    x_order = months_sorted + ["Full Period"]
+
+    # --- Panel 1: Stacked area of population share ---
+    for i, b in enumerate(bins_sorted):
+        sub = agg[agg[bin_col] == b].set_index("_month").reindex(x_order).reset_index()
+        fig.add_trace(
+            go.Bar(
+                x=sub["_month"],
+                y=sub["share_pct"],
+                name=bin_labels[b],
+                legendgroup=str(b),
+                marker_color=colors[i],
+                hovertemplate=(
+                    f"{bin_labels[b]}<br>%{{x}}<br>Share: %{{y:.1f}}%<br>Count: %{{customdata}}<extra></extra>"
+                ),
+                customdata=sub["count"].values,
+            ),
+            row=1,
+            col=1,
+        )
+
+    # --- Panel 2: B2EverH6 per bin ---
+    for i, b in enumerate(bins_sorted):
+        sub = agg[agg[bin_col] == b].set_index("_month").reindex(x_order).reset_index()
+        fig.add_trace(
+            go.Scatter(
+                x=sub["_month"],
+                y=sub["b2_ever_h6"],
+                mode="lines+markers",
+                name=bin_labels[b],
+                legendgroup=str(b),
+                showlegend=False,
+                line=dict(color=colors[i]),
+                hovertemplate=f"{bin_labels[b]}<br>%{{x}}<br>B2EverH6: %{{y:.2f}}%<extra></extra>",
+            ),
+            row=2,
+            col=1,
+        )
+
+    # --- Panel 3: Risk separation ratio between adjacent bins ---
+    if n_bins >= 2:
+        pivot = agg.pivot_table(index="_month", columns=bin_col, values="b2_ever_h6")
+        pivot = pivot.reindex(x_order)
+        for j in range(len(bins_sorted) - 1):
+            b_lo, b_hi = bins_sorted[j], bins_sorted[j + 1]
+            if b_lo in pivot.columns and b_hi in pivot.columns:
+                ratio = pivot[b_hi] / pivot[b_lo].replace(0, np.nan)
+                fig.add_trace(
+                    go.Scatter(
+                        x=ratio.index.astype(str),
+                        y=ratio.values,
+                        mode="lines+markers",
+                        name=f"{bin_labels[b_hi]} / {bin_labels[b_lo]}",
+                        legendgroup=f"ratio_{j}",
+                        hovertemplate=(
+                            f"{bin_labels[b_hi]} / {bin_labels[b_lo]}<br>%{{x}}<br>Ratio: %{{y:.2f}}<extra></extra>"
+                        ),
+                    ),
+                    row=3,
+                    col=1,
+                )
+
+        # Reference line at ratio=1
+        fig.add_trace(
+            go.Scatter(
+                x=x_order,
+                y=[1.0] * len(x_order),
+                mode="lines",
+                line=dict(color="grey", dash="dash", width=1),
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=3,
+            col=1,
+        )
+
+    # Vertical separator before "Full Period"
+    for row in range(1, 4):
+        fig.add_vline(
+            x=len(months_sorted) - 0.5,
+            line=dict(color="grey", dash="dot", width=1),
+            row=row,
+            col=1,
+        )
+
+    fig.update_layout(
+        height=1000,
+        width=1200,
+        title_text=title_text,
+        barmode="stack",
+    )
+    fig.update_yaxes(title_text="Share (%)", row=1, col=1)
+    fig.update_yaxes(title_text="B2EverH6 (%)", row=2, col=1)
+    fig.update_yaxes(title_text="Ratio", row=3, col=1)
+    fig.update_xaxes(title_text="Period", row=3, col=1)
+    # Force categorical x-axes so Plotly doesn't auto-parse period strings as dates
+    fig.update_xaxes(type="category", categoryorder="array", categoryarray=x_order)
+
+    styles.apply_plotly_style(fig)
+
+    if output_path:
+        fig.write_html(output_path)
+        logger.info(f"Bin threshold diagnostic saved to {output_path}")
 
     return fig
 

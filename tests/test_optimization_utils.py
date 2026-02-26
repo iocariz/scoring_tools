@@ -14,6 +14,7 @@ from src.optimization_utils import (
     add_bin_columns,
     classify_by_mask,
     create_fixed_cutoff_solution,
+    decode_mask,
     evaluate_solution,
     get_fact_sol,
     mask_to_cutoffs,
@@ -701,8 +702,8 @@ class TestAddBinColumns:
         for v0 in grid.values_per_var["var0"]:
             assert float(v0) in result.columns
 
-    def test_3d_has_sol_fac_only(self):
-        """For N>2, add_bin_columns should only add sol_fac."""
+    def test_3d_adds_mask_column(self):
+        """For N>2, add_bin_columns should add sol_fac and acceptance_mask."""
         df = _make_summary_3d(2, 3, 2)
         grid = CellGrid.from_summary(df, ["var0", "var1", "var2"])
         mask = np.ones(grid.n_cells, dtype=int)
@@ -712,6 +713,29 @@ class TestAddBinColumns:
 
         result = add_bin_columns(pareto_df, [mask], grid, inv_vars=[])
         assert "sol_fac" in result.columns
+        assert "acceptance_mask" in result.columns
+        # Decoded mask length equals grid.n_cells
+        decoded = decode_mask(result["acceptance_mask"].iloc[0])
+        assert len(decoded) == grid.n_cells
+        # Round-trip: decoded mask matches original
+        np.testing.assert_array_equal(decoded, mask)
+
+    def test_2d_no_mask_column(self):
+        """For 2-var case, acceptance_mask should NOT be added (backward compat)."""
+        df = _make_summary_2d(3, 4)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        mask = np.ones(grid.n_cells, dtype=int)
+
+        kpis = evaluate_solution(mask, grid, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], 7)
+        pareto_df = pd.DataFrame([kpis])
+
+        result = add_bin_columns(pareto_df, [mask], grid, inv_vars=[])
+        assert "acceptance_mask" not in result.columns
+
+    def test_decode_mask(self):
+        """decode_mask should convert comma-separated string to numpy array."""
+        result = decode_mask("1,0,1")
+        np.testing.assert_array_equal(result, np.array([1, 0, 1]))
 
 
 # =============================================================================
@@ -946,11 +970,13 @@ class TestLearnIncomeBins:
 
         rng = np.random.RandomState(42)
         n = 3000
-        income = np.concatenate([
-            rng.normal(1000, 200, n // 3),
-            rng.normal(3000, 200, n // 3),
-            rng.normal(6000, 200, n // 3),
-        ])
+        income = np.concatenate(
+            [
+                rng.normal(1000, 200, n // 3),
+                rng.normal(3000, 200, n // 3),
+                rng.normal(6000, 200, n // 3),
+            ]
+        )
         bad = np.concatenate([np.ones(n // 3), np.zeros(n // 3), np.zeros(n // 3)])
         data = pd.DataFrame({"income_t1_m": income, "early_bad": bad})
 

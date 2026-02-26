@@ -77,6 +77,20 @@ class TestPreprocessorSettings:
             PreprocessingSettings(**valid_config_dict)
         assert "Invalid main observation period" in str(excinfo.value)
 
+    def test_use_mr_outcomes_default(self, valid_config_dict):
+        settings = PreprocessingSettings(**valid_config_dict)
+        assert settings.use_mr_outcomes is False
+
+    def test_mr_min_obs_per_bin_default(self, valid_config_dict):
+        settings = PreprocessingSettings(**valid_config_dict)
+        assert settings.mr_min_obs_per_bin == 30
+
+    def test_mr_min_obs_per_bin_zero_invalid(self, valid_config_dict):
+        valid_config_dict["mr_min_obs_per_bin"] = 0
+        with pytest.raises(ValidationError) as excinfo:
+            PreprocessingSettings(**valid_config_dict)
+        assert "mr_min_obs_per_bin" in str(excinfo.value)
+
 
 class TestDataValidation:
     """Test data validation functions."""

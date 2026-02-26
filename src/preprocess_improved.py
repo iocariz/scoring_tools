@@ -292,9 +292,7 @@ def learn_income_bins(
 
     valid = data_booked[[source_col, target_col]].dropna()
     if len(valid) < min_samples_leaf * 2:
-        raise ValueError(
-            f"learn_income_bins: only {len(valid)} valid records — need at least {min_samples_leaf * 2}"
-        )
+        raise ValueError(f"learn_income_bins: only {len(valid)} valid records — need at least {min_samples_leaf * 2}")
 
     X = valid[[source_col]].values
     y = valid[target_col].values.astype(int)
@@ -308,7 +306,7 @@ def learn_income_bins(
 
     # Extract split thresholds from tree internals
     thresholds = sorted(
-        t for t in tree.tree_.threshold if t != -2.0  # -2.0 = leaf node sentinel
+        {t for t in tree.tree_.threshold if t != -2.0}  # -2.0 = leaf node sentinel
     )
 
     if not thresholds:
@@ -400,7 +398,7 @@ def learn_optimization_bins(
 
     # Extract split thresholds from tree internals
     thresholds = sorted(
-        t for t in tree.tree_.threshold if t != -2.0  # -2.0 = leaf node sentinel
+        {t for t in tree.tree_.threshold if t != -2.0}  # -2.0 = leaf node sentinel
     )
 
     if not thresholds:
@@ -463,8 +461,7 @@ def assess_binning_gini(
     retention = (gini_binned / gini_raw * 100) if gini_raw != 0 else 0.0
 
     logger.info(
-        f"assess_binning_gini: raw Gini={gini_raw:.4f}, binned Gini={gini_binned:.4f}, "
-        f"retention={retention:.1f}%"
+        f"assess_binning_gini: raw Gini={gini_raw:.4f}, binned Gini={gini_binned:.4f}, retention={retention:.1f}%"
     )
     return {"gini_raw": gini_raw, "gini_binned": gini_binned, "gini_retention_pct": retention}
 
@@ -845,9 +842,7 @@ def _run_data_transformations(df: pd.DataFrame, settings: "PreprocessingSettings
                         max_bins=bc.max_bins,
                     )
                 else:
-                    logger.info(
-                        f"Learning bin edges for '{var_name}' using quantile splits (max_bins={bc.max_bins})"
-                    )
+                    logger.info(f"Learning bin edges for '{var_name}' using quantile splits (max_bins={bc.max_bins})")
                     learned_edges = learn_quantile_bins(
                         data_booked_for_bins,
                         source_col=bc.source_col,

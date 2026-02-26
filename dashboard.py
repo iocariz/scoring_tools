@@ -1095,20 +1095,30 @@ def create_model_details_content(segment: str | None = None) -> html.Div:
 def load_cutoff_data(
     scenario: str, segment: str | None = None
 ) -> tuple[
-    pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None, list[str], list[str], float, pd.DataFrame | None
+    pd.DataFrame | None,
+    pd.DataFrame | None,
+    pd.DataFrame | None,
+    list[str],
+    list[str],
+    float,
+    pd.DataFrame | None,
+    list[int] | None,
 ]:
     """
     Load data needed for cutoff explorer.
 
     Returns:
-        Tuple of (summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier, cell_ci)
+        Tuple of (summary_data, optimal_solution, pareto_solutions, variables,
+                  inv_vars, multiplier, cell_ci, optimal_mask)
+        optimal_mask is a decoded acceptance mask list for N>2, or None for 2-var.
     """
     from src.config import PreprocessingSettings
 
-    # Extract inv_vars and multiplier from configuration, preferring the segment's own config.
+    # Extract variables, inv_vars and multiplier from configuration, preferring the segment's own config.
     # inv_vars is populated at runtime by preprocessing (_infer_monotonicity) and is never
     # written to the TOML config.  We must derive it from the ``directions`` dict instead.
     inv_vars = []
+    config_variables: list[str] = []
     multiplier = 7.0
     try:
         config_candidates = []
@@ -1121,6 +1131,7 @@ def load_cutoff_data(
                 multiplier = settings.multiplier
                 # Derive inv_vars from directions: direction == -1 means higher bin = safer
                 inv_vars = [var for var, d in settings.directions.items() if d == -1]
+                config_variables = list(settings.variables)
                 break
     except Exception as e:
         logger.warning(f"Could not load config: {e}")
@@ -1130,17 +1141,25 @@ def load_cutoff_data(
     summary_data = None
     optimal_solution = None
     pareto_solutions = None
-    variables = []
+    variables: list[str] = []
 
     # Load summary data
     if paths["summary_data"].exists():
         summary_data = pd.read_csv(paths["summary_data"])
-        # Detect variables (first two columns that look like cluster columns)
-        for col in summary_data.columns:
-            if "clus" in col.lower() or col in ["sc_octroi_new_clus", "new_efx_clus"]:
-                variables.append(col)
-            if len(variables) == 2:
-                break
+
+        # Use config-derived variables if available (supports N variables)
+        if config_variables:
+            # Resolve actual column names: config names may differ from CSV column names.
+            # Look up bin output columns from preprocessing.bins config or match directly.
+            variables = [v for v in config_variables if v in summary_data.columns]
+
+        # Fallback: pattern-match cluster columns (legacy 2-var detection)
+        if not variables:
+            for col in summary_data.columns:
+                if "clus" in col.lower() or col in ["sc_octroi_new_clus", "new_efx_clus"]:
+                    variables.append(col)
+                    if len(variables) == 2:
+                        break
 
     # Load optimal solution
     if paths["cutoffs"].exists():
@@ -1165,7 +1184,20 @@ def load_cutoff_data(
             except Exception as e:
                 logger.warning(f"Could not load cell CI from {ci_path}: {e}")
 
-    return summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier, cell_ci
+    # Decode optimal acceptance mask for N>2
+    optimal_mask: list[int] | None = None
+    if (
+        len(variables) > 2
+        and optimal_solution is not None
+        and not optimal_solution.empty
+        and "acceptance_mask" in optimal_solution.columns
+    ):
+        from src.optimization_utils import decode_mask
+
+        mask_str = str(optimal_solution["acceptance_mask"].iloc[0])
+        optimal_mask = decode_mask(mask_str).tolist()
+
+    return summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier, cell_ci, optimal_mask
 
 
 def calculate_metrics_from_custom_cuts(
@@ -1251,10 +1283,43 @@ def calculate_metrics_from_custom_cuts(
     }
 
 
+def calculate_metrics_from_mask(
+    data: pd.DataFrame,
+    mask: list[int] | np.ndarray,
+    variables: list[str],
+    multiplier: float = 7.0,
+) -> dict[str, Any]:
+    """Calculate metrics from an N-dimensional acceptance mask.
+
+    Thin wrapper around CellGrid + evaluate_solution, returning the same dict
+    shape as calculate_metrics_from_custom_cuts().
+    """
+    from src.optimization_utils import CellGrid, evaluate_solution
+
+    mask_arr = np.asarray(mask, dtype=int)
+    grid = CellGrid.from_summary(data, variables)
+    kpis = evaluate_solution(mask_arr, grid, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], multiplier)
+
+    actual_prod = kpis.get("oa_amt_h0_boo", 0.0) + kpis.get("oa_amt_h0_cut", 0.0)
+    opt_prod = kpis.get("oa_amt_h0", 0.0)
+
+    return {
+        "actual_prod": actual_prod,
+        "actual_risk": kpis.get("b2_ever_h6_boo", 0.0),
+        "swap_in_prod": kpis.get("oa_amt_h0_rep", 0.0),
+        "swap_in_risk": kpis.get("b2_ever_h6_rep", 0.0),
+        "swap_out_prod": kpis.get("oa_amt_h0_cut", 0.0),
+        "swap_out_risk": kpis.get("b2_ever_h6_cut", 0.0),
+        "opt_prod": opt_prod,
+        "opt_risk": kpis.get("b2_ever_h6", 0.0),
+        "opt_prod_pct": opt_prod / actual_prod if actual_prod > 0 else 0,
+    }
+
+
 def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> html.Div:
     """Create the cutoff explorer tab layout."""
-    summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier, cell_ci = load_cutoff_data(
-        scenario, segment
+    summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier, cell_ci, optimal_mask = (
+        load_cutoff_data(scenario, segment)
     )
 
     if summary_data is None or len(variables) < 2:
@@ -1266,30 +1331,7 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
             color="warning",
         )
 
-    var0_col, var1_col = variables[0], variables[1]
-
-    # Get unique bins (normalize to float for consistent key matching)
-    bins = sorted(summary_data[var0_col].unique())
-    var1_bins = sorted(summary_data[var1_col].unique())
-    var1_max = int(max(var1_bins))
-
-    # Get optimal cutoffs — CSV columns may be strings like "1.0"
-    optimal_cuts = {}
-    if optimal_solution is not None and not optimal_solution.empty:
-        opt_row = optimal_solution.iloc[0]
-        # Build a float→column_name lookup for numeric columns
-        col_float_map = {}
-        for col in optimal_solution.columns:
-            try:
-                col_float_map[float(col)] = col
-            except (ValueError, TypeError):
-                pass
-        for bin_val in bins:
-            col_name = col_float_map.get(float(bin_val))
-            if col_name is not None:
-                optimal_cuts[bin_val] = int(opt_row[col_name])
-            else:
-                optimal_cuts[bin_val] = var1_max
+    is_nd = len(variables) > 2
 
     # Get risk range from Pareto solutions
     risk_min, risk_max, risk_current = 0.0, 2.0, 1.0
@@ -1297,51 +1339,16 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
     if pareto_solutions is not None and not pareto_solutions.empty:
         risk_min = float(pareto_solutions["b2_ever_h6"].min())
         risk_max = float(pareto_solutions["b2_ever_h6"].max())
-        # Get current risk from optimal solution if available
         if optimal_solution is not None and "b2_ever_h6" in optimal_solution.columns:
             risk_current = float(optimal_solution["b2_ever_h6"].iloc[0])
         else:
             risk_current = (risk_min + risk_max) / 2
-        # Convert Pareto solutions to list of dicts for storage
         pareto_data = pareto_solutions.to_dict("records")
 
-    # Create sliders for each bin.
-    # Sliders use negated values so that 1 appears at the top and var1_max at the bottom
-    # (vertical sliders always put min at bottom; negating reverses the visual direction).
-    slider_marks = {-i: str(i) for i in range(1, var1_max + 1, max(1, var1_max // 5))}
-    # Always show endpoints
-    slider_marks[-1] = "1"
-    slider_marks[-var1_max] = str(var1_max)
+    # Serialize cell_ci for storage
+    cell_ci_data = cell_ci.to_dict("records") if cell_ci is not None and not cell_ci.empty else []
+    has_ci = len(cell_ci_data) > 0
 
-    sliders = []
-    for bin_val in bins:
-        initial_value = optimal_cuts.get(bin_val, var1_max)
-        sliders.append(
-            dbc.Col(
-                [
-                    html.Label(f"Bin {int(bin_val)}", className="fw-bold text-center d-block"),
-                    dcc.Slider(
-                        id={"type": "cutoff-slider", "index": int(bin_val)},
-                        min=-var1_max,
-                        max=-1,
-                        step=1,
-                        value=-initial_value,
-                        marks=slider_marks,
-                        vertical=True,
-                        verticalHeight=200,
-                    ),
-                    html.Div(
-                        f"Opt: {initial_value}",
-                        className="text-muted text-center small mt-1",
-                        id={"type": "optimal-label", "index": int(bin_val)},
-                    ),
-                ],
-                className="text-center",
-                style={"minWidth": "80px"},
-            )
-        )
-
-    # Store for data
     scenario_display = scenario.capitalize()
     segment_display = f" - {segment}" if segment else ""
 
@@ -1349,31 +1356,227 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
     risk_step = (risk_max - risk_min) / 4 if risk_max > risk_min else 0.25
     risk_marks = {round(risk_min + i * risk_step, 2): f"{round(risk_min + i * risk_step, 2):.2f}%" for i in range(5)}
 
-    # Serialize cell_ci for storage
-    cell_ci_data = cell_ci.to_dict("records") if cell_ci is not None and not cell_ci.empty else []
-    has_ci = len(cell_ci_data) > 0
+    # ------------------------------------------------------------------
+    # 2-var path: sliders + per-bin cutoffs (unchanged)
+    # ------------------------------------------------------------------
+    if not is_nd:
+        var0_col, var1_col = variables[0], variables[1]
 
+        bins = sorted(summary_data[var0_col].unique())
+        var1_bins = sorted(summary_data[var1_col].unique())
+        var1_max = int(max(var1_bins))
+
+        optimal_cuts = {}
+        if optimal_solution is not None and not optimal_solution.empty:
+            opt_row = optimal_solution.iloc[0]
+            col_float_map = {}
+            for col in optimal_solution.columns:
+                try:
+                    col_float_map[float(col)] = col
+                except (ValueError, TypeError):
+                    pass
+            for bin_val in bins:
+                col_name = col_float_map.get(float(bin_val))
+                if col_name is not None:
+                    optimal_cuts[bin_val] = int(opt_row[col_name])
+                else:
+                    optimal_cuts[bin_val] = var1_max
+
+        slider_marks = {-i: str(i) for i in range(1, var1_max + 1, max(1, var1_max // 5))}
+        slider_marks[-1] = "1"
+        slider_marks[-var1_max] = str(var1_max)
+
+        sliders = []
+        for bin_val in bins:
+            initial_value = optimal_cuts.get(bin_val, var1_max)
+            sliders.append(
+                dbc.Col(
+                    [
+                        html.Label(f"Bin {int(bin_val)}", className="fw-bold text-center d-block"),
+                        dcc.Slider(
+                            id={"type": "cutoff-slider", "index": int(bin_val)},
+                            min=-var1_max,
+                            max=-1,
+                            step=1,
+                            value=-initial_value,
+                            marks=slider_marks,
+                            vertical=True,
+                            verticalHeight=200,
+                        ),
+                        html.Div(
+                            f"Opt: {initial_value}",
+                            className="text-muted text-center small mt-1",
+                            id={"type": "optimal-label", "index": int(bin_val)},
+                        ),
+                    ],
+                    className="text-center",
+                    style={"minWidth": "80px"},
+                )
+            )
+
+        store_data = {
+            "scenario": scenario,
+            "segment": segment,
+            "is_nd": False,
+            "variables": variables,
+            "var0_col": var0_col,
+            "var1_col": var1_col,
+            "optimal_cuts": {str(float(k)): v for k, v in optimal_cuts.items()},
+            "inv_vars": inv_vars,
+            "bins": [float(b) for b in bins],
+            "var1_bins": [float(b) for b in var1_bins],
+            "multiplier": multiplier,
+            "pareto_solutions": pareto_data,
+            "cell_ci": cell_ci_data,
+        }
+
+        slider_panel = dbc.Col(
+            [
+                dbc.Card(
+                    [
+                        dbc.CardHeader(
+                            [
+                                html.Span("Adjust Cutoffs by Score Bin", className="fw-bold"),
+                                dbc.Button(
+                                    "Reset to Optimal",
+                                    id="reset-cutoffs-btn",
+                                    color="secondary",
+                                    size="sm",
+                                    className="float-end",
+                                ),
+                            ]
+                        ),
+                        dbc.CardBody(
+                            [
+                                html.P(
+                                    [
+                                        f"Variable: {var0_col} (bins) \u2192 {var1_col} "
+                                        f"({'min accepted' if var1_col in inv_vars else 'max accepted'})",
+                                    ],
+                                    className="text-muted small",
+                                ),
+                                html.Div(
+                                    [dbc.Row(sliders, className="g-2 justify-content-center")],
+                                    style={"overflowX": "auto"},
+                                ),
+                            ]
+                        ),
+                    ],
+                    className="mb-3",
+                ),
+            ],
+            md=5,
+        )
+
+        heatmap_header = (
+            f"Cutoff Visualization \u2014 green = accepted "
+            f"({var1_col} {'\u2265' if var1_col in inv_vars else '\u2264'} cutoff)"
+        )
+
+    # ------------------------------------------------------------------
+    # N>2 path: acceptance DataTable + mask store
+    # ------------------------------------------------------------------
+    else:
+        from src.optimization_utils import CellGrid
+
+        grid = CellGrid.from_summary(summary_data, variables)
+
+        # Build table rows: one per cell, columns = variable values + status
+        table_rows = []
+        for combo, idx in grid.cell_index.items():
+            row = {variables[d]: int(combo[d]) for d in range(len(variables))}
+            row["status"] = "Accept" if (optimal_mask and optimal_mask[idx] == 1) else "Reject"
+            table_rows.append(row)
+
+        nd_table_columns = [{"name": v, "id": v} for v in variables] + [{"name": "Status", "id": "status"}]
+
+        store_data = {
+            "scenario": scenario,
+            "segment": segment,
+            "is_nd": True,
+            "variables": variables,
+            "optimal_mask": optimal_mask,
+            "inv_vars": inv_vars,
+            "multiplier": multiplier,
+            "pareto_solutions": pareto_data,
+            "cell_ci": cell_ci_data,
+        }
+
+        slider_panel = dbc.Col(
+            [
+                dbc.Card(
+                    [
+                        dbc.CardHeader(
+                            [
+                                html.Span(
+                                    f"Cell Acceptance ({len(variables)} variables, {grid.n_cells} cells)",
+                                    className="fw-bold",
+                                ),
+                                dbc.Button(
+                                    "Reset to Optimal",
+                                    id="reset-cutoffs-btn",
+                                    color="secondary",
+                                    size="sm",
+                                    className="float-end",
+                                ),
+                            ]
+                        ),
+                        dbc.CardBody(
+                            [
+                                html.P(
+                                    "Click a row in Pin Mode to cycle: unpinned \u2192 accept \u2192 reject \u2192 unpinned",
+                                    className="text-muted small",
+                                ),
+                                dash_table.DataTable(
+                                    id="nd-acceptance-table",
+                                    columns=nd_table_columns,
+                                    data=table_rows,
+                                    page_size=20,
+                                    filter_action="native",
+                                    sort_action="native",
+                                    row_selectable=False,
+                                    style_table={"overflowX": "auto", "maxHeight": "400px", "overflowY": "auto"},
+                                    style_cell={
+                                        "textAlign": "center",
+                                        "padding": "6px 10px",
+                                        "fontSize": "0.85rem",
+                                    },
+                                    style_header={
+                                        "backgroundColor": "#f8f9fa",
+                                        "fontWeight": "600",
+                                        "borderBottom": "2px solid #dee2e6",
+                                    },
+                                    style_data_conditional=[
+                                        {
+                                            "if": {"filter_query": '{status} = "Accept"'},
+                                            "backgroundColor": "rgba(46,204,113,0.12)",
+                                        },
+                                        {
+                                            "if": {"filter_query": '{status} = "Reject"'},
+                                            "backgroundColor": "rgba(231,76,60,0.12)",
+                                        },
+                                    ],
+                                ),
+                            ]
+                        ),
+                    ],
+                    className="mb-3",
+                ),
+            ],
+            md=5,
+        )
+
+        heatmap_header = "Cell Acceptance Map \u2014 green = accepted"
+
+    # ------------------------------------------------------------------
+    # Common layout (both paths share the same component IDs)
+    # ------------------------------------------------------------------
     return html.Div(
         [
             html.H4(f"Cutoff Explorer ({scenario_display}{segment_display})", className="mb-4"),
-            # Store data for callbacks
-            dcc.Store(
-                id="cutoff-data-store",
-                data={
-                    "scenario": scenario,
-                    "segment": segment,
-                    "var0_col": var0_col,
-                    "var1_col": var1_col,
-                    "optimal_cuts": {str(float(k)): v for k, v in optimal_cuts.items()},
-                    "inv_vars": inv_vars,
-                    "bins": [float(b) for b in bins],
-                    "var1_bins": [float(b) for b in var1_bins],
-                    "multiplier": multiplier,
-                    "pareto_solutions": pareto_data,
-                    "cell_ci": cell_ci_data,
-                },
-            ),
+            dcc.Store(id="cutoff-data-store", data=store_data),
             dcc.Store(id="pinned-cells-store", data={}),
+            dcc.Store(id="current-mask-store", data=optimal_mask),
             # Risk Level Selector
             dbc.Card(
                 [
@@ -1428,44 +1631,7 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
             ),
             dbc.Row(
                 [
-                    # Sliders panel
-                    dbc.Col(
-                        [
-                            dbc.Card(
-                                [
-                                    dbc.CardHeader(
-                                        [
-                                            html.Span("Adjust Cutoffs by Score Bin", className="fw-bold"),
-                                            dbc.Button(
-                                                "Reset to Optimal",
-                                                id="reset-cutoffs-btn",
-                                                color="secondary",
-                                                size="sm",
-                                                className="float-end",
-                                            ),
-                                        ]
-                                    ),
-                                    dbc.CardBody(
-                                        [
-                                            html.P(
-                                                [
-                                                    f"Variable: {var0_col} (bins) → {var1_col} "
-                                                    f"({'min accepted' if var1_col in inv_vars else 'max accepted'})",
-                                                ],
-                                                className="text-muted small",
-                                            ),
-                                            html.Div(
-                                                [dbc.Row(sliders, className="g-2 justify-content-center")],
-                                                style={"overflowX": "auto"},
-                                            ),
-                                        ]
-                                    ),
-                                ],
-                                className="mb-3",
-                            ),
-                        ],
-                        md=5,
-                    ),
+                    slider_panel,
                     # Results panel
                     dbc.Col(
                         [
@@ -1527,10 +1693,7 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                         [
                             dbc.Card(
                                 [
-                                    dbc.CardHeader(
-                                        f"Cutoff Visualization — green = accepted "
-                                        f"({var1_col} {'≥' if var1_col in inv_vars else '≤'} cutoff)"
-                                    ),
+                                    dbc.CardHeader(heatmap_header),
                                     dbc.CardBody([dcc.Graph(id="cutoff-heatmap", style={"height": "400px"})]),
                                 ]
                             )
@@ -1547,7 +1710,7 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                             dbc.Card(
                                 [
                                     dbc.CardHeader(
-                                        "Marginal Impact — production change if cell is flipped "
+                                        "Marginal Impact \u2014 production change if cell is flipped "
                                         "(green = gain, red = loss)"
                                     ),
                                     dbc.CardBody([dcc.Graph(id="marginal-impact-heatmap", style={"height": "400px"})]),
@@ -1999,26 +2162,32 @@ def render_content(active_tab: str, scenario: str | None, segment: str | None) -
         Input("cutoff-data-store", "data"),
         Input("show-uncertainty-toggle", "value"),
         Input("pinned-cells-store", "data"),
+        Input("current-mask-store", "data"),
     ],
     prevent_initial_call=False,
 )
-def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_cells):
-    """Update cutoff analysis when sliders change."""
-    if not store_data or not slider_values:
+def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_cells, current_mask_data):
+    """Update cutoff analysis when sliders or mask change."""
+    if not store_data:
+        empty_fig = go.Figure()
+        empty_fig.update_layout(annotations=[dict(text="No data available", x=0.5, y=0.5, showarrow=False)])
+        return html.Div("No data available"), empty_fig, empty_fig, empty_fig
+
+    is_nd = store_data.get("is_nd", False)
+
+    # For 2-var, require sliders; for N>2, require mask
+    if not is_nd and not slider_values:
         empty_fig = go.Figure()
         empty_fig.update_layout(annotations=[dict(text="No data available", x=0.5, y=0.5, showarrow=False)])
         return html.Div("No data available"), empty_fig, empty_fig, empty_fig
 
     scenario = store_data["scenario"]
     segment = store_data.get("segment")
-    var0_col = store_data["var0_col"]
-    var1_col = store_data["var1_col"]
-    optimal_cuts = {float(k): v for k, v in store_data["optimal_cuts"].items()}
+    variables = store_data.get("variables", [])
     inv_vars = store_data.get("inv_vars", [])
-    bins = store_data["bins"]
     multiplier = store_data.get("multiplier", 7.0)
 
-    # Load summary data only (inv_vars already stored from initial load)
+    # Load summary data
     paths = get_scenario_paths(scenario, segment)
     summary_data = None
     if paths["summary_data"].exists():
@@ -2029,6 +2198,175 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
     if summary_data is None:
         empty_fig = go.Figure()
         return html.Div("Data not available"), empty_fig, empty_fig, empty_fig
+
+    # ==================================================================
+    # N>2 path
+    # ==================================================================
+    if is_nd:
+        optimal_mask = store_data.get("optimal_mask")
+        current_mask = current_mask_data if current_mask_data else optimal_mask
+
+        if not current_mask:
+            empty_fig = go.Figure()
+            return html.Div("No mask data available"), empty_fig, empty_fig, empty_fig
+
+        # Compute metrics
+        current_metrics = calculate_metrics_from_mask(summary_data, current_mask, variables, multiplier)
+        optimal_metrics = (
+            calculate_metrics_from_mask(summary_data, optimal_mask, variables, multiplier)
+            if optimal_mask
+            else current_metrics
+        )
+
+        # Results display
+        risk_delta = current_metrics["opt_risk"] - optimal_metrics["opt_risk"]
+        prod_delta = current_metrics["opt_prod_pct"] - optimal_metrics["opt_prod_pct"]
+        risk_color = COLOR_GOOD if risk_delta <= 0 else COLOR_BAD
+        prod_color = COLOR_GOOD if prod_delta >= 0 else COLOR_BAD
+
+        results = dbc.Row(
+            [
+                dbc.Col(
+                    [
+                        html.H6("Current Configuration", className="text-primary"),
+                        html.P(
+                            [
+                                html.Strong("Risk: "),
+                                f"{current_metrics['opt_risk']:.2f}%",
+                                html.Span(f" ({risk_delta:+.2f}pp)", style={"color": risk_color}, className="ms-1"),
+                            ]
+                        ),
+                        html.P(
+                            [
+                                html.Strong("Production: "),
+                                f"{current_metrics['opt_prod_pct']:.1%}",
+                                html.Span(f" ({prod_delta:+.1%})", style={"color": prod_color}, className="ms-1"),
+                            ]
+                        ),
+                    ],
+                    md=6,
+                ),
+                dbc.Col(
+                    [
+                        html.H6("Optimal Configuration", className="text-muted"),
+                        html.P([html.Strong("Risk: "), f"{optimal_metrics['opt_risk']:.2f}%"]),
+                        html.P([html.Strong("Production: "), f"{optimal_metrics['opt_prod_pct']:.1%}"]),
+                    ],
+                    md=6,
+                ),
+            ]
+        )
+
+        # Bar chart
+        fig_chart = go.Figure()
+        categories = ["Risk (%)", "Production (%)"]
+        fig_chart.add_trace(
+            go.Bar(
+                name="Current",
+                x=categories,
+                y=[current_metrics["opt_risk"], current_metrics["opt_prod_pct"] * 100],
+                marker_color=COLOR_PRIMARY,
+            )
+        )
+        fig_chart.add_trace(
+            go.Bar(
+                name="Optimal",
+                x=categories,
+                y=[optimal_metrics["opt_risk"], optimal_metrics["opt_prod_pct"] * 100],
+                marker_color=COLOR_PRODUCTION,
+            )
+        )
+        fig_chart.update_layout(
+            barmode="group",
+            margin=dict(l=40, r=20, t=30, b=40),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            yaxis_title="Value (%)",
+        )
+        apply_plotly_style(fig_chart, height=280)
+
+        # Heatmap: go.Table showing cells with color-coded status
+        from src.optimization_utils import CellGrid
+
+        grid = CellGrid.from_summary(summary_data, variables)
+        mask_arr = np.asarray(current_mask, dtype=int)
+
+        header_vals = [*variables, "Status"]
+        cell_vals = [[] for _ in header_vals]
+        cell_colors = []
+        for combo, idx in grid.cell_index.items():
+            for d, v in enumerate(combo):
+                cell_vals[d].append(int(v))
+            status = "Accept" if mask_arr[idx] == 1 else "Reject"
+            cell_vals[-1].append(status)
+            cell_colors.append("rgba(46,204,113,0.15)" if mask_arr[idx] == 1 else "rgba(231,76,60,0.15)")
+
+        # Add pin markers to status column
+        if pinned_cells:
+            for i, combo in enumerate(grid.cell_index.keys()):
+                cell_key = ",".join(str(int(v)) for v in combo)
+                pin_val = pinned_cells.get(cell_key)
+                if pin_val is not None:
+                    marker = "\u2605" if pin_val == 1 else "\u2717"
+                    cell_vals[-1][i] = f"{cell_vals[-1][i]} {marker}"
+
+        fig_heatmap = go.Figure(
+            data=go.Table(
+                header=dict(values=header_vals, fill_color="#f8f9fa", font=dict(size=12, color="black")),
+                cells=dict(
+                    values=cell_vals,
+                    fill_color=[["white"] * len(cell_colors)] * (len(variables)) + [cell_colors],
+                    font=dict(size=11),
+                    align="center",
+                ),
+            )
+        )
+        fig_heatmap.update_layout(margin=dict(l=10, r=10, t=10, b=10))
+        apply_plotly_style(fig_heatmap, height=380)
+
+        # Marginal impact: horizontal bar chart sorted by magnitude
+        fig_marginal = go.Figure()
+        try:
+            from src.sensitivity import compute_cell_marginal_impact
+
+            marginal_df = compute_cell_marginal_impact(
+                grid, mask_arr, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], multiplier
+            )
+            marginal_df = marginal_df.sort_values("delta_production", key=abs, ascending=True)
+
+            # Build cell labels
+            labels = [",".join(str(int(row[v])) for v in variables) for _, row in marginal_df[variables].iterrows()]
+            colors = [COLOR_PRODUCTION if v >= 0 else COLOR_RISK for v in marginal_df["delta_production"]]
+
+            fig_marginal = go.Figure(
+                go.Bar(
+                    x=marginal_df["delta_production"].values,
+                    y=labels,
+                    orientation="h",
+                    marker_color=colors,
+                    hovertemplate="Cell %{y}<br>Delta Production: \u20ac%{x:,.0f}<extra></extra>",
+                )
+            )
+            fig_marginal.update_layout(
+                xaxis_title="Delta Production (\u20ac)",
+                yaxis_title="Cell",
+                margin=dict(l=80, r=20, t=30, b=40),
+            )
+            apply_plotly_style(fig_marginal, height=max(380, len(labels) * 20))
+        except Exception as e:
+            logger.warning(f"Marginal impact computation failed: {e}")
+            fig_marginal.update_layout(
+                annotations=[dict(text="Marginal impact not available", x=0.5, y=0.5, showarrow=False)]
+            )
+
+        return results, fig_chart, fig_heatmap, fig_marginal
+
+    # ==================================================================
+    # 2-var path (unchanged)
+    # ==================================================================
+    var0_col = store_data["var0_col"]
+    var1_col = store_data["var1_col"]
+    optimal_cuts = {float(k): v for k, v in store_data["optimal_cuts"].items()}
+    bins = store_data["bins"]
 
     # Build current cut map from sliders (keys as float to match data column types).
     # Slider values are negated (for reversed direction), so negate back.
@@ -2251,7 +2589,7 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
                 showscale=True,
                 colorbar=dict(title="EUR"),
                 hovertemplate=(
-                    f"{var0_col}: %{{x}}<br>{var1_col}: %{{y}}<br>Delta Production: €%{{z:,.0f}}<extra></extra>"
+                    f"{var0_col}: %{{x}}<br>{var1_col}: %{{y}}<br>Delta Production: \u20ac%{{z:,.0f}}<extra></extra>"
                 ),
             )
         )
@@ -2272,40 +2610,67 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
 
 # Reset button callback
 @app.callback(
-    Output({"type": "cutoff-slider", "index": dash.ALL}, "value"),
+    [
+        Output({"type": "cutoff-slider", "index": dash.ALL}, "value"),
+        Output("current-mask-store", "data"),
+    ],
     [Input("reset-cutoffs-btn", "n_clicks"), Input("apply-risk-btn", "n_clicks")],
     [
         State("cutoff-data-store", "data"),
         State("risk-level-slider", "value"),
         State({"type": "cutoff-slider", "index": dash.ALL}, "value"),
+        State("current-mask-store", "data"),
     ],
     prevent_initial_call=True,
 )
-def update_cutoffs_from_buttons(reset_clicks, apply_clicks, store_data, risk_value, current_values):
-    """Update sliders from reset button or risk level selection."""
+def update_cutoffs_from_buttons(reset_clicks, apply_clicks, store_data, risk_value, current_values, current_mask):
+    """Update sliders/mask from reset button or risk level selection."""
     if not store_data:
-        return current_values
+        return current_values, dash.no_update
 
     ctx = callback_context
     if not ctx.triggered:
-        return current_values
+        return current_values, dash.no_update
 
     trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    is_nd = store_data.get("is_nd", False)
+
+    # ------------------------------------------------------------------
+    # N>2 path: update mask store only, sliders are empty
+    # ------------------------------------------------------------------
+    if is_nd:
+        if trigger_id == "reset-cutoffs-btn":
+            return current_values, store_data.get("optimal_mask")
+
+        if trigger_id == "apply-risk-btn":
+            pareto_solutions = store_data.get("pareto_solutions", [])
+            if not pareto_solutions or risk_value is None:
+                return current_values, dash.no_update
+
+            closest_solution = min(pareto_solutions, key=lambda s: abs(s.get("b2_ever_h6", 0) - risk_value))
+            mask_str = closest_solution.get("acceptance_mask")
+            if mask_str:
+                from src.optimization_utils import decode_mask
+
+                return current_values, decode_mask(str(mask_str)).tolist()
+            return current_values, dash.no_update
+
+        return current_values, dash.no_update
+
+    # ------------------------------------------------------------------
+    # 2-var path (unchanged, mask store untouched)
+    # ------------------------------------------------------------------
     bins = store_data["bins"]
 
     if trigger_id == "reset-cutoffs-btn":
-        # Reset to original optimal values (keys stored as str(float)).
-        # Return negated values for the reversed slider direction.
         optimal_cuts = {float(k): v for k, v in store_data["optimal_cuts"].items()}
-        return [-optimal_cuts.get(float(bin_val), 9) for bin_val in bins]
+        return [-optimal_cuts.get(float(bin_val), 9) for bin_val in bins], dash.no_update
 
     elif trigger_id == "apply-risk-btn":
-        # Find closest Pareto-optimal solution to selected risk level
         pareto_solutions = store_data.get("pareto_solutions", [])
         if not pareto_solutions or risk_value is None:
-            return current_values
+            return current_values, dash.no_update
 
-        # Find the solution with risk closest to the selected value
         closest_solution = None
         min_diff = float("inf")
         for sol in pareto_solutions:
@@ -2315,11 +2680,8 @@ def update_cutoffs_from_buttons(reset_clicks, apply_clicks, store_data, risk_val
                 closest_solution = sol
 
         if closest_solution is None:
-            return current_values
+            return current_values, dash.no_update
 
-        # Extract cutoffs from the closest solution.
-        # CSV column names become string dict keys (e.g. "1.0"); try multiple key formats.
-        # Return negated values for the reversed slider direction.
         new_values = []
         for bin_val in bins:
             cutoff = None
@@ -2331,13 +2693,12 @@ def update_cutoffs_from_buttons(reset_clicks, apply_clicks, store_data, risk_val
             if cutoff is not None:
                 new_values.append(-int(cutoff))
             else:
-                # Fallback to current value (already negated)
                 idx = bins.index(bin_val)
                 new_values.append(current_values[idx] if idx < len(current_values) else -9)
 
-        return new_values
+        return new_values, dash.no_update
 
-    return current_values
+    return current_values, dash.no_update
 
 
 # Risk selection info callback
@@ -2422,52 +2783,54 @@ def handle_cell_pin(click_data, pin_mode, pinned_cells, store_data):
 
 
 @app.callback(
-    Output({"type": "cutoff-slider", "index": dash.ALL}, "value", allow_duplicate=True),
+    [
+        Output({"type": "cutoff-slider", "index": dash.ALL}, "value", allow_duplicate=True),
+        Output("current-mask-store", "data", allow_duplicate=True),
+    ],
     [Input("reoptimize-pin-btn", "n_clicks")],
     [
         State("cutoff-data-store", "data"),
         State("pinned-cells-store", "data"),
         State("risk-level-slider", "value"),
         State({"type": "cutoff-slider", "index": dash.ALL}, "value"),
+        State("current-mask-store", "data"),
     ],
     prevent_initial_call=True,
 )
-def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current_values):
-    """Re-optimize MILP with pinned cell constraints and update sliders."""
+def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current_values, current_mask):
+    """Re-optimize MILP with pinned cell constraints and update sliders/mask."""
     if not n_clicks or not store_data or not pinned_cells:
-        return current_values
+        return current_values, dash.no_update
 
     try:
         from src.optimization_utils import CellGrid, mask_to_cutoffs, solve_with_fixed_cells
 
         scenario = store_data["scenario"]
         segment = store_data.get("segment")
-        var0_col = store_data["var0_col"]
-        var1_col = store_data["var1_col"]
+        variables = store_data.get("variables", [])
         inv_vars = store_data.get("inv_vars", [])
-        bins = store_data["bins"]
         multiplier = store_data.get("multiplier", 7.0)
+        is_nd = store_data.get("is_nd", False)
 
         # Load summary data
         paths = get_scenario_paths(scenario, segment)
         if not paths["summary_data"].exists():
-            return current_values
+            return current_values, dash.no_update
         summary_data = pd.read_csv(paths["summary_data"])
 
-        grid = CellGrid.from_summary(summary_data, [var0_col, var1_col])
+        grid = CellGrid.from_summary(summary_data, variables)
 
-        # Build fixed_accepts and fixed_rejects from pinned cells
+        # Build fixed_accepts and fixed_rejects from pinned cells (N-tuple keys)
         fixed_accepts = []
         fixed_rejects = []
         for cell_key, pin_val in pinned_cells.items():
             parts = cell_key.split(",")
-            if len(parts) == 2:
-                v0 = int(parts[0].strip())
-                v1 = int(parts[1].strip())
+            combo = tuple(int(p.strip()) for p in parts)
+            if len(combo) == len(variables):
                 if pin_val == 1:
-                    fixed_accepts.append((v0, v1))
+                    fixed_accepts.append(combo)
                 else:
-                    fixed_rejects.append((v0, v1))
+                    fixed_rejects.append(combo)
 
         target_risk = risk_value if risk_value else 1.0
         mask, kpis = solve_with_fixed_cells(
@@ -2482,12 +2845,18 @@ def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current
 
         if mask is None:
             logger.warning("Re-optimization with pins: infeasible")
-            return current_values
+            return current_values, dash.no_update
 
-        # Convert mask to cutoff slider values
+        # N>2: return mask directly
+        if is_nd:
+            return current_values, mask.tolist()
+
+        # 2-var: convert mask → cutoffs → slider values
+        var0_col = store_data["var0_col"]
+        bins = store_data["bins"]
         cutoffs = mask_to_cutoffs(mask, grid, inv_vars)
         if var0_col not in cutoffs:
-            return current_values
+            return current_values, dash.no_update
 
         new_values = []
         for bin_val in bins:
@@ -2498,11 +2867,58 @@ def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current
                 idx = bins.index(bin_val)
                 new_values.append(current_values[idx] if idx < len(current_values) else -9)
 
-        return new_values
+        return new_values, dash.no_update
 
     except Exception as e:
         logger.error(f"Re-optimize with pins failed: {e}")
-        return current_values
+        return current_values, dash.no_update
+
+
+# --- N>2 Cell Pin Callback ---
+
+
+@app.callback(
+    [
+        Output("pinned-cells-store", "data", allow_duplicate=True),
+        Output("pin-status", "children", allow_duplicate=True),
+    ],
+    [Input("nd-acceptance-table", "active_cell")],
+    [
+        State("nd-acceptance-table", "data"),
+        State("pin-mode-toggle", "value"),
+        State("pinned-cells-store", "data"),
+        State("cutoff-data-store", "data"),
+    ],
+    prevent_initial_call=True,
+)
+def handle_nd_cell_pin(active_cell, table_data, pin_mode, pinned_cells, store_data):
+    """On N>2 DataTable cell click when pin mode is on, cycle pin state."""
+    if not pin_mode or not active_cell or not store_data or not store_data.get("is_nd", False):
+        n_pins = len(pinned_cells) if pinned_cells else 0
+        status_text = f"{n_pins} cell(s) pinned" if n_pins > 0 else ""
+        return pinned_cells or {}, status_text
+
+    if pinned_cells is None:
+        pinned_cells = {}
+
+    variables = store_data.get("variables", [])
+    row = table_data[active_cell["row"]]
+    cell_key = ",".join(str(int(row[v])) for v in variables)
+
+    current = pinned_cells.get(cell_key)
+    if current is None:
+        pinned_cells[cell_key] = 1  # pin as accept
+    elif current == 1:
+        pinned_cells[cell_key] = 0  # pin as reject
+    else:
+        del pinned_cells[cell_key]  # unpin
+
+    n_pins = len(pinned_cells)
+    n_accept = sum(1 for v in pinned_cells.values() if v == 1)
+    n_reject = sum(1 for v in pinned_cells.values() if v == 0)
+    status_text = f"{n_pins} pinned ({n_accept} accept, {n_reject} reject)" if n_pins > 0 else ""
+
+    return pinned_cells, status_text
 
 
 # --- New Callbacks: Collapsible, Download, Audit Period ---

@@ -190,9 +190,9 @@ def calculate_psi(
     baseline_pct = baseline_pct.reindex(all_bins, fill_value=0)
     comparison_pct = comparison_pct.reindex(all_bins, fill_value=0)
 
-    # Apply minimum percentage to avoid log(0), then re-normalize so percentages sum to 1
-    baseline_pct = baseline_pct.clip(lower=min_pct)
-    comparison_pct = comparison_pct.clip(lower=min_pct)
+    # Replace exact zeros with epsilon to avoid log(0), then re-normalize
+    baseline_pct = baseline_pct.where(baseline_pct > 0, min_pct)
+    comparison_pct = comparison_pct.where(comparison_pct > 0, min_pct)
     baseline_pct = baseline_pct / baseline_pct.sum()
     comparison_pct = comparison_pct / comparison_pct.sum()
 

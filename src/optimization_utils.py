@@ -428,23 +428,21 @@ def trace_pareto_frontier(
     all_masks = [all_masks[i] for i in sort_idx]
 
     # Post-hoc Pareto dominance filter:
-    # A solution is dominated if another has lower-or-equal risk AND higher-or-equal production
-    # (with at least one strict inequality).  Sorted by ascending risk, so we keep solutions
-    # whose production is strictly > any previously kept solution's production.
-    cummax = df["oa_amt_h0"].cummax()
-    pareto_mask = df["oa_amt_h0"] >= cummax
-    pareto_indices = pareto_mask[pareto_mask].index.tolist()
+    # Sorted by ascending risk, keep solutions whose production is strictly > any previously seen.
+    prev_max = float("-inf")
+    pareto_keep = []
+    for i, prod in enumerate(df["oa_amt_h0"].values):
+        if prod > prev_max:
+            pareto_keep.append(i)
+            prev_max = prod
 
-    df = df[pareto_mask].reset_index(drop=True)
-    pareto_masks = [all_masks[i] for i in pareto_indices]
-
-    # Remove dominated duplicates: same production but higher risk (keep lowest-risk)
-    dup_mask = ~df["oa_amt_h0"].duplicated(keep="first")
-    if not dup_mask.all():
-        n_removed = (~dup_mask).sum()
-        df = df[dup_mask].reset_index(drop=True)
-        pareto_masks = [m for m, keep in zip(pareto_masks, dup_mask) if keep]
-        logger.debug(f"Removed {n_removed} dominated solutions (same production, higher risk)")
+    if len(pareto_keep) < len(df):
+        n_removed = len(df) - len(pareto_keep)
+        df = df.iloc[pareto_keep].reset_index(drop=True)
+        pareto_masks = [all_masks[i] for i in pareto_keep]
+        logger.debug(f"Removed {n_removed} dominated solutions (non-increasing production)")
+    else:
+        pareto_masks = list(all_masks)
 
     # Final verification: strictly increasing production along the frontier
     if len(df) > 1:
@@ -614,10 +612,19 @@ def add_bin_columns(
                 for bin_val, cutoff_val in cutoffs[var0].items():
                     df.at[i, bin_val] = cutoff_val
 
+    else:
+        for i, mask in enumerate(masks):
+            df.at[i, "acceptance_mask"] = ",".join(str(int(v)) for v in mask)
+
     # Add sol_fac column at the beginning
     df.insert(0, "sol_fac", range(len(df)))
 
     return df
+
+
+def decode_mask(mask_str: str) -> np.ndarray:
+    """Decode a comma-separated binary mask string back to numpy array."""
+    return np.array([int(v) for v in mask_str.split(",")], dtype=int)
 
 
 # =============================================================================

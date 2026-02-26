@@ -185,21 +185,21 @@ class TestApplyParcelingAdjustment:
 
         assert result["todu_amt_pile_h6"].iloc[0] == pytest.approx(500.0)
 
-    def test_missing_bins_get_no_adjustment(self):
-        """Bins not in acceptance_rates get acceptance_rate=1.0 (no adjustment)."""
+    def test_missing_bins_get_median_adjustment(self):
+        """Bins not in acceptance_rates get median acceptance_rate as conservative fallback."""
         repesca = pd.DataFrame(
             {"var0": [1, 2], "var1": [1, 2], "todu_30ever_h6": [100.0, 200.0], "todu_amt_pile_h6": [500.0, 600.0]}
         )
-        # Only bin (1,1) has rates
+        # Only bin (1,1) has rates (median = 0.5)
         rates = self._make_rates(acceptance_rate=0.5)
 
         result = apply_parceling_adjustment(repesca, rates, VARIABLES)
 
-        # Bin (1,1): adjusted
+        # Bin (1,1): adjusted with actual rate 0.5
         assert result[result["var0"] == 1]["reject_risk_multiplier"].iloc[0] == pytest.approx(1.75)
-        # Bin (2,2): missing from rates → no adjustment
-        assert result[result["var0"] == 2]["reject_risk_multiplier"].iloc[0] == pytest.approx(1.0)
-        assert result[result["var0"] == 2]["todu_30ever_h6"].iloc[0] == pytest.approx(200.0)
+        # Bin (2,2): missing from rates → filled with median (0.5) → same multiplier
+        assert result[result["var0"] == 2]["reject_risk_multiplier"].iloc[0] == pytest.approx(1.75)
+        assert result[result["var0"] == 2]["todu_30ever_h6"].iloc[0] == pytest.approx(350.0)
 
     def test_multiple_bins(self):
         """Multiple bins with different acceptance rates."""

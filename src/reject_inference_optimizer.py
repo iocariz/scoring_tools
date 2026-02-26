@@ -44,6 +44,7 @@ class OptimizerInputs:
     indicators: list[str]
     inv_vars: list[str] = field(default_factory=list)
     multiplier: float = 7.0
+    parceling_method: str = "linear"
 
 
 def _compute_calibration_error(
@@ -110,6 +111,7 @@ def evaluate_ri_params(
         variables=inputs.variables,
         reject_uplift_factor=uplift_factor,
         max_risk_multiplier=max_risk_multiplier,
+        method=inputs.parceling_method if hasattr(inputs, "parceling_method") else "linear",
     )
 
     # Drop auxiliary columns

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.mr_pipeline import calculate_metrics_from_cuts
+from src.mr_pipeline import _compute_hybrid_mr_risk, _mr_outcomes_available, calculate_metrics_from_cuts
 from src.utils import calculate_b2_ever_h6
 
 # =============================================================================
@@ -296,3 +296,169 @@ class TestCalculateMetricsFromCutsEdgeCases:
         result = calculate_metrics_from_cuts(data, None, variables)
 
         assert result is None
+
+
+# =============================================================================
+# _mr_outcomes_available Tests
+# =============================================================================
+
+
+class TestMROutcomesAvailable:
+    """Tests for the _mr_outcomes_available helper."""
+
+    def test_returns_true_when_columns_present_with_data(self):
+        df = pd.DataFrame({"todu_30ever_h6": [1.0, 2.0], "todu_amt_pile_h6": [10.0, 20.0]})
+        assert _mr_outcomes_available(df) is True
+
+    def test_returns_false_when_columns_missing(self):
+        df = pd.DataFrame({"oa_amt": [100.0]})
+        assert _mr_outcomes_available(df) is False
+
+    def test_returns_false_when_all_null(self):
+        df = pd.DataFrame({"todu_30ever_h6": [np.nan, np.nan], "todu_amt_pile_h6": [np.nan, np.nan]})
+        assert _mr_outcomes_available(df) is False
+
+    def test_returns_false_when_one_column_missing(self):
+        df = pd.DataFrame({"todu_30ever_h6": [1.0], "oa_amt": [100.0]})
+        assert _mr_outcomes_available(df) is False
+
+
+# =============================================================================
+# _compute_hybrid_mr_risk Tests
+# =============================================================================
+
+
+class TestComputeHybridMRRisk:
+    """Tests for _compute_hybrid_mr_risk function."""
+
+    @pytest.fixture
+    def merge_keys(self):
+        return ["bin_a", "bin_b"]
+
+    @pytest.fixture
+    def data_booked_main(self):
+        """Main-period booked data with 2 bins."""
+        return pd.DataFrame(
+            {
+                "bin_a": [1, 1, 2, 2],
+                "bin_b": [1, 1, 1, 1],
+                "todu_30ever_h6": [10.0, 10.0, 5.0, 5.0],
+                "todu_amt_pile_h6": [100.0, 100.0, 200.0, 200.0],
+                "status_name": ["booked"] * 4,
+            }
+        )
+
+    @pytest.fixture
+    def data_demand_mr_sufficient(self):
+        """MR-period demand data where bin (1,1) has 40 obs, bin (2,1) has 40 obs."""
+        rng = np.random.RandomState(42)
+        n = 40
+        return pd.DataFrame(
+            {
+                "bin_a": [1] * n + [2] * n,
+                "bin_b": [1] * (2 * n),
+                "todu_30ever_h6": rng.uniform(5, 15, 2 * n),
+                "todu_amt_pile_h6": rng.uniform(80, 120, 2 * n),
+                "oa_amt_h0": rng.uniform(500, 1500, 2 * n),
+                "status_name": ["booked"] * (2 * n),
+            }
+        )
+
+    def test_uses_mr_observed_for_sufficient_bins(self, data_booked_main, data_demand_mr_sufficient, merge_keys):
+        """Bins with n_obs >= threshold use MR observed risk."""
+        merge_df, comparison_df = _compute_hybrid_mr_risk(
+            data_booked_main, data_demand_mr_sufficient, merge_keys, min_obs=30
+        )
+
+        # Both bins have 40 obs >= 30 threshold -> should use mr_observed
+        assert (comparison_df["risk_source"] == "mr_observed").all()
+        # b2_ever_h6_tmp should equal b2_mr
+        for _, row in comparison_df.iterrows():
+            assert np.isclose(row["b2_ever_h6_tmp"], row["b2_mr"])
+
+    def test_falls_back_to_main_for_sparse_bins(self, data_booked_main, merge_keys):
+        """Bins with n_obs < threshold use main-period risk."""
+        # Only 5 MR obs per bin -> below threshold of 30
+        data_demand_mr_sparse = pd.DataFrame(
+            {
+                "bin_a": [1] * 5 + [2] * 5,
+                "bin_b": [1] * 10,
+                "todu_30ever_h6": [8.0] * 10,
+                "todu_amt_pile_h6": [90.0] * 10,
+                "oa_amt_h0": [1000.0] * 10,
+                "status_name": ["booked"] * 10,
+            }
+        )
+
+        merge_df, comparison_df = _compute_hybrid_mr_risk(
+            data_booked_main, data_demand_mr_sparse, merge_keys, min_obs=30
+        )
+
+        assert (comparison_df["risk_source"] == "main_imputed").all()
+        for _, row in comparison_df.iterrows():
+            assert np.isclose(row["b2_ever_h6_tmp"], row["b2_main"])
+
+    def test_handles_bins_only_in_mr(self, data_booked_main, merge_keys):
+        """Bin present in MR but absent from main — sparse gets NaN (model_fallback)."""
+        data_demand_mr_new_bin = pd.DataFrame(
+            {
+                "bin_a": [3] * 5,
+                "bin_b": [1] * 5,
+                "todu_30ever_h6": [10.0] * 5,
+                "todu_amt_pile_h6": [100.0] * 5,
+                "oa_amt_h0": [1000.0] * 5,
+                "status_name": ["booked"] * 5,
+            }
+        )
+
+        merge_df, comparison_df = _compute_hybrid_mr_risk(
+            data_booked_main, data_demand_mr_new_bin, merge_keys, min_obs=30
+        )
+
+        new_bin_row = comparison_df[(comparison_df["bin_a"] == 3) & (comparison_df["bin_b"] == 1)]
+        assert len(new_bin_row) == 1
+        assert new_bin_row.iloc[0]["risk_source"] == "model_fallback"
+        assert np.isnan(new_bin_row.iloc[0]["b2_ever_h6_tmp"])
+
+    def test_handles_bins_only_in_main(self, data_booked_main, merge_keys):
+        """Bin present in main but absent from MR uses main risk."""
+        # MR data only has bin (1,1), not (2,1)
+        data_demand_mr_partial = pd.DataFrame(
+            {
+                "bin_a": [1] * 5,
+                "bin_b": [1] * 5,
+                "todu_30ever_h6": [10.0] * 5,
+                "todu_amt_pile_h6": [100.0] * 5,
+                "oa_amt_h0": [1000.0] * 5,
+                "status_name": ["booked"] * 5,
+            }
+        )
+
+        merge_df, comparison_df = _compute_hybrid_mr_risk(
+            data_booked_main, data_demand_mr_partial, merge_keys, min_obs=30
+        )
+
+        main_only_row = comparison_df[(comparison_df["bin_a"] == 2) & (comparison_df["bin_b"] == 1)]
+        assert len(main_only_row) == 1
+        # No MR obs -> falls back to main
+        assert main_only_row.iloc[0]["risk_source"] == "main_imputed"
+        assert np.isclose(main_only_row.iloc[0]["b2_ever_h6_tmp"], main_only_row.iloc[0]["b2_main"])
+
+    def test_comparison_df_columns(self, data_booked_main, data_demand_mr_sufficient, merge_keys):
+        """Verify all expected columns are present in comparison_df."""
+        _, comparison_df = _compute_hybrid_mr_risk(data_booked_main, data_demand_mr_sufficient, merge_keys, min_obs=30)
+
+        expected_cols = {
+            "bin_a",
+            "bin_b",
+            "b2_main",
+            "b2_mr",
+            "n_obs_main",
+            "n_obs_mr",
+            "b2_ever_h6_tmp",
+            "risk_source",
+            "b2_delta",
+            "b2_delta_pct",
+            "mr_production",
+        }
+        assert expected_cols == set(comparison_df.columns)

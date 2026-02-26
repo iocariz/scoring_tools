@@ -42,6 +42,12 @@ reject_inference_method = "parceling"  # "none" (default) or "parceling"
 reject_uplift_factor = 1.5            # scaling coefficient for reject ratio (0.0-10.0)
 reject_max_risk_multiplier = 3.0      # upper cap for per-bin multiplier (1.0-10.0)
 
+# Hybrid MR risk inference (optional)
+# When enabled, uses MR-period observed risk per bin where sample size is sufficient,
+# falling back to main-period imputation for sparse bins. Helps detect model degradation.
+# use_mr_outcomes = true
+# mr_min_obs_per_bin = 30
+
 # Fixed cutoffs (optional) - uncomment to skip optimization and use predefined cutoffs
 # When set, the optimization step is skipped and these cutoffs are applied directly.
 # NOTE: Fixed cutoffs only work with 2-variable grids. Not supported with income_bin (3-var).
@@ -59,7 +65,7 @@ reject_max_risk_multiplier = 3.0      # upper cap for per-bin multiplier (1.0-10
 [preprocessing.bins.income_bin]
 source_col = "income_t1_m"
 output_col = "income_bin"
-max_bins = 3
+max_bins = 2
 method = "optimization"     # "quantile" (default) or "optimization" (production-weighted risk split)
 
 # # bin_edges = [-inf, 3000.0, inf]  # Optional: override with fixed edges (skips supervised learning)

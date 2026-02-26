@@ -99,6 +99,9 @@ class OutputPaths:
     def mr_risk_production_summary_csv(self, suffix: str = "") -> str:
         return str(self.data_dir / f"risk_production_summary_table_mr{suffix}.csv")
 
+    def mr_risk_comparison_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"mr_risk_comparison{suffix}.csv")
+
     def stability_report_html(self, suffix: str = "") -> str:
         return str(self.images_dir / f"stability_report{suffix}.html")
 
@@ -140,6 +143,11 @@ class OutputPaths:
     def segment_report_html(self) -> str:
         return str(self.base_dir / "report.html")
 
+    # -- bin threshold diagnostics --
+
+    def bin_diagnostic_html(self, bin_col: str) -> str:
+        return str(self.images_dir / f"bin_diagnostic_{bin_col}.html")
+
     # -- inference_optimized (main-period visualization) --
 
     @property
@@ -176,9 +184,7 @@ class BinConfig:
         if self.bin_edges and len(self.bin_edges) < 2:
             raise ValueError(f"bin_edges for '{self.output_col}' must have at least 2 values")
         if not self.bin_edges and self.max_bins is None:
-            raise ValueError(
-                f"BinConfig for '{self.output_col}': either bin_edges or max_bins must be provided"
-            )
+            raise ValueError(f"BinConfig for '{self.output_col}': either bin_edges or max_bins must be provided")
 
 
 class PreprocessingSettings(BaseModel):
@@ -236,6 +242,10 @@ class PreprocessingSettings(BaseModel):
     ri_max_mult_range: list[float] = [1.0, 5.0]
     ri_uplift_steps: int = 11
     ri_max_mult_steps: int = 9
+
+    # Hybrid MR risk inference
+    use_mr_outcomes: bool = False
+    mr_min_obs_per_bin: int = Field(default=30, ge=1)
 
     # Reject inference settings
     reject_inference_method: Literal["none", "parceling"] = "none"
@@ -370,10 +380,7 @@ class PreprocessingSettings(BaseModel):
             )
         if not set(self.inference_variables).issubset(set(self.variables)):
             extra = set(self.inference_variables) - set(self.variables)
-            raise ValueError(
-                f"'inference_variables' must be a subset of 'variables', "
-                f"found extra: {extra}"
-            )
+            raise ValueError(f"'inference_variables' must be a subset of 'variables', found extra: {extra}")
         return self
 
     @classmethod

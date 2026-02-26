@@ -13,6 +13,7 @@ import pytest
 
 from src.constants import Columns, StatusName
 from src.plots import (
+    plot_bin_threshold_diagnostic,
     plot_precision_recall_curve,
     plot_risk_vs_production,
     plot_roc_curve,
@@ -183,3 +184,90 @@ class TestPlotScoreDistribution:
         scores = rng.rand(200)
         plot_score_distribution(ax, y_true, scores, bins=20)
         assert len(ax.patches) > 0
+
+
+# =============================================================================
+# TestPlotBinThresholdDiagnostic
+# =============================================================================
+
+
+class TestPlotBinThresholdDiagnostic:
+    """Tests for plot_bin_threshold_diagnostic."""
+
+    @staticmethod
+    def _make_data(n_months=6, n_per_month=100, n_bins=3, seed=42):
+        rng = np.random.RandomState(seed)
+        months = pd.date_range("2023-01-01", periods=n_months, freq="MS")
+        rows = []
+        for m in months:
+            for _ in range(n_per_month):
+                b = rng.randint(1, n_bins + 1)
+                rows.append(
+                    {
+                        "mis_date": m,
+                        "bin_col": b,
+                        "todu_30ever_h6": rng.exponential(100 * b),
+                        "todu_amt_pile_h6": rng.exponential(5000),
+                    }
+                )
+        return pd.DataFrame(rows)
+
+    def test_returns_figure(self):
+        """Should return a plotly Figure."""
+        df = self._make_data()
+        fig = plot_bin_threshold_diagnostic(df, bin_col="bin_col")
+        assert isinstance(fig, go.Figure)
+
+    def test_three_subplots(self):
+        """Should have 3 subplot rows (share, risk, separation)."""
+        df = self._make_data()
+        fig = plot_bin_threshold_diagnostic(df, bin_col="bin_col")
+        # 3 subplot titles
+        annotations = [a for a in fig.layout.annotations if a.text]
+        assert len(annotations) == 3
+
+    def test_single_bin_no_crash(self):
+        """Should handle a single bin gracefully (no separation panel data)."""
+        df = self._make_data(n_bins=1)
+        fig = plot_bin_threshold_diagnostic(df, bin_col="bin_col")
+        assert isinstance(fig, go.Figure)
+
+    def test_saves_html(self, tmp_path):
+        """Should write HTML file when output_path is provided."""
+        df = self._make_data()
+        path = str(tmp_path / "diag.html")
+        plot_bin_threshold_diagnostic(df, bin_col="bin_col", output_path=path)
+        assert os.path.exists(path)
+        assert os.path.getsize(path) > 0
+
+    def test_bin_edges_in_title(self):
+        """Threshold values should appear in the figure title."""
+        df = self._make_data()
+        edges = [float("-inf"), 350.0, 450.0, float("inf")]
+        fig = plot_bin_threshold_diagnostic(df, bin_col="bin_col", bin_edges=edges, source_col="score_rf")
+        title = fig.layout.title.text
+        assert "350" in title
+        assert "450" in title
+        assert "score_rf" in title
+
+    def test_full_period_in_x_axis(self):
+        """'Full Period' summary column should be present in the data."""
+        df = self._make_data()
+        fig = plot_bin_threshold_diagnostic(df, bin_col="bin_col")
+        # Check that at least one trace has 'Full Period' in its x data
+        found = False
+        for trace in fig.data:
+            xs = trace.x if trace.x is not None else []
+            if "Full Period" in list(xs):
+                found = True
+                break
+        assert found
+
+    def test_bin_edge_labels_in_legend(self):
+        """Bin legend labels should contain interval ranges when edges provided."""
+        df = self._make_data()
+        edges = [float("-inf"), 350.0, 450.0, float("inf")]
+        fig = plot_bin_threshold_diagnostic(df, bin_col="bin_col", bin_edges=edges)
+        names = [t.name for t in fig.data if t.name]
+        # At least one trace should have a threshold range in its name
+        assert any("350" in n for n in names)
