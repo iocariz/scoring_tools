@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Credit risk scoring and portfolio optimization pipeline. Processes loan application data (SAS `.sas7bdat` files), trains risk models on a 2D score grid (e.g., internal "octroi" bins × external "EFX" bins), and finds optimal acceptance cutoffs via exhaustive monotonically-constrained search over a Pareto frontier of risk (`b2_ever_h6`) vs. production (`oa_amt_h0`).
+Credit risk scoring and portfolio optimization pipeline. Processes loan application data (SAS `.sas7bdat` files), trains risk models on a 2D+ score grid (e.g., internal "octroi" bins × external "EFX" bins, optionally × income bins), and finds optimal acceptance cutoffs via MILP with monotonicity constraints over a Pareto frontier of risk (`b2_ever_h6`) vs. production (`oa_amt_h0`).
 
 ## Commands
 
@@ -42,8 +42,8 @@ Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `mak
 
 1. **Config** — `PreprocessingSettings` (Pydantic) loaded from `config.toml` via `from_toml()`
 2. **Data Loading** — `src/data_manager.py` reads SAS files, standardizes columns
-3. **Preprocessing** — `src/pipeline/preprocessing.py` orchestrates DQ checks (`src/data_quality.py`), filtering/binning (`src/preprocess_improved.py`)
-4. **Inference** — `src/pipeline/inference.py` orchestrates model training with 5-fold CV across feature sets; custom sklearn estimators in `src/estimators.py` (`HurdleRegressor`, `TweedieGLM`)
+3. **Preprocessing** — `src/pipeline/preprocessing.py` orchestrates DQ checks (`src/data_quality.py`), filtering/binning (`src/preprocess_improved.py`). Bin edge learning supports `"quantile"` (equal-count) and `"optimization"` (production-weighted risk split via `DecisionTreeRegressor`) methods, dispatched by `BinConfig.method`.
+4. **Inference** — `src/pipeline/inference.py` orchestrates model training with CV across feature sets; custom sklearn estimators in `src/estimators.py` (`HurdleRegressor`, `TweedieGLM`). Trains on `inference_variables` (subset of `variables`), decoupled from the optimization grid.
 5. **Optimization** — `src/pipeline/optimization.py` generates all monotonic cutoff combinations, computes KPIs per solution, applies optional reject inference (parceling), filters to Pareto frontier
 6. **Scenario Analysis** — selects optimal Pareto points at pessimistic/base/optimistic risk thresholds; bootstrap CI, MR validation, PSI/CSI stability, audit tables
 7. **Trend Analysis** — monthly metrics with SPC anomaly detection
@@ -57,14 +57,14 @@ Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `mak
 ### Key Design Patterns
 
 - **`OutputPaths` dataclass** — centralized path management; every pipeline phase receives an instance
-- **`PreprocessingSettings` Pydantic model** — all config flows through this with field/model validators (exact 2 variables, bin edges ≥ 2, date parsing, MR period pairing, range constraints)
+- **`PreprocessingSettings` Pydantic model** — all config flows through this with field/model validators (≥ 2 variables, bin edges ≥ 2, date parsing, MR period pairing, range constraints)
 - **`StatusName` / `RejectReason` / `Columns` enums** in `src/constants.py` — centralized string constants across the codebase
 - **Custom sklearn estimators** — `HurdleRegressor` and `TweedieGLM` implement full `BaseEstimator`/`RegressorMixin` interface
 - **Chunked processing** in optimization — feasible solutions processed in memory-efficient chunks for the combinatorial 2D grid search
 
 ## Configuration
 
-Two-tier config: `config.toml` (global defaults) overridden per-segment by `segments.toml`. Key fields: `variables` (exactly 2 score names), `octroi_bins`/`efx_bins` (bin edges), date ranges, `optimum_risk`, `risk_step`, `multiplier`, `reject_inference_method` ("none"/"parceling"), `fixed_cutoffs`, `inv_var1`, `cz_config`.
+Two-tier config: `config.toml` (global defaults) overridden per-segment by `segments.toml`. Key fields: `variables` (≥ 2 score names), `octroi_bins`/`efx_bins` (legacy bin edges) or `[preprocessing.bins.*]` (N-variable `BinConfig` with `source_col`, `output_col`, `bin_edges`/`max_bins`, `method`), `inference_variables` (subset used for model training), date ranges, `optimum_risk`, `risk_step`, `multiplier`, `reject_inference_method` ("none"/"parceling"), `fixed_cutoffs`, `directions`, `cz_config`.
 
 ## Testing
 
