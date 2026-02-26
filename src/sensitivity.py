@@ -251,9 +251,12 @@ def compute_cell_marginal_impact(
             new_tamt = base_tamt + cell_tamt
 
         new_risk = float(calculate_b2_ever_h6(new_t30, new_tamt, multiplier=multiplier, as_percentage=True))
+        if np.isnan(new_risk):
+            new_risk = 0.0
+        safe_base_risk = 0.0 if np.isnan(base_risk) else base_risk
 
         delta_prod = new_prod - base_prod
-        delta_risk = new_risk - base_risk if not (np.isnan(new_risk) or np.isnan(base_risk)) else 0.0
+        delta_risk = new_risk - safe_base_risk
 
         # Per-cell risk (for information)
         cell_risk = float(calculate_b2_ever_h6(cell_t30, cell_tamt, multiplier=multiplier, as_percentage=True))

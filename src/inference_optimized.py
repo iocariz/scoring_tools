@@ -704,9 +704,10 @@ def compute_cell_level_ci(
 
         if n_folds >= 2:
             std = np.std(preds_list, ddof=1)
+            se = std / np.sqrt(n_folds)
             row["pred_std"] = std
-            row["ci_lower"] = row["pred_mean"] - z_val * std
-            row["ci_upper"] = row["pred_mean"] + z_val * std
+            row["ci_lower"] = row["pred_mean"] - z_val * se
+            row["ci_upper"] = row["pred_mean"] + z_val * se
         else:
             row["pred_std"] = np.nan
             row["ci_lower"] = np.nan
