@@ -416,8 +416,33 @@ def _build_portfolio_metric_table(row: pd.Series) -> str:
     return "\n".join(lines)
 
 
+def _portfolio_group_list(period_df: pd.DataFrame) -> list[tuple[str, str]]:
+    """Return an ordered list of ``(group_col_value, display_name)`` for portfolio sections.
+
+    Supersegment aggregates come first, then standalone segments, then TOTAL last.
+    """
+    all_groups = period_df["group"].unique()
+    supersegment_names = sorted(g[len("supersegment_") :] for g in all_groups if g.startswith("supersegment_"))
+
+    group_list: list[tuple[str, str]] = []
+    if supersegment_names:
+        for ss in supersegment_names:
+            group_list.append((f"supersegment_{ss}", ss))
+    else:
+        for g in sorted(all_groups):
+            if g != "TOTAL":
+                group_list.append((g, g.replace("segment_", "")))
+    if "TOTAL" in all_groups:
+        group_list.append(("TOTAL", "Total"))
+    return group_list
+
+
 def _build_portfolio_summary_sections(csv_path: Path) -> list[ReportSection]:
-    """Build portfolio summary: one section per supersegment group, each with per-scenario tables."""
+    """Build portfolio summary: one section per supersegment group, each with per-scenario tables.
+
+    Main period sections are emitted first.  If MR-period data exists, a parallel
+    set of sections (titled "MR Validation") is appended afterwards.
+    """
     if not csv_path.exists():
         return []
     try:
@@ -427,67 +452,56 @@ def _build_portfolio_summary_sections(csv_path: Path) -> list[ReportSection]:
     if df.empty or "group" not in df.columns:
         return []
 
-    # Filter to main period
-    if "period" in df.columns:
-        main_df = df[df["period"] == "main"]
-        if main_df.empty:
-            main_df = df
-    else:
-        main_df = df
-
-    # Parse group structure into ordered sections.
-    # supersegment_X  → section for that supersegment (aggregate)
-    # X/seg           → individual segment within supersegment (shown under same section)
-    # segment_X       → standalone section
-    # TOTAL           → shown last
-    all_groups = main_df["group"].unique()
-    supersegment_names = sorted(g[len("supersegment_") :] for g in all_groups if g.startswith("supersegment_"))
-
-    # Build ordered list of (group_col_value, display_name) for top-level sections
-    group_list: list[tuple[str, str]] = []
-    if supersegment_names:
-        for ss in supersegment_names:
-            group_list.append((f"supersegment_{ss}", ss))
-    else:
-        # No supersegments: each group (except TOTAL) gets its own section
-        for g in sorted(all_groups):
-            if g != "TOTAL":
-                group_list.append((g, g.replace("segment_", "")))
-    if "TOTAL" in all_groups:
-        group_list.append(("TOTAL", "Total"))
-
+    has_period = "period" in df.columns
     scenario_order = ["pessimistic", "base", "optimistic"]
-    sections: list[ReportSection] = []
 
-    for group_value, display_name in group_list:
-        safe_id = display_name.lower().replace(" ", "-").replace("/", "-")
-        section = ReportSection(
-            id=f"portfolio-{safe_id}",
-            title=f"Portfolio Summary \u2014 {display_name}",
-        )
+    # Determine which periods to render
+    if has_period:
+        periods = [("main", "Portfolio Summary", "portfolio"), ("mr", "MR Validation", "mr-portfolio")]
+    else:
+        periods = [(None, "Portfolio Summary", "portfolio")]
 
-        group_df = main_df[main_df["group"] == group_value]
-        if "scenario" in group_df.columns:
-            available = [s for s in scenario_order if s in group_df["scenario"].values]
-            if not available:
-                available = list(group_df["scenario"].unique())
+    all_sections: list[ReportSection] = []
+
+    for period_value, section_prefix, id_prefix in periods:
+        if period_value is not None:
+            period_df = df[df["period"] == period_value]
         else:
-            available = [None]
+            period_df = df
+        if period_df.empty:
+            continue
 
-        for scenario in available:
-            scen_df = group_df[group_df["scenario"] == scenario] if scenario else group_df
-            if scen_df.empty:
-                continue
+        group_list = _portfolio_group_list(period_df)
 
-            badge_cls = f"badge-{scenario}" if scenario and scenario in _SCENARIO_ORDER else ""
-            label = scenario.title() if scenario else "Base"
-            heading = f'<h4><span class="badge {badge_cls}">{label}</span></h4>'
-            section.tables.append(heading + _build_portfolio_metric_table(scen_df.iloc[0]))
+        for group_value, display_name in group_list:
+            safe_id = display_name.lower().replace(" ", "-").replace("/", "-")
+            section = ReportSection(
+                id=f"{id_prefix}-{safe_id}",
+                title=f"{section_prefix} \u2014 {display_name}",
+            )
 
-        if section.tables:
-            sections.append(section)
+            group_df = period_df[period_df["group"] == group_value]
+            if "scenario" in group_df.columns:
+                available = [s for s in scenario_order if s in group_df["scenario"].values]
+                if not available:
+                    available = list(group_df["scenario"].unique())
+            else:
+                available = [None]
 
-    return sections
+            for scenario in available:
+                scen_df = group_df[group_df["scenario"] == scenario] if scenario else group_df
+                if scen_df.empty:
+                    continue
+
+                badge_cls = f"badge-{scenario}" if scenario and scenario in _SCENARIO_ORDER else ""
+                label = scenario.title() if scenario else "Base"
+                heading = f'<h4><span class="badge {badge_cls}">{label}</span></h4>'
+                section.tables.append(heading + _build_portfolio_metric_table(scen_df.iloc[0]))
+
+            if section.tables:
+                all_sections.append(section)
+
+    return all_sections
 
 
 def _build_cutoff_comparison_section(output_base: Path, segments: dict) -> ReportSection | None:

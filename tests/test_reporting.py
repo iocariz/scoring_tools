@@ -737,7 +737,7 @@ class TestBuildPortfolioSummarySections:
         assert "Base" in total_section.tables[1]
         assert "Optimistic" in total_section.tables[2]
 
-    def test_filters_to_main_period(self, tmp_path):
+    def test_main_and_mr_separate_sections(self, tmp_path):
         rows = [
             {"group": "TOTAL", "period": "main", "scenario": "base", "actual_production": 100},
             {"group": "TOTAL", "period": "mr", "scenario": "base", "actual_production": 50},
@@ -745,9 +745,39 @@ class TestBuildPortfolioSummarySections:
         pd.DataFrame(rows).to_csv(tmp_path / "consolidated_risk_production.csv", index=False)
 
         sections = _build_portfolio_summary_sections(tmp_path / "consolidated_risk_production.csv")
-        total_section = next(s for s in sections if s.id == "portfolio-total")
-        # Only main period, so 1 table
-        assert len(total_section.tables) == 1
+        ids = [s.id for s in sections]
+        # Main and MR each get their own section
+        assert "portfolio-total" in ids
+        assert "mr-portfolio-total" in ids
+        # Main sections come before MR sections
+        assert ids.index("portfolio-total") < ids.index("mr-portfolio-total")
+
+    def test_mr_section_titles(self, tmp_path):
+        rows = [
+            {"group": "supersegment_premium", "period": "main", "scenario": "base", "actual_production": 100},
+            {"group": "supersegment_premium", "period": "mr", "scenario": "base", "actual_production": 50},
+            {"group": "TOTAL", "period": "main", "scenario": "base", "actual_production": 100},
+            {"group": "TOTAL", "period": "mr", "scenario": "base", "actual_production": 50},
+        ]
+        pd.DataFrame(rows).to_csv(tmp_path / "consolidated_risk_production.csv", index=False)
+
+        sections = _build_portfolio_summary_sections(tmp_path / "consolidated_risk_production.csv")
+        titles = {s.id: s.title for s in sections}
+        assert "Portfolio Summary" in titles["portfolio-premium"]
+        assert "MR Validation" in titles["mr-portfolio-premium"]
+        assert "Portfolio Summary" in titles["portfolio-total"]
+        assert "MR Validation" in titles["mr-portfolio-total"]
+
+    def test_mr_only_when_data_exists(self, tmp_path):
+        rows = [
+            {"group": "TOTAL", "period": "main", "scenario": "base", "actual_production": 100},
+        ]
+        pd.DataFrame(rows).to_csv(tmp_path / "consolidated_risk_production.csv", index=False)
+
+        sections = _build_portfolio_summary_sections(tmp_path / "consolidated_risk_production.csv")
+        ids = [s.id for s in sections]
+        assert "portfolio-total" in ids
+        assert not any(i.startswith("mr-") for i in ids)
 
     def test_standalone_segments_without_supersegments(self, tmp_path):
         rows = [
