@@ -107,10 +107,9 @@ class TestCalculateB2EverH6:
         assert result == 0.0
 
     def test_negative_values(self):
-        """Test calculation with negative values."""
+        """Test that negative risk is clipped to zero."""
         result = calculate_b2_ever_h6(-100, 1000)
-        expected = 7 * -100 / 1000
-        assert np.isclose(result, expected)
+        assert result == 0.0
 
     def test_mixed_series_with_zeros(self):
         """Test series with multiple zeros in denominator."""

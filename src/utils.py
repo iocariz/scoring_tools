@@ -56,6 +56,9 @@ def calculate_b2_ever_h6(
     if as_percentage:
         result = result * 100
 
+    # Risk cannot be negative — clip to 0 (preserves NaN for missing cells)
+    result = np.clip(result, 0, None)
+
     return np.round(result, decimals)
 
 
