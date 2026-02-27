@@ -111,6 +111,223 @@ def csv_to_html_table(
 
 
 # ---------------------------------------------------------------------------
+# Cutoff comparison helpers (consolidated report)
+# ---------------------------------------------------------------------------
+
+_FIXED_COLS = frozenset(
+    {
+        "accepted",
+        "segment",
+        "scenario",
+        "risk_pct",
+        "production",
+        "production_ci_lower",
+        "production_ci_upper",
+        "risk_ci_lower",
+        "risk_ci_upper",
+    }
+)
+
+
+def _detect_variable_cols(df: pd.DataFrame) -> list[str]:
+    """Return the ordered list of grid variable columns (everything not a fixed KPI/meta column)."""
+    return [c for c in df.columns if c not in _FIXED_COLS]
+
+
+def _read_cutoff_data(output_base: Path, segments: dict) -> pd.DataFrame | None:
+    """Read and concatenate ``cutoff_summary_wide.csv`` from each segment directory.
+
+    Returns *None* when no valid data is found.
+    """
+    frames: list[pd.DataFrame] = []
+    for seg_name in segments:
+        seg_output = OutputPaths(base_dir=output_base / seg_name)
+        csv_path = Path(seg_output.cutoff_summary_wide_csv)
+        if not csv_path.exists():
+            logger.warning(f"Cutoff CSV not found for segment {seg_name}: {csv_path}")
+            continue
+        try:
+            df = pd.read_csv(csv_path)
+        except (pd.errors.ParserError, OSError, ValueError):
+            logger.warning(f"Could not read cutoff CSV for segment {seg_name}: {csv_path}")
+            continue
+        if df.empty:
+            continue
+        if "segment" not in df.columns:
+            df["segment"] = seg_name
+        frames.append(df)
+
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True)
+
+
+_SCENARIO_ORDER = {"pessimistic": 0, "base": 1, "optimistic": 2}
+
+
+def _build_scenario_kpi_table(df: pd.DataFrame, variable_cols: list[str]) -> str:
+    """Build an HTML summary table with one row per (segment, scenario)."""
+    rows: list[dict] = []
+    group_cols = ["segment", "scenario"]
+    for (seg, scen), grp in df.groupby(group_cols, sort=False):
+        first = grp.iloc[0]
+        total = len(grp)
+        accepted = int(grp["accepted"].sum()) if "accepted" in grp.columns else total
+
+        risk = first.get("risk_pct", float("nan"))
+        production = first.get("production", float("nan"))
+        risk_ci_lo = first.get("risk_ci_lower", float("nan"))
+        risk_ci_hi = first.get("risk_ci_upper", float("nan"))
+        prod_ci_lo = first.get("production_ci_lower", float("nan"))
+        prod_ci_hi = first.get("production_ci_upper", float("nan"))
+
+        def _fmt_ci(lo, hi, scale=1.0, dp=2):
+            if pd.isna(lo) or pd.isna(hi):
+                return "—"
+            return f"[{lo / scale:.{dp}f}, {hi / scale:.{dp}f}]"
+
+        rows.append(
+            {
+                "Segment": seg,
+                "Scenario": scen,
+                "Risk (%)": f"{risk:.2f}" if pd.notna(risk) else "—",
+                "Production (M)": f"{production / 1e6:.2f}" if pd.notna(production) else "—",
+                "Risk CI": _fmt_ci(risk_ci_lo, risk_ci_hi),
+                "Prod CI (M)": _fmt_ci(prod_ci_lo, prod_ci_hi, scale=1e6),
+                "Accepted": accepted,
+                "Total": total,
+                "Acc. Rate (%)": f"{100 * accepted / total:.1f}" if total > 0 else "—",
+            }
+        )
+
+    summary = pd.DataFrame(rows)
+    # Sort by segment then scenario order
+    summary["_sort"] = summary["Scenario"].map(_SCENARIO_ORDER).fillna(99)
+    summary = summary.sort_values(["Segment", "_sort"]).drop(columns="_sort")
+
+    return summary.to_html(index=False, classes="report-table", border=0, na_rep="—")
+
+
+def _build_acceptance_matrices(df: pd.DataFrame, variable_cols: list[str], scenario: str = "base") -> str | None:
+    """Build colored HTML pivot grids showing accept/reject patterns for a scenario."""
+    if "accepted" not in df.columns:
+        return None
+    if "scenario" not in df.columns:
+        return None
+
+    scen_df = df[df["scenario"] == scenario]
+    if scen_df.empty:
+        return None
+
+    if len(variable_cols) < 2:
+        return None
+
+    col_var = variable_cols[0]  # columns of the pivot
+    row_var = variable_cols[1]  # rows of the pivot
+    slice_vars = variable_cols[2:]  # additional dimensions → sub-tables
+
+    parts: list[str] = []
+
+    for seg_name, seg_df in scen_df.groupby("segment", sort=True):
+        parts.append(f"<h4>{seg_name}</h4>")
+
+        if slice_vars:
+            # Group by the slice variables for sub-tables
+            slice_groups = seg_df.groupby(slice_vars, sort=True)
+            # Cap at 12 sub-tables
+            group_items = list(slice_groups)[:12]
+        else:
+            group_items = [(None, seg_df)]
+
+        parts.append('<div style="display: flex; gap: 1.5rem; flex-wrap: wrap;">')
+        for slice_key, slice_df in group_items:
+            if slice_key is not None:
+                if isinstance(slice_key, tuple):
+                    label = ", ".join(f"{v}={k}" for v, k in zip(slice_vars, slice_key))
+                else:
+                    label = f"{slice_vars[0]}={slice_key}"
+                parts.append(f"<div><strong>{label}</strong>")
+            else:
+                parts.append("<div>")
+
+            pivot = slice_df.pivot_table(index=row_var, columns=col_var, values="accepted", aggfunc="first")
+            # Sort index and columns numerically if possible
+            try:
+                pivot = pivot.sort_index(key=lambda x: pd.to_numeric(x, errors="coerce"))
+                pivot = pivot[sorted(pivot.columns, key=lambda x: pd.to_numeric(x, errors="coerce"))]
+            except (TypeError, ValueError):
+                pass
+
+            parts.append(_render_acceptance_pivot(pivot, col_var, row_var))
+            parts.append("</div>")
+        parts.append("</div>")
+
+    return "\n".join(parts) if parts else None
+
+
+def _render_acceptance_pivot(pivot: pd.DataFrame, col_label: str, row_label: str) -> str:
+    """Render a single acceptance pivot table as inline-styled HTML."""
+    lines: list[str] = []
+    lines.append('<table style="border-collapse: collapse; font-size: 0.85em; margin: 0.5rem 0;">')
+    # Header row
+    lines.append("<tr>")
+    lines.append(
+        f'<th style="padding: 4px 8px; border: 1px solid #ccc; background: #f5f5f5;">{row_label} \\ {col_label}</th>'
+    )
+    for col in pivot.columns:
+        lines.append(f'<th style="padding: 4px 8px; border: 1px solid #ccc; background: #f5f5f5;">{col}</th>')
+    lines.append("</tr>")
+
+    # Data rows
+    for idx in pivot.index:
+        lines.append("<tr>")
+        lines.append(f'<th style="padding: 4px 8px; border: 1px solid #ccc; background: #f5f5f5;">{idx}</th>')
+        for col in pivot.columns:
+            val = pivot.loc[idx, col]
+            if pd.isna(val):
+                style = "background: #EAECEE; color: #7f8c8d;"
+                text = "—"
+            elif val == 1:
+                style = "background: #2ECC71; color: white;"
+                text = "&#10003;"
+            else:
+                style = "background: #FADBD8; color: #922B21;"
+                text = "&#10007;"
+            lines.append(
+                f'<td style="padding: 4px 8px; border: 1px solid #ccc; text-align: center; {style}">{text}</td>'
+            )
+        lines.append("</tr>")
+
+    lines.append("</table>")
+    return "\n".join(lines)
+
+
+def _build_cutoff_comparison_section(output_base: Path, segments: dict) -> ReportSection | None:
+    """Build the redesigned cutoff comparison section for the consolidated report."""
+    df = _read_cutoff_data(output_base, segments)
+    if df is None:
+        return None
+
+    variable_cols = _detect_variable_cols(df)
+    section = ReportSection(id="cutoff-comparison", title="Cutoff Comparison")
+
+    # KPI summary table
+    if "scenario" in df.columns and "segment" in df.columns:
+        kpi_html = _build_scenario_kpi_table(df, variable_cols)
+        section.tables.append("<h4>Scenario KPI Summary</h4>" + kpi_html)
+
+    # Acceptance matrices (base scenario only)
+    if "accepted" in df.columns:
+        matrices_html = _build_acceptance_matrices(df, variable_cols)
+        if matrices_html:
+            section.tables.append("<h4>Acceptance Matrices (Base Scenario)</h4>" + matrices_html)
+
+    if not section.tables:
+        return None
+    return section
+
+
+# ---------------------------------------------------------------------------
 # Segment report builder
 # ---------------------------------------------------------------------------
 
@@ -281,14 +498,8 @@ def build_consolidated_report(
         sections.append(comparison_section)
 
     # --- Cutoff Comparison ---
-    cutoff_section = ReportSection(id="cutoff-comparison", title="Cutoff Comparison")
-    for seg_name in segments:
-        seg_dir = output_base / seg_name
-        seg_output = OutputPaths(base_dir=seg_dir)
-        tbl = csv_to_html_table(seg_output.cutoff_summary_wide_csv, max_rows=200)
-        if tbl:
-            cutoff_section.tables.append(f"<h4>{seg_name}</h4>{tbl}")
-    if cutoff_section.tables:
+    cutoff_section = _build_cutoff_comparison_section(output_base, segments)
+    if cutoff_section is not None:
         sections.append(cutoff_section)
 
     segment_list = ", ".join(segments.keys()) if segments else "none"

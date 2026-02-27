@@ -96,6 +96,64 @@ def load_and_standardize_data(data_path: str) -> pd.DataFrame | None:
         return None
 
 
+def learn_global_bin_edges(data: pd.DataFrame, base_config: dict[str, Any]) -> dict[str, list[float]]:
+    """Learn bin edges on the full dataset (all segments) for consistency.
+
+    When bins use ``method = "optimization"`` or ``"quantile"`` with ``max_bins``
+    instead of fixed ``bin_edges``, edges are learned from data.  In batch mode
+    we want a single set of edges shared across all segments, so we learn them
+    here on the full (unfiltered) booked population before any segment run.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Full pre-loaded and standardized dataset (all segments).
+    base_config : dict
+        Base ``[preprocessing]`` configuration dictionary.
+
+    Returns
+    -------
+    dict[str, list[float]]
+        Mapping of variable name → learned bin edges.  Empty if no bins
+        require learning.
+    """
+    from src.preprocess_improved import learn_optimization_bins, learn_quantile_bins
+
+    bins_config = base_config.get("bins", {})
+    if not bins_config:
+        return {}
+
+    # Basic quality filters (NO segment filter) + booked only
+    mask = (
+        (data["fuera_norma"] == "n")
+        & (data["fraud_flag"] == "n")
+        & (data["nature_holder"] != "legal")
+        & (data["status_name"] == "booked")
+    )
+    data_booked = data[mask]
+    logger.info(f"Global bin learning: {len(data_booked):,} booked records across all segments")
+
+    global_edges: dict[str, list[float]] = {}
+    for var_name, bc_raw in bins_config.items():
+        has_edges = bc_raw.get("bin_edges") and len(bc_raw["bin_edges"]) >= 2
+        if has_edges or bc_raw.get("max_bins") is None:
+            continue  # Fixed edges or no learning needed
+
+        source_col = bc_raw["source_col"]
+        method = bc_raw.get("method", "quantile")
+        max_bins = bc_raw["max_bins"]
+
+        if method == "optimization":
+            edges = learn_optimization_bins(data_booked, source_col=source_col, max_bins=max_bins)
+        else:
+            edges = learn_quantile_bins(data_booked, source_col=source_col, max_bins=max_bins)
+
+        global_edges[var_name] = edges
+        logger.info(f"Global bin edges for '{var_name}': {edges}")
+
+    return global_edges
+
+
 def load_base_config(config_path: str = "config.toml") -> dict[str, Any]:
     """Load the base configuration from config.toml."""
     with open(config_path, "rb") as f:
@@ -153,6 +211,7 @@ def run_segment_pipeline(
     skip_dq_checks: bool = False,
     preloaded_data: pd.DataFrame = None,
     training_only: bool = False,
+    global_bin_edges: dict[str, list[float]] | None = None,
 ) -> bool:
     """
     Run the pipeline for a single segment.
@@ -169,6 +228,9 @@ def run_segment_pipeline(
         preloaded_data: Optional pre-loaded and standardized DataFrame. If provided,
                        skips loading data from file for faster batch processing.
         training_only: Optional parameter. If True, skipping optimization and scenario generation.
+        global_bin_edges: Optional pre-learned bin edges from the full dataset.
+                         When provided, these are injected into the merged config so
+                         that all segments share consistent bin edges.
 
     Returns:
         True if successful, False otherwise
@@ -188,6 +250,14 @@ def run_segment_pipeline(
 
     # Merge configurations
     merged_config = merge_configs(base_config, segment_config)
+
+    # Inject globally-learned bin edges so all segments share the same edges.
+    if global_bin_edges:
+        bins_section = merged_config.setdefault("bins", {})
+        for var_name, edges in global_bin_edges.items():
+            if var_name in bins_section:
+                bins_section[var_name]["bin_edges"] = edges
+
     logger.info(f"Segment filter: {merged_config.get('segment_filter')}")
     logger.info(f"Optimum risk: {merged_config.get('optimum_risk')}")
     if model_path:
@@ -234,6 +304,7 @@ def run_supersegment_training(
     output_base: str = "output",
     skip_dq_checks: bool = False,
     preloaded_data: pd.DataFrame = None,
+    global_bin_edges: dict[str, list[float]] | None = None,
 ) -> str | None:
     """
     Train a model on combined supersegment data (multiple segment_filters).
@@ -248,6 +319,9 @@ def run_supersegment_training(
         supersegment_config: Config containing list of segment_filters to combine
         base_config: Base configuration from config.toml
         output_base: Base directory for all outputs
+        skip_dq_checks: If True, skip data quality checks.
+        preloaded_data: Optional pre-loaded DataFrame.
+        global_bin_edges: Optional pre-learned bin edges from the full dataset.
 
     Returns:
         Path to the trained model directory, or None if training failed
@@ -283,6 +357,13 @@ def run_supersegment_training(
     # Merge config with combined filter
     merged_config = base_config.copy()
     merged_config["segment_filter"] = combined_filter
+
+    # Inject globally-learned bin edges so supersegment uses the same edges as segments.
+    if global_bin_edges:
+        bins_section = merged_config.setdefault("bins", {})
+        for var_name, edges in global_bin_edges.items():
+            if var_name in bins_section:
+                bins_section[var_name]["bin_edges"] = edges
 
     try:
         from main import main as run_main_pipeline
@@ -369,6 +450,7 @@ def run_segments_sequential(
     skip_dq_checks: bool = False,
     preloaded_data: pd.DataFrame = None,
     training_only: bool = False,
+    global_bin_edges: dict[str, list[float]] | None = None,
 ) -> dict[str, bool]:
     """
     Run all segments sequentially, with supersegment support.
@@ -384,6 +466,7 @@ def run_segments_sequential(
         reuse_models: If True, reuse existing supersegment models instead of retraining
         skip_dq_checks: If True, skip data quality checks.
         preloaded_data: Optional pre-loaded DataFrame to avoid reloading for each segment.
+        global_bin_edges: Optional pre-learned bin edges from the full dataset.
 
     Returns:
         Dictionary of segment names to success status
@@ -436,6 +519,7 @@ def run_segments_sequential(
                     output_base=output_base,
                     skip_dq_checks=skip_dq_checks,
                     preloaded_data=preloaded_data,
+                    global_bin_edges=global_bin_edges,
                 )
 
                 if model_path:
@@ -484,6 +568,7 @@ def run_segments_sequential(
                 skip_dq_checks=skip_dq_checks,
                 preloaded_data=preloaded_data,
                 training_only=training_only,
+                global_bin_edges=global_bin_edges,
             )
             results[segment_name] = success
 
@@ -506,6 +591,7 @@ def run_segments_parallel(
     skip_dq_checks: bool = False,
     preloaded_data: pd.DataFrame = None,
     training_only: bool = False,
+    global_bin_edges: dict[str, list[float]] | None = None,
 ) -> dict[str, bool]:
     """
     Run all segments in parallel, with supersegment support.
@@ -526,6 +612,7 @@ def run_segments_parallel(
         reuse_models: If True, reuse existing supersegment models instead of retraining
         skip_dq_checks: If True, skip data quality checks.
         preloaded_data: Optional pre-loaded DataFrame to avoid reloading for each segment.
+        global_bin_edges: Optional pre-learned bin edges from the full dataset.
 
     Returns:
         Dictionary of segment names to success status
@@ -575,6 +662,7 @@ def run_segments_parallel(
                     output_base=output_base,
                     skip_dq_checks=skip_dq_checks,
                     preloaded_data=preloaded_data,
+                    global_bin_edges=global_bin_edges,
                 )
                 if model_path:
                     supersegment_models[ss_name] = model_path
@@ -607,6 +695,7 @@ def run_segments_parallel(
                     skip_dq_checks,
                     preloaded_data,
                     training_only,
+                    global_bin_edges,
                 )
                 futures[future] = segment_name
 
@@ -889,6 +978,13 @@ def main():
         print("Data preloading skipped (file not accessible locally).")
         print("Each segment will load data individually from configured path.\n")
 
+    # Learn global bin edges ONCE on the full dataset so all segments share
+    # identical edges (instead of each segment learning from its own filtered
+    # subpopulation).
+    global_bin_edges: dict[str, list[float]] = {}
+    if preloaded_data is not None:
+        global_bin_edges = learn_global_bin_edges(preloaded_data, base_config)
+
     # Run segments
     if args.parallel:
         results = run_segments_parallel(
@@ -901,6 +997,7 @@ def main():
             skip_dq_checks=args.skip_dq_checks,
             preloaded_data=preloaded_data,
             training_only=args.training_only,
+            global_bin_edges=global_bin_edges,
         )
     else:
         results = run_segments_sequential(
@@ -912,6 +1009,7 @@ def main():
             skip_dq_checks=args.skip_dq_checks,
             preloaded_data=preloaded_data,
             training_only=args.training_only,
+            global_bin_edges=global_bin_edges,
         )
 
     # Print summary

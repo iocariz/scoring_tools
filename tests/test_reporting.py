@@ -13,6 +13,11 @@ from src.config import OutputPaths, PreprocessingSettings
 from src.reporting import (
     ReportContext,
     ReportSection,
+    _build_acceptance_matrices,
+    _build_cutoff_comparison_section,
+    _build_scenario_kpi_table,
+    _detect_variable_cols,
+    _read_cutoff_data,
     build_consolidated_report,
     build_segment_report,
     csv_to_html_table,
@@ -324,19 +329,288 @@ class TestBuildConsolidatedReport:
         assert len(context.sections) == 0
 
     def test_multi_segment(self, tmp_path):
-        """Consolidated report with multiple segment dirs."""
-        # Create segment dirs with cutoff_summary_wide.csv
+        """Consolidated report with multiple segment dirs picks up cutoff comparison."""
+        rng = np.random.RandomState(42)
         for seg in ["seg_a", "seg_b"]:
             data_dir = tmp_path / seg / "data"
             data_dir.mkdir(parents=True)
-            df = pd.DataFrame({"var1": [1, 2], "var2": [3, 4]})
-            df.to_csv(data_dir / "cutoff_summary_wide.csv", index=False)
+            rows = []
+            for scen in ["pessimistic", "base", "optimistic"]:
+                for v1 in range(3):
+                    for v2 in range(3):
+                        rows.append(
+                            {
+                                "octroi_bin": v1,
+                                "efx_bin": v2,
+                                "accepted": int(rng.rand() > 0.4),
+                                "segment": seg,
+                                "scenario": scen,
+                                "risk_pct": 1.0 + rng.rand(),
+                                "production": 50_000_000 + rng.rand() * 10_000_000,
+                                "risk_ci_lower": 0.5,
+                                "risk_ci_upper": 1.5,
+                                "production_ci_lower": 48_000_000,
+                                "production_ci_upper": 52_000_000,
+                            }
+                        )
+            pd.DataFrame(rows).to_csv(data_dir / "cutoff_summary_wide.csv", index=False)
 
         context = build_consolidated_report(tmp_path, segments={"seg_a": {}, "seg_b": {}}, supersegments={})
 
         section_ids = [s.id for s in context.sections]
         assert "cutoff-comparison" in section_ids
 
-        # Should have tables for both segments
         cutoff_section = next(s for s in context.sections if s.id == "cutoff-comparison")
+        # KPI summary table + acceptance matrices
         assert len(cutoff_section.tables) == 2
+        assert "Scenario KPI Summary" in cutoff_section.tables[0]
+        assert "Acceptance Matrices" in cutoff_section.tables[1]
+
+
+# =============================================================================
+# Helpers: shared cutoff DataFrame fixture
+# =============================================================================
+
+
+def _make_cutoff_df(
+    segments=("seg_a",),
+    scenarios=("pessimistic", "base", "optimistic"),
+    grid_size=(3, 4),
+    include_accepted=True,
+    seed=42,
+):
+    """Build a synthetic cutoff DataFrame for testing helpers."""
+    rng = np.random.RandomState(seed)
+    rows = []
+    for seg in segments:
+        for scen in scenarios:
+            for v1 in range(grid_size[0]):
+                for v2 in range(grid_size[1]):
+                    row = {
+                        "octroi_bin": v1,
+                        "efx_bin": v2,
+                        "segment": seg,
+                        "scenario": scen,
+                        "risk_pct": round(0.5 + rng.rand(), 2),
+                        "production": round(40_000_000 + rng.rand() * 20_000_000, 2),
+                        "risk_ci_lower": 0.3,
+                        "risk_ci_upper": 1.7,
+                        "production_ci_lower": 38_000_000,
+                        "production_ci_upper": 52_000_000,
+                    }
+                    if include_accepted:
+                        row["accepted"] = int(rng.rand() > 0.4)
+                    rows.append(row)
+    return pd.DataFrame(rows)
+
+
+# =============================================================================
+# Tests: _detect_variable_cols
+# =============================================================================
+
+
+class TestDetectVariableCols:
+    def test_detects_variable_cols(self):
+        df = _make_cutoff_df()
+        cols = _detect_variable_cols(df)
+        assert "octroi_bin" in cols
+        assert "efx_bin" in cols
+        assert "segment" not in cols
+        assert "accepted" not in cols
+        assert "risk_pct" not in cols
+
+    def test_preserves_order(self):
+        df = _make_cutoff_df()
+        cols = _detect_variable_cols(df)
+        assert cols == ["octroi_bin", "efx_bin"]
+
+
+# =============================================================================
+# Tests: _read_cutoff_data
+# =============================================================================
+
+
+class TestReadCutoffData:
+    def test_reads_multiple_segments(self, tmp_path):
+        for seg in ["seg_a", "seg_b"]:
+            data_dir = tmp_path / seg / "data"
+            data_dir.mkdir(parents=True)
+            _make_cutoff_df(segments=(seg,)).to_csv(data_dir / "cutoff_summary_wide.csv", index=False)
+
+        result = _read_cutoff_data(tmp_path, {"seg_a": {}, "seg_b": {}})
+        assert result is not None
+        assert set(result["segment"].unique()) == {"seg_a", "seg_b"}
+
+    def test_missing_csv_skipped(self, tmp_path):
+        data_dir = tmp_path / "seg_a" / "data"
+        data_dir.mkdir(parents=True)
+        _make_cutoff_df(segments=("seg_a",)).to_csv(data_dir / "cutoff_summary_wide.csv", index=False)
+
+        result = _read_cutoff_data(tmp_path, {"seg_a": {}, "seg_missing": {}})
+        assert result is not None
+        assert list(result["segment"].unique()) == ["seg_a"]
+
+    def test_all_missing_returns_none(self, tmp_path):
+        result = _read_cutoff_data(tmp_path, {"seg_x": {}})
+        assert result is None
+
+    def test_adds_segment_col_if_missing(self, tmp_path):
+        data_dir = tmp_path / "seg_a" / "data"
+        data_dir.mkdir(parents=True)
+        df = _make_cutoff_df(segments=("seg_a",)).drop(columns="segment")
+        df.to_csv(data_dir / "cutoff_summary_wide.csv", index=False)
+
+        result = _read_cutoff_data(tmp_path, {"seg_a": {}})
+        assert "segment" in result.columns
+        assert result["segment"].iloc[0] == "seg_a"
+
+
+# =============================================================================
+# Tests: _build_scenario_kpi_table
+# =============================================================================
+
+
+class TestBuildScenarioKpiTable:
+    def test_one_row_per_segment_scenario(self):
+        df = _make_cutoff_df(segments=("seg_a", "seg_b"), scenarios=("pessimistic", "base", "optimistic"))
+        html = _build_scenario_kpi_table(df, ["octroi_bin", "efx_bin"])
+        # 2 segments × 3 scenarios = 6 data rows (header row has inline style)
+        assert html.count("<tr>") == 6
+        assert "seg_a" in html
+        assert "seg_b" in html
+
+    def test_scenario_ordering(self):
+        df = _make_cutoff_df(scenarios=("optimistic", "base", "pessimistic"))
+        html = _build_scenario_kpi_table(df, ["octroi_bin", "efx_bin"])
+        pess_pos = html.index("pessimistic")
+        base_pos = html.index("base")
+        opt_pos = html.index("optimistic")
+        assert pess_pos < base_pos < opt_pos
+
+    def test_production_in_millions(self):
+        df = _make_cutoff_df(scenarios=("base",))
+        html = _build_scenario_kpi_table(df, ["octroi_bin", "efx_bin"])
+        # Production values are ~40-60M, divided by 1e6 should be ~40-60
+        assert "Production (M)" in html
+        # Check formatted values are reasonable (not raw large numbers)
+        assert "000,000" not in html
+
+    def test_acceptance_rate(self):
+        df = _make_cutoff_df(scenarios=("base",))
+        html = _build_scenario_kpi_table(df, ["octroi_bin", "efx_bin"])
+        assert "Acc. Rate (%)" in html
+
+    def test_without_accepted_col(self):
+        df = _make_cutoff_df(include_accepted=False, scenarios=("base",))
+        html = _build_scenario_kpi_table(df, ["octroi_bin", "efx_bin"])
+        assert "report-table" in html
+        # All cells accepted → rate should be 100.0%
+        assert "100.0" in html
+
+    def test_ci_formatting(self):
+        df = _make_cutoff_df(scenarios=("base",))
+        html = _build_scenario_kpi_table(df, ["octroi_bin", "efx_bin"])
+        # Risk CI should be present as [lower, upper]
+        assert "[0.30, 1.70]" in html
+
+
+# =============================================================================
+# Tests: _build_acceptance_matrices
+# =============================================================================
+
+
+class TestBuildAcceptanceMatrices:
+    def test_renders_base_scenario(self):
+        df = _make_cutoff_df()
+        html = _build_acceptance_matrices(df, ["octroi_bin", "efx_bin"])
+        assert html is not None
+        assert "seg_a" in html
+        # Contains checkmarks and crosses
+        assert "&#10003;" in html or "&#10007;" in html
+
+    def test_returns_none_without_accepted(self):
+        df = _make_cutoff_df(include_accepted=False)
+        result = _build_acceptance_matrices(df, ["octroi_bin", "efx_bin"])
+        assert result is None
+
+    def test_returns_none_without_scenario(self):
+        df = _make_cutoff_df().drop(columns="scenario")
+        result = _build_acceptance_matrices(df, ["octroi_bin", "efx_bin"])
+        assert result is None
+
+    def test_returns_none_for_missing_scenario(self):
+        df = _make_cutoff_df(scenarios=("pessimistic",))
+        result = _build_acceptance_matrices(df, ["octroi_bin", "efx_bin"], scenario="base")
+        assert result is None
+
+    def test_multiple_segments(self):
+        df = _make_cutoff_df(segments=("seg_a", "seg_b"))
+        html = _build_acceptance_matrices(df, ["octroi_bin", "efx_bin"])
+        assert html is not None
+        assert "seg_a" in html
+        assert "seg_b" in html
+
+    def test_three_variable_slices(self):
+        rng = np.random.RandomState(42)
+        rows = []
+        for scen in ["base"]:
+            for v1 in range(2):
+                for v2 in range(2):
+                    for v3 in range(2):
+                        rows.append(
+                            {
+                                "var_a": v1,
+                                "var_b": v2,
+                                "income_bin": v3,
+                                "accepted": int(rng.rand() > 0.5),
+                                "segment": "seg_a",
+                                "scenario": scen,
+                                "risk_pct": 1.0,
+                                "production": 50_000_000,
+                            }
+                        )
+        df = pd.DataFrame(rows)
+        html = _build_acceptance_matrices(df, ["var_a", "var_b", "income_bin"])
+        assert html is not None
+        assert "income_bin=" in html
+
+    def test_colored_cells(self):
+        df = _make_cutoff_df(grid_size=(2, 2))
+        html = _build_acceptance_matrices(df, ["octroi_bin", "efx_bin"])
+        assert html is not None
+        assert "#2ECC71" in html or "#FADBD8" in html
+
+
+# =============================================================================
+# Tests: _build_cutoff_comparison_section
+# =============================================================================
+
+
+class TestBuildCutoffComparisonSection:
+    def test_full_section(self, tmp_path):
+        for seg in ["seg_a"]:
+            data_dir = tmp_path / seg / "data"
+            data_dir.mkdir(parents=True)
+            _make_cutoff_df(segments=(seg,)).to_csv(data_dir / "cutoff_summary_wide.csv", index=False)
+
+        section = _build_cutoff_comparison_section(tmp_path, {"seg_a": {}})
+        assert section is not None
+        assert section.id == "cutoff-comparison"
+        assert len(section.tables) == 2  # KPI table + matrices
+
+    def test_returns_none_when_no_data(self, tmp_path):
+        section = _build_cutoff_comparison_section(tmp_path, {"nonexistent": {}})
+        assert section is None
+
+    def test_no_matrices_without_accepted(self, tmp_path):
+        data_dir = tmp_path / "seg_a" / "data"
+        data_dir.mkdir(parents=True)
+        _make_cutoff_df(segments=("seg_a",), include_accepted=False).to_csv(
+            data_dir / "cutoff_summary_wide.csv", index=False
+        )
+
+        section = _build_cutoff_comparison_section(tmp_path, {"seg_a": {}})
+        assert section is not None
+        # Only KPI table, no matrices
+        assert len(section.tables) == 1
+        assert "Scenario KPI Summary" in section.tables[0]

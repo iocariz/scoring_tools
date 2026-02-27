@@ -1,7 +1,7 @@
 [preprocessing]
 keep_vars = [
     "authorization_id", "mis_date", "status_name", "risk_score_rf", "se_decision_id",
-    "reject_reason", "score_rf", "segment_cut_off", "early_bad", "income_t1_m"
+    "reject_reason", "score_rf", "segment_cut_off", "early_bad", "income_t1t2_m"
 ]
 indicators = [
     "acct_booked_h0", "oa_amt", "todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"
@@ -63,7 +63,7 @@ reject_max_risk_multiplier = 3.0      # upper cap for per-bin multiplier (1.0-10
 # 3) set variables = ['sc_octroi_new_clus', 'new_efx_clus', 'income_bin']
 #
 [preprocessing.bins.income_bin]
-source_col = "income_t1_m"
+source_col = "income_t1t2_m"
 output_col = "income_bin"
 max_bins = 2
 method = "optimization"     # "quantile" (default) or "optimization" (production-weighted risk split)

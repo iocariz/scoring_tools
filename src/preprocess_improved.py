@@ -824,11 +824,11 @@ def _run_data_transformations(df: pd.DataFrame, settings: "PreprocessingSettings
     data_clean = preprocess_data(df, settings.keep_vars, settings.indicators, settings.segment_filter)
 
     if settings.bins:
+        from src.constants import StatusName
+
         # Learn bin edges for any BinConfig with max_bins but no bin_edges
         for var_name, bc in settings.bins.items():
             if not bc.bin_edges and bc.max_bins is not None:
-                from src.constants import StatusName
-
                 booked_mask = data_clean["status_name"] == StatusName.BOOKED.value
                 data_booked_for_bins = data_clean[booked_mask]
 
