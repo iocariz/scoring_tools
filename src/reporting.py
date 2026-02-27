@@ -205,7 +205,36 @@ def _build_scenario_kpi_table(df: pd.DataFrame, variable_cols: list[str]) -> str
     summary["_sort"] = summary["Scenario"].map(_SCENARIO_ORDER).fillna(99)
     summary = summary.sort_values(["Segment", "_sort"]).drop(columns="_sort")
 
-    return summary.to_html(index=False, classes="report-table", border=0, na_rep="—")
+    # Build semantic HTML table
+    columns = list(summary.columns)
+    numeric_cols = {"Risk (%)", "Production (M)", "Risk CI", "Prod CI (M)", "Accepted", "Total", "Acc. Rate (%)"}
+    ci_cols = {"Risk CI", "Prod CI (M)"}
+
+    lines: list[str] = ['<table class="report-table" border="0">']
+    lines.append("<thead><tr>")
+    for col in columns:
+        cls = ' class="num"' if col in numeric_cols else ""
+        lines.append(f"<th{cls}>{col}</th>")
+    lines.append("</tr></thead>")
+
+    lines.append("<tbody>")
+    for _, row in summary.iterrows():
+        lines.append("<tr>")
+        for col in columns:
+            val = row[col]
+            if col == "Scenario":
+                badge_cls = f"badge-{val}" if val in _SCENARIO_ORDER else ""
+                lines.append(f'<td><span class="badge {badge_cls}">{val}</span></td>')
+            elif col in ci_cols:
+                lines.append(f'<td class="num ci">{val}</td>')
+            elif col in numeric_cols:
+                lines.append(f'<td class="num">{val}</td>')
+            else:
+                lines.append(f"<td>{val}</td>")
+        lines.append("</tr>")
+    lines.append("</tbody></table>")
+
+    return "\n".join(lines)
 
 
 def _build_acceptance_matrices(df: pd.DataFrame, variable_cols: list[str], scenario: str = "base") -> str | None:
@@ -272,16 +301,19 @@ def _render_acceptance_pivot(pivot: pd.DataFrame, col_label: str, row_label: str
     # Header row
     lines.append("<tr>")
     lines.append(
-        f'<th style="padding: 4px 8px; border: 1px solid #ccc; background: #f5f5f5;">{row_label} \\ {col_label}</th>'
+        f'<th style="padding: 4px 8px; border: 1px solid #d1d5db; background: #1e40af; color: #fff;">'
+        f"{row_label} \\ {col_label}</th>"
     )
     for col in pivot.columns:
-        lines.append(f'<th style="padding: 4px 8px; border: 1px solid #ccc; background: #f5f5f5;">{col}</th>')
+        lines.append(
+            f'<th style="padding: 4px 8px; border: 1px solid #d1d5db; background: #1e40af; color: #fff;">{col}</th>'
+        )
     lines.append("</tr>")
 
     # Data rows
     for idx in pivot.index:
         lines.append("<tr>")
-        lines.append(f'<th style="padding: 4px 8px; border: 1px solid #ccc; background: #f5f5f5;">{idx}</th>')
+        lines.append(f'<th style="padding: 4px 8px; border: 1px solid #d1d5db; background: #f1f5f9;">{idx}</th>')
         for col in pivot.columns:
             val = pivot.loc[idx, col]
             if pd.isna(val):
@@ -294,12 +326,168 @@ def _render_acceptance_pivot(pivot: pd.DataFrame, col_label: str, row_label: str
                 style = "background: #FADBD8; color: #922B21;"
                 text = "&#10007;"
             lines.append(
-                f'<td style="padding: 4px 8px; border: 1px solid #ccc; text-align: center; {style}">{text}</td>'
+                f'<td style="padding: 4px 8px; border: 1px solid #d1d5db; text-align: center; {style}">{text}</td>'
             )
         lines.append("</tr>")
 
     lines.append("</table>")
     return "\n".join(lines)
+
+
+_PORTFOLIO_METRIC_ROWS = [
+    ("Actual", "actual"),
+    ("Optimum", "optimum"),
+    ("Swap-in", "swap_in"),
+    ("Swap-out", "swap_out"),
+]
+
+
+def _fmt_num(val, fmt=",.2f"):
+    """Format a numeric value, returning '\u2014' for NaN."""
+    if pd.isna(val):
+        return "\u2014"
+    return format(val, fmt)
+
+
+def _build_portfolio_metric_table(row: pd.Series) -> str:
+    """Render one consolidated-CSV row as a 4-row metric breakdown table.
+
+    Unpivots the wide columns (actual_*, optimum_*, swap_in_*, swap_out_*)
+    into four rows with the user-requested columns.
+    """
+    columns = [
+        ("Metric", False),
+        ("Risk (%)", True),
+        ("Production (\u20ac)", True),
+        ("Production (%)", True),
+        ("todu_30ever_h6", True),
+        ("todu_amt_pile_h6", True),
+        ("Production CI Lower", True),
+        ("Production CI Upper", True),
+        ("Risk CI Lower", True),
+        ("Risk CI Upper", True),
+    ]
+
+    lines: list[str] = ['<table class="report-table" border="0">']
+    lines.append("<thead><tr>")
+    for col_name, is_num in columns:
+        cls = ' class="num"' if is_num else ""
+        lines.append(f"<th{cls}>{col_name}</th>")
+    lines.append("</tr></thead>")
+
+    lines.append("<tbody>")
+    for label, prefix in _PORTFOLIO_METRIC_ROWS:
+        risk = row.get(f"{prefix}_risk_pct", float("nan"))
+        prod = row.get(f"{prefix}_production", float("nan"))
+        todu30 = row.get(f"{prefix}_todu_30ever_h6", float("nan"))
+        toduamt = row.get(f"{prefix}_todu_amt_pile_h6", float("nan"))
+
+        # Production delta (%) and CIs only for Optimum
+        if prefix == "optimum":
+            prod_pct = row.get("production_delta_pct", float("nan"))
+            prod_ci_lo = row.get("production_ci_lower", float("nan"))
+            prod_ci_hi = row.get("production_ci_upper", float("nan"))
+            risk_ci_lo = row.get("risk_ci_lower", float("nan"))
+            risk_ci_hi = row.get("risk_ci_upper", float("nan"))
+        else:
+            prod_pct = prod_ci_lo = prod_ci_hi = risk_ci_lo = risk_ci_hi = float("nan")
+
+        # Format production delta with sign
+        if pd.notna(prod_pct):
+            sign = "+" if prod_pct > 0 else ""
+            prod_pct_str = f"{sign}{prod_pct:.1f}"
+        else:
+            prod_pct_str = "\u2014"
+
+        lines.append("<tr>")
+        lines.append(f"<td><strong>{label}</strong></td>")
+        lines.append(f'<td class="num">{_fmt_num(risk)}</td>')
+        lines.append(f'<td class="num">{_fmt_num(prod, ",.0f")}</td>')
+        lines.append(f'<td class="num">{prod_pct_str}</td>')
+        lines.append(f'<td class="num">{_fmt_num(todu30, ",.0f")}</td>')
+        lines.append(f'<td class="num">{_fmt_num(toduamt, ",.0f")}</td>')
+        lines.append(f'<td class="num ci">{_fmt_num(prod_ci_lo, ",.0f")}</td>')
+        lines.append(f'<td class="num ci">{_fmt_num(prod_ci_hi, ",.0f")}</td>')
+        lines.append(f'<td class="num ci">{_fmt_num(risk_ci_lo)}</td>')
+        lines.append(f'<td class="num ci">{_fmt_num(risk_ci_hi)}</td>')
+        lines.append("</tr>")
+
+    lines.append("</tbody></table>")
+    return "\n".join(lines)
+
+
+def _build_portfolio_summary_sections(csv_path: Path) -> list[ReportSection]:
+    """Build portfolio summary: one section per supersegment group, each with per-scenario tables."""
+    if not csv_path.exists():
+        return []
+    try:
+        df = pd.read_csv(csv_path)
+    except (pd.errors.ParserError, OSError, ValueError):
+        return []
+    if df.empty or "group" not in df.columns:
+        return []
+
+    # Filter to main period
+    if "period" in df.columns:
+        main_df = df[df["period"] == "main"]
+        if main_df.empty:
+            main_df = df
+    else:
+        main_df = df
+
+    # Parse group structure into ordered sections.
+    # supersegment_X  → section for that supersegment (aggregate)
+    # X/seg           → individual segment within supersegment (shown under same section)
+    # segment_X       → standalone section
+    # TOTAL           → shown last
+    all_groups = main_df["group"].unique()
+    supersegment_names = sorted(g[len("supersegment_") :] for g in all_groups if g.startswith("supersegment_"))
+
+    # Build ordered list of (group_col_value, display_name) for top-level sections
+    group_list: list[tuple[str, str]] = []
+    if supersegment_names:
+        for ss in supersegment_names:
+            group_list.append((f"supersegment_{ss}", ss))
+    else:
+        # No supersegments: each group (except TOTAL) gets its own section
+        for g in sorted(all_groups):
+            if g != "TOTAL":
+                group_list.append((g, g.replace("segment_", "")))
+    if "TOTAL" in all_groups:
+        group_list.append(("TOTAL", "Total"))
+
+    scenario_order = ["pessimistic", "base", "optimistic"]
+    sections: list[ReportSection] = []
+
+    for group_value, display_name in group_list:
+        safe_id = display_name.lower().replace(" ", "-").replace("/", "-")
+        section = ReportSection(
+            id=f"portfolio-{safe_id}",
+            title=f"Portfolio Summary \u2014 {display_name}",
+        )
+
+        group_df = main_df[main_df["group"] == group_value]
+        if "scenario" in group_df.columns:
+            available = [s for s in scenario_order if s in group_df["scenario"].values]
+            if not available:
+                available = list(group_df["scenario"].unique())
+        else:
+            available = [None]
+
+        for scenario in available:
+            scen_df = group_df[group_df["scenario"] == scenario] if scenario else group_df
+            if scen_df.empty:
+                continue
+
+            badge_cls = f"badge-{scenario}" if scenario and scenario in _SCENARIO_ORDER else ""
+            label = scenario.title() if scenario else "Base"
+            heading = f'<h4><span class="badge {badge_cls}">{label}</span></h4>'
+            section.tables.append(heading + _build_portfolio_metric_table(scen_df.iloc[0]))
+
+        if section.tables:
+            sections.append(section)
+
+    return sections
 
 
 def _build_cutoff_comparison_section(output_base: Path, segments: dict) -> ReportSection | None:
@@ -466,14 +654,9 @@ def build_consolidated_report(
     output_base = Path(output_base)
     sections: list[ReportSection] = []
 
-    # --- Portfolio Summary ---
-    portfolio_section = ReportSection(id="portfolio-summary", title="Portfolio Summary")
+    # --- Portfolio Summary (per supersegment + total) ---
     consol_csv = output_base / "consolidated_risk_production.csv"
-    tbl = csv_to_html_table(consol_csv, max_rows=200)
-    if tbl:
-        portfolio_section.tables.append(tbl)
-    if portfolio_section.tables:
-        sections.append(portfolio_section)
+    sections.extend(_build_portfolio_summary_sections(consol_csv))
 
     # --- Consolidated Dashboard ---
     dash_section = ReportSection(id="consolidated-dashboard", title="Consolidated Dashboard")

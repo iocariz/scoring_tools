@@ -15,6 +15,8 @@ from src.reporting import (
     ReportSection,
     _build_acceptance_matrices,
     _build_cutoff_comparison_section,
+    _build_portfolio_metric_table,
+    _build_portfolio_summary_sections,
     _build_scenario_kpi_table,
     _detect_variable_cols,
     _read_cutoff_data,
@@ -310,7 +312,10 @@ class TestBuildConsolidatedReport:
                 "period": ["main", "main"],
                 "scenario": ["base", "base"],
                 "actual_production": [200_000, 100_000],
+                "actual_risk_pct": [1.5, 1.2],
                 "optimum_production": [250_000, 130_000],
+                "optimum_risk_pct": [1.3, 1.0],
+                "production_delta_pct": [25.0, 30.0],
             }
         )
         df.to_csv(tmp_path / "consolidated_risk_production.csv", index=False)
@@ -320,7 +325,8 @@ class TestBuildConsolidatedReport:
         assert context.title == "Consolidated Report"
 
         section_ids = [s.id for s in context.sections]
-        assert "portfolio-summary" in section_ids
+        assert "portfolio-a" in section_ids
+        assert "portfolio-total" in section_ids
 
     def test_empty_output(self, tmp_path):
         """Consolidated report with no artifacts should have no sections."""
@@ -474,8 +480,8 @@ class TestBuildScenarioKpiTable:
     def test_one_row_per_segment_scenario(self):
         df = _make_cutoff_df(segments=("seg_a", "seg_b"), scenarios=("pessimistic", "base", "optimistic"))
         html = _build_scenario_kpi_table(df, ["octroi_bin", "efx_bin"])
-        # 2 segments × 3 scenarios = 6 data rows (header row has inline style)
-        assert html.count("<tr>") == 6
+        # 2 segments × 3 scenarios = 6 data rows + 1 header row
+        assert html.count("<tr>") == 7
         assert "seg_a" in html
         assert "seg_b" in html
 
@@ -614,3 +620,168 @@ class TestBuildCutoffComparisonSection:
         # Only KPI table, no matrices
         assert len(section.tables) == 1
         assert "Scenario KPI Summary" in section.tables[0]
+
+
+# =============================================================================
+# Tests: _build_portfolio_metric_table
+# =============================================================================
+
+
+def _make_consolidated_row(**overrides):
+    """Build a synthetic consolidated-CSV row (pd.Series)."""
+    data = {
+        "group": "TOTAL",
+        "period": "main",
+        "scenario": "base",
+        "actual_production": 50_000_000,
+        "actual_risk_pct": 1.50,
+        "actual_todu_30ever_h6": 1200,
+        "actual_todu_amt_pile_h6": 400_000,
+        "optimum_production": 55_000_000,
+        "optimum_risk_pct": 1.30,
+        "optimum_todu_30ever_h6": 1000,
+        "optimum_todu_amt_pile_h6": 400_000,
+        "swap_in_production": 8_000_000,
+        "swap_in_risk_pct": 2.10,
+        "swap_in_todu_30ever_h6": 300,
+        "swap_in_todu_amt_pile_h6": 80_000,
+        "swap_out_production": 3_000_000,
+        "swap_out_risk_pct": 3.50,
+        "swap_out_todu_30ever_h6": 500,
+        "swap_out_todu_amt_pile_h6": 70_000,
+        "production_delta_pct": 10.0,
+        "production_ci_lower": 53_000_000,
+        "production_ci_upper": 57_000_000,
+        "risk_ci_lower": 1.10,
+        "risk_ci_upper": 1.50,
+    }
+    data.update(overrides)
+    return pd.Series(data)
+
+
+class TestBuildPortfolioMetricTable:
+    def test_renders_four_metric_rows(self):
+        row = _make_consolidated_row()
+        html = _build_portfolio_metric_table(row)
+        assert "<thead>" in html
+        assert "<tbody>" in html
+        # 4 metric rows + 1 header = 5 <tr>
+        assert html.count("<tr>") == 5
+        for label in ["Actual", "Optimum", "Swap-in", "Swap-out"]:
+            assert label in html
+
+    def test_columns_present(self):
+        row = _make_consolidated_row()
+        html = _build_portfolio_metric_table(row)
+        for col in ["Risk (%)", "Production (\u20ac)", "Production (%)", "todu_30ever_h6", "todu_amt_pile_h6"]:
+            assert col in html
+        for col in ["Production CI Lower", "Production CI Upper", "Risk CI Lower", "Risk CI Upper"]:
+            assert col in html
+
+    def test_production_delta_only_on_optimum(self):
+        row = _make_consolidated_row(production_delta_pct=10.0)
+        html = _build_portfolio_metric_table(row)
+        assert "+10.0" in html
+        # Only one occurrence (Optimum row), rest are dashes
+        assert html.count("+10.0") == 1
+
+    def test_cis_only_on_optimum(self):
+        row = _make_consolidated_row()
+        html = _build_portfolio_metric_table(row)
+        assert "53,000,000" in html  # production CI lower
+        assert "1.10" in html  # risk CI lower
+
+    def test_handles_missing_columns(self):
+        row = pd.Series({"group": "TOTAL", "scenario": "base"})
+        html = _build_portfolio_metric_table(row)
+        assert "<table" in html
+        # All values should be dashes
+        assert html.count("\u2014") >= 4 * 9  # 4 rows × 9 numeric columns
+
+
+# =============================================================================
+# Tests: _build_portfolio_summary_sections
+# =============================================================================
+
+
+class TestBuildPortfolioSummarySections:
+    def test_supersegment_sections(self, tmp_path):
+        rows = []
+        for scen in ["pessimistic", "base", "optimistic"]:
+            rows.append({"group": "supersegment_premium", "period": "main", "scenario": scen, "actual_production": 100})
+            rows.append(
+                {"group": "supersegment_standard", "period": "main", "scenario": scen, "actual_production": 200}
+            )
+            rows.append({"group": "TOTAL", "period": "main", "scenario": scen, "actual_production": 300})
+        pd.DataFrame(rows).to_csv(tmp_path / "consolidated_risk_production.csv", index=False)
+
+        sections = _build_portfolio_summary_sections(tmp_path / "consolidated_risk_production.csv")
+        ids = [s.id for s in sections]
+        assert "portfolio-premium" in ids
+        assert "portfolio-standard" in ids
+        assert "portfolio-total" in ids
+        # TOTAL should be last
+        assert ids[-1] == "portfolio-total"
+
+    def test_one_table_per_scenario(self, tmp_path):
+        rows = []
+        for scen in ["pessimistic", "base", "optimistic"]:
+            rows.append({"group": "TOTAL", "period": "main", "scenario": scen, "actual_production": 100})
+        pd.DataFrame(rows).to_csv(tmp_path / "consolidated_risk_production.csv", index=False)
+
+        sections = _build_portfolio_summary_sections(tmp_path / "consolidated_risk_production.csv")
+        total_section = next(s for s in sections if s.id == "portfolio-total")
+        # 3 scenarios = 3 tables (each table = heading + table HTML)
+        assert len(total_section.tables) == 3
+        assert "Pessimistic" in total_section.tables[0]
+        assert "Base" in total_section.tables[1]
+        assert "Optimistic" in total_section.tables[2]
+
+    def test_filters_to_main_period(self, tmp_path):
+        rows = [
+            {"group": "TOTAL", "period": "main", "scenario": "base", "actual_production": 100},
+            {"group": "TOTAL", "period": "mr", "scenario": "base", "actual_production": 50},
+        ]
+        pd.DataFrame(rows).to_csv(tmp_path / "consolidated_risk_production.csv", index=False)
+
+        sections = _build_portfolio_summary_sections(tmp_path / "consolidated_risk_production.csv")
+        total_section = next(s for s in sections if s.id == "portfolio-total")
+        # Only main period, so 1 table
+        assert len(total_section.tables) == 1
+
+    def test_standalone_segments_without_supersegments(self, tmp_path):
+        rows = [
+            {"group": "segment_a", "period": "main", "scenario": "base", "actual_production": 100},
+            {"group": "segment_b", "period": "main", "scenario": "base", "actual_production": 200},
+            {"group": "TOTAL", "period": "main", "scenario": "base", "actual_production": 300},
+        ]
+        pd.DataFrame(rows).to_csv(tmp_path / "consolidated_risk_production.csv", index=False)
+
+        sections = _build_portfolio_summary_sections(tmp_path / "consolidated_risk_production.csv")
+        ids = [s.id for s in sections]
+        assert "portfolio-a" in ids
+        assert "portfolio-b" in ids
+        assert "portfolio-total" in ids
+
+    def test_returns_empty_for_missing_file(self, tmp_path):
+        assert _build_portfolio_summary_sections(tmp_path / "nonexistent.csv") == []
+
+    def test_returns_empty_for_empty_csv(self, tmp_path):
+        path = tmp_path / "empty.csv"
+        path.write_text("group,scenario\n")
+        assert _build_portfolio_summary_sections(path) == []
+
+    def test_badge_classes_in_output(self, tmp_path):
+        rows = [
+            {"group": "TOTAL", "period": "main", "scenario": "pessimistic", "actual_production": 100},
+            {"group": "TOTAL", "period": "main", "scenario": "base", "actual_production": 100},
+            {"group": "TOTAL", "period": "main", "scenario": "optimistic", "actual_production": 100},
+        ]
+        pd.DataFrame(rows).to_csv(tmp_path / "consolidated_risk_production.csv", index=False)
+
+        sections = _build_portfolio_summary_sections(tmp_path / "consolidated_risk_production.csv")
+        total_section = next(s for s in sections if s.id == "portfolio-total")
+        all_html = "".join(total_section.tables)
+        assert "badge-pessimistic" in all_html
+        assert "badge-base" in all_html
+        assert "badge-optimistic" in all_html

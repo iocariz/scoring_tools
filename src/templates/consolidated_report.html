@@ -7,7 +7,9 @@
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
     <style>
         :root {
-            --primary: #0d6efd;
+            --primary: #1e40af;
+            --primary-light: #dbeafe;
+            --primary-dark: #172554;
             --bg: #f8f9fa;
             --card-bg: #ffffff;
             --border: #dee2e6;
@@ -24,11 +26,12 @@
         }
         .container { max-width: 1400px; margin: 0 auto; }
         header {
-            background: var(--primary);
+            background: linear-gradient(135deg, var(--primary-dark), var(--primary));
             color: #fff;
             padding: 1.5rem 2rem;
-            border-radius: 8px;
+            border-radius: 12px;
             margin-bottom: 1.5rem;
+            box-shadow: 0 4px 16px rgba(30,64,175,0.2);
         }
         header h1 { font-size: 1.5rem; font-weight: 600; }
         header .meta { font-size: 0.85rem; opacity: 0.85; margin-top: 0.25rem; }
@@ -44,17 +47,24 @@
             color: var(--primary);
             text-decoration: none;
             font-size: 0.85rem;
+            font-weight: 500;
             padding: 0.25rem 0.75rem;
             border-radius: 4px;
             border: 1px solid var(--border);
+            transition: all 0.2s ease;
         }
-        nav a:hover { background: var(--bg); }
+        nav a:hover {
+            background: var(--primary-light);
+            border-color: var(--primary);
+            transform: translateY(-1px);
+        }
         .section {
             background: var(--card-bg);
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: 12px;
             padding: 1.5rem 2rem;
             margin-bottom: 1.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
         }
         .section h2 {
             font-size: 1.2rem;
@@ -68,7 +78,9 @@
             font-size: 0.95rem;
             font-weight: 600;
             margin: 1rem 0 0.5rem;
-            color: var(--text-muted);
+            color: var(--text);
+            border-left: 3px solid var(--primary);
+            padding-left: 0.75rem;
         }
         .chart-container {
             margin-bottom: 1.5rem;
@@ -81,24 +93,54 @@
             margin-bottom: 1rem;
         }
         .report-table th, .report-table td {
-            padding: 0.4rem 0.75rem;
+            padding: 0.7rem 1rem;
             text-align: left;
             border-bottom: 1px solid var(--border);
         }
-        .report-table th {
-            background: var(--bg);
+        .report-table thead th {
+            background: var(--primary);
+            color: #fff;
             font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            letter-spacing: 0.03em;
             position: sticky;
             top: 0;
         }
-        .report-table tr:hover { background: #f1f3f5; }
+        .report-table tbody tr:nth-child(even) { background: #f8fafc; }
+        .report-table tbody tr:hover { background: var(--primary-light); }
+        .report-table tbody tr:last-child td { border-bottom: none; }
         .table-wrapper { overflow-x: auto; margin-bottom: 1rem; }
+
+        /* Utility classes for semantic KPI tables */
+        .num { text-align: right; font-variant-numeric: tabular-nums; }
+        .ci { color: var(--text-muted); font-size: 0.9em; }
+        .badge {
+            display: inline-block;
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.2em 0.6em;
+            border-radius: 4px;
+        }
+        .badge-pessimistic { background: #fef3c7; color: #92400e; }
+        .badge-base { background: #dbeafe; color: #1e40af; }
+        .badge-optimistic { background: #d1fae5; color: #065f46; }
+
         footer {
             text-align: center;
             font-size: 0.8rem;
             color: var(--text-muted);
             margin-top: 2rem;
             padding: 1rem;
+        }
+
+        @media print {
+            body { padding: 0; background: #fff; }
+            header { box-shadow: none; }
+            .section { box-shadow: none; break-inside: avoid; }
+            nav { display: none; }
+            .report-table thead th { background: var(--primary) !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .badge { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         }
     </style>
 </head>
