@@ -50,6 +50,16 @@ class ConsolidatedMetrics:
     swap_out_todu_30ever_h6: float = 0.0
     swap_out_todu_amt_pile_h6: float = 0.0
 
+    # Raw risk components for H3 (complementary 3-month horizon metric)
+    actual_todu_30ever_h3: float = 0.0
+    actual_todu_amt_pile_h3: float = 0.0
+    optimum_todu_30ever_h3: float = 0.0
+    optimum_todu_amt_pile_h3: float = 0.0
+    swap_in_todu_30ever_h3: float = 0.0
+    swap_in_todu_amt_pile_h3: float = 0.0
+    swap_out_todu_30ever_h3: float = 0.0
+    swap_out_todu_amt_pile_h3: float = 0.0
+
     # Confidence Intervals (for optimum solution)
     optimum_production_ci_lower: float = 0.0
     optimum_production_ci_upper: float = 0.0
@@ -97,6 +107,63 @@ class ConsolidatedMetrics:
             )
         )
 
+    # H3 risk properties (complementary 3-month horizon metric, multiplier=4)
+    @cached_property
+    def actual_risk_h3(self) -> float:
+        return float(
+            np.nan_to_num(
+                calculate_b2_ever_h6(
+                    self.actual_todu_30ever_h3,
+                    self.actual_todu_amt_pile_h3,
+                    multiplier=4,
+                    as_percentage=True,
+                    decimals=6,
+                )
+            )
+        )
+
+    @cached_property
+    def optimum_risk_h3(self) -> float:
+        return float(
+            np.nan_to_num(
+                calculate_b2_ever_h6(
+                    self.optimum_todu_30ever_h3,
+                    self.optimum_todu_amt_pile_h3,
+                    multiplier=4,
+                    as_percentage=True,
+                    decimals=6,
+                )
+            )
+        )
+
+    @cached_property
+    def swap_in_risk_h3(self) -> float:
+        return float(
+            np.nan_to_num(
+                calculate_b2_ever_h6(
+                    self.swap_in_todu_30ever_h3,
+                    self.swap_in_todu_amt_pile_h3,
+                    multiplier=4,
+                    as_percentage=True,
+                    decimals=6,
+                )
+            )
+        )
+
+    @cached_property
+    def swap_out_risk_h3(self) -> float:
+        return float(
+            np.nan_to_num(
+                calculate_b2_ever_h6(
+                    self.swap_out_todu_30ever_h3,
+                    self.swap_out_todu_amt_pile_h3,
+                    multiplier=4,
+                    as_percentage=True,
+                    decimals=6,
+                )
+            )
+        )
+
     @property
     def production_delta(self) -> float:
         return self.optimum_production - self.actual_production
@@ -113,7 +180,7 @@ class ConsolidatedMetrics:
 
     def to_dict(self) -> dict[str, Any]:
         # Risk properties already return percentage (e.g. 7.0 means 7%)
-        return {
+        d = {
             "group": self.group_name,
             "period": self.period,
             "scenario": self.scenario,
@@ -143,6 +210,31 @@ class ConsolidatedMetrics:
             "risk_ci_lower": self.optimum_risk_ci_lower,
             "risk_ci_upper": self.optimum_risk_ci_upper,
         }
+        # H3 complementary risk metrics
+        has_h3 = (
+            self.actual_todu_amt_pile_h3 > 0
+            or self.optimum_todu_amt_pile_h3 > 0
+            or self.swap_in_todu_amt_pile_h3 > 0
+            or self.swap_out_todu_amt_pile_h3 > 0
+        )
+        if has_h3:
+            d.update(
+                {
+                    "actual_risk_h3_pct": self.actual_risk_h3,
+                    "actual_todu_30ever_h3": self.actual_todu_30ever_h3,
+                    "actual_todu_amt_pile_h3": self.actual_todu_amt_pile_h3,
+                    "optimum_risk_h3_pct": self.optimum_risk_h3,
+                    "optimum_todu_30ever_h3": self.optimum_todu_30ever_h3,
+                    "optimum_todu_amt_pile_h3": self.optimum_todu_amt_pile_h3,
+                    "swap_in_risk_h3_pct": self.swap_in_risk_h3,
+                    "swap_in_todu_30ever_h3": self.swap_in_todu_30ever_h3,
+                    "swap_in_todu_amt_pile_h3": self.swap_in_todu_amt_pile_h3,
+                    "swap_out_risk_h3_pct": self.swap_out_risk_h3,
+                    "swap_out_todu_30ever_h3": self.swap_out_todu_30ever_h3,
+                    "swap_out_todu_amt_pile_h3": self.swap_out_todu_amt_pile_h3,
+                }
+            )
+        return d
 
 
 def find_scenario_suffix(filename: str) -> str:
@@ -291,10 +383,34 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
     Returns dict with production and raw todu values for proper aggregation.
     """
     metrics = {
-        "actual": {"production": 0, "todu_30ever_h6": 0, "todu_amt_pile_h6": 0},
-        "optimum": {"production": 0, "todu_30ever_h6": 0, "todu_amt_pile_h6": 0},
-        "swap_in": {"production": 0, "todu_30ever_h6": 0, "todu_amt_pile_h6": 0},
-        "swap_out": {"production": 0, "todu_30ever_h6": 0, "todu_amt_pile_h6": 0},
+        "actual": {
+            "production": 0,
+            "todu_30ever_h6": 0,
+            "todu_amt_pile_h6": 0,
+            "todu_30ever_h3": 0,
+            "todu_amt_pile_h3": 0,
+        },
+        "optimum": {
+            "production": 0,
+            "todu_30ever_h6": 0,
+            "todu_amt_pile_h6": 0,
+            "todu_30ever_h3": 0,
+            "todu_amt_pile_h3": 0,
+        },
+        "swap_in": {
+            "production": 0,
+            "todu_30ever_h6": 0,
+            "todu_amt_pile_h6": 0,
+            "todu_30ever_h3": 0,
+            "todu_amt_pile_h3": 0,
+        },
+        "swap_out": {
+            "production": 0,
+            "todu_30ever_h6": 0,
+            "todu_amt_pile_h6": 0,
+            "todu_30ever_h3": 0,
+            "todu_amt_pile_h3": 0,
+        },
     }
 
     if df is None or df.empty:
@@ -317,6 +433,8 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
     prod_col = None
     todu_30_col = None
     todu_amt_col = None
+    todu_30_h3_col = None
+    todu_amt_h3_col = None
 
     for col in df.columns:
         col_lower = col.lower()
@@ -326,6 +444,10 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
             todu_30_col = col
         elif col_lower == "todu_amt_pile_h6":
             todu_amt_col = col
+        elif col_lower == "todu_30ever_h3":
+            todu_30_h3_col = col
+        elif col_lower == "todu_amt_pile_h3":
+            todu_amt_h3_col = col
 
     # Fallback for production column
     if prod_col is None:
@@ -373,6 +495,18 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
             except (ValueError, TypeError):
                 pass
 
+        # Extract H3 columns (complementary metric)
+        if todu_30_h3_col and todu_30_h3_col in row.index:
+            try:
+                metrics[key]["todu_30ever_h3"] = float(row[todu_30_h3_col]) if pd.notna(row[todu_30_h3_col]) else 0
+            except (ValueError, TypeError):
+                pass
+        if todu_amt_h3_col and todu_amt_h3_col in row.index:
+            try:
+                metrics[key]["todu_amt_pile_h3"] = float(row[todu_amt_h3_col]) if pd.notna(row[todu_amt_h3_col]) else 0
+            except (ValueError, TypeError):
+                pass
+
         # Extract CI values (only for optimum)
         if key == "optimum":
             for col in df.columns:
@@ -397,10 +531,34 @@ def aggregate_metrics(metrics_list: list[dict[str, dict[str, float]]]) -> dict[s
     todu values: risk = sum(todu_30ever_h6) / sum(todu_amt_pile_h6) * 7
     """
     aggregated = {
-        "actual": {"production": 0, "todu_30ever_h6": 0, "todu_amt_pile_h6": 0},
-        "optimum": {"production": 0, "todu_30ever_h6": 0, "todu_amt_pile_h6": 0},
-        "swap_in": {"production": 0, "todu_30ever_h6": 0, "todu_amt_pile_h6": 0},
-        "swap_out": {"production": 0, "todu_30ever_h6": 0, "todu_amt_pile_h6": 0},
+        "actual": {
+            "production": 0,
+            "todu_30ever_h6": 0,
+            "todu_amt_pile_h6": 0,
+            "todu_30ever_h3": 0,
+            "todu_amt_pile_h3": 0,
+        },
+        "optimum": {
+            "production": 0,
+            "todu_30ever_h6": 0,
+            "todu_amt_pile_h6": 0,
+            "todu_30ever_h3": 0,
+            "todu_amt_pile_h3": 0,
+        },
+        "swap_in": {
+            "production": 0,
+            "todu_30ever_h6": 0,
+            "todu_amt_pile_h6": 0,
+            "todu_30ever_h3": 0,
+            "todu_amt_pile_h3": 0,
+        },
+        "swap_out": {
+            "production": 0,
+            "todu_30ever_h6": 0,
+            "todu_amt_pile_h6": 0,
+            "todu_30ever_h3": 0,
+            "todu_amt_pile_h3": 0,
+        },
     }
 
     for metrics in metrics_list:
@@ -408,6 +566,8 @@ def aggregate_metrics(metrics_list: list[dict[str, dict[str, float]]]) -> dict[s
             aggregated[key]["production"] += metrics[key]["production"]
             aggregated[key]["todu_30ever_h6"] += metrics[key]["todu_30ever_h6"]
             aggregated[key]["todu_amt_pile_h6"] += metrics[key]["todu_amt_pile_h6"]
+            aggregated[key]["todu_30ever_h3"] += metrics[key].get("todu_30ever_h3", 0)
+            aggregated[key]["todu_amt_pile_h3"] += metrics[key].get("todu_amt_pile_h3", 0)
 
             # Aggregate CIs for optimum using variance addition (assumes independence)
             if key == "optimum":
@@ -577,6 +737,15 @@ def consolidate_segments(
                         swap_out_production=agg["swap_out"]["production"],
                         swap_out_todu_30ever_h6=agg["swap_out"]["todu_30ever_h6"],
                         swap_out_todu_amt_pile_h6=agg["swap_out"]["todu_amt_pile_h6"],
+                        # H3 complementary metrics
+                        actual_todu_30ever_h3=agg["actual"].get("todu_30ever_h3", 0),
+                        actual_todu_amt_pile_h3=agg["actual"].get("todu_amt_pile_h3", 0),
+                        optimum_todu_30ever_h3=agg["optimum"].get("todu_30ever_h3", 0),
+                        optimum_todu_amt_pile_h3=agg["optimum"].get("todu_amt_pile_h3", 0),
+                        swap_in_todu_30ever_h3=agg["swap_in"].get("todu_30ever_h3", 0),
+                        swap_in_todu_amt_pile_h3=agg["swap_in"].get("todu_amt_pile_h3", 0),
+                        swap_out_todu_30ever_h3=agg["swap_out"].get("todu_30ever_h3", 0),
+                        swap_out_todu_amt_pile_h3=agg["swap_out"].get("todu_amt_pile_h3", 0),
                         # Pass aggregated CIs (Production only)
                         optimum_production_ci_lower=agg["optimum"].get("production_ci_lower", 0),
                         optimum_production_ci_upper=agg["optimum"].get("production_ci_upper", 0),
@@ -612,6 +781,15 @@ def consolidate_segments(
                     swap_out_production=agg["swap_out"]["production"],
                     swap_out_todu_30ever_h6=agg["swap_out"]["todu_30ever_h6"],
                     swap_out_todu_amt_pile_h6=agg["swap_out"]["todu_amt_pile_h6"],
+                    # H3 complementary metrics
+                    actual_todu_30ever_h3=agg["actual"].get("todu_30ever_h3", 0),
+                    actual_todu_amt_pile_h3=agg["actual"].get("todu_amt_pile_h3", 0),
+                    optimum_todu_30ever_h3=agg["optimum"].get("todu_30ever_h3", 0),
+                    optimum_todu_amt_pile_h3=agg["optimum"].get("todu_amt_pile_h3", 0),
+                    swap_in_todu_30ever_h3=agg["swap_in"].get("todu_30ever_h3", 0),
+                    swap_in_todu_amt_pile_h3=agg["swap_in"].get("todu_amt_pile_h3", 0),
+                    swap_out_todu_30ever_h3=agg["swap_out"].get("todu_30ever_h3", 0),
+                    swap_out_todu_amt_pile_h3=agg["swap_out"].get("todu_amt_pile_h3", 0),
                     # Pass segment-level CIs (fully available)
                     optimum_production_ci_lower=metrics["optimum"].get("production_ci_lower", 0),
                     optimum_production_ci_upper=metrics["optimum"].get("production_ci_upper", 0),
@@ -641,6 +819,15 @@ def consolidate_segments(
                     swap_out_production=total_agg["swap_out"]["production"],
                     swap_out_todu_30ever_h6=total_agg["swap_out"]["todu_30ever_h6"],
                     swap_out_todu_amt_pile_h6=total_agg["swap_out"]["todu_amt_pile_h6"],
+                    # H3 complementary metrics
+                    actual_todu_30ever_h3=total_agg["actual"].get("todu_30ever_h3", 0),
+                    actual_todu_amt_pile_h3=total_agg["actual"].get("todu_amt_pile_h3", 0),
+                    optimum_todu_30ever_h3=total_agg["optimum"].get("todu_30ever_h3", 0),
+                    optimum_todu_amt_pile_h3=total_agg["optimum"].get("todu_amt_pile_h3", 0),
+                    swap_in_todu_30ever_h3=total_agg["swap_in"].get("todu_30ever_h3", 0),
+                    swap_in_todu_amt_pile_h3=total_agg["swap_in"].get("todu_amt_pile_h3", 0),
+                    swap_out_todu_30ever_h3=total_agg["swap_out"].get("todu_30ever_h3", 0),
+                    swap_out_todu_amt_pile_h3=total_agg["swap_out"].get("todu_amt_pile_h3", 0),
                     # Pass aggregated CIs (Production only)
                     optimum_production_ci_lower=total_agg["optimum"].get("production_ci_lower", 0),
                     optimum_production_ci_upper=total_agg["optimum"].get("production_ci_upper", 0),

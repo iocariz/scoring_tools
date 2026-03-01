@@ -40,6 +40,7 @@ def calculate_metrics_from_cuts(
     inv_vars: list[str] | None = None,
     mask: np.ndarray | None = None,
     grid: object | None = None,
+    multiplier_h3: float | None = None,
 ) -> pd.DataFrame | None:
     """
     Generates the Risk Production Summary Table by applying optimal cuts to aggregated data.
@@ -94,6 +95,9 @@ def calculate_metrics_from_cuts(
 
         summary_data = []
 
+        # Check if h3 columns are available
+        has_h3 = multiplier_h3 is not None and "todu_30ever_h3_boo" in df.columns
+
         # Helper to calc metrics from a filtered subset
         def calc_metrics(subset, suffix):
             prod = subset[f"oa_amt_h0{suffix}"].sum()
@@ -101,48 +105,67 @@ def calculate_metrics_from_cuts(
             risk_den = subset[f"todu_amt_pile_h6{suffix}"].sum()
             b2_ever_raw = calculate_b2_ever_h6(risk_num, risk_den, as_percentage=True)
             b2_ever = float(b2_ever_raw) if pd.notna(b2_ever_raw) else None
-            return prod, b2_ever, risk_num, risk_den
+            # H3 metrics
+            h3_rn, h3_rd, h3_risk = 0.0, 0.0, None
+            if has_h3:
+                h3_col_num = f"todu_30ever_h3{suffix}"
+                h3_col_den = f"todu_amt_pile_h3{suffix}"
+                if h3_col_num in subset.columns and h3_col_den in subset.columns:
+                    h3_rn = subset[h3_col_num].sum()
+                    h3_rd = subset[h3_col_den].sum()
+                    h3_raw = calculate_b2_ever_h6(h3_rn, h3_rd, multiplier=multiplier_h3, as_percentage=True)
+                    h3_risk = float(h3_raw) if pd.notna(h3_raw) else None
+            return prod, b2_ever, risk_num, risk_den, h3_risk, h3_rn, h3_rd
 
         # Actual (All Booked)
-        actual_prod, actual_risk, actual_rn, actual_rd = calc_metrics(df, "_boo")
-        summary_data.append(
-            {
-                "Metric": "Actual",
-                "Risk (%)": actual_risk,
-                "Production (€)": actual_prod,
-                "Production (%)": 1.0,
-                "todu_30ever_h6": actual_rn,
-                "todu_amt_pile_h6": actual_rd,
-            }
-        )
+        actual_prod, actual_risk, actual_rn, actual_rd, actual_h3, actual_h3_rn, actual_h3_rd = calc_metrics(df, "_boo")
+        row_actual = {
+            "Metric": "Actual",
+            "Risk (%)": actual_risk,
+            "Production (€)": actual_prod,
+            "Production (%)": 1.0,
+            "todu_30ever_h6": actual_rn,
+            "todu_amt_pile_h6": actual_rd,
+        }
+        if has_h3:
+            row_actual["Risk H3 (%)"] = actual_h3
+            row_actual["todu_30ever_h3"] = actual_h3_rn
+            row_actual["todu_amt_pile_h3"] = actual_h3_rd
+        summary_data.append(row_actual)
 
         # Swap-in (Repesca that passes)
         swap_in_df = df[df["passes_cut"]]
-        si_prod, si_risk, si_rn, si_rd = calc_metrics(swap_in_df, "_rep")
-        summary_data.append(
-            {
-                "Metric": "Swap-in",
-                "Risk (%)": si_risk,
-                "Production (€)": si_prod,
-                "Production (%)": si_prod / actual_prod if actual_prod else 0,
-                "todu_30ever_h6": si_rn,
-                "todu_amt_pile_h6": si_rd,
-            }
-        )
+        si_prod, si_risk, si_rn, si_rd, si_h3, si_h3_rn, si_h3_rd = calc_metrics(swap_in_df, "_rep")
+        row_si = {
+            "Metric": "Swap-in",
+            "Risk (%)": si_risk,
+            "Production (€)": si_prod,
+            "Production (%)": si_prod / actual_prod if actual_prod else 0,
+            "todu_30ever_h6": si_rn,
+            "todu_amt_pile_h6": si_rd,
+        }
+        if has_h3:
+            row_si["Risk H3 (%)"] = si_h3
+            row_si["todu_30ever_h3"] = si_h3_rn
+            row_si["todu_amt_pile_h3"] = si_h3_rd
+        summary_data.append(row_si)
 
         # Swap-out (Booked that fails)
         swap_out_df = df[~df["passes_cut"]]
-        so_prod, so_risk, so_rn, so_rd = calc_metrics(swap_out_df, "_boo")
-        summary_data.append(
-            {
-                "Metric": "Swap-out",
-                "Risk (%)": so_risk,
-                "Production (€)": so_prod,
-                "Production (%)": so_prod / actual_prod if actual_prod else 0,
-                "todu_30ever_h6": so_rn,
-                "todu_amt_pile_h6": so_rd,
-            }
-        )
+        so_prod, so_risk, so_rn, so_rd, so_h3, so_h3_rn, so_h3_rd = calc_metrics(swap_out_df, "_boo")
+        row_so = {
+            "Metric": "Swap-out",
+            "Risk (%)": so_risk,
+            "Production (€)": so_prod,
+            "Production (%)": so_prod / actual_prod if actual_prod else 0,
+            "todu_30ever_h6": so_rn,
+            "todu_amt_pile_h6": so_rd,
+        }
+        if has_h3:
+            row_so["Risk H3 (%)"] = so_h3
+            row_so["todu_30ever_h3"] = so_h3_rn
+            row_so["todu_amt_pile_h3"] = so_h3_rd
+        summary_data.append(row_so)
 
         # Optimum
         opt_prod = (actual_prod - so_prod) + si_prod
@@ -150,16 +173,24 @@ def calculate_metrics_from_cuts(
         opt_rd = (actual_rd - so_rd) + si_rd
         opt_risk = float(np.nan_to_num(calculate_b2_ever_h6(opt_rn, opt_rd, as_percentage=True)))
 
-        summary_data.append(
-            {
-                "Metric": "Optimum selected",
-                "Risk (%)": opt_risk,
-                "Production (€)": opt_prod,
-                "Production (%)": opt_prod / actual_prod if actual_prod else 0,
-                "todu_30ever_h6": opt_rn,
-                "todu_amt_pile_h6": opt_rd,
-            }
-        )
+        row_opt = {
+            "Metric": "Optimum selected",
+            "Risk (%)": opt_risk,
+            "Production (€)": opt_prod,
+            "Production (%)": opt_prod / actual_prod if actual_prod else 0,
+            "todu_30ever_h6": opt_rn,
+            "todu_amt_pile_h6": opt_rd,
+        }
+        if has_h3:
+            opt_h3_rn = (actual_h3_rn - so_h3_rn) + si_h3_rn
+            opt_h3_rd = (actual_h3_rd - so_h3_rd) + si_h3_rd
+            opt_h3_risk = float(
+                np.nan_to_num(calculate_b2_ever_h6(opt_h3_rn, opt_h3_rd, multiplier=multiplier_h3, as_percentage=True))
+            )
+            row_opt["Risk H3 (%)"] = opt_h3_risk
+            row_opt["todu_30ever_h3"] = opt_h3_rn
+            row_opt["todu_amt_pile_h3"] = opt_h3_rd
+        summary_data.append(row_opt)
 
         return pd.DataFrame(summary_data)
 
@@ -180,6 +211,7 @@ def _compute_hybrid_mr_risk(
     data_demand_mr: pd.DataFrame,
     merge_keys: list[str],
     min_obs: int,
+    multiplier_h3: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Compute per-bin ``b2_ever_h6_tmp`` using MR outcomes when sufficient, else main-period.
 
@@ -217,10 +249,65 @@ def _compute_hybrid_mr_risk(
     # --- Outer join ---
     combined = main_agg.merge(mr_agg, on=merge_keys, how="outer")
 
+    # --- H3 aggregation (needed before risk source selection for extrapolation) ---
+    has_h3 = multiplier_h3 is not None and "todu_30ever_h3" in data_booked.columns
+    if has_h3:
+        mr_booked_h3 = data_demand_mr[data_demand_mr["status_name"] == StatusName.BOOKED.value]
+        h3_cols = ["todu_30ever_h3", "todu_amt_pile_h3"]
+
+        # Main-period H3
+        if all(c in data_booked.columns for c in h3_cols):
+            main_h3_agg = data_booked.groupby(merge_keys)[h3_cols].sum().reset_index()
+            main_h3_agg["b2_main_h3"] = calculate_b2_ever_h6(
+                main_h3_agg["todu_30ever_h3"], main_h3_agg["todu_amt_pile_h3"], multiplier=multiplier_h3
+            ).fillna(0.0)
+            combined = combined.merge(main_h3_agg[merge_keys + ["b2_main_h3"]], on=merge_keys, how="left")
+        else:
+            combined["b2_main_h3"] = np.nan
+
+        # MR-period H3 — only accounts with mature H3 (first 3 mis_dates in 6-month MR window)
+        if all(c in mr_booked_h3.columns for c in h3_cols):
+            mr_h3_valid = mr_booked_h3[
+                mr_booked_h3["todu_30ever_h3"].notna() | mr_booked_h3["todu_amt_pile_h3"].notna()
+            ]
+            mr_h3_agg = mr_h3_valid.groupby(merge_keys)[h3_cols].sum().reset_index()
+            mr_h3_agg["n_obs_mr_h3"] = mr_h3_valid.groupby(merge_keys).size().reset_index(drop=True)
+            mr_h3_agg["b2_mr_h3"] = calculate_b2_ever_h6(
+                mr_h3_agg["todu_30ever_h3"], mr_h3_agg["todu_amt_pile_h3"], multiplier=multiplier_h3
+            ).fillna(0.0)
+            combined = combined.merge(mr_h3_agg[merge_keys + ["b2_mr_h3", "n_obs_mr_h3"]], on=merge_keys, how="left")
+        else:
+            combined["b2_mr_h3"] = np.nan
+            combined["n_obs_mr_h3"] = 0
+
     # --- Choose source per bin ---
     use_mr = combined["n_obs_mr"].fillna(0) >= min_obs
-    combined["b2_ever_h6_tmp"] = np.where(use_mr, combined["b2_mr"], combined["b2_main"])
-    combined["risk_source"] = np.where(use_mr, "mr_observed", "main_imputed")
+
+    if has_h3:
+        # H3 ratio: main-period H6/H3 scaling factor
+        ratio_valid = combined["b2_main_h3"].fillna(0).abs() > 1e-9
+        h6_h3_ratio = np.where(ratio_valid, combined["b2_main"] / combined["b2_main_h3"], np.nan)
+
+        # H3 extrapolation: observed MR H3 × main-period ratio
+        has_h3_obs = combined["b2_mr_h3"].notna() & (combined["n_obs_mr_h3"].fillna(0) >= min_obs)
+        can_extrapolate = use_mr & ratio_valid & has_h3_obs
+        h6_from_h3 = combined["b2_mr_h3"] * h6_h3_ratio
+
+        # Priority: h3_extrapolated > mr_observed > main_imputed > model_fallback
+        combined["b2_ever_h6_tmp"] = combined["b2_main"]  # default: main_imputed
+        combined["risk_source"] = "main_imputed"
+
+        combined.loc[use_mr, "b2_ever_h6_tmp"] = combined.loc[use_mr, "b2_mr"]
+        combined.loc[use_mr, "risk_source"] = "mr_observed"
+
+        combined.loc[can_extrapolate, "b2_ever_h6_tmp"] = h6_from_h3[can_extrapolate]
+        combined.loc[can_extrapolate, "risk_source"] = "h3_extrapolated"
+
+        combined["h6_h3_ratio"] = h6_h3_ratio
+    else:
+        # Original logic (no H3 columns)
+        combined["b2_ever_h6_tmp"] = np.where(use_mr, combined["b2_mr"], combined["b2_main"])
+        combined["risk_source"] = np.where(use_mr, "mr_observed", "main_imputed")
 
     # Bins only in MR (no main data) and below threshold: leave NaN for model fallback
     only_mr_sparse = combined["b2_main"].isna() & ~use_mr
@@ -246,6 +333,17 @@ def _compute_hybrid_mr_risk(
         "b2_delta_pct",
         "mr_production",
     ]
+
+    # --- H3 comparison diagnostics ---
+    if has_h3:
+        combined["b2_delta_h3"] = combined["b2_mr_h3"] - combined["b2_main_h3"]
+        combined["b2_delta_pct_h3"] = np.where(
+            combined["b2_main_h3"].abs() > 1e-9,
+            combined["b2_delta_h3"] / combined["b2_main_h3"] * 100,
+            np.nan,
+        )
+        comparison_cols += ["b2_main_h3", "b2_mr_h3", "n_obs_mr_h3", "b2_delta_h3", "b2_delta_pct_h3", "h6_h3_ratio"]
+
     comparison_df = combined[comparison_cols].copy()
 
     merge_df = combined[merge_keys + ["b2_ever_h6_tmp"]].copy()
@@ -283,6 +381,9 @@ def process_mr_period(
         indicators_mr = ["acct_booked_h0", "oa_amt", "oa_amt_h0"]
         if settings.use_mr_outcomes:
             indicators_mr += ["todu_30ever_h6", "todu_amt_pile_h6"]
+        # Include h3 columns for complementary monitoring when configured
+        if "todu_30ever_h3" in settings.indicators:
+            indicators_mr += ["todu_30ever_h3", "todu_amt_pile_h3"]
         # Ensure merge keys (variables) are included
         merge_keys = settings.variables
         mr_cols = settings.keep_vars + indicators_mr + merge_keys
@@ -307,7 +408,11 @@ def process_mr_period(
                 f"falling back to main-period for sparse bins."
             )
             merge_df, comparison_df = _compute_hybrid_mr_risk(
-                data_booked, data_demand_mr, merge_keys, settings.mr_min_obs_per_bin
+                data_booked,
+                data_demand_mr,
+                merge_keys,
+                settings.mr_min_obs_per_bin,
+                multiplier_h3=settings.multiplier_h3,
             )
 
             # Save comparison CSV
@@ -549,6 +654,14 @@ def process_mr_period(
         data_surf_mr["b2_ever_h6"] = calculate_b2_ever_h6(
             data_surf_mr["todu_30ever_h6"], data_surf_mr["todu_amt_pile_h6"], as_percentage=True
         )
+        # Compute complementary H3 metric on MR surface when columns are available
+        if "todu_30ever_h3" in data_surf_mr.columns and "todu_amt_pile_h3" in data_surf_mr.columns:
+            data_surf_mr["b2_ever_h3"] = calculate_b2_ever_h6(
+                data_surf_mr["todu_30ever_h3"],
+                data_surf_mr["todu_amt_pile_h3"],
+                multiplier=settings.multiplier_h3,
+                as_percentage=True,
+            )
 
         if len(VARIABLES) == 2:
             logger.info("Generating b2_ever_h6 visualization for MR dataset...")
@@ -652,6 +765,7 @@ def process_mr_period(
             settings.inv_vars,
             mask=mask,
             grid=grid,
+            multiplier_h3=settings.multiplier_h3,
         )
 
         if mr_summary_table is not None:

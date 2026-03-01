@@ -34,6 +34,28 @@ def sample_data():
 
 
 @pytest.fixture
+def sample_data_with_h3():
+    """Create sample data for MR testing with H3 columns."""
+    data = pd.DataFrame(
+        {
+            "sc_octroi_new_clus": [1, 2, 1, 3],
+            "new_efx_clus": [1, 5, 10, 2],
+            "todu_30ever_h6_boo": [10, 20, 30, 40],
+            "todu_amt_pile_h6_boo": [100, 200, 300, 400],
+            "oa_amt_h0_boo": [1000, 2000, 3000, 4000],
+            "todu_30ever_h6_rep": [1, 2, 3, 4],
+            "todu_amt_pile_h6_rep": [10, 20, 30, 40],
+            "oa_amt_h0_rep": [100, 200, 300, 400],
+            "todu_30ever_h3_boo": [5, 10, 15, 20],
+            "todu_amt_pile_h3_boo": [90, 180, 270, 360],
+            "todu_30ever_h3_rep": [0.5, 1, 1.5, 2],
+            "todu_amt_pile_h3_rep": [9, 18, 27, 36],
+        }
+    )
+    return data
+
+
+@pytest.fixture
 def optimal_solution_df():
     """Create mock optimal solution with cuts."""
     # Columns '1', '2', '3' represent cuts for bins 1, 2, 3 of var0
@@ -462,3 +484,290 @@ class TestComputeHybridMRRisk:
             "mr_production",
         }
         assert expected_cols == set(comparison_df.columns)
+
+    def test_h3_columns_in_comparison_df(self, data_booked_main, merge_keys):
+        """When multiplier_h3 is provided and h3 data exists, comparison_df should have h3 columns."""
+        # Add h3 columns to main data
+        data_booked_h3 = data_booked_main.copy()
+        data_booked_h3["todu_30ever_h3"] = data_booked_h3["todu_30ever_h6"] * 0.5
+        data_booked_h3["todu_amt_pile_h3"] = data_booked_h3["todu_amt_pile_h6"] * 0.9
+
+        rng = np.random.RandomState(42)
+        n = 40
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * n + [2] * n,
+                "bin_b": [1] * (2 * n),
+                "todu_30ever_h6": rng.uniform(5, 15, 2 * n),
+                "todu_amt_pile_h6": rng.uniform(80, 120, 2 * n),
+                "todu_30ever_h3": rng.uniform(2, 8, 2 * n),
+                "todu_amt_pile_h3": rng.uniform(70, 110, 2 * n),
+                "oa_amt_h0": rng.uniform(500, 1500, 2 * n),
+                "status_name": ["booked"] * (2 * n),
+            }
+        )
+
+        _, comparison_df = _compute_hybrid_mr_risk(
+            data_booked_h3, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4
+        )
+
+        assert "b2_main_h3" in comparison_df.columns
+        assert "b2_mr_h3" in comparison_df.columns
+        assert "n_obs_mr_h3" in comparison_df.columns
+        assert "b2_delta_h3" in comparison_df.columns
+        assert "b2_delta_pct_h3" in comparison_df.columns
+
+    def test_h3_extrapolation_replaces_direct_mr(self, merge_keys):
+        """When H3 data exists and ratio is valid, bins use h3_extrapolated risk source."""
+        # Main-period data with H3 columns
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1, 1, 2, 2],
+                "bin_b": [1, 1, 1, 1],
+                "todu_30ever_h6": [10.0, 10.0, 5.0, 5.0],
+                "todu_amt_pile_h6": [100.0, 100.0, 200.0, 200.0],
+                "todu_30ever_h3": [5.0, 5.0, 3.0, 3.0],
+                "todu_amt_pile_h3": [90.0, 90.0, 180.0, 180.0],
+                "status_name": ["booked"] * 4,
+            }
+        )
+
+        rng = np.random.RandomState(42)
+        n = 40
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * n + [2] * n,
+                "bin_b": [1] * (2 * n),
+                "todu_30ever_h6": rng.uniform(5, 15, 2 * n),
+                "todu_amt_pile_h6": rng.uniform(80, 120, 2 * n),
+                "todu_30ever_h3": rng.uniform(2, 8, 2 * n),
+                "todu_amt_pile_h3": rng.uniform(70, 110, 2 * n),
+                "oa_amt_h0": rng.uniform(500, 1500, 2 * n),
+                "status_name": ["booked"] * (2 * n),
+            }
+        )
+
+        merge_df, comparison_df = _compute_hybrid_mr_risk(
+            data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4
+        )
+
+        # All bins should use h3_extrapolated (sufficient obs, valid ratio)
+        assert (comparison_df["risk_source"] == "h3_extrapolated").all()
+
+        # Verify the extrapolation formula: b2_mr_h3 * (b2_main / b2_main_h3)
+        for _, row in comparison_df.iterrows():
+            expected = row["b2_mr_h3"] * (row["b2_main"] / row["b2_main_h3"])
+            assert np.isclose(row["b2_ever_h6_tmp"], expected), f"Expected {expected}, got {row['b2_ever_h6_tmp']}"
+
+    def test_h3_fallback_to_mr_observed(self, merge_keys):
+        """When b2_main_h3 ≈ 0 (ratio invalid), falls back to mr_observed."""
+        # Main-period: H3 numerator/denominator both zero → b2_main_h3 ≈ 0
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1, 1],
+                "bin_b": [1, 1],
+                "todu_30ever_h6": [10.0, 10.0],
+                "todu_amt_pile_h6": [100.0, 100.0],
+                "todu_30ever_h3": [0.0, 0.0],
+                "todu_amt_pile_h3": [100.0, 100.0],
+                "status_name": ["booked"] * 2,
+            }
+        )
+
+        rng = np.random.RandomState(42)
+        n = 40
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * n,
+                "bin_b": [1] * n,
+                "todu_30ever_h6": rng.uniform(5, 15, n),
+                "todu_amt_pile_h6": rng.uniform(80, 120, n),
+                "todu_30ever_h3": rng.uniform(2, 8, n),
+                "todu_amt_pile_h3": rng.uniform(70, 110, n),
+                "oa_amt_h0": rng.uniform(500, 1500, n),
+                "status_name": ["booked"] * n,
+            }
+        )
+
+        merge_df, comparison_df = _compute_hybrid_mr_risk(
+            data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4
+        )
+
+        # b2_main_h3 ≈ 0 → ratio invalid → fallback to mr_observed
+        assert (comparison_df["risk_source"] == "mr_observed").all()
+        for _, row in comparison_df.iterrows():
+            assert np.isclose(row["b2_ever_h6_tmp"], row["b2_mr"])
+
+    def test_no_h3_columns_original_logic(self, data_booked_main, data_demand_mr_sufficient, merge_keys):
+        """Without H3 columns, original mr_observed / main_imputed logic is preserved."""
+        # No multiplier_h3 and no H3 columns → has_h3 = False
+        merge_df, comparison_df = _compute_hybrid_mr_risk(
+            data_booked_main, data_demand_mr_sufficient, merge_keys, min_obs=30
+        )
+
+        # Both bins have 40 obs >= 30 → mr_observed (original behavior)
+        assert (comparison_df["risk_source"] == "mr_observed").all()
+        for _, row in comparison_df.iterrows():
+            assert np.isclose(row["b2_ever_h6_tmp"], row["b2_mr"])
+
+        # h6_h3_ratio should NOT be in comparison_df
+        assert "h6_h3_ratio" not in comparison_df.columns
+
+    def test_h3_partial_maturity_excludes_immature_accounts(self, merge_keys):
+        """MR accounts without mature H3 (NaN) are excluded from H3 aggregation."""
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1, 1],
+                "bin_b": [1, 1],
+                "todu_30ever_h6": [10.0, 10.0],
+                "todu_amt_pile_h6": [100.0, 100.0],
+                "todu_30ever_h3": [5.0, 5.0],
+                "todu_amt_pile_h3": [90.0, 90.0],
+                "status_name": ["booked"] * 2,
+            }
+        )
+
+        # 40 MR accounts total, but only 20 have mature H3 (first 3 months);
+        # remaining 20 have NaN H3 (last 3 months)
+        rng = np.random.RandomState(42)
+        n_mature = 20
+        n_immature = 20
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * (n_mature + n_immature),
+                "bin_b": [1] * (n_mature + n_immature),
+                "todu_30ever_h6": [np.nan] * (n_mature + n_immature),
+                "todu_amt_pile_h6": [np.nan] * (n_mature + n_immature),
+                "todu_30ever_h3": list(rng.uniform(2, 8, n_mature)) + [np.nan] * n_immature,
+                "todu_amt_pile_h3": list(rng.uniform(70, 110, n_mature)) + [np.nan] * n_immature,
+                "oa_amt_h0": rng.uniform(500, 1500, n_mature + n_immature),
+                "status_name": ["booked"] * (n_mature + n_immature),
+            }
+        )
+
+        _, comparison_df = _compute_hybrid_mr_risk(data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4)
+
+        row = comparison_df.iloc[0]
+        # n_obs_mr_h3 should count only the 20 mature accounts, not all 40
+        assert row["n_obs_mr_h3"] == n_mature
+        # With only 20 H3 obs < min_obs=30, can't extrapolate → falls back to mr_observed
+        assert row["risk_source"] == "mr_observed"
+
+    def test_h3_partial_maturity_all_immature_falls_back(self, merge_keys):
+        """When ALL MR accounts lack H3 (all from months 4-6), falls back to mr_observed."""
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1, 1],
+                "bin_b": [1, 1],
+                "todu_30ever_h6": [10.0, 10.0],
+                "todu_amt_pile_h6": [100.0, 100.0],
+                "todu_30ever_h3": [5.0, 5.0],
+                "todu_amt_pile_h3": [90.0, 90.0],
+                "status_name": ["booked"] * 2,
+            }
+        )
+
+        # All 40 MR accounts are from months 4-6: no mature H3
+        n = 40
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * n,
+                "bin_b": [1] * n,
+                "todu_30ever_h6": [np.nan] * n,
+                "todu_amt_pile_h6": [np.nan] * n,
+                "todu_30ever_h3": [np.nan] * n,
+                "todu_amt_pile_h3": [np.nan] * n,
+                "oa_amt_h0": [1000.0] * n,
+                "status_name": ["booked"] * n,
+            }
+        )
+
+        _, comparison_df = _compute_hybrid_mr_risk(data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4)
+
+        row = comparison_df.iloc[0]
+        # No H3 data at all → b2_mr_h3 is NaN → can't extrapolate → mr_observed
+        assert row["risk_source"] == "mr_observed"
+        assert np.isnan(row["n_obs_mr_h3"]) or row["n_obs_mr_h3"] == 0
+
+    def test_h6_h3_ratio_in_comparison_df(self, merge_keys):
+        """When H3 is available, h6_h3_ratio column appears in comparison_df with correct values."""
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1, 1, 2, 2],
+                "bin_b": [1, 1, 1, 1],
+                "todu_30ever_h6": [10.0, 10.0, 5.0, 5.0],
+                "todu_amt_pile_h6": [100.0, 100.0, 200.0, 200.0],
+                "todu_30ever_h3": [5.0, 5.0, 3.0, 3.0],
+                "todu_amt_pile_h3": [90.0, 90.0, 180.0, 180.0],
+                "status_name": ["booked"] * 4,
+            }
+        )
+
+        rng = np.random.RandomState(42)
+        n = 40
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * n + [2] * n,
+                "bin_b": [1] * (2 * n),
+                "todu_30ever_h6": rng.uniform(5, 15, 2 * n),
+                "todu_amt_pile_h6": rng.uniform(80, 120, 2 * n),
+                "todu_30ever_h3": rng.uniform(2, 8, 2 * n),
+                "todu_amt_pile_h3": rng.uniform(70, 110, 2 * n),
+                "oa_amt_h0": rng.uniform(500, 1500, 2 * n),
+                "status_name": ["booked"] * (2 * n),
+            }
+        )
+
+        _, comparison_df = _compute_hybrid_mr_risk(data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4)
+
+        assert "h6_h3_ratio" in comparison_df.columns
+
+        # Verify ratio = b2_main / b2_main_h3
+        for _, row in comparison_df.iterrows():
+            expected_ratio = row["b2_main"] / row["b2_main_h3"]
+            assert np.isclose(row["h6_h3_ratio"], expected_ratio), (
+                f"Expected ratio {expected_ratio}, got {row['h6_h3_ratio']}"
+            )
+
+
+# =============================================================================
+# B2 Ever H3 Tests
+# =============================================================================
+
+
+class TestB2EverH3:
+    """Tests for complementary H3 risk metric in MR pipeline."""
+
+    def test_calculate_metrics_includes_h3(self, sample_data_with_h3, optimal_solution_df, variables):
+        """calculate_metrics_from_cuts should include H3 columns when multiplier_h3 is provided."""
+        result = calculate_metrics_from_cuts(sample_data_with_h3, optimal_solution_df, variables, multiplier_h3=4)
+
+        assert result is not None
+        assert "Risk H3 (%)" in result.columns
+        assert "todu_30ever_h3" in result.columns
+        assert "todu_amt_pile_h3" in result.columns
+
+    def test_calculate_metrics_no_h3_without_multiplier(self, sample_data_with_h3, optimal_solution_df, variables):
+        """calculate_metrics_from_cuts should not include H3 when multiplier_h3 is None."""
+        result = calculate_metrics_from_cuts(sample_data_with_h3, optimal_solution_df, variables, multiplier_h3=None)
+
+        assert result is not None
+        assert "Risk H3 (%)" not in result.columns
+
+    def test_calculate_metrics_no_h3_without_columns(self, sample_data, optimal_solution_df, variables):
+        """calculate_metrics_from_cuts should not include H3 when h3 columns are absent."""
+        result = calculate_metrics_from_cuts(sample_data, optimal_solution_df, variables, multiplier_h3=4)
+
+        assert result is not None
+        assert "Risk H3 (%)" not in result.columns
+
+    def test_h3_optimum_calculation(self, sample_data_with_h3, optimal_solution_df, variables):
+        """Optimum H3 risk should be computed from (Actual - Swap-out + Swap-in) components."""
+        result = calculate_metrics_from_cuts(sample_data_with_h3, optimal_solution_df, variables, multiplier_h3=4)
+
+        assert result is not None
+        actual_h3_rn = result.loc[0, "todu_30ever_h3"]
+        si_h3_rn = result.loc[1, "todu_30ever_h3"]
+        so_h3_rn = result.loc[2, "todu_30ever_h3"]
+        opt_h3_rn = result.loc[3, "todu_30ever_h3"]
+        assert np.isclose(opt_h3_rn, actual_h3_rn - so_h3_rn + si_h3_rn)

@@ -224,6 +224,7 @@ class PreprocessingSettings(BaseModel):
     data_path: str = "data/demanda_direct_out.sas7bdat"
     n_months: int = 12
     multiplier: float = Field(default=7.0, gt=0)
+    multiplier_h3: float = Field(default=4.0, gt=0)
     z_threshold: float = Field(default=3.0, gt=0)
     cv_folds: int = Field(default=4, ge=2, le=10)
     optimum_risk: float = 1.1

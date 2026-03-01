@@ -53,10 +53,15 @@ class Columns:
     OA_AMT: Final[str] = "oa_amt"
     OA_AMT_H0: Final[str] = "oa_amt_h0"
 
-    # Risk metric columns
+    # Risk metric columns (H6 — 6-month horizon)
     TODU_30EVER_H6: Final[str] = "todu_30ever_h6"
     TODU_AMT_PILE_H6: Final[str] = "todu_amt_pile_h6"
     B2_EVER_H6: Final[str] = "b2_ever_h6"
+
+    # Risk metric columns (H3 — 3-month horizon, complementary)
+    TODU_30EVER_H3: Final[str] = "todu_30ever_h3"
+    TODU_AMT_PILE_H3: Final[str] = "todu_amt_pile_h3"
+    B2_EVER_H3: Final[str] = "b2_ever_h3"
 
     # Grouping variables (default names)
     OCTROI_BINNED: Final[str] = "octroi_binned"
@@ -82,6 +87,9 @@ class Suffixes:
 # =============================================================================
 # Default multiplier for b2_ever_h6 calculation: 7 * todu_30ever_h6 / todu_amt_pile_h6
 DEFAULT_RISK_MULTIPLIER: Final[int] = 7
+
+# Default multiplier for b2_ever_h3 calculation: 4 * todu_30ever_h3 / todu_amt_pile_h3
+DEFAULT_RISK_MULTIPLIER_H3: Final[int] = 4
 
 # Default Z-score threshold for outlier removal
 DEFAULT_Z_THRESHOLD: Final[float] = 3.0

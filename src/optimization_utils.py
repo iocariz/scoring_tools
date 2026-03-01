@@ -17,7 +17,7 @@ from loguru import logger
 from scipy import sparse
 from scipy.optimize import LinearConstraint, milp
 
-from .constants import DEFAULT_RISK_MULTIPLIER
+from .constants import DEFAULT_RISK_MULTIPLIER, DEFAULT_RISK_MULTIPLIER_H3
 from .utils import calculate_b2_ever_h6
 
 # =============================================================================
@@ -338,12 +338,14 @@ def evaluate_solution(
     grid: CellGrid,
     indicators: list[str],
     multiplier: float,
+    multiplier_h3: float | None = None,
 ) -> dict:
     """Compute KPIs for a single acceptance mask.
 
     For accepted cells: sums base, _boo, and _rep columns.
     Computes _cut = total_boo - accepted_boo for each indicator.
     Computes b2_ever_h6 for each suffix group.
+    Optionally computes b2_ever_h3 when multiplier_h3 is provided.
     """
     cell = grid.cell_data
     accepted = mask.astype(bool)
@@ -374,6 +376,16 @@ def evaluate_solution(
                 calculate_b2_ever_h6(result[t30], result[tamt], multiplier=multiplier, as_percentage=True)
             )
 
+    # Compute b2_ever_h3 for each suffix (complementary metric)
+    if multiplier_h3 is not None:
+        for suffix in ["", "_boo", "_rep", "_cut"]:
+            t30_h3 = f"todu_30ever_h3{suffix}"
+            tamt_h3 = f"todu_amt_pile_h3{suffix}"
+            if t30_h3 in result and tamt_h3 in result:
+                result[f"b2_ever_h3{suffix}"] = float(
+                    calculate_b2_ever_h6(result[t30_h3], result[tamt_h3], multiplier=multiplier_h3, as_percentage=True)
+                )
+
     return result
 
 
@@ -391,6 +403,7 @@ def trace_pareto_frontier(
     n_points: int = 50,
     max_swapin_production_pct: float | None = None,
     max_swapin_risk: float | None = None,
+    multiplier_h3: float | None = None,
 ) -> tuple[pd.DataFrame, CellGrid, list[np.ndarray]]:
     """Sweep risk targets, solve MILP at each, filter to Pareto-optimal set.
 
@@ -442,7 +455,7 @@ def trace_pareto_frontier(
             continue
         seen_masks.add(mask_key)
 
-        kpis = evaluate_solution(mask, grid, indicators, multiplier)
+        kpis = evaluate_solution(mask, grid, indicators, multiplier, multiplier_h3=multiplier_h3)
         solutions.append(kpis)
         all_masks.append(mask)
 
@@ -1016,6 +1029,18 @@ def kpi_of_fact_sol(
                 final_result[t30].astype(float),
                 final_result[tamt].astype(float),
                 multiplier=DEFAULT_RISK_MULTIPLIER,
+                as_percentage=True,
+            ).fillna(0)
+
+    # Compute b2_ever_h3 (complementary metric) when h3 columns are present
+    for metric in ["", "_cut", "_rep", "_boo"]:
+        t30_h3 = f"todu_30ever_h3{metric}"
+        tamt_h3 = f"todu_amt_pile_h3{metric}"
+        if t30_h3 in final_result.columns and tamt_h3 in final_result.columns:
+            final_result[f"b2_ever_h3{metric}"] = calculate_b2_ever_h6(
+                final_result[t30_h3].astype(float),
+                final_result[tamt_h3].astype(float),
+                multiplier=DEFAULT_RISK_MULTIPLIER_H3,
                 as_percentage=True,
             ).fillna(0)
 

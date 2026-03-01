@@ -173,6 +173,7 @@ def run_optimization_phase(
             indicators=settings.indicators,
             max_swapin_production_pct=settings.max_swapin_production_pct,
             max_swapin_risk=settings.max_swapin_risk,
+            multiplier_h3=settings.multiplier_h3,
         )
 
         if pareto_df.empty:
@@ -214,6 +215,14 @@ def run_optimization_phase(
         multiplier=multiplier,
         as_percentage=True,
     )
+    # Compute complementary H3 risk metric when columns are available
+    if "todu_30ever_h3" in data_summary_desagregado.columns:
+        data_summary_desagregado["b2_ever_h3"] = calculate_b2_ever_h6(
+            data_summary_desagregado["todu_30ever_h3"],
+            data_summary_desagregado["todu_amt_pile_h3"],
+            multiplier=settings.multiplier_h3,
+            as_percentage=True,
+        )
     data_summary_desagregado["text"] = data_summary_desagregado.apply(
         lambda x: str("{:,.2f}M".format(x["oa_amt_h0"] / 1000000)) + " " + str("{:.2%}".format(x["b2_ever_h6"] / 100)),
         axis=1,

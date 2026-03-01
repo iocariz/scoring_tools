@@ -1,10 +1,12 @@
 [preprocessing]
 keep_vars = [
     "authorization_id", "mis_date", "status_name", "risk_score_rf", "se_decision_id",
-    "reject_reason", "score_rf", "segment_cut_off", "early_bad", "income_t1t2_m"
+    "reject_reason", "score_rf", "segment_cut_off", "early_bad", "income_t1t2_m",
+    "todu_30ever_h3", "todu_amt_pile_h3"
 ]
 indicators = [
-    "acct_booked_h0", "oa_amt", "todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"
+    "acct_booked_h0", "oa_amt", "todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0",
+    "todu_30ever_h3", "todu_amt_pile_h3"
 ]
 
 octroi_bins = [-inf, 364.0, 370.0, 379.0, 382.0, 389.0, 397.0, 404.0, 416.0, 431.0, inf]
@@ -29,6 +31,7 @@ n_months = 24
 variables = ['sc_octroi_new_clus', 'new_efx_clus', 'income_bin']
 inference_variables = ['sc_octroi_new_clus', 'new_efx_clus']
 multiplier = 7
+multiplier_h3 = 4
 z_threshold = 3.0
 cv_folds = 3
 run_sensitivity = true

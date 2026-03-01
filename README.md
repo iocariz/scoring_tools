@@ -528,7 +528,39 @@ This produces more stable models and avoids redundant training.
 
 ### MR Period (Recent Monitoring)
 
-When `date_ini_book_obs_mr` and `date_fin_book_obs_mr` are configured, the pipeline applies the selected cutoffs to a recent holdout period. This validates that the proposed strategy performs as expected on data not used during optimization. The MR results include risk, production, swap-in/swap-out metrics, and stability analysis.
+When `date_ini_book_obs_mr` and `date_fin_book_obs_mr` are configured, the pipeline applies the selected cutoffs to a recent holdout period (typically the most recent 6 months). This validates that the proposed strategy performs as expected on data not used during optimization. The MR results include risk, production, swap-in/swap-out metrics, and stability analysis.
+
+#### Hybrid Risk Estimation
+
+In the main period, all booked applications have a full 6-month performance window, so `b2_ever_h6` is directly observable. In the MR period this is not the case: only the earliest cohorts have matured enough for reliable outcome data. The pipeline uses a **hybrid per-bin risk estimation** controlled by `use_mr_outcomes` and `mr_min_obs_per_bin`:
+
+| Priority | Source | Condition | Method |
+|:---------|:-------|:----------|:-------|
+| 1 | `h3_extrapolated` | H3 configured, valid main-period H6/H3 ratio, and enough mature H3 observations in MR | MR-observed H3 scaled by the main-period ratio (see below) |
+| 2 | `mr_observed` | Enough MR observations but H3 extrapolation unavailable | Direct MR-period `b2_ever_h6` |
+| 3 | `main_imputed` | Insufficient MR observations | Main-period `b2_ever_h6` |
+| 4 | `model_fallback` | Bin exists only in MR with sparse data | Inferred via the trained risk model |
+
+#### H3-Based H6 Extrapolation
+
+The 3-month horizon indicator (`b2_ever_h3`) matures in half the time of H6. In a 6-month MR window, the first 3 monthly cohorts have reliable H3 outcomes while none have fully matured H6. The pipeline exploits this by using the **main-period H6/H3 ratio** as a scaling factor:
+
+```
+b2_h6_estimated = b2_mr_h3 × (b2_main_h6 / b2_main_h3)
+```
+
+Where, for each score bin:
+- `b2_main_h6` and `b2_main_h3` are computed from the main period (all applications fully matured)
+- `b2_mr_h3` is computed from **only** the MR accounts with mature H3 data (accounts from months with at least 3 months of performance history; immature accounts with NaN H3 are excluded from the aggregation)
+
+The ratio `b2_main_h6 / b2_main_h3` captures the bin-level relationship between 3-month and 6-month default rates. Multiplying the observed MR H3 rate by this ratio produces a more reliable H6 estimate than either direct (immature) MR H6 observation or static main-period imputation.
+
+**Safeguards:**
+- Bins where `b2_main_h3 ≈ 0` have an undefined ratio and fall back to `mr_observed`.
+- The number of MR accounts with mature H3 (`n_obs_mr_h3`) must meet the `mr_min_obs_per_bin` threshold; otherwise the bin falls back to `mr_observed` or `main_imputed`.
+- The per-bin `h6_h3_ratio` and `n_obs_mr_h3` are included in the comparison CSV (`mr_risk_comparison_*.csv`) for auditing.
+
+This feature activates automatically when `use_mr_outcomes = true` and `multiplier_h3` is configured. No additional configuration is required.
 
 ### Stability Analysis (PSI/CSI)
 

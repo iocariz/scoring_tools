@@ -335,6 +335,9 @@ def _make_summary_2d(n_var0=3, n_var1=4):
             risk = rng.uniform(0.01, 0.1)
             amt = rng.uniform(1000, 10000)
             production = rng.uniform(5000, 50000)
+            # H3 values: scaled from H6 (shorter horizon → smaller numerator, similar denominator)
+            risk_h3 = risk * 0.6
+            amt_h3 = amt * 0.9
             rows.append(
                 {
                     "var0": v0,
@@ -348,6 +351,12 @@ def _make_summary_2d(n_var0=3, n_var1=4):
                     "todu_30ever_h6_rep": risk * amt / 7 * 0.2,
                     "todu_amt_pile_h6_rep": amt * 0.2,
                     "oa_amt_h0_rep": production * 0.2,
+                    "todu_30ever_h3": risk_h3 * amt_h3 / 4,
+                    "todu_amt_pile_h3": amt_h3,
+                    "todu_30ever_h3_boo": risk_h3 * amt_h3 / 4 * 0.8,
+                    "todu_amt_pile_h3_boo": amt_h3 * 0.8,
+                    "todu_30ever_h3_rep": risk_h3 * amt_h3 / 4 * 0.2,
+                    "todu_amt_pile_h3_rep": amt_h3 * 0.2,
                 }
             )
     return pd.DataFrame(rows)
@@ -363,6 +372,8 @@ def _make_summary_3d(n_var0=2, n_var1=3, n_var2=2):
                 risk = rng.uniform(0.01, 0.1)
                 amt = rng.uniform(1000, 10000)
                 production = rng.uniform(5000, 50000)
+                risk_h3 = risk * 0.6
+                amt_h3 = amt * 0.9
                 rows.append(
                     {
                         "var0": v0,
@@ -377,6 +388,12 @@ def _make_summary_3d(n_var0=2, n_var1=3, n_var2=2):
                         "todu_30ever_h6_rep": risk * amt / 7 * 0.2,
                         "todu_amt_pile_h6_rep": amt * 0.2,
                         "oa_amt_h0_rep": production * 0.2,
+                        "todu_30ever_h3": risk_h3 * amt_h3 / 4,
+                        "todu_amt_pile_h3": amt_h3,
+                        "todu_30ever_h3_boo": risk_h3 * amt_h3 / 4 * 0.8,
+                        "todu_amt_pile_h3_boo": amt_h3 * 0.8,
+                        "todu_30ever_h3_rep": risk_h3 * amt_h3 / 4 * 0.2,
+                        "todu_amt_pile_h3_rep": amt_h3 * 0.2,
                     }
                 )
     return pd.DataFrame(rows)
@@ -588,6 +605,70 @@ class TestEvaluateSolution:
             assert f"{ind}_boo" in result
             assert f"{ind}_rep" in result
             assert f"{ind}_cut" in result
+
+
+# =============================================================================
+# B2 Ever H3 Tests
+# =============================================================================
+
+
+class TestB2EverH3:
+    """Tests for complementary H3 risk metric computation."""
+
+    def test_evaluate_solution_computes_h3_when_multiplier_provided(self):
+        """evaluate_solution should compute b2_ever_h3 when multiplier_h3 is given."""
+        df = _make_summary_2d(2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        indicators = ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0", "todu_30ever_h3", "todu_amt_pile_h3"]
+        mask = np.ones(grid.n_cells, dtype=int)
+
+        result = evaluate_solution(mask, grid, indicators, multiplier=7, multiplier_h3=4)
+
+        assert "b2_ever_h3" in result
+        assert "b2_ever_h3_boo" in result
+        assert "b2_ever_h3_rep" in result
+        assert "b2_ever_h3_cut" in result
+        # H3 risk should be a positive number
+        assert result["b2_ever_h3"] > 0
+
+    def test_evaluate_solution_no_h3_when_multiplier_none(self):
+        """evaluate_solution should not compute b2_ever_h3 when multiplier_h3 is None."""
+        df = _make_summary_2d(2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        indicators = ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0", "todu_30ever_h3", "todu_amt_pile_h3"]
+        mask = np.ones(grid.n_cells, dtype=int)
+
+        result = evaluate_solution(mask, grid, indicators, multiplier=7, multiplier_h3=None)
+
+        assert "b2_ever_h3" not in result
+        assert "b2_ever_h3_boo" not in result
+
+    def test_h3_risk_lower_than_h6(self):
+        """H3 risk should generally be lower than H6 (shorter horizon)."""
+        df = _make_summary_2d(3, 4)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        indicators = ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0", "todu_30ever_h3", "todu_amt_pile_h3"]
+        mask = np.ones(grid.n_cells, dtype=int)
+
+        result = evaluate_solution(mask, grid, indicators, multiplier=7, multiplier_h3=4)
+
+        # With our synthetic data (h3 risk = 0.6 * h6 risk), h3 should be lower
+        assert result["b2_ever_h3"] < result["b2_ever_h6"]
+
+    def test_pareto_frontier_includes_h3(self):
+        """trace_pareto_frontier should include h3 columns when multiplier_h3 is provided."""
+        df = _make_summary_2d(3, 4)
+        pareto_df, _, _ = trace_pareto_frontier(
+            df,
+            variables=["var0", "var1"],
+            inv_vars=[],
+            multiplier=7,
+            indicators=["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0", "todu_30ever_h3", "todu_amt_pile_h3"],
+            n_points=10,
+            multiplier_h3=4,
+        )
+        assert not pareto_df.empty
+        assert "b2_ever_h3" in pareto_df.columns
 
 
 # =============================================================================
