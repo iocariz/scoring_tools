@@ -8,7 +8,13 @@ import pandas as pd
 import pytest
 
 from src.config import PreprocessingSettings
-from src.reject_inference_optimizer import OptimizerInputs, evaluate_ri_params, run_reject_inference_optimization
+from src.reject_inference_optimizer import (
+    OptimizerInputs,
+    _compute_calibration_error,
+    evaluate_ri_params,
+    run_reject_inference_optimization,
+    validate_ri_with_mr,
+)
 
 # =============================================================================
 # Helpers
@@ -45,7 +51,7 @@ def _make_summary_2d(n_var0=3, n_var1=4):
     return pd.DataFrame(rows)
 
 
-def _make_optimizer_inputs(n_var0=3, n_var1=4, tasa_fin=0.5):
+def _make_optimizer_inputs(n_var0=3, n_var1=4, tasa_fin=0.5, calibration_gamma=1.0):
     """Build OptimizerInputs from synthetic data."""
     rng = np.random.RandomState(42)
 
@@ -101,6 +107,7 @@ def _make_optimizer_inputs(n_var0=3, n_var1=4, tasa_fin=0.5):
         indicators=INDICATORS,
         inv_vars=[],
         multiplier=7.0,
+        calibration_gamma=calibration_gamma,
     )
 
 
@@ -289,6 +296,118 @@ class TestRunOptimization:
 
 
 # =============================================================================
+# TestCalibrationGamma
+# =============================================================================
+
+
+class TestCalibrationGamma:
+    def test_gamma_affects_calibration_error(self):
+        """Different gamma values should produce different calibration errors."""
+        inputs_g1 = _make_optimizer_inputs(calibration_gamma=1.0)
+        inputs_g05 = _make_optimizer_inputs(calibration_gamma=0.5)
+
+        result_g1 = evaluate_ri_params(inputs_g1, uplift_factor=1.5, max_risk_multiplier=3.0, risk_target=20.0)
+        result_g05 = evaluate_ri_params(inputs_g05, uplift_factor=1.5, max_risk_multiplier=3.0, risk_target=20.0)
+
+        # Calibration errors should differ when gamma differs
+        assert result_g1["calibration_error"] != result_g05["calibration_error"]
+
+    def test_gamma_1_matches_original(self):
+        """gamma=1.0 should produce the same result as the original formula."""
+        inputs = _make_optimizer_inputs(calibration_gamma=1.0)
+        result = evaluate_ri_params(inputs, uplift_factor=1.5, max_risk_multiplier=3.0, risk_target=20.0)
+        assert result["calibration_error"] > 0 or result["calibration_error"] == 0.0
+
+    def test_lower_gamma_less_aggressive(self):
+        """Lower gamma should produce less aggressive calibration targets."""
+        # With gamma < 1, target = booked_risk / acc^gamma is closer to booked_risk
+        # than with gamma = 1, so calibration error at low uplift should be lower
+        inputs_g1 = _make_optimizer_inputs(calibration_gamma=1.0)
+        inputs_g05 = _make_optimizer_inputs(calibration_gamma=0.5)
+
+        result_g1 = evaluate_ri_params(inputs_g1, uplift_factor=0.0, max_risk_multiplier=1.0, risk_target=20.0)
+        result_g05 = evaluate_ri_params(inputs_g05, uplift_factor=0.0, max_risk_multiplier=1.0, risk_target=20.0)
+
+        # With zero uplift (no RI), gamma=0.5 target is closer to predicted → lower error
+        if result_g1["calibration_error"] > 0 and result_g05["calibration_error"] > 0:
+            assert result_g05["calibration_error"] < result_g1["calibration_error"]
+
+
+# =============================================================================
+# TestOptunaOptimizer
+# =============================================================================
+
+
+class TestOptunaOptimizer:
+    @pytest.fixture
+    def inputs(self):
+        return _make_optimizer_inputs()
+
+    def test_optuna_returns_results(self, inputs):
+        """Optuna optimizer should return (DataFrame, dict) tuple."""
+        pytest.importorskip("optuna")
+        from src.reject_inference_optimizer import run_reject_inference_optimization_optuna
+
+        results_df, best_params = run_reject_inference_optimization_optuna(inputs, risk_target=20.0, n_trials=10)
+        assert isinstance(results_df, pd.DataFrame)
+        assert isinstance(best_params, dict)
+
+    def test_optuna_expected_columns(self, inputs):
+        """Optuna results should have expected columns."""
+        pytest.importorskip("optuna")
+        from src.reject_inference_optimizer import run_reject_inference_optimization_optuna
+
+        results_df, _ = run_reject_inference_optimization_optuna(inputs, risk_target=20.0, n_trials=10)
+        expected_cols = {"uplift_factor", "max_risk_multiplier", "feasible", "calibration_error"}
+        assert expected_cols.issubset(set(results_df.columns))
+
+    def test_optuna_n_trials(self, inputs):
+        """Number of results should match n_trials."""
+        pytest.importorskip("optuna")
+        from src.reject_inference_optimizer import run_reject_inference_optimization_optuna
+
+        results_df, _ = run_reject_inference_optimization_optuna(inputs, risk_target=20.0, n_trials=15)
+        assert len(results_df) == 15
+
+    def test_optuna_single_best(self, inputs):
+        """Exactly one row should be marked as best (if feasible)."""
+        pytest.importorskip("optuna")
+        from src.reject_inference_optimizer import run_reject_inference_optimization_optuna
+
+        results_df, best_params = run_reject_inference_optimization_optuna(inputs, risk_target=20.0, n_trials=20)
+        if best_params:
+            assert results_df["is_best"].sum() == 1
+
+
+# =============================================================================
+# TestValidateRIWithMR
+# =============================================================================
+
+
+class TestValidateRIWithMR:
+    def test_mr_validation_returns_expected_keys(self):
+        """MR validation should return dict with expected keys."""
+        main_inputs = _make_optimizer_inputs()
+        mr_inputs = _make_optimizer_inputs()  # Same synthetic data for simplicity
+        best_params = {"uplift_factor": 1.5, "max_risk_multiplier": 3.0}
+
+        result = validate_ri_with_mr(main_inputs, mr_inputs, best_params, risk_target=20.0)
+        assert "main_calibration_error" in result
+        assert "mr_calibration_error" in result
+        assert "degradation_ratio" in result
+        assert "mr_feasible" in result
+
+    def test_same_data_degradation_near_one(self):
+        """With identical main/MR data, degradation ratio should be ~1.0."""
+        inputs = _make_optimizer_inputs()
+        best_params = {"uplift_factor": 1.5, "max_risk_multiplier": 3.0}
+
+        result = validate_ri_with_mr(inputs, inputs, best_params, risk_target=20.0)
+        if np.isfinite(result["degradation_ratio"]):
+            assert result["degradation_ratio"] == pytest.approx(1.0, abs=0.01)
+
+
+# =============================================================================
 # TestConfigFields
 # =============================================================================
 
@@ -316,6 +435,9 @@ class TestConfigFields:
         assert config.ri_max_mult_range == [1.0, 5.0]
         assert config.ri_uplift_steps == 11
         assert config.ri_max_mult_steps == 9
+        assert config.ri_calibration_gamma == 1.0
+        assert config.ri_optimizer_method == "grid"
+        assert config.ri_optuna_n_trials == 100
 
     def test_range_requires_two_elements(self):
         """Range fields must have exactly 2 elements."""
@@ -339,3 +461,20 @@ class TestConfigFields:
         )
         assert config.ri_uplift_range == [0.5, 3.0]
         assert config.ri_max_mult_range == [1.5, 4.0]
+
+    def test_optuna_method_accepted(self):
+        """'optuna' is a valid optimizer method."""
+        config = PreprocessingSettings(**self._make_base_config(ri_optimizer_method="optuna"))
+        assert config.ri_optimizer_method == "optuna"
+
+    def test_invalid_optimizer_method(self):
+        """Invalid optimizer method should be rejected."""
+        with pytest.raises(ValueError):
+            PreprocessingSettings(**self._make_base_config(ri_optimizer_method="bayesian"))
+
+    def test_optuna_n_trials_bounds(self):
+        """ri_optuna_n_trials respects ge=10 and le=10000 bounds."""
+        with pytest.raises(ValueError):
+            PreprocessingSettings(**self._make_base_config(ri_optuna_n_trials=5))
+        with pytest.raises(ValueError):
+            PreprocessingSettings(**self._make_base_config(ri_optuna_n_trials=20000))

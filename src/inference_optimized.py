@@ -1573,6 +1573,10 @@ def run_optimization_pipeline(
     reject_inference_method: str = "none",
     reject_uplift_factor: float = 1.5,
     reject_max_risk_multiplier: float = 3.0,
+    reject_parceling_method: str = "linear",
+    reject_bayesian_smoothing: bool = False,
+    reject_bayesian_prior_strength: float = 10.0,
+    reject_enforce_monotonicity: bool = False,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
 ):
     """
@@ -1609,10 +1613,21 @@ def run_optimization_pipeline(
             method=reject_inference_method,
             reject_uplift_factor=reject_uplift_factor,
             max_risk_multiplier=reject_max_risk_multiplier,
+            parceling_method=reject_parceling_method,
+            bayesian_smoothing=reject_bayesian_smoothing,
+            bayesian_prior_strength=reject_bayesian_prior_strength,
+            enforce_monotonicity=reject_enforce_monotonicity,
         )
         # Drop auxiliary columns before downstream merge
         data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.drop(
-            columns=["acceptance_rate", "reject_risk_multiplier"], errors="ignore"
+            columns=[
+                "acceptance_rate",
+                "smoothed_acceptance_rate",
+                "reject_risk_multiplier",
+                "ri_confidence",
+                "ri_bin_count",
+            ],
+            errors="ignore",
         )
 
     data_sumary_desagregado_repesca[INDICADORES] *= tasa_fin

@@ -185,6 +185,8 @@ def milp_solve_cutoffs(
     inv_vars: list[str],
     multiplier: float,
     fixed_cells: dict[int, int] | None = None,
+    max_swapin_production_pct: float | None = None,
+    max_swapin_risk: float | None = None,
 ) -> np.ndarray | None:
     """Solve single MILP: maximize production subject to risk budget + monotonicity.
 
@@ -225,10 +227,29 @@ def milp_solve_cutoffs(
 
     # Stack risk constraint row on top of monotonicity
     risk_row = sparse.csc_matrix(risk_coeffs.reshape(1, -1))
+    extra_rows: list[sparse.csc_matrix] = []
+
+    # Optional swap-in production fraction constraint:
+    #   sum(oa_amt_h0_rep[i] * x[i]) / sum(oa_amt_h0[i] * x[i]) <= pct/100
+    # Linearized: sum((oa_amt_h0_rep[i] - pct/100 * oa_amt_h0[i]) * x[i]) <= 0
+    if max_swapin_production_pct is not None and "oa_amt_h0_rep" in cell.columns:
+        rep_prod = cell["oa_amt_h0_rep"].values.astype(float)
+        swapin_prod_coeffs = rep_prod - (max_swapin_production_pct / 100.0) * production
+        extra_rows.append(sparse.csc_matrix(swapin_prod_coeffs.reshape(1, -1)))
+
+    # Optional swap-in risk constraint:
+    #   multiplier * sum(todu_30ever_h6_rep[i] * x[i]) / sum(todu_amt_pile_h6_rep[i] * x[i]) <= max_risk/100
+    # Linearized: sum((multiplier * todu_30ever_h6_rep[i] - max_risk/100 * todu_amt_pile_h6_rep[i]) * x[i]) <= 0
+    if max_swapin_risk is not None and "todu_30ever_h6_rep" in cell.columns and "todu_amt_pile_h6_rep" in cell.columns:
+        rep_t30 = cell["todu_30ever_h6_rep"].values.astype(float)
+        rep_tamt = cell["todu_amt_pile_h6_rep"].values.astype(float)
+        swapin_risk_coeffs = multiplier * rep_t30 - (max_swapin_risk / 100.0) * rep_tamt
+        extra_rows.append(sparse.csc_matrix(swapin_risk_coeffs.reshape(1, -1)))
+
+    all_rows = [risk_row] + extra_rows
     if A_mono.shape[0] > 0:
-        A = sparse.vstack([risk_row, A_mono], format="csc")
-    else:
-        A = risk_row
+        all_rows.append(A_mono)
+    A = sparse.vstack(all_rows, format="csc") if len(all_rows) > 1 else all_rows[0]
 
     n_constraints = A.shape[0]
     b_u = np.zeros(n_constraints)
@@ -368,6 +389,8 @@ def trace_pareto_frontier(
     multiplier: float,
     indicators: list[str],
     n_points: int = 50,
+    max_swapin_production_pct: float | None = None,
+    max_swapin_risk: float | None = None,
 ) -> tuple[pd.DataFrame, CellGrid, list[np.ndarray]]:
     """Sweep risk targets, solve MILP at each, filter to Pareto-optimal set.
 
@@ -403,7 +426,14 @@ def trace_pareto_frontier(
     logger.info(f"MILP Pareto sweep: {n_points} risk targets in [0.01, {max_risk * 1.1:.2f}%]")
 
     for target in risk_targets:
-        mask = milp_solve_cutoffs(grid, target, inv_vars, multiplier)
+        mask = milp_solve_cutoffs(
+            grid,
+            target,
+            inv_vars,
+            multiplier,
+            max_swapin_production_pct=max_swapin_production_pct,
+            max_swapin_risk=max_swapin_risk,
+        )
         if mask is None:
             continue
 

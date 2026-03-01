@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -24,6 +25,9 @@ from src.constants import RejectReason, StatusName
 def compute_acceptance_rates(
     data_demand: pd.DataFrame,
     variables: list[str],
+    *,
+    bayesian_smoothing: bool = False,
+    bayesian_prior_strength: float = 10.0,
 ) -> pd.DataFrame:
     """Compute per-bin acceptance rates from the demand population.
 
@@ -43,10 +47,15 @@ def compute_acceptance_rates(
         listed in *variables*.
     variables:
         The two binning variable names (e.g. ``["sc_octroi_new_clus", "new_efx_clus"]``).
+    bayesian_smoothing:
+        If True, apply Beta-Binomial posterior smoothing to acceptance rates.
+    bayesian_prior_strength:
+        Strength of the Beta prior (higher = more shrinkage toward global rate).
 
     Returns
     -------
     DataFrame with columns ``[*variables, "n_booked", "n_score_rejected", "acceptance_rate"]``.
+    When *bayesian_smoothing* is True, also includes ``"smoothed_acceptance_rate"``.
     """
     booked = data_demand[data_demand["status_name"] == StatusName.BOOKED.value]
     score_rejected = data_demand[
@@ -63,6 +72,17 @@ def compute_acceptance_rates(
 
     total = rates["n_booked"] + rates["n_score_rejected"]
     rates["acceptance_rate"] = (rates["n_booked"] / total).where(total > 0, 0.0)
+
+    # Bayesian smoothing: Beta-Binomial posterior
+    if bayesian_smoothing:
+        global_rate = rates["n_booked"].sum() / max(total.sum(), 1)
+        alpha = bayesian_prior_strength * global_rate
+        beta = bayesian_prior_strength * (1 - global_rate)
+        rates["smoothed_acceptance_rate"] = (rates["n_booked"] + alpha) / (total + alpha + beta)
+        logger.debug(
+            f"Bayesian smoothing applied | prior_strength={bayesian_prior_strength} | "
+            f"global_rate={global_rate:.3f} | alpha={alpha:.2f}, beta={beta:.2f}"
+        )
 
     # Warn about non-score rejections that are excluded from acceptance rate
     n_other_rejected = len(
@@ -90,6 +110,82 @@ def compute_acceptance_rates(
     return rates
 
 
+def compute_ri_confidence(
+    acceptance_rates: pd.DataFrame,
+    variables: list[str],
+    *,
+    scale: float = 50.0,
+) -> pd.DataFrame:
+    """Compute per-bin confidence scores for reject inference adjustments.
+
+    Confidence is based on the total number of observations (booked + score-rejected)
+    in each bin::
+
+        confidence = 1 - exp(-n_total / scale)
+
+    Parameters
+    ----------
+    acceptance_rates:
+        Output of :func:`compute_acceptance_rates`.
+    variables:
+        Binning variable names.
+    scale:
+        Controls the rate of confidence growth. Higher = more observations needed
+        for high confidence.
+
+    Returns
+    -------
+    DataFrame with columns ``[*variables, "ri_confidence", "ri_bin_count"]``.
+    """
+    n_total = acceptance_rates["n_booked"] + acceptance_rates["n_score_rejected"]
+    confidence = 1.0 - np.exp(-n_total / scale)
+
+    return pd.DataFrame(
+        {
+            **{v: acceptance_rates[v] for v in variables},
+            "ri_confidence": confidence,
+            "ri_bin_count": n_total,
+        }
+    )
+
+
+def _enforce_multiplier_monotonicity(
+    result: pd.DataFrame,
+    variables: list[str],
+) -> pd.DataFrame:
+    """Enforce monotonicity on reject_risk_multiplier per variable axis.
+
+    Uses isotonic regression to ensure that multipliers are non-decreasing along
+    each variable axis (marginal monotonicity). Higher risk bins (higher index)
+    should have equal or higher multipliers.
+
+    Parameters
+    ----------
+    result:
+        DataFrame with ``reject_risk_multiplier`` and *variables* columns.
+    variables:
+        Binning variable names.
+
+    Returns
+    -------
+    DataFrame with monotonicity-adjusted ``reject_risk_multiplier``.
+    """
+    from sklearn.isotonic import IsotonicRegression
+
+    iso = IsotonicRegression(increasing=True, out_of_bounds="clip")
+
+    for var in variables:
+        # Average multiplier along the other axes and fit isotonic per this variable
+        grouped = result.groupby(var)["reject_risk_multiplier"].mean().sort_index()
+        if len(grouped) < 2:
+            continue
+        iso_values = iso.fit_transform(grouped.index.values.astype(float), grouped.values)
+        iso_map = dict(zip(grouped.index, iso_values))
+        result["reject_risk_multiplier"] = result[var].map(iso_map).fillna(result["reject_risk_multiplier"])
+
+    return result
+
+
 def apply_parceling_adjustment(
     repesca_summary: pd.DataFrame,
     acceptance_rates: pd.DataFrame,
@@ -97,17 +193,21 @@ def apply_parceling_adjustment(
     *,
     reject_uplift_factor: float = 1.5,
     max_risk_multiplier: float = 3.0,
-    method: Literal["linear", "power"] = "linear",
+    method: Literal["linear", "power", "sigmoid"] = "linear",
+    enforce_monotonicity: bool = False,
 ) -> pd.DataFrame:
     """Apply per-bin risk uplift to repesca summary based on acceptance rates.
 
-    Two methods are available:
+    Three methods are available:
 
     - ``"linear"`` (default): ``multiplier = 1 + factor * (1 - acceptance_rate)``
     - ``"power"``: ``multiplier = (1 / acceptance_rate) ^ factor``.  This is
       grounded in the assumption that rejected applicants are drawn from the
       riskier tail, so risk scales as a power of the inverse acceptance rate.
       It produces a non-linear curve that grows faster at low acceptance rates.
+    - ``"sigmoid"``: ``multiplier = 1 + factor / (1 + exp(steepness * (rate - midpoint)))``
+      Produces a smooth S-curve: gentle at extremes, steep transition around 50%
+      acceptance.
 
     Only ``todu_30ever_h6`` is adjusted (revenue columns are left unchanged
     because ``oa_amt`` is observable for rejected records).
@@ -124,10 +224,14 @@ def apply_parceling_adjustment(
     reject_uplift_factor:
         Scaling coefficient.  For ``"linear"``: additive slope on reject ratio.
         For ``"power"``: exponent on inverse acceptance rate.
+        For ``"sigmoid"``: max uplift magnitude.
     max_risk_multiplier:
         Upper cap for the per-bin multiplier.
     method:
-        ``"linear"`` or ``"power"`` (see above).
+        ``"linear"``, ``"power"``, or ``"sigmoid"`` (see above).
+    enforce_monotonicity:
+        If True, apply isotonic regression to ensure multipliers are
+        non-decreasing along each variable axis.
 
     Returns
     -------
@@ -135,35 +239,58 @@ def apply_parceling_adjustment(
     Auxiliary columns ``acceptance_rate`` and ``reject_risk_multiplier`` are
     included for diagnostics but should be dropped before downstream merges.
     """
+    # Use smoothed rates if available (from Bayesian smoothing)
+    rate_col = (
+        "smoothed_acceptance_rate" if "smoothed_acceptance_rate" in acceptance_rates.columns else "acceptance_rate"
+    )
+    merge_cols = variables + ["acceptance_rate"]
+    if "smoothed_acceptance_rate" in acceptance_rates.columns:
+        merge_cols = merge_cols + ["smoothed_acceptance_rate"]
+
     result = repesca_summary.merge(
-        acceptance_rates[variables + ["acceptance_rate"]],
+        acceptance_rates[merge_cols],
         on=variables,
         how="left",
     )
 
     # Bins missing from acceptance_rates (no demand data): use median observed rate
     # as a conservative default (1.0 would mean "all accepted" = no adjustment)
-    median_rate = acceptance_rates["acceptance_rate"].median()
+    median_rate = acceptance_rates[rate_col].median()
     fallback_rate = median_rate if pd.notna(median_rate) and median_rate > 0 else 0.5
-    n_missing = result["acceptance_rate"].isna().sum()
+    n_missing = result[rate_col].isna().sum() if rate_col in result.columns else result["acceptance_rate"].isna().sum()
     if n_missing > 0:
         logger.warning(
             f"Parceling: {n_missing} repesca bin(s) have no demand data; "
             f"filling acceptance_rate with median={fallback_rate:.3f}"
         )
     result["acceptance_rate"] = result["acceptance_rate"].fillna(fallback_rate)
+    if rate_col == "smoothed_acceptance_rate":
+        result["smoothed_acceptance_rate"] = result["smoothed_acceptance_rate"].fillna(fallback_rate)
+
+    effective_rate = result[rate_col] if rate_col in result.columns else result["acceptance_rate"]
 
     if method == "power":
         # Power-law: multiplier = (1 / acceptance_rate) ^ factor
         # Clamp acceptance_rate away from 0 to avoid infinity
-        safe_rate = result["acceptance_rate"].clip(lower=0.01)
+        safe_rate = effective_rate.clip(lower=0.01)
         raw_multiplier = (1.0 / safe_rate) ** reject_uplift_factor
+    elif method == "sigmoid":
+        # Sigmoid: multiplier = 1 + max_uplift / (1 + exp(steepness * (rate - midpoint)))
+        steepness = 10.0
+        midpoint = 0.5
+        raw_multiplier = 1.0 + reject_uplift_factor / (1.0 + np.exp(steepness * (effective_rate - midpoint)))
     else:
         # Linear: multiplier = 1 + factor * reject_ratio
-        reject_ratio = 1.0 - result["acceptance_rate"]
+        reject_ratio = 1.0 - effective_rate
         raw_multiplier = 1.0 + reject_uplift_factor * reject_ratio
 
     result["reject_risk_multiplier"] = raw_multiplier.clip(lower=1.0, upper=max_risk_multiplier)
+
+    # Enforce monotonicity if requested
+    if enforce_monotonicity:
+        result = _enforce_multiplier_monotonicity(result, variables)
+        # Re-clip after isotonic adjustment
+        result["reject_risk_multiplier"] = result["reject_risk_multiplier"].clip(lower=1.0, upper=max_risk_multiplier)
 
     # Warn about bins with extreme adjustments or very few observations
     extreme_bins = (result["reject_risk_multiplier"] >= max_risk_multiplier * 0.9).sum()
@@ -194,7 +321,10 @@ def apply_reject_inference(
     *,
     reject_uplift_factor: float = 1.5,
     max_risk_multiplier: float = 3.0,
-    parceling_method: Literal["linear", "power"] = "linear",
+    parceling_method: Literal["linear", "power", "sigmoid"] = "linear",
+    bayesian_smoothing: bool = False,
+    bayesian_prior_strength: float = 10.0,
+    enforce_monotonicity: bool = False,
 ) -> pd.DataFrame:
     """Dispatcher: apply reject-inference adjustment to repesca risk predictions.
 
@@ -214,7 +344,13 @@ def apply_reject_inference(
     max_risk_multiplier:
         Passed to :func:`apply_parceling_adjustment`.
     parceling_method:
-        ``"linear"`` or ``"power"``, passed to :func:`apply_parceling_adjustment`.
+        ``"linear"``, ``"power"``, or ``"sigmoid"``, passed to :func:`apply_parceling_adjustment`.
+    bayesian_smoothing:
+        If True, apply Beta-Binomial posterior smoothing to acceptance rates.
+    bayesian_prior_strength:
+        Strength of the Beta prior for Bayesian smoothing.
+    enforce_monotonicity:
+        If True, enforce monotonicity on multipliers via isotonic regression.
 
     Returns
     -------
@@ -229,14 +365,29 @@ def apply_reject_inference(
         return repesca_summary
 
     if method == "parceling":
-        acceptance_rates = compute_acceptance_rates(data_demand, variables)
-        return apply_parceling_adjustment(
+        acceptance_rates = compute_acceptance_rates(
+            data_demand,
+            variables,
+            bayesian_smoothing=bayesian_smoothing,
+            bayesian_prior_strength=bayesian_prior_strength,
+        )
+
+        result = apply_parceling_adjustment(
             repesca_summary,
             acceptance_rates,
             variables,
             reject_uplift_factor=reject_uplift_factor,
             max_risk_multiplier=max_risk_multiplier,
             method=parceling_method,
+            enforce_monotonicity=enforce_monotonicity,
         )
+
+        # Merge per-bin confidence scores
+        confidence = compute_ri_confidence(acceptance_rates, variables)
+        result = result.merge(confidence, on=variables, how="left")
+        result["ri_confidence"] = result["ri_confidence"].fillna(0.0)
+        result["ri_bin_count"] = result["ri_bin_count"].fillna(0).astype(int)
+
+        return result
 
     raise ValueError(f"Unknown reject inference method: {method!r}. Supported methods: 'none', 'parceling'.")

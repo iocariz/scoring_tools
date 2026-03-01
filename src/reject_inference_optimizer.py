@@ -5,9 +5,12 @@ Grid search over (reject_uplift_factor, reject_max_risk_multiplier) to find
 the parameter pair that minimizes calibration error against the 1/acceptance_rate
 selection model.
 
-The calibration target for each cell is ``booked_risk / acceptance_rate``, based
-on the standard selection-bias model: if a bin accepts the least-risky fraction
-*a* of applicants, the true population risk is approximately ``observed / a``.
+The calibration target for each cell is ``booked_risk / acceptance_rate^gamma``,
+based on the standard selection-bias model: if a bin accepts the least-risky
+fraction *a* of applicants, the true population risk is approximately
+``observed / a^gamma``.  With ``gamma=1.0`` (default) this recovers the classic
+model; lower gamma produces less aggressive targets.
+
 The optimizer selects parameters whose blended (booked + RI-corrected repesca)
 risk estimates best match these targets (exposure-weighted mean squared relative
 error).  Ties within 5% of the minimum error are broken by maximizing production.
@@ -45,6 +48,7 @@ class OptimizerInputs:
     inv_vars: list[str] = field(default_factory=list)
     multiplier: float = 7.0
     parceling_method: str = "linear"
+    calibration_gamma: float = 1.0
 
 
 def _compute_calibration_error(
@@ -52,11 +56,12 @@ def _compute_calibration_error(
     acceptance_rates: pd.DataFrame,
     variables: list[str],
     multiplier: float,
+    calibration_gamma: float = 1.0,
 ) -> float:
     """Compute exposure-weighted mean squared relative calibration error.
 
     For each cell the selection-bias model predicts:
-        target_risk = booked_risk / clip(acceptance_rate, 0.05)
+        target_risk = booked_risk / clip(acceptance_rate, 0.05) ^ gamma
 
     The predicted (blended) risk after RI is:
         predicted_risk = multiplier * todu_30ever_h6 / todu_amt_pile_h6
@@ -68,7 +73,7 @@ def _compute_calibration_error(
 
     denom_boo = df["todu_amt_pile_h6_boo"].replace(0, np.nan)
     booked_risk = multiplier * df["todu_30ever_h6_boo"] / denom_boo
-    target_risk = booked_risk / acc
+    target_risk = booked_risk / (acc**calibration_gamma)
 
     denom_all = df["todu_amt_pile_h6"].replace(0, np.nan)
     predicted_risk = multiplier * df["todu_30ever_h6"] / denom_all
@@ -111,11 +116,20 @@ def evaluate_ri_params(
         variables=inputs.variables,
         reject_uplift_factor=uplift_factor,
         max_risk_multiplier=max_risk_multiplier,
-        method=inputs.parceling_method if hasattr(inputs, "parceling_method") else "linear",
+        method=inputs.parceling_method,
     )
 
     # Drop auxiliary columns
-    repesca = repesca.drop(columns=["acceptance_rate", "reject_risk_multiplier"], errors="ignore")
+    repesca = repesca.drop(
+        columns=[
+            "acceptance_rate",
+            "smoothed_acceptance_rate",
+            "reject_risk_multiplier",
+            "ri_confidence",
+            "ri_bin_count",
+        ],
+        errors="ignore",
+    )
 
     # Apply financing rate
     repesca[inputs.indicators] *= inputs.tasa_fin
@@ -131,7 +145,10 @@ def evaluate_ri_params(
         merged[ind] = merged[ind + Suffixes.BOOKED] + merged[ind + "_rep"]
 
     # Calibration error (parameter-intrinsic, computed before MILP)
-    calibration_error = _compute_calibration_error(merged, inputs.acceptance_rates, inputs.variables, inputs.multiplier)
+    calibration_gamma = inputs.calibration_gamma if hasattr(inputs, "calibration_gamma") else 1.0
+    calibration_error = _compute_calibration_error(
+        merged, inputs.acceptance_rates, inputs.variables, inputs.multiplier, calibration_gamma
+    )
 
     # Build grid and solve MILP
     grid = CellGrid.from_summary(merged, inputs.variables)
@@ -176,6 +193,46 @@ def evaluate_ri_params(
     return result
 
 
+def _select_best(results_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Select the best parameter combination from optimizer results.
+
+    Best = min calibration_error among feasible; ties within 5% tolerance
+    broken by max production. Returns (results_df with is_best column, best_params dict).
+    """
+    feasible = results_df[results_df["feasible"]]
+    if feasible.empty:
+        logger.warning("RI optimizer: no feasible solution found")
+        results_df["is_best"] = False
+        return results_df, {}
+
+    min_error = feasible["calibration_error"].min()
+    tolerance = min_error * 1.05  # 5% tolerance band
+    near_best = feasible[feasible["calibration_error"] <= tolerance]
+    best_idx = near_best["oa_amt_h0"].idxmax()
+
+    results_df["is_best"] = False
+    results_df.loc[best_idx, "is_best"] = True
+
+    best_row = results_df.loc[best_idx]
+    best_params = {
+        "uplift_factor": float(best_row["uplift_factor"]),
+        "max_risk_multiplier": float(best_row["max_risk_multiplier"]),
+        "oa_amt_h0": float(best_row["oa_amt_h0"]),
+        "b2_ever_h6": float(best_row["b2_ever_h6"]),
+        "calibration_error": float(best_row["calibration_error"]),
+    }
+
+    logger.info(
+        f"RI optimizer best: uplift={best_params['uplift_factor']:.2f}, "
+        f"max_mult={best_params['max_risk_multiplier']:.2f} | "
+        f"calibration_error={best_params['calibration_error']:.6f} | "
+        f"production={best_params['oa_amt_h0']:,.0f} | "
+        f"risk={best_params['b2_ever_h6']:.4f}%"
+    )
+
+    return results_df, best_params
+
+
 def run_reject_inference_optimization(
     inputs: OptimizerInputs,
     risk_target: float,
@@ -210,37 +267,99 @@ def run_reject_inference_optimization(
             results.append(row)
 
     results_df = pd.DataFrame(results)
+    return _select_best(results_df)
 
-    # Find best: min calibration_error among feasible; tie-break by max production
-    feasible = results_df[results_df["feasible"]]
-    if feasible.empty:
-        logger.warning("RI optimizer: no feasible solution found")
-        results_df["is_best"] = False
-        return results_df, {}
 
-    min_error = feasible["calibration_error"].min()
-    tolerance = min_error * 1.05  # 5% tolerance band
-    near_best = feasible[feasible["calibration_error"] <= tolerance]
-    best_idx = near_best["oa_amt_h0"].idxmax()
+def run_reject_inference_optimization_optuna(
+    inputs: OptimizerInputs,
+    risk_target: float,
+    *,
+    uplift_range: tuple[float, float] = (0.0, 5.0),
+    max_mult_range: tuple[float, float] = (1.0, 5.0),
+    n_trials: int = 100,
+) -> tuple[pd.DataFrame, dict]:
+    """Optuna TPE-based optimization over (uplift_factor, max_risk_multiplier).
 
-    results_df["is_best"] = False
-    results_df.loc[best_idx, "is_best"] = True
+    Uses Tree-structured Parzen Estimator (TPE) sampler for efficient search.
+    Same best-selection logic as grid search (min calibration error, 5% tolerance,
+    tie-break by production).
 
-    best_row = results_df.loc[best_idx]
-    best_params = {
-        "uplift_factor": float(best_row["uplift_factor"]),
-        "max_risk_multiplier": float(best_row["max_risk_multiplier"]),
-        "oa_amt_h0": float(best_row["oa_amt_h0"]),
-        "b2_ever_h6": float(best_row["b2_ever_h6"]),
-        "calibration_error": float(best_row["calibration_error"]),
-    }
+    Returns:
+        Tuple of (results_df with all trials, best_params dict).
+    """
+    import optuna
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    results: list[dict] = []
+
+    def objective(trial: optuna.Trial) -> float:
+        uplift = trial.suggest_float("uplift_factor", uplift_range[0], uplift_range[1])
+        max_mult = trial.suggest_float("max_risk_multiplier", max_mult_range[0], max_mult_range[1])
+
+        row = evaluate_ri_params(inputs, uplift, max_mult, risk_target)
+        results.append(row)
+
+        if not row["feasible"]:
+            return float("inf")
+        return row["calibration_error"]
+
+    sampler = optuna.samplers.TPESampler(seed=42)
+    study = optuna.create_study(direction="minimize", sampler=sampler)
+    study.optimize(objective, n_trials=n_trials)
+
+    logger.info(f"RI Optuna optimizer: {n_trials} trials completed")
+
+    results_df = pd.DataFrame(results)
+    return _select_best(results_df)
+
+
+def validate_ri_with_mr(
+    inputs: OptimizerInputs,
+    mr_inputs: OptimizerInputs,
+    best_params: dict,
+    risk_target: float,
+) -> dict:
+    """Validate best RI params on MR-period data (out-of-time validation).
+
+    Applies the best RI parameters found on the main period to MR-period data
+    and computes calibration error. Returns comparison metrics.
+
+    Parameters
+    ----------
+    inputs:
+        Main-period optimizer inputs (for computing main calibration error).
+    mr_inputs:
+        MR-period optimizer inputs.
+    best_params:
+        Best parameter dict from main-period optimization.
+    risk_target:
+        Target risk threshold for MILP.
+
+    Returns
+    -------
+    Dict with keys: main_calibration_error, mr_calibration_error, degradation_ratio.
+    """
+    uplift = best_params["uplift_factor"]
+    max_mult = best_params["max_risk_multiplier"]
+
+    main_result = evaluate_ri_params(inputs, uplift, max_mult, risk_target)
+    mr_result = evaluate_ri_params(mr_inputs, uplift, max_mult, risk_target)
+
+    main_error = main_result["calibration_error"]
+    mr_error = mr_result["calibration_error"]
+
+    degradation = mr_error / main_error if main_error > 0 and np.isfinite(main_error) else float("nan")
 
     logger.info(
-        f"RI optimizer best: uplift={best_params['uplift_factor']:.2f}, "
-        f"max_mult={best_params['max_risk_multiplier']:.2f} | "
-        f"calibration_error={best_params['calibration_error']:.6f} | "
-        f"production={best_params['oa_amt_h0']:,.0f} | "
-        f"risk={best_params['b2_ever_h6']:.4f}%"
+        f"RI MR validation: main_error={main_error:.6f}, mr_error={mr_error:.6f}, degradation={degradation:.2f}x"
     )
 
-    return results_df, best_params
+    return {
+        "main_calibration_error": main_error,
+        "mr_calibration_error": mr_error,
+        "degradation_ratio": degradation,
+        "mr_feasible": mr_result.get("feasible", False),
+        "mr_oa_amt_h0": mr_result.get("oa_amt_h0", 0.0),
+        "mr_b2_ever_h6": mr_result.get("b2_ever_h6", 0.0),
+    }

@@ -36,9 +36,15 @@ run_ri_optimizer = true
 sensitivity_levels = [-30, -20, -10, -5, 5, 10, 20, 30]
 
 
+# Swap-in (repesca) constraints (optional) - limit swap-in exposure inside the MILP solver.
+# Without these, the optimizer can accept high-risk repesca cells freely as long as overall risk is under budget.
+max_swapin_production_pct = 15.0  # Max % of total accepted production from swap-in (0-100). None = no limit.
+#max_swapin_risk = 3.0            # Max b2_ever_h6 (%) for the swap-in population only (0-100). None = no limit.
+
 # Reject inference (optional) - adjusts predicted risk for score-rejected bins
 # based on per-bin acceptance rates to correct for selection bias.
 reject_inference_method = "parceling"  # "none" (default) or "parceling"
+reject_parceling_method = "linear"     # "linear" (default) or "power"
 reject_uplift_factor = 1.5            # scaling coefficient for reject ratio (0.0-10.0)
 reject_max_risk_multiplier = 3.0      # upper cap for per-bin multiplier (1.0-10.0)
 

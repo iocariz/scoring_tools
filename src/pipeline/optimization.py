@@ -78,6 +78,10 @@ def run_optimization_phase(
         reject_inference_method=settings.reject_inference_method,
         reject_uplift_factor=settings.reject_uplift_factor,
         reject_max_risk_multiplier=settings.reject_max_risk_multiplier,
+        reject_parceling_method=settings.reject_parceling_method,
+        reject_bayesian_smoothing=settings.reject_bayesian_smoothing,
+        reject_bayesian_prior_strength=settings.reject_bayesian_prior_strength,
+        reject_enforce_monotonicity=settings.reject_enforce_monotonicity,
         multiplier=settings.multiplier,
     )
 
@@ -167,6 +171,8 @@ def run_optimization_phase(
             inv_vars=settings.inv_vars,
             multiplier=settings.multiplier,
             indicators=settings.indicators,
+            max_swapin_production_pct=settings.max_swapin_production_pct,
+            max_swapin_risk=settings.max_swapin_risk,
         )
 
         if pareto_df.empty:
@@ -661,12 +667,24 @@ def run_ri_optimizer_phase(
     settings: PreprocessingSettings,
     annual_coef: float,
     output: OutputPaths | None = None,
+    data_booked_mr: pd.DataFrame | None = None,
+    data_demand_mr: pd.DataFrame | None = None,
+    annual_coef_mr: float | None = None,
 ) -> dict | None:
     """Run reject inference parameter optimization (non-blocking).
 
     Gated behind ``settings.run_ri_optimizer``. Sweeps over
     (reject_uplift_factor, reject_max_risk_multiplier) grid to find the pair
     that maximizes production at the configured risk target.
+
+    Parameters
+    ----------
+    data_booked_mr:
+        Optional MR-period booked data for out-of-time validation.
+    data_demand_mr:
+        Optional MR-period demand data for out-of-time validation.
+    annual_coef_mr:
+        Optional MR-period annual coefficient.
 
     Returns:
         Best parameter dict, or None if disabled/failed.
@@ -687,7 +705,12 @@ def run_ri_optimizer_phase(
     try:
         from src.inference_optimized import compute_pre_reject_inference_data
         from src.reject_inference import compute_acceptance_rates
-        from src.reject_inference_optimizer import OptimizerInputs, run_reject_inference_optimization
+        from src.reject_inference_optimizer import (
+            OptimizerInputs,
+            run_reject_inference_optimization,
+            run_reject_inference_optimization_optuna,
+            validate_ri_with_mr,
+        )
 
         # Step 1: Compute invariant pre-reject-inference data
         booked_summary, repesca_pre_ri = compute_pre_reject_inference_data(
@@ -714,19 +737,71 @@ def run_ri_optimizer_phase(
             indicators=settings.indicators,
             inv_vars=settings.inv_vars,
             multiplier=settings.multiplier,
+            parceling_method=settings.reject_parceling_method,
+            calibration_gamma=settings.ri_calibration_gamma,
         )
 
-        # Step 4: Run grid search
-        results_df, best_params = run_reject_inference_optimization(
-            optimizer_inputs,
-            risk_target=settings.optimum_risk,
-            uplift_range=tuple(settings.ri_uplift_range),
-            uplift_steps=settings.ri_uplift_steps,
-            max_mult_range=tuple(settings.ri_max_mult_range),
-            max_mult_steps=settings.ri_max_mult_steps,
-        )
+        # Step 4: Run optimization (grid or Optuna)
+        if settings.ri_optimizer_method == "optuna":
+            results_df, best_params = run_reject_inference_optimization_optuna(
+                optimizer_inputs,
+                risk_target=settings.optimum_risk,
+                uplift_range=tuple(settings.ri_uplift_range),
+                max_mult_range=tuple(settings.ri_max_mult_range),
+                n_trials=settings.ri_optuna_n_trials,
+            )
+        else:
+            results_df, best_params = run_reject_inference_optimization(
+                optimizer_inputs,
+                risk_target=settings.optimum_risk,
+                uplift_range=tuple(settings.ri_uplift_range),
+                uplift_steps=settings.ri_uplift_steps,
+                max_mult_range=tuple(settings.ri_max_mult_range),
+                max_mult_steps=settings.ri_max_mult_steps,
+            )
 
-        # Step 5: Save results
+        # Step 5: MR out-of-time validation (if MR data available)
+        if best_params and data_booked_mr is not None and data_demand_mr is not None and annual_coef_mr is not None:
+            try:
+                mr_booked_summary, mr_repesca_pre_ri = compute_pre_reject_inference_data(
+                    data_booked=data_booked_mr,
+                    data_demand=data_demand_mr,
+                    risk_inference=risk_inference,
+                    reg_todu_amt_pile=reg_todu_amt_pile,
+                    stressor=stress_factor,
+                    indicators=settings.indicators,
+                    variables=settings.variables,
+                    annual_coef=annual_coef_mr,
+                )
+                mr_acceptance_rates = compute_acceptance_rates(data_demand_mr, settings.variables)
+                mr_optimizer_inputs = OptimizerInputs(
+                    booked_summary=mr_booked_summary,
+                    repesca_pre_ri=mr_repesca_pre_ri,
+                    acceptance_rates=mr_acceptance_rates,
+                    tasa_fin=tasa_fin,
+                    variables=settings.variables,
+                    indicators=settings.indicators,
+                    inv_vars=settings.inv_vars,
+                    multiplier=settings.multiplier,
+                    parceling_method=settings.reject_parceling_method,
+                    calibration_gamma=settings.ri_calibration_gamma,
+                )
+
+                mr_validation = validate_ri_with_mr(
+                    optimizer_inputs, mr_optimizer_inputs, best_params, settings.optimum_risk
+                )
+                best_params.update(mr_validation)
+                logger.info(f"[{segment}] RI MR validation: degradation={mr_validation['degradation_ratio']:.2f}x")
+
+                # Append MR validation results to results CSV
+                for key, val in mr_validation.items():
+                    results_df[key] = None
+                    results_df.loc[results_df["is_best"], key] = val
+
+            except Exception as e:
+                logger.warning(f"[{segment}] RI MR validation failed (non-blocking): {e}")
+
+        # Step 6: Save results
         csv_path = output.ri_optimizer_csv()
         results_df.to_csv(csv_path, index=False)
         logger.info(f"[{segment}] RI optimizer results saved to {csv_path}")

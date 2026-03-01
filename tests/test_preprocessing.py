@@ -470,11 +470,13 @@ def test_learn_optimization_bins_basic():
     risk = np.clip(risk, 0, 1)
     production = rng.uniform(5000, 50000, n)
 
-    df = pd.DataFrame({
-        "income_t1_m": income,
-        "early_bad": risk,
-        "oa_amt_h0": production,
-    })
+    df = pd.DataFrame(
+        {
+            "income_t1_m": income,
+            "early_bad": risk,
+            "oa_amt_h0": production,
+        }
+    )
 
     edges = learn_optimization_bins(df, source_col="income_t1_m", min_samples_leaf=100)
 
@@ -492,10 +494,12 @@ def test_learn_optimization_bins_fallback_no_weight_col():
     income = rng.uniform(1000, 10000, n)
     risk = (income < 5000).astype(float)
 
-    df = pd.DataFrame({
-        "income_t1_m": income,
-        "early_bad": risk,
-    })
+    df = pd.DataFrame(
+        {
+            "income_t1_m": income,
+            "early_bad": risk,
+        }
+    )
 
     edges = learn_optimization_bins(df, source_col="income_t1_m", min_samples_leaf=100)
     assert len(edges) == 3
@@ -510,11 +514,13 @@ def test_learn_optimization_bins_fallback_zero_weights():
     income = rng.uniform(1000, 10000, n)
     risk = (income < 5000).astype(float)
 
-    df = pd.DataFrame({
-        "income_t1_m": income,
-        "early_bad": risk,
-        "oa_amt_h0": np.zeros(n),
-    })
+    df = pd.DataFrame(
+        {
+            "income_t1_m": income,
+            "early_bad": risk,
+            "oa_amt_h0": np.zeros(n),
+        }
+    )
 
     edges = learn_optimization_bins(df, source_col="income_t1_m", min_samples_leaf=100)
     assert len(edges) == 3
@@ -522,10 +528,12 @@ def test_learn_optimization_bins_fallback_zero_weights():
 
 def test_learn_optimization_bins_too_few_records():
     """Test that too few records raises ValueError."""
-    df = pd.DataFrame({
-        "income_t1_m": [1000, 2000],
-        "early_bad": [0, 1],
-    })
+    df = pd.DataFrame(
+        {
+            "income_t1_m": [1000, 2000],
+            "early_bad": [0, 1],
+        }
+    )
 
     with pytest.raises(ValueError, match="only 2 valid records"):
         learn_optimization_bins(df, source_col="income_t1_m", min_samples_leaf=500)

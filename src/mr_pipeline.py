@@ -531,6 +531,10 @@ def process_mr_period(
             reject_inference_method=settings.reject_inference_method,
             reject_uplift_factor=settings.reject_uplift_factor,
             reject_max_risk_multiplier=settings.reject_max_risk_multiplier,
+            reject_parceling_method=settings.reject_parceling_method,
+            reject_bayesian_smoothing=settings.reject_bayesian_smoothing,
+            reject_bayesian_prior_strength=settings.reject_bayesian_prior_strength,
+            reject_enforce_monotonicity=settings.reject_enforce_monotonicity,
         )
 
         # Save MR summary

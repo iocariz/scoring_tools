@@ -247,10 +247,21 @@ class PreprocessingSettings(BaseModel):
     use_mr_outcomes: bool = False
     mr_min_obs_per_bin: int = Field(default=30, ge=1)
 
+    # Swap-in (repesca) constraints for MILP optimization
+    max_swapin_production_pct: float | None = Field(default=None, ge=0, le=100)
+    max_swapin_risk: float | None = Field(default=None, ge=0, le=100)
+
     # Reject inference settings
     reject_inference_method: Literal["none", "parceling"] = "none"
+    reject_parceling_method: Literal["linear", "power", "sigmoid"] = "linear"
     reject_uplift_factor: float = Field(default=1.5, ge=0.0, le=10.0)
     reject_max_risk_multiplier: float = Field(default=3.0, ge=1.0, le=10.0)
+    reject_bayesian_smoothing: bool = False
+    reject_bayesian_prior_strength: float = Field(default=10.0, gt=0, le=1000)
+    reject_enforce_monotonicity: bool = False
+    ri_calibration_gamma: float = Field(default=1.0, gt=0, le=1)
+    ri_optimizer_method: Literal["grid", "optuna"] = "grid"
+    ri_optuna_n_trials: int = Field(default=100, ge=10, le=10000)
 
     @field_validator("keep_vars", "indicators")
     @classmethod

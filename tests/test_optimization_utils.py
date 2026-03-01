@@ -1025,3 +1025,145 @@ class TestAssessBinningGini:
         data = pd.DataFrame({"raw": [1, 2, 3], "binned": [1, 1, 2], "target": [0, 0, 0]})
         result = assess_binning_gini(data, "raw", "binned", "target")
         assert result["gini_raw"] == 0.0
+
+
+# =============================================================================
+# Swap-In Constraint Tests
+# =============================================================================
+
+
+def _make_summary_2d_swapin(n_var0=3, n_var1=4):
+    """Create a 2D summary with controlled swap-in data for constraint testing.
+
+    Cells with higher var1 index have disproportionately high repesca share,
+    so a production-share constraint should reject some of them.
+    """
+    rng = np.random.RandomState(42)
+    rows = []
+    for v0 in range(1, n_var0 + 1):
+        for v1 in range(1, n_var1 + 1):
+            amt = rng.uniform(5000, 10000)
+            production = rng.uniform(20000, 50000)
+            # Higher var1 → higher repesca share (up to 80%)
+            rep_frac = 0.1 + 0.7 * (v1 - 1) / max(n_var1 - 1, 1)
+            risk_base = rng.uniform(0.01, 0.05)
+            risk_rep = risk_base * (1 + 0.5 * v1)  # repesca risk escalates with v1
+            rows.append(
+                {
+                    "var0": v0,
+                    "var1": v1,
+                    "todu_30ever_h6": risk_base * amt / 7,
+                    "todu_amt_pile_h6": amt,
+                    "oa_amt_h0": production,
+                    "todu_30ever_h6_boo": risk_base * amt / 7 * (1 - rep_frac),
+                    "todu_amt_pile_h6_boo": amt * (1 - rep_frac),
+                    "oa_amt_h0_boo": production * (1 - rep_frac),
+                    "todu_30ever_h6_rep": risk_rep * amt * rep_frac / 7,
+                    "todu_amt_pile_h6_rep": amt * rep_frac,
+                    "oa_amt_h0_rep": production * rep_frac,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+class TestSwapInConstraints:
+    """Tests for max_swapin_production_pct and max_swapin_risk MILP constraints."""
+
+    def test_swapin_production_constraint_limits_repesca_share(self):
+        """Accepted cells should respect the swap-in production fraction cap."""
+        df = _make_summary_2d_swapin(3, 4)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+
+        # Solve without constraint — should accept most/all cells
+        mask_unconstrained = milp_solve_cutoffs(grid, target_risk=50.0, inv_vars=[], multiplier=7)
+        assert mask_unconstrained is not None
+
+        # Solve with tight swap-in production cap (20%)
+        mask_constrained = milp_solve_cutoffs(
+            grid, target_risk=50.0, inv_vars=[], multiplier=7, max_swapin_production_pct=20.0
+        )
+        assert mask_constrained is not None
+
+        # Verify the constraint is satisfied
+        cell = grid.cell_data
+        accepted = mask_constrained.astype(bool)
+        total_prod = (cell.loc[accepted, "oa_amt_h0"]).sum()
+        rep_prod = (cell.loc[accepted, "oa_amt_h0_rep"]).sum()
+        if total_prod > 0:
+            actual_pct = rep_prod / total_prod * 100
+            assert actual_pct <= 20.0 + 1e-6, f"Swap-in production share {actual_pct:.1f}% exceeds 20% cap"
+
+    def test_swapin_risk_constraint_limits_repesca_risk(self):
+        """Accepted cells should respect the swap-in risk cap."""
+        df = _make_summary_2d_swapin(3, 4)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+
+        # Solve with swap-in risk cap (e.g. 5%)
+        mask = milp_solve_cutoffs(grid, target_risk=50.0, inv_vars=[], multiplier=7, max_swapin_risk=5.0)
+        assert mask is not None
+
+        # Verify the constraint: multiplier * sum(rep_t30) / sum(rep_tamt) <= max_risk/100
+        cell = grid.cell_data
+        accepted = mask.astype(bool)
+        rep_t30 = cell.loc[accepted, "todu_30ever_h6_rep"].sum()
+        rep_tamt = cell.loc[accepted, "todu_amt_pile_h6_rep"].sum()
+        if rep_tamt > 0:
+            actual_risk = 7.0 * rep_t30 / rep_tamt * 100
+            assert actual_risk <= 5.0 + 1e-6, f"Swap-in risk {actual_risk:.2f}% exceeds 5% cap"
+
+    def test_swapin_constraints_none_has_no_effect(self):
+        """None constraints should produce same result as omitting them."""
+        df = _make_summary_2d(3, 4)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+
+        mask_default = milp_solve_cutoffs(grid, target_risk=20.0, inv_vars=[], multiplier=7)
+        mask_none = milp_solve_cutoffs(
+            grid, target_risk=20.0, inv_vars=[], multiplier=7, max_swapin_production_pct=None, max_swapin_risk=None
+        )
+        assert mask_default is not None
+        assert mask_none is not None
+        np.testing.assert_array_equal(mask_default, mask_none)
+
+    def test_swapin_constraint_makes_infeasible(self):
+        """Overly tight swap-in constraint should return None or all-zero mask."""
+        df = _make_summary_2d_swapin(3, 4)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+
+        # Extremely tight: 0% swap-in production allowed
+        mask = milp_solve_cutoffs(grid, target_risk=50.0, inv_vars=[], multiplier=7, max_swapin_production_pct=0.0)
+        # Either infeasible (None) or no repesca production in accepted cells
+        if mask is not None:
+            cell = grid.cell_data
+            accepted = mask.astype(bool)
+            rep_prod = cell.loc[accepted, "oa_amt_h0_rep"].sum()
+            assert rep_prod <= 1e-6
+
+    def test_pareto_frontier_with_swapin_constraints(self):
+        """Swap-in params should flow through to Pareto sweep."""
+        df = _make_summary_2d_swapin(3, 4)
+
+        # Unconstrained Pareto
+        pareto_unc, _, _ = trace_pareto_frontier(
+            df,
+            variables=["var0", "var1"],
+            inv_vars=[],
+            multiplier=7,
+            indicators=["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"],
+            n_points=10,
+        )
+
+        # Constrained Pareto with tight swap-in production cap
+        pareto_con, _, masks_con = trace_pareto_frontier(
+            df,
+            variables=["var0", "var1"],
+            inv_vars=[],
+            multiplier=7,
+            indicators=["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"],
+            n_points=10,
+            max_swapin_production_pct=15.0,
+        )
+
+        assert not pareto_unc.empty
+        assert not pareto_con.empty
+        # Constrained frontier should have equal or less max production
+        assert pareto_con["oa_amt_h0"].max() <= pareto_unc["oa_amt_h0"].max() + 1e-6

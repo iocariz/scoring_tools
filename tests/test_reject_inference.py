@@ -3,13 +3,16 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from src.reject_inference import (
+    _enforce_multiplier_monotonicity,
     apply_parceling_adjustment,
     apply_reject_inference,
     compute_acceptance_rates,
+    compute_ri_confidence,
 )
 
 # =============================================================================
@@ -125,6 +128,76 @@ class TestComputeAcceptanceRates:
 
 
 # =============================================================================
+# Bayesian Smoothing Tests
+# =============================================================================
+
+
+class TestBayesianSmoothing:
+    def test_smoothing_produces_column(self):
+        """Bayesian smoothing adds smoothed_acceptance_rate column."""
+        demand = _make_demand(
+            [
+                (1, 1, "booked", None),
+                (1, 1, "rejected", "09-score"),
+            ]
+        )
+        rates = compute_acceptance_rates(demand, VARIABLES, bayesian_smoothing=True)
+        assert "smoothed_acceptance_rate" in rates.columns
+
+    def test_smoothing_shrinks_toward_global(self):
+        """Smoothed rate should be pulled toward global rate for small bins."""
+        demand = _make_demand(
+            [
+                # Bin (1,1): 1 booked, 9 rejected → raw 10%
+                *[(1, 1, "booked", None)] * 1,
+                *[(1, 1, "rejected", "09-score")] * 9,
+                # Bin (2,2): 90 booked, 10 rejected → raw 90%
+                *[(2, 2, "booked", None)] * 90,
+                *[(2, 2, "rejected", "09-score")] * 10,
+            ]
+        )
+        rates = compute_acceptance_rates(demand, VARIABLES, bayesian_smoothing=True, bayesian_prior_strength=10.0)
+
+        bin_11 = rates[rates["var0"] == 1].iloc[0]
+        bin_22 = rates[rates["var0"] == 2].iloc[0]
+
+        # Global rate = 91/110 ≈ 0.827
+        # Smoothed rate for small bin (1,1) should be pulled up from 0.1 toward global
+        assert bin_11["smoothed_acceptance_rate"] > bin_11["acceptance_rate"]
+        # Smoothed rate for large bin (2,2) should barely change
+        assert bin_22["smoothed_acceptance_rate"] < bin_22["acceptance_rate"]
+
+    def test_no_smoothing_no_column(self):
+        """Without bayesian_smoothing, no smoothed column should be present."""
+        demand = _make_demand(
+            [
+                (1, 1, "booked", None),
+                (1, 1, "rejected", "09-score"),
+            ]
+        )
+        rates = compute_acceptance_rates(demand, VARIABLES, bayesian_smoothing=False)
+        assert "smoothed_acceptance_rate" not in rates.columns
+
+    def test_smoothed_rate_used_in_parceling(self):
+        """When smoothed rates are available, parceling should use them."""
+        repesca = pd.DataFrame({"var0": [1], "var1": [1], "todu_30ever_h6": [100.0], "todu_amt_pile_h6": [500.0]})
+        rates = pd.DataFrame(
+            {
+                "var0": [1],
+                "var1": [1],
+                "n_booked": [1],
+                "n_score_rejected": [9],
+                "acceptance_rate": [0.1],
+                "smoothed_acceptance_rate": [0.4],
+            }
+        )
+
+        # With smoothed rate, effective rate is 0.4 → reject_ratio = 0.6 → mult = 1 + 1.5*0.6 = 1.9
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES)
+        assert result["reject_risk_multiplier"].iloc[0] == pytest.approx(1.9)
+
+
+# =============================================================================
 # apply_parceling_adjustment Tests
 # =============================================================================
 
@@ -224,6 +297,188 @@ class TestApplyParcelingAdjustment:
 
 
 # =============================================================================
+# Sigmoid Method Tests
+# =============================================================================
+
+
+class TestSigmoidMethod:
+    def _make_repesca(self, todu_val=100.0):
+        return pd.DataFrame({"var0": [1], "var1": [1], "todu_30ever_h6": [todu_val], "todu_amt_pile_h6": [500.0]})
+
+    def _make_rates(self, acceptance_rate=1.0):
+        return pd.DataFrame(
+            {"var0": [1], "var1": [1], "n_booked": [10], "n_score_rejected": [0], "acceptance_rate": [acceptance_rate]}
+        )
+
+    def test_sigmoid_low_acceptance(self):
+        """Low acceptance rate produces high multiplier with sigmoid."""
+        repesca = self._make_repesca()
+        rates = self._make_rates(acceptance_rate=0.1)
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES, method="sigmoid")
+
+        # At rate=0.1 with steepness=10, midpoint=0.5: exp(10*(0.1-0.5)) = exp(-4) ≈ 0.018
+        # multiplier = 1 + 1.5 / (1 + 0.018) ≈ 1 + 1.47 = 2.47
+        assert result["reject_risk_multiplier"].iloc[0] > 2.0
+
+    def test_sigmoid_high_acceptance(self):
+        """High acceptance rate produces low multiplier with sigmoid."""
+        repesca = self._make_repesca()
+        rates = self._make_rates(acceptance_rate=0.9)
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES, method="sigmoid")
+
+        # At rate=0.9 with steepness=10, midpoint=0.5: exp(10*(0.9-0.5)) = exp(4) ≈ 54.6
+        # multiplier = 1 + 1.5 / (1 + 54.6) ≈ 1 + 0.027 ≈ 1.027
+        assert result["reject_risk_multiplier"].iloc[0] < 1.1
+
+    def test_sigmoid_midpoint(self):
+        """At midpoint (0.5), sigmoid produces moderate multiplier."""
+        repesca = self._make_repesca()
+        rates = self._make_rates(acceptance_rate=0.5)
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES, method="sigmoid")
+
+        # At rate=0.5: exp(0) = 1, multiplier = 1 + 1.5/2 = 1.75
+        assert result["reject_risk_multiplier"].iloc[0] == pytest.approx(1.75)
+
+    def test_sigmoid_monotonic_with_rate(self):
+        """Sigmoid multiplier should decrease as acceptance rate increases."""
+        repesca = pd.DataFrame(
+            {"var0": [1, 2, 3], "var1": [1, 2, 3], "todu_30ever_h6": [100.0] * 3, "todu_amt_pile_h6": [500.0] * 3}
+        )
+        rates = pd.DataFrame(
+            {
+                "var0": [1, 2, 3],
+                "var1": [1, 2, 3],
+                "n_booked": [2, 5, 9],
+                "n_score_rejected": [8, 5, 1],
+                "acceptance_rate": [0.2, 0.5, 0.9],
+            }
+        )
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES, method="sigmoid")
+        multipliers = result.sort_values("var0")["reject_risk_multiplier"].values
+        assert multipliers[0] > multipliers[1] > multipliers[2]
+
+
+# =============================================================================
+# Monotonicity Enforcement Tests
+# =============================================================================
+
+
+class TestMonotonicityEnforcement:
+    def test_enforces_monotonicity(self):
+        """Multipliers should be non-decreasing along each variable axis after enforcement."""
+        result = pd.DataFrame(
+            {
+                "var0": [1, 2, 3],
+                "var1": [1, 1, 1],
+                "reject_risk_multiplier": [2.0, 1.5, 2.5],  # Non-monotone: 2.0 > 1.5
+            }
+        )
+        enforced = _enforce_multiplier_monotonicity(result.copy(), VARIABLES)
+        # After isotonic regression along var0, should be non-decreasing
+        mults = enforced.sort_values("var0")["reject_risk_multiplier"].values
+        assert all(mults[i] <= mults[i + 1] for i in range(len(mults) - 1))
+
+    def test_already_monotone_unchanged(self):
+        """Already monotone multipliers should stay the same."""
+        result = pd.DataFrame(
+            {
+                "var0": [1, 2, 3],
+                "var1": [1, 1, 1],
+                "reject_risk_multiplier": [1.0, 1.5, 2.0],
+            }
+        )
+        enforced = _enforce_multiplier_monotonicity(result.copy(), VARIABLES)
+        mults = enforced.sort_values("var0")["reject_risk_multiplier"].values
+        np.testing.assert_array_almost_equal(mults, [1.0, 1.5, 2.0])
+
+    def test_monotonicity_in_parceling(self):
+        """enforce_monotonicity param in apply_parceling_adjustment works."""
+        repesca = pd.DataFrame(
+            {"var0": [1, 2, 3], "var1": [1, 1, 1], "todu_30ever_h6": [100.0] * 3, "todu_amt_pile_h6": [500.0] * 3}
+        )
+        # Non-monotone acceptance rates: bin 2 has higher rate than bin 3
+        rates = pd.DataFrame(
+            {
+                "var0": [1, 2, 3],
+                "var1": [1, 1, 1],
+                "n_booked": [1, 8, 5],
+                "n_score_rejected": [9, 2, 5],
+                "acceptance_rate": [0.1, 0.8, 0.5],
+            }
+        )
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES, enforce_monotonicity=True)
+        mults = result.sort_values("var0")["reject_risk_multiplier"].values
+        # Should be non-decreasing after enforcement
+        assert all(mults[i] <= mults[i + 1] + 1e-9 for i in range(len(mults) - 1))
+
+
+# =============================================================================
+# Per-Bin Confidence Tests
+# =============================================================================
+
+
+class TestComputeRIConfidence:
+    def test_confidence_columns(self):
+        """compute_ri_confidence returns expected columns."""
+        rates = pd.DataFrame(
+            {
+                "var0": [1, 2],
+                "var1": [1, 2],
+                "n_booked": [50, 5],
+                "n_score_rejected": [50, 5],
+                "acceptance_rate": [0.5, 0.5],
+            }
+        )
+        conf = compute_ri_confidence(rates, VARIABLES)
+        assert "ri_confidence" in conf.columns
+        assert "ri_bin_count" in conf.columns
+        assert "var0" in conf.columns
+        assert "var1" in conf.columns
+
+    def test_higher_count_higher_confidence(self):
+        """Bins with more observations should have higher confidence."""
+        rates = pd.DataFrame(
+            {
+                "var0": [1, 2],
+                "var1": [1, 2],
+                "n_booked": [5, 500],
+                "n_score_rejected": [5, 500],
+                "acceptance_rate": [0.5, 0.5],
+            }
+        )
+        conf = compute_ri_confidence(rates, VARIABLES)
+        assert conf[conf["var0"] == 2]["ri_confidence"].iloc[0] > conf[conf["var0"] == 1]["ri_confidence"].iloc[0]
+
+    def test_confidence_range(self):
+        """Confidence should be in [0, 1)."""
+        rates = pd.DataFrame(
+            {
+                "var0": [1, 2],
+                "var1": [1, 2],
+                "n_booked": [0, 10000],
+                "n_score_rejected": [0, 10000],
+                "acceptance_rate": [0.0, 0.5],
+            }
+        )
+        conf = compute_ri_confidence(rates, VARIABLES)
+        assert (conf["ri_confidence"] >= 0).all()
+        assert (conf["ri_confidence"] <= 1).all()
+
+    def test_confidence_merged_in_parceling(self):
+        """apply_reject_inference with parceling should include confidence columns."""
+        repesca = pd.DataFrame({"var0": [1], "var1": [1], "todu_30ever_h6": [100.0], "todu_amt_pile_h6": [500.0]})
+        demand = _make_demand(
+            [
+                (1, 1, "booked", None),
+                (1, 1, "rejected", "09-score"),
+            ]
+        )
+        result = apply_reject_inference(repesca, demand, VARIABLES, method="parceling")
+        assert "ri_confidence" in result.columns
+        assert "ri_bin_count" in result.columns
+
+
+# =============================================================================
 # apply_reject_inference Tests (dispatcher)
 # =============================================================================
 
@@ -272,6 +527,55 @@ class TestApplyRejectInference:
         assert result["reject_risk_multiplier"].iloc[0] == pytest.approx(2.0)
         assert result["todu_30ever_h6"].iloc[0] == pytest.approx(200.0)
 
+    def test_parceling_method_power_forwarded(self):
+        """parceling_method='power' should use power-law formula."""
+        repesca, demand = self._make_data()
+        result = apply_reject_inference(
+            repesca, demand, VARIABLES, method="parceling", parceling_method="power", reject_uplift_factor=1.0
+        )
+        # acceptance=0.5, power: (1/0.5)^1.0 = 2.0
+        assert result["reject_risk_multiplier"].iloc[0] == pytest.approx(2.0)
+
+    def test_parceling_method_sigmoid_forwarded(self):
+        """parceling_method='sigmoid' should use sigmoid formula."""
+        repesca, demand = self._make_data()
+        result = apply_reject_inference(repesca, demand, VARIABLES, method="parceling", parceling_method="sigmoid")
+        # At rate=0.5: sigmoid midpoint → mult = 1 + 1.5/2 = 1.75
+        assert result["reject_risk_multiplier"].iloc[0] == pytest.approx(1.75)
+
+    def test_bayesian_smoothing_forwarded(self):
+        """bayesian_smoothing params are forwarded through dispatcher."""
+        repesca, demand = self._make_data()
+        result = apply_reject_inference(
+            repesca,
+            demand,
+            VARIABLES,
+            method="parceling",
+            bayesian_smoothing=True,
+            bayesian_prior_strength=10.0,
+        )
+        # Should have smoothed columns
+        assert "smoothed_acceptance_rate" in result.columns
+
+    def test_enforce_monotonicity_forwarded(self):
+        """enforce_monotonicity param is forwarded through dispatcher."""
+        repesca = pd.DataFrame(
+            {"var0": [1, 2, 3], "var1": [1, 1, 1], "todu_30ever_h6": [100.0] * 3, "todu_amt_pile_h6": [500.0] * 3}
+        )
+        demand = _make_demand(
+            [
+                (1, 1, "booked", None),
+                *[(1, 1, "rejected", "09-score")] * 9,
+                *[(2, 1, "booked", None)] * 8,
+                *[(2, 1, "rejected", "09-score")] * 2,
+                *[(3, 1, "booked", None)] * 5,
+                *[(3, 1, "rejected", "09-score")] * 5,
+            ]
+        )
+        result = apply_reject_inference(repesca, demand, VARIABLES, method="parceling", enforce_monotonicity=True)
+        mults = result.sort_values("var0")["reject_risk_multiplier"].values
+        assert all(mults[i] <= mults[i + 1] + 1e-9 for i in range(len(mults) - 1))
+
 
 # =============================================================================
 # Config integration Tests
@@ -295,6 +599,12 @@ class TestConfigRejectInference:
         assert settings.reject_inference_method == "none"
         assert settings.reject_uplift_factor == 1.5
         assert settings.reject_max_risk_multiplier == 3.0
+        assert settings.reject_bayesian_smoothing is False
+        assert settings.reject_bayesian_prior_strength == 10.0
+        assert settings.reject_enforce_monotonicity is False
+        assert settings.ri_calibration_gamma == 1.0
+        assert settings.ri_optimizer_method == "grid"
+        assert settings.ri_optuna_n_trials == 100
 
     def test_custom_values(self):
         """PreprocessingSettings accepts custom reject inference config."""
@@ -311,10 +621,24 @@ class TestConfigRejectInference:
             reject_inference_method="parceling",
             reject_uplift_factor=2.0,
             reject_max_risk_multiplier=5.0,
+            reject_bayesian_smoothing=True,
+            reject_bayesian_prior_strength=20.0,
+            reject_enforce_monotonicity=True,
+            reject_parceling_method="sigmoid",
+            ri_calibration_gamma=0.8,
+            ri_optimizer_method="optuna",
+            ri_optuna_n_trials=200,
         )
         assert settings.reject_inference_method == "parceling"
         assert settings.reject_uplift_factor == 2.0
         assert settings.reject_max_risk_multiplier == 5.0
+        assert settings.reject_bayesian_smoothing is True
+        assert settings.reject_bayesian_prior_strength == 20.0
+        assert settings.reject_enforce_monotonicity is True
+        assert settings.reject_parceling_method == "sigmoid"
+        assert settings.ri_calibration_gamma == 0.8
+        assert settings.ri_optimizer_method == "optuna"
+        assert settings.ri_optuna_n_trials == 200
 
     def test_invalid_method_rejected(self):
         """Invalid reject_inference_method is rejected by pydantic."""
@@ -362,4 +686,52 @@ class TestConfigRejectInference:
                 date_fin_book_obs="2024-12-01",
                 variables=["var0", "var1"],
                 reject_max_risk_multiplier=0.5,
+            )
+
+    def test_sigmoid_parceling_method_accepted(self):
+        """sigmoid is accepted as a valid parceling method."""
+        from src.config import PreprocessingSettings
+
+        settings = PreprocessingSettings(
+            keep_vars=["authorization_id"],
+            indicators=["oa_amt"],
+            octroi_bins=[-float("inf"), float("inf")],
+            efx_bins=[-float("inf"), float("inf")],
+            date_ini_book_obs="2024-01-01",
+            date_fin_book_obs="2024-12-01",
+            variables=["var0", "var1"],
+            reject_parceling_method="sigmoid",
+        )
+        assert settings.reject_parceling_method == "sigmoid"
+
+    def test_invalid_parceling_method_rejected(self):
+        """Invalid parceling method is rejected by pydantic."""
+        from src.config import PreprocessingSettings
+
+        with pytest.raises(ValueError):
+            PreprocessingSettings(
+                keep_vars=["authorization_id"],
+                indicators=["oa_amt"],
+                octroi_bins=[-float("inf"), float("inf")],
+                efx_bins=[-float("inf"), float("inf")],
+                date_ini_book_obs="2024-01-01",
+                date_fin_book_obs="2024-12-01",
+                variables=["var0", "var1"],
+                reject_parceling_method="invalid",
+            )
+
+    def test_calibration_gamma_bounds(self):
+        """ri_calibration_gamma must be in (0, 1]."""
+        from src.config import PreprocessingSettings
+
+        with pytest.raises(ValueError):
+            PreprocessingSettings(
+                keep_vars=["authorization_id"],
+                indicators=["oa_amt"],
+                octroi_bins=[-float("inf"), float("inf")],
+                efx_bins=[-float("inf"), float("inf")],
+                date_ini_book_obs="2024-01-01",
+                date_fin_book_obs="2024-12-01",
+                variables=["var0", "var1"],
+                ri_calibration_gamma=1.5,
             )

@@ -615,7 +615,7 @@ def _fast_delong(y_true: np.ndarray, scores1: np.ndarray, scores2: np.ndarray) -
         # Structural components for variance estimation
         positive_ranks_within = _compute_midrank(ordered[:m])
         v_positive = (positive_ranks - positive_ranks_within) / n
-        
+
         negative_ranks_combined = midranks[m:]
         negative_ranks_within = _compute_midrank(ordered[m:])
         v_negative = (negative_ranks_combined - negative_ranks_within) / m

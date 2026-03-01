@@ -335,9 +335,7 @@ def tune_linear_models(
     def objective_tweedie(trial):
         power = trial.suggest_float("power", 1.01, 1.99)
         alpha = trial.suggest_float("alpha", 0.01, 10.0, log=True)
-        model = TweedieGLM(
-            power=power, alpha=alpha, link="log", exposure_col="todu_amt_pile_h6", multiplier=multiplier
-        )
+        model = TweedieGLM(power=power, alpha=alpha, link="log", exposure_col="todu_amt_pile_h6", multiplier=multiplier)
         mean_score, _ = safe_eval(model)
         return mean_score
 
