@@ -302,6 +302,11 @@ def apply_parceling_adjustment(
 
     result["todu_30ever_h6"] = result["todu_30ever_h6"] * result["reject_risk_multiplier"]
 
+    # Apply the same uplift to H3 risk numerator when present, so that
+    # the H6/H3 ratio remains consistent for downstream H3 extrapolation.
+    if "todu_30ever_h3" in result.columns:
+        result["todu_30ever_h3"] = result["todu_30ever_h3"] * result["reject_risk_multiplier"]
+
     adjusted_bins = (result["reject_risk_multiplier"] > 1.0).sum()
     if adjusted_bins > 0:
         logger.debug(

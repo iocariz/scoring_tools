@@ -610,12 +610,13 @@ def aggregate_metrics(metrics_list: list[dict[str, dict[str, float]]]) -> dict[s
         aggregated[key]["production_ci_lower"] = combined_prod_mean - z_95 * combined_prod_se
         aggregated[key]["production_ci_upper"] = combined_prod_mean + z_95 * combined_prod_se
 
-        # Risk CIs: use the point estimate from the aggregated numerator/denominator
-        # (already computed correctly upstream), not the sum of segment means
+        # Risk CIs: compute the center from aggregated todu components (ratio metric,
+        # not additive — cannot use sum of segment means).
         combined_risk_se = np.sqrt(sum(se**2 for se in risk_ses))
         if combined_risk_se > 0:
-            # Use the already-computed aggregated risk as the center, not sum(risk_means)
-            agg_risk_point = aggregated[key].get("optimum_risk", sum(risk_means))
+            agg_num = aggregated[key].get("todu_30ever_h6", 0)
+            agg_den = aggregated[key].get("todu_amt_pile_h6", 0)
+            agg_risk_point = float(calculate_b2_ever_h6(agg_num, agg_den, as_percentage=True)) if agg_den else 0.0
             aggregated[key]["risk_ci_lower"] = agg_risk_point - z_95 * combined_risk_se
             aggregated[key]["risk_ci_upper"] = agg_risk_point + z_95 * combined_risk_se
         else:

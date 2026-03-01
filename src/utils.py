@@ -335,26 +335,20 @@ def calculate_bootstrap_intervals(
     risk_lower = np.percentile(risks, lower_p)
     risk_upper = np.percentile(risks, upper_p)
 
-    # Inflate risk CI to account for model prediction uncertainty
+    # Note: model_cv_se_risk is no longer used for inflation because it is on
+    # the RMSE scale (prediction error), not the risk-ratio scale.  Combining
+    # the two via variance addition is statistically invalid.  The percentile
+    # bootstrap CI already captures sampling uncertainty in the risk estimate.
     if model_cv_se_risk is not None and model_cv_se_risk > 0:
-        from scipy.stats import norm
-
-        z = norm.ppf(1 - alpha)
-        risk_mean = float(np.mean(risks))
-        bootstrap_se = float(np.std(risks, ddof=1))
-        total_se = np.sqrt(bootstrap_se**2 + model_cv_se_risk**2)
-        risk_lower = risk_mean - z * total_se
-        risk_upper = risk_mean + z * total_se
-        logger.info(
-            f"  Risk CI inflated for model uncertainty: bootstrap_se={bootstrap_se:.6f}, "
-            f"model_se={model_cv_se_risk:.6f}, total_se={total_se:.6f}"
-        )
+        logger.info(f"  Model CV SE (informational only, not used for inflation): {model_cv_se_risk:.6f}")
 
     return {
         "production_ci_lower": prod_lower,
         "production_ci_upper": prod_upper,
-        "risk_ci_lower": risk_lower,
-        "risk_ci_upper": risk_upper,
+        # Return risk CIs as percentage to match the Risk (%) column convention.
+        # Single authoritative conversion point — callers should NOT multiply by 100.
+        "risk_ci_lower": risk_lower * 100,
+        "risk_ci_upper": risk_upper * 100,
     }
 
 
@@ -408,8 +402,8 @@ def generate_cutoff_summary(
             if ci_data:
                 cell_df["production_ci_lower"] = ci_data.get("production_ci_lower")
                 cell_df["production_ci_upper"] = ci_data.get("production_ci_upper")
-                cell_df["risk_ci_lower"] = ci_data.get("risk_ci_lower", 0) * 100
-                cell_df["risk_ci_upper"] = ci_data.get("risk_ci_upper", 0) * 100
+                cell_df["risk_ci_lower"] = ci_data.get("risk_ci_lower", 0)
+                cell_df["risk_ci_upper"] = ci_data.get("risk_ci_upper", 0)
             logger.info(
                 f"Generated N-d cutoff summary for segment '{segment_name}', scenario '{scenario_name}' "
                 f"({len(cell_df)} cells, {int(mask.sum())} accepted)"
@@ -466,9 +460,8 @@ def generate_cutoff_summary(
         if ci_data:
             row_data["production_ci_lower"] = ci_data.get("production_ci_lower")
             row_data["production_ci_upper"] = ci_data.get("production_ci_upper")
-            # Risk CI is raw, convert to % if needed
-            row_data["risk_ci_lower"] = ci_data.get("risk_ci_lower", 0) * 100
-            row_data["risk_ci_upper"] = ci_data.get("risk_ci_upper", 0) * 100
+            row_data["risk_ci_lower"] = ci_data.get("risk_ci_lower", 0)
+            row_data["risk_ci_upper"] = ci_data.get("risk_ci_upper", 0)
 
         summary_rows.append(row_data)
 

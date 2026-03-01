@@ -22,7 +22,7 @@ from loguru import logger
 
 from src import styles
 from src.config import OutputPaths
-from src.constants import PSI_UNSTABLE_THRESHOLD, StatusName
+from src.constants import DEFAULT_RISK_MULTIPLIER, PSI_UNSTABLE_THRESHOLD, StatusName
 from src.inference_optimized import run_optimization_pipeline
 from src.models import calculate_B2
 from src.preprocess_improved import filter_by_date
@@ -211,6 +211,7 @@ def _compute_hybrid_mr_risk(
     data_demand_mr: pd.DataFrame,
     merge_keys: list[str],
     min_obs: int,
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
     multiplier_h3: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Compute per-bin ``b2_ever_h6_tmp`` using MR outcomes when sufficient, else main-period.
@@ -226,15 +227,21 @@ def _compute_hybrid_mr_risk(
     """
     # --- Main-period aggregation (existing logic) ---
     main_agg = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
-    main_agg["b2_main"] = calculate_b2_ever_h6(main_agg["todu_30ever_h6"], main_agg["todu_amt_pile_h6"]).fillna(0.0)
-    main_agg["n_obs_main"] = data_booked.groupby(merge_keys).size().reset_index(drop=True)
+    main_agg["b2_main"] = calculate_b2_ever_h6(
+        main_agg["todu_30ever_h6"], main_agg["todu_amt_pile_h6"], multiplier=multiplier
+    ).fillna(0.0)
+    n_obs_main = data_booked.groupby(merge_keys).size().reset_index(name="n_obs_main")
+    main_agg = main_agg.merge(n_obs_main, on=merge_keys, how="left")
     main_agg = main_agg[merge_keys + ["b2_main", "n_obs_main"]]
 
     # --- MR-period aggregation ---
     mr_booked = data_demand_mr[data_demand_mr["status_name"] == StatusName.BOOKED.value]
     mr_agg = mr_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
-    mr_agg["b2_mr"] = calculate_b2_ever_h6(mr_agg["todu_30ever_h6"], mr_agg["todu_amt_pile_h6"]).fillna(0.0)
-    mr_agg["n_obs_mr"] = mr_booked.groupby(merge_keys).size().reset_index(drop=True)
+    mr_agg["b2_mr"] = calculate_b2_ever_h6(
+        mr_agg["todu_30ever_h6"], mr_agg["todu_amt_pile_h6"], multiplier=multiplier
+    ).fillna(0.0)
+    n_obs_mr = mr_booked.groupby(merge_keys).size().reset_index(name="n_obs_mr")
+    mr_agg = mr_agg.merge(n_obs_mr, on=merge_keys, how="left")
 
     # MR production per bin
     if "oa_amt_h0" in mr_booked.columns:
@@ -271,7 +278,8 @@ def _compute_hybrid_mr_risk(
                 mr_booked_h3["todu_30ever_h3"].notna() | mr_booked_h3["todu_amt_pile_h3"].notna()
             ]
             mr_h3_agg = mr_h3_valid.groupby(merge_keys)[h3_cols].sum().reset_index()
-            mr_h3_agg["n_obs_mr_h3"] = mr_h3_valid.groupby(merge_keys).size().reset_index(drop=True)
+            n_obs_mr_h3 = mr_h3_valid.groupby(merge_keys).size().reset_index(name="n_obs_mr_h3")
+            mr_h3_agg = mr_h3_agg.merge(n_obs_mr_h3, on=merge_keys, how="left")
             mr_h3_agg["b2_mr_h3"] = calculate_b2_ever_h6(
                 mr_h3_agg["todu_30ever_h3"], mr_h3_agg["todu_amt_pile_h3"], multiplier=multiplier_h3
             ).fillna(0.0)
@@ -412,6 +420,7 @@ def process_mr_period(
                 data_demand_mr,
                 merge_keys,
                 settings.mr_min_obs_per_bin,
+                multiplier=settings.multiplier,
                 multiplier_h3=settings.multiplier_h3,
             )
 
@@ -451,7 +460,7 @@ def process_mr_period(
 
             # Calculate b2_ever_h6_tmp
             agg_data["b2_ever_h6_tmp"] = calculate_b2_ever_h6(
-                agg_data["todu_30ever_h6"], agg_data["todu_amt_pile_h6"]
+                agg_data["todu_30ever_h6"], agg_data["todu_amt_pile_h6"], multiplier=settings.multiplier
             ).fillna(0.0)
 
             merge_df = agg_data[merge_keys + ["b2_ever_h6_tmp"]]
@@ -512,6 +521,8 @@ def process_mr_period(
                     data_demand_mr.loc[fill_mask, "b2_ever_h6_tmp"] = data_demand_mr.loc[
                         fill_mask, "b2_ever_h6_inferred"
                     ]
+                    # Track which rows were imputed (for diagnostics below)
+                    imputed_mask = fill_mask.copy()
 
                     # Drop the helper column
                     data_demand_mr = data_demand_mr.drop(columns=["b2_ever_h6_inferred"], errors="ignore")
@@ -536,7 +547,7 @@ def process_mr_period(
                     total_booked = booked_mask.sum()
                     imputed_pct = null_count / max(total_booked, 1) * 100
                     imputed_prod = (
-                        data_demand_mr.loc[null_b2_mask, "oa_amt_h0"].sum()
+                        data_demand_mr.loc[imputed_mask, "oa_amt_h0"].sum()
                         if "oa_amt_h0" in data_demand_mr.columns
                         else 0
                     )
@@ -652,7 +663,10 @@ def process_mr_period(
 
         data_surf_mr = data_summary_desagregado_mr.copy()
         data_surf_mr["b2_ever_h6"] = calculate_b2_ever_h6(
-            data_surf_mr["todu_30ever_h6"], data_surf_mr["todu_amt_pile_h6"], as_percentage=True
+            data_surf_mr["todu_30ever_h6"],
+            data_surf_mr["todu_amt_pile_h6"],
+            multiplier=settings.multiplier,
+            as_percentage=True,
         )
         # Compute complementary H3 metric on MR surface when columns are available
         if "todu_30ever_h3" in data_surf_mr.columns and "todu_amt_pile_h3" in data_surf_mr.columns:

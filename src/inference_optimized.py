@@ -207,9 +207,11 @@ def _generate_regression_variables_nd(variables: list[str]) -> tuple[list[str], 
             feature_sets[label] = names
             var_reg = names
         else:
-            # Higher degrees: remove raw variable names (already columns in df)
+            # Include all terms (main effects + higher-order) to respect
+            # the principle of marginality — a polynomial model without
+            # lower-order terms is numerically unstable and uninterpretable.
             feature_names = [n for n in names if n not in variables]
-            feature_sets[label] = feature_names
+            feature_sets[label] = var_reg + feature_names
 
     # Also add a combined set
     feature_sets["original"] = list(variables)
@@ -549,8 +551,8 @@ def _select_feature_set_cv(
             X_val = prepare_model_input(val_agg, features, model_template)
             y_train, y_val = train_agg[target_var], val_agg[target_var]
 
-            w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
-            w_val = val_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in val_agg.columns else None
+            w_train = train_agg["oa_amt_h0"] if "oa_amt_h0" in train_agg.columns else None
+            w_val = val_agg["oa_amt_h0"] if "oa_amt_h0" in val_agg.columns else None
 
             model_clone = clone(model_template)
             model_clone.fit(X_train, y_train, sample_weight=w_train)

@@ -827,10 +827,15 @@ def _run_data_transformations(df: pd.DataFrame, settings: "PreprocessingSettings
         from src.constants import StatusName
 
         # Learn bin edges for any BinConfig with max_bins but no bin_edges
+        # Use date-filtered booked data to avoid look-ahead bias
         for var_name, bc in settings.bins.items():
             if not bc.bin_edges and bc.max_bins is not None:
                 booked_mask = data_clean["status_name"] == StatusName.BOOKED.value
                 data_booked_for_bins = data_clean[booked_mask]
+                if settings.date_ini_book_obs and settings.date_fin_book_obs:
+                    data_booked_for_bins = filter_by_date(
+                        data_booked_for_bins, "mis_date", settings.date_ini_book_obs, settings.date_fin_book_obs
+                    )
 
                 if bc.method == "optimization":
                     logger.info(

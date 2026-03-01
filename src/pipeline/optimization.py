@@ -401,10 +401,8 @@ def run_scenario_analysis(
         if mask_opt.any():
             summary_table.loc[mask_opt, "production_ci_lower"] = ci_data.get("production_ci_lower", 0.0)
             summary_table.loc[mask_opt, "production_ci_upper"] = ci_data.get("production_ci_upper", 0.0)
-            # CI risk values from bootstrap are raw ratio (multiplier * num / den).
-            # Convert to percentage to match the Risk (%) column.
-            summary_table.loc[mask_opt, "risk_ci_lower"] = ci_data.get("risk_ci_lower", 0.0) * 100
-            summary_table.loc[mask_opt, "risk_ci_upper"] = ci_data.get("risk_ci_upper", 0.0) * 100
+            summary_table.loc[mask_opt, "risk_ci_lower"] = ci_data.get("risk_ci_lower", 0.0)
+            summary_table.loc[mask_opt, "risk_ci_upper"] = ci_data.get("risk_ci_upper", 0.0)
 
     # Save outputs
     visualizer.save_html(output.risk_production_visualizer_html(suffix))

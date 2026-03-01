@@ -33,9 +33,10 @@ def validate_data_columns(data: pd.DataFrame, required_columns: list[str], conte
     Raises:
         DataValidationError: If any required columns are missing
     """
-    # Normalize column names for comparison
-    data_columns = set(data.columns.str.lower())
-    missing = [col for col in required_columns if col.lower() not in data_columns]
+    # Case-sensitive comparison — columns should already be standardized to
+    # lowercase by load_and_prepare_data before this is called.
+    data_columns = set(data.columns)
+    missing = [col for col in required_columns if col not in data_columns]
 
     if missing:
         raise DataValidationError(f"Missing required columns in {context}: {missing}")

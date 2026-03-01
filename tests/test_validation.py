@@ -107,8 +107,10 @@ class TestDataValidation:
             validate_data_columns(sample_data, ["col1", "missing_col"])
         assert "missing_col" in str(excinfo.value)
 
-    def test_case_insensitive(self, sample_data):
-        assert validate_data_columns(sample_data, ["COL1", "Col2"]) == []
+    def test_case_sensitive(self, sample_data):
+        """Validation is case-sensitive — columns must be standardized to lowercase first."""
+        with pytest.raises(DataValidationError):
+            validate_data_columns(sample_data, ["COL1", "Col2"])
 
     def test_validate_data_not_empty_success(self, sample_data):
         validate_data_not_empty(sample_data)
