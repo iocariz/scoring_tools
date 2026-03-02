@@ -15,7 +15,7 @@ from loguru import logger
 from sklearn.metrics import roc_auc_score
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
-from src.constants import RejectReason, StatusName
+from src.constants import Columns, RejectReason, StatusName
 
 if TYPE_CHECKING:
     from src.config import BinConfig, PreprocessingSettings
@@ -116,9 +116,11 @@ def preprocess_data(
     m_ct_direct_columns = [col for col in df.columns if col.startswith("m_ct_direct")]
     logger.info(f"Found {len(m_ct_direct_columns)} measure columns starting with 'm_ct_direct'")
 
-    # Validate that requested columns exist
-    all_requested_columns = keep_vars + indicators + m_ct_direct_columns
-    validate_dataframe_columns(df, all_requested_columns, "preprocess_data")
+    # Validate that requested columns exist (H3 columns are optional)
+    h3_optional = {Columns.TODU_30EVER_H3, Columns.TODU_AMT_PILE_H3}
+    all_requested_columns = list(dict.fromkeys(keep_vars + indicators + m_ct_direct_columns))
+    required_columns = [c for c in all_requested_columns if c not in h3_optional]
+    validate_dataframe_columns(df, required_columns, "preprocess_data")
 
     # Apply filter conditions in a single query operation
     query_start = time.time()
@@ -156,9 +158,10 @@ def preprocess_data(
     if data_filtered.empty:
         raise ValueError("No records remain after filtering")
 
-    # Select only needed columns
-    logger.info(f"Selecting {len(all_requested_columns)} columns")
-    data_clean = data_filtered[all_requested_columns].copy()
+    # Select only needed columns (filter out optional columns not present in data)
+    select_columns = [c for c in all_requested_columns if c in data_filtered.columns]
+    logger.info(f"Selecting {len(select_columns)} columns")
+    data_clean = data_filtered[select_columns].copy()
 
     # Log completion
     elapsed_time = time.time() - start_time

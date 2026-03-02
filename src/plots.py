@@ -593,12 +593,15 @@ class RiskProductionVisualizer:
             col=2,
         )
 
-        # Mask heatmap
+        # Mask heatmap — rejected cells get a dark red overlay, accepted are transparent
         self.mask_trace = go.Heatmap(
             x=self.values_var0,
             y=self.values_var1,
             z=np.zeros_like(self.yy),
-            colorscale=[(0.00, "rgba(0,0,0,0.5)"), (1.00, "rgba(0,0,0,0)")],
+            colorscale=[
+                (0.00, "rgba(120,0,0,0.55)"),
+                (1.00, "rgba(0,0,0,0)"),
+            ],
             showscale=False,
         )
         self.fig.add_trace(self.mask_trace, row=1, col=2)
@@ -692,6 +695,78 @@ class RiskProductionVisualizer:
         # _add_heatmap_traces adds 2 traces (4, 5)
         self.fig.data[5].z = z_mask
         self.fig.data[3].update(x=[OA], y=[B2])
+
+        # Draw cutoff boundary line on the heatmap (col=2 → xaxis2/yaxis2)
+        # Remove previous cutoff shapes (tagged with name)
+        self.fig.layout.shapes = [s for s in (self.fig.layout.shapes or []) if getattr(s, "name", None) != "_cutoff"]
+
+        boundary_x, boundary_y = self._compute_cutoff_boundary(z_mask)
+        if boundary_x:
+            self.fig.add_trace(
+                go.Scatter(
+                    x=boundary_x,
+                    y=boundary_y,
+                    mode="lines",
+                    line=dict(color="rgba(0,200,80,0.9)", width=3, dash="solid"),
+                    showlegend=False,
+                    hoverinfo="skip",
+                ),
+                row=1,
+                col=2,
+            )
+
+    def _compute_cutoff_boundary(self, z_mask):
+        """Compute a step-function boundary path between accepted (1) and rejected (0) cells.
+
+        Returns (x_coords, y_coords) for a line tracing the cutoff edge on the heatmap.
+        """
+        v0 = list(self.values_var0)
+        v1 = list(self.values_var1)
+        if len(v0) < 2 or len(v1) < 2:
+            return [], []
+
+        # Half-step sizes for cell boundaries
+        dx = (v0[1] - v0[0]) / 2 if len(v0) > 1 else 0.5
+        dy = (v1[1] - v1[0]) / 2 if len(v1) > 1 else 0.5
+
+        # z_mask shape: (len(v1), len(v0)) — rows=var1, cols=var0
+        # For 2D case: it's a step function along var0 (columns).
+        # For each column, find the highest accepted var1 index.
+        path_x = []
+        path_y = []
+
+        for ci in range(len(v0)):
+            # Find highest accepted row index in this column
+            max_accepted = -1
+            for ri in range(len(v1)):
+                if z_mask[ri][ci] == 1:
+                    max_accepted = ri
+
+            if max_accepted >= 0:
+                # Boundary sits at the top edge of the last accepted cell
+                boundary_y = v1[max_accepted] + dy
+            else:
+                # No accepted cells in this column — boundary at bottom
+                boundary_y = v1[0] - dy
+
+            left_x = v0[ci] - dx
+            right_x = v0[ci] + dx
+
+            # Add horizontal segment across this column
+            if path_x:
+                # Vertical connector from previous boundary_y to this one
+                path_x.append(left_x)
+                path_y.append(path_y[-1])
+                path_x.append(left_x)
+                path_y.append(boundary_y)
+            else:
+                path_x.append(left_x)
+                path_y.append(boundary_y)
+
+            path_x.append(right_x)
+            path_y.append(boundary_y)
+
+        return path_x, path_y
 
     def create_slider(self):
         """No longer used"""
@@ -799,10 +874,12 @@ def plot_risk_vs_production(
     if not pd.api.types.is_datetime64_any_dtype(data[Columns.MIS_DATE]):
         data[Columns.MIS_DATE] = pd.to_datetime(data[Columns.MIS_DATE])
 
+    # Filter indicators to only those present in the data
+    available_indicators = [c for c in indicadores if c in data.columns]
     df_plot = (
         data[data[Columns.STATUS_NAME] == StatusName.BOOKED.value]
         .groupby([Columns.MIS_DATE], as_index=False)
-        .agg(dict.fromkeys(indicadores, "sum"))
+        .agg(dict.fromkeys(available_indicators, "sum"))
     )
 
     # Calculate rolling sums (handling potential missing cols gracefully)
@@ -1547,6 +1624,74 @@ def plot_bin_threshold_diagnostic(
     return fig
 
 
+def _add_nd_cutoff_boundary(
+    fig: go.Figure,
+    pivot_mask: "pd.DataFrame",
+    x_labels: list[str],
+    y_labels: list[str],
+    row: int,
+    col: int,
+) -> None:
+    """Draw a step-function boundary line between accepted and rejected cells on a categorical heatmap.
+
+    For each column (var0 value), finds the top-most accepted cell and draws
+    a horizontal segment just above it. Vertical connectors link the steps.
+    The line uses categorical axis coordinates (integer positions where 0 = first category).
+    """
+    if len(x_labels) < 1 or len(y_labels) < 1:
+        return
+
+    # Build step path in numeric coordinates: cell centers at 0, 1, 2, ...
+    # Cell boundaries at -0.5, 0.5, 1.5, ...
+    path_x: list[float] = []
+    path_y: list[float] = []
+    z = pivot_mask.values  # shape (n_y, n_x)
+
+    for ci in range(len(x_labels)):
+        max_accepted = -1
+        for ri in range(len(y_labels)):
+            if z[ri, ci] == 1:
+                max_accepted = ri
+
+        boundary_y = max_accepted + 0.5 if max_accepted >= 0 else -0.5
+        left_x = ci - 0.5
+        right_x = ci + 0.5
+
+        if path_x:
+            path_x.append(left_x)
+            path_y.append(path_y[-1])
+            path_x.append(left_x)
+            path_y.append(boundary_y)
+        else:
+            path_x.append(left_x)
+            path_y.append(boundary_y)
+
+        path_x.append(right_x)
+        path_y.append(boundary_y)
+
+    if not path_x:
+        return
+
+    # Resolve subplot axis references via Plotly's get_subplot
+    subplot = fig.get_subplot(row, col)
+    xaxis_name = subplot.xaxis.plotly_name  # "xaxis", "xaxis2", etc.
+    yaxis_name = subplot.yaxis.plotly_name
+    xref = xaxis_name.replace("axis", "")  # "x", "x2", etc.
+    yref = yaxis_name.replace("axis", "")
+
+    for i in range(len(path_x) - 1):
+        fig.add_shape(
+            type="line",
+            x0=path_x[i],
+            y0=path_y[i],
+            x1=path_x[i + 1],
+            y1=path_y[i + 1],
+            xref=xref,
+            yref=yref,
+            line=dict(color="white", width=3),
+        )
+
+
 def plot_acceptance_grid_nd(
     mask: np.ndarray,
     grid: Any,
@@ -1600,13 +1745,43 @@ def plot_acceptance_grid_nd(
     else:
         cell_df["_b2"] = 0.0
 
-    # Production text
+    # Adaptive formatting based on grid size
+    n_rows = len(grid.values_per_var[var1])
+    n_cols_grid = len(grid.values_per_var[var0])
+    n_cells = n_rows * n_cols_grid
+
+    # Scale font size to grid dimensions so text fits inside cells
+    if n_cells > 150:
+        font_size = 7
+    elif n_cells > 80:
+        font_size = 8
+    else:
+        font_size = 10
+
+    # Format production values with appropriate unit (k/M) based on magnitude
+    def _fmt_production(val: float) -> str:
+        if abs(val) >= 1e6:
+            return f"{val / 1e6:,.1f}M"
+        if abs(val) >= 1e3:
+            return f"{val / 1e3:,.0f}k"
+        return f"{val:,.0f}"
+
+    # Compact cell text: production + risk only; ACC/REJ is conveyed by color
     if "oa_amt_h0" in cell_df.columns:
         cell_df["_text"] = cell_df.apply(
-            lambda r: f"{'ACC' if r['_mask'] else 'REJ'}\n{r['oa_amt_h0'] / 1e6:,.1f}M\n{r['_b2']:.1f}%", axis=1
+            lambda r: f"{_fmt_production(r['oa_amt_h0'])}<br>{r['_b2']:.1f}%",
+            axis=1,
         )
     else:
-        cell_df["_text"] = cell_df["_mask"].map({1: "ACC", 0: "REJ"})
+        cell_df["_text"] = cell_df["_b2"].apply(lambda v: f"{v:.1f}%")
+
+    # High-contrast discrete colorscale: rejected = muted red, accepted = green
+    mask_colorscale = [
+        (0.0, "rgb(210,70,70)"),
+        (0.5, "rgb(210,70,70)"),
+        (0.5, "rgb(50,160,80)"),
+        (1.0, "rgb(50,160,80)"),
+    ]
 
     for col_idx, v2 in enumerate(v2_vals, start=1):
         slice_df = cell_df[cell_df[var2] == v2]
@@ -1615,32 +1790,46 @@ def plot_acceptance_grid_nd(
         pivot_mask = slice_df.pivot(index=var1, columns=var0, values="_mask").sort_index(ascending=True)
         pivot_text = slice_df.pivot(index=var1, columns=var0, values="_text").sort_index(ascending=True)
 
+        x_labels = [str(c) for c in pivot_mask.columns]
+        y_labels = [str(r) for r in pivot_mask.index]
+
         fig.add_trace(
             go.Heatmap(
-                x=[str(c) for c in pivot_mask.columns],
-                y=[str(r) for r in pivot_mask.index],
+                x=x_labels,
+                y=y_labels,
                 z=pivot_mask.values,
                 text=pivot_text.values,
                 texttemplate="%{text}",
-                colorscale=[(0, "rgba(157,13,20,0.6)"), (1, "rgba(33,150,243,0.6)")],
+                textfont=dict(size=font_size, color="white"),
+                colorscale=mask_colorscale,
                 zmin=0,
                 zmax=1,
+                xgap=1,
+                ygap=1,
                 showscale=col_idx == 1,
-                colorbar=dict(title="Accepted", tickvals=[0, 1], ticktext=["No", "Yes"]) if col_idx == 1 else None,
+                colorbar=dict(title="Accepted", tickvals=[0, 1], ticktext=["REJ", "ACC"]) if col_idx == 1 else None,
             ),
             row=1,
             col=col_idx,
         )
 
-        # Row 2: Risk heatmap
+        # Add cutoff boundary line on the acceptance heatmap
+        _add_nd_cutoff_boundary(fig, pivot_mask, x_labels, y_labels, row=1, col=col_idx)
+
+        # Row 2: Risk heatmap with value annotations
         pivot_risk = slice_df.pivot(index=var1, columns=var0, values="_b2").sort_index(ascending=True)
         fig.add_trace(
             go.Heatmap(
                 x=[str(c) for c in pivot_risk.columns],
                 y=[str(r) for r in pivot_risk.index],
                 z=pivot_risk.values,
+                text=pivot_risk.values,
+                texttemplate="%{text:.1f}",
+                textfont=dict(size=font_size),
                 colorscale=[(0, "rgba(255,255,255,1)"), (1, "rgba(157,13,20,1)")],
                 zmin=0,
+                xgap=1,
+                ygap=1,
                 showscale=col_idx == len(v2_vals),
                 colorbar=dict(title="b2 (%)") if col_idx == len(v2_vals) else None,
             ),
@@ -1648,16 +1837,21 @@ def plot_acceptance_grid_nd(
             col=col_idx,
         )
 
-        fig.update_xaxes(title_text=var0, row=1, col=col_idx)
-        fig.update_xaxes(title_text=var0, row=2, col=col_idx)
+        fig.update_xaxes(title_text=var0, row=1, col=col_idx, tickfont=dict(size=9))
+        fig.update_xaxes(title_text=var0, row=2, col=col_idx, tickfont=dict(size=9))
         if col_idx == 1:
-            fig.update_yaxes(title_text=var1, row=1, col=col_idx)
-            fig.update_yaxes(title_text=var1, row=2, col=col_idx)
+            fig.update_yaxes(title_text=var1, row=1, col=col_idx, tickfont=dict(size=9))
+            fig.update_yaxes(title_text=var1, row=2, col=col_idx, tickfont=dict(size=9))
+
+    # Scale height to grid rows so cells aren't squashed
+    row_height = max(22, min(35, 700 // n_rows))
+    total_height = max(700, row_height * n_rows * 2 + 120)
 
     fig.update_layout(
         title_text="Acceptance Grid & Risk by Income Bin",
-        height=700,
+        height=total_height,
         width=max(500 * len(v2_vals), 800),
+        margin=dict(l=60, r=40, t=60, b=40),
     )
 
     if output_path:

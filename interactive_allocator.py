@@ -11,7 +11,6 @@ Usage:
 """
 
 import argparse
-import base64
 import tomllib
 from pathlib import Path
 
@@ -23,7 +22,7 @@ import plotly.express as px
 from dash import Input, Output, State, dash_table, dcc, html
 from loguru import logger
 
-from src.global_optimizer import GlobalAllocator
+from src.global_optimizer import GlobalAllocator, SegmentConstraints
 from src.styles import COLOR_RISK, apply_plotly_style
 
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.FLATLY])
@@ -57,6 +56,36 @@ def get_available_scenarios(output_base: Path) -> list[str]:
     return sorted(scenarios)
 
 
+def get_segments_for_scenario(output_base: Path, scenario: str) -> list[str]:
+    """Return segment names that have a frontier file for the given scenario."""
+    segments = []
+    if not output_base.exists():
+        return segments
+    for segment_dir in sorted(output_base.iterdir()):
+        if segment_dir.is_dir() and not segment_dir.name.startswith(("_", ".")):
+            frontier_path = segment_dir / "data" / f"efficient_frontier_{scenario}.csv"
+            if frontier_path.exists():
+                segments.append(segment_dir.name)
+    return segments
+
+
+def load_segments_config(segments_path: str = "segments.toml") -> dict[str, dict]:
+    """Read segments.toml and return a dict of segment config values."""
+    path = Path(segments_path)
+    if not path.exists():
+        return {}
+    with open(path, "rb") as f:
+        config = tomllib.load(f)
+    result = {}
+    for seg_name, seg_cfg in config.get("segments", {}).items():
+        result[seg_name] = {
+            "min_risk": seg_cfg.get("min_risk"),
+            "max_risk": seg_cfg.get("max_risk"),
+            "optimum_risk": seg_cfg.get("optimum_risk"),
+        }
+    return result
+
+
 def create_empty_state() -> dbc.Alert:
     """Create an empty state message when no scenarios are available."""
     return dbc.Alert(
@@ -84,62 +113,98 @@ app.layout = dbc.Container(
         dbc.Row(
             [
                 dbc.Col(
-                    dbc.Card(
-                        [
-                            dbc.CardHeader("Configuration"),
-                            dbc.CardBody(
-                                [
-                                    dbc.Label("Global Risk Target (%)", html_for="risk-target-input"),
-                                    dbc.Input(
-                                        id="risk-target-input", type="number", value=1.0, step=0.1, className="mb-3"
-                                    ),
-                                    dbc.Label("Optimization Method", html_for="method-input"),
-                                    dbc.RadioItems(
-                                        id="method-input",
-                                        options=[
-                                            {"label": "Exact (MILP)", "value": "exact"},
-                                            {"label": "Greedy", "value": "greedy"},
-                                        ],
-                                        value="exact",
-                                        inline=True,
-                                        className="mb-3",
-                                    ),
-                                    dbc.Label("Scenario", html_for="scenario-dropdown"),
-                                    dcc.Dropdown(
-                                        id="scenario-dropdown",
-                                        options=[],
-                                        value=None,
-                                        clearable=False,
-                                        className="mb-3",
-                                    ),
-                                    dbc.Label("Segment Constraints (Optional TOML)", html_for="upload-constraints"),
-                                    dcc.Upload(
-                                        id="upload-constraints",
-                                        children=html.Div(["Drag and Drop or ", html.A("Select File")]),
-                                        style={
-                                            "width": "100%",
-                                            "height": "60px",
-                                            "lineHeight": "60px",
-                                            "borderWidth": "1px",
-                                            "borderStyle": "dashed",
-                                            "borderRadius": "5px",
-                                            "textAlign": "center",
-                                            "marginBottom": "10px",
-                                        },
-                                        multiple=False,
-                                    ),
-                                    html.Div(id="upload-filename"),
-                                    dbc.Button(
-                                        "Run Optimization",
-                                        id="run-button",
-                                        color="primary",
-                                        n_clicks=0,
-                                        className="w-100",
-                                    ),
-                                ]
-                            ),
-                        ]
-                    ),
+                    [
+                        dbc.Card(
+                            [
+                                dbc.CardHeader("Global Configuration"),
+                                dbc.CardBody(
+                                    [
+                                        dbc.Label("Global Risk Target (%)", html_for="risk-target-input"),
+                                        dbc.Input(
+                                            id="risk-target-input", type="number", value=1.0, step=0.1, className="mb-3"
+                                        ),
+                                        dbc.Label("Optimization Method", html_for="method-input"),
+                                        dbc.RadioItems(
+                                            id="method-input",
+                                            options=[
+                                                {"label": "Exact (MILP)", "value": "exact"},
+                                                {"label": "Greedy", "value": "greedy"},
+                                            ],
+                                            value="exact",
+                                            inline=True,
+                                            className="mb-3",
+                                        ),
+                                        dbc.Label("Scenario", html_for="scenario-dropdown"),
+                                        dcc.Dropdown(
+                                            id="scenario-dropdown",
+                                            options=[],
+                                            value=None,
+                                            clearable=False,
+                                            className="mb-3",
+                                        ),
+                                        dbc.Label(
+                                            "Global Production Floor (optional)",
+                                            html_for="global-prod-floor-input",
+                                        ),
+                                        dbc.Input(
+                                            id="global-prod-floor-input",
+                                            type="number",
+                                            value=None,
+                                            placeholder="No floor",
+                                            className="mb-3",
+                                        ),
+                                    ]
+                                ),
+                            ],
+                            className="mb-3",
+                        ),
+                        dbc.Card(
+                            [
+                                dbc.CardHeader("Segment Constraints"),
+                                dbc.CardBody(
+                                    [
+                                        html.P(
+                                            "Edit per-segment constraints below. "
+                                            "Values auto-populate from segments.toml when a scenario is selected.",
+                                            className="text-muted small mb-2",
+                                        ),
+                                        dash_table.DataTable(
+                                            id="constraints-table",
+                                            columns=[
+                                                {"name": "Segment", "id": "segment", "editable": False},
+                                                {"name": "Min Risk", "id": "min_risk", "type": "numeric"},
+                                                {"name": "Max Risk", "id": "max_risk", "type": "numeric"},
+                                                {"name": "Min Production", "id": "min_production", "type": "numeric"},
+                                                {"name": "Locked", "id": "locked", "presentation": "dropdown"},
+                                            ],
+                                            data=[],
+                                            editable=True,
+                                            row_deletable=False,
+                                            style_table={"overflowX": "auto"},
+                                            style_cell={"textAlign": "left", "padding": "4px 8px", "fontSize": "13px"},
+                                            style_header={"fontWeight": "bold"},
+                                            dropdown={
+                                                "locked": {
+                                                    "options": [
+                                                        {"label": "No", "value": "No"},
+                                                        {"label": "Yes", "value": "Yes"},
+                                                    ]
+                                                }
+                                            },
+                                        ),
+                                    ]
+                                ),
+                            ],
+                            className="mb-3",
+                        ),
+                        dbc.Button(
+                            "Run Optimization",
+                            id="run-button",
+                            color="primary",
+                            n_clicks=0,
+                            className="w-100 mb-3",
+                        ),
+                    ],
                     md=4,
                 ),
                 dbc.Col(
@@ -169,7 +234,6 @@ app.layout = dbc.Container(
                 ),
             ]
         ),
-        dcc.Store(id="constraints-store"),
         dcc.Store(id="results-csv-store"),
         dcc.Download(id="download-csv"),
     ],
@@ -200,26 +264,38 @@ def update_scenario_dropdown(_):
 
 
 @app.callback(
-    Output("constraints-store", "data"),
-    Output("upload-filename", "children"),
-    Input("upload-constraints", "contents"),
-    State("upload-constraints", "filename"),
+    Output("constraints-table", "data"),
+    Input("scenario-dropdown", "value"),
     prevent_initial_call=True,
 )
-def store_uploaded_constraints(contents, filename):
-    if contents is None:
-        return None, ""
+def populate_constraints_table(scenario):
+    """Auto-populate constraint table when scenario changes."""
+    if not scenario:
+        return []
 
-    content_type, content_string = contents.split(",")
-    decoded = base64.b64decode(content_string)
+    output_base = Path("output")
+    segments = get_segments_for_scenario(output_base, scenario)
+    if not segments:
+        return []
 
-    try:
-        constraints_text = decoded.decode("utf-8")
-        logger.info(f"Loaded constraints file: {filename}")
-        return constraints_text, f"Loaded: {filename}"
-    except Exception as e:
-        logger.error(f"Error loading constraints file: {e}")
-        return None, f"Error loading file: {e}"
+    # Load defaults from segments.toml
+    seg_config = load_segments_config()
+
+    rows = []
+    for seg in segments:
+        cfg = seg_config.get(seg, {})
+        rows.append(
+            {
+                "segment": seg,
+                "min_risk": cfg.get("min_risk"),
+                "max_risk": cfg.get("max_risk"),
+                "min_production": None,
+                "locked": "No",
+            }
+        )
+
+    logger.info(f"Populated constraints table for {len(rows)} segments (scenario={scenario})")
+    return rows
 
 
 @app.callback(
@@ -229,10 +305,11 @@ def store_uploaded_constraints(contents, filename):
     State("risk-target-input", "value"),
     State("method-input", "value"),
     State("scenario-dropdown", "value"),
-    State("constraints-store", "data"),
+    State("constraints-table", "data"),
+    State("global-prod-floor-input", "value"),
     prevent_initial_call=True,
 )
-def run_optimization(n_clicks, target, method, scenario, constraints_text):
+def run_optimization(n_clicks, target, method, scenario, table_data, global_prod_floor):
     if n_clicks == 0:
         return dash.no_update, dash.no_update
 
@@ -272,31 +349,52 @@ def run_optimization(n_clicks, target, method, scenario, constraints_text):
             dash.no_update,
         )
 
+    # Build SegmentConstraints from table data
     constraints = {}
-    if constraints_text:
-        try:
-            config = tomllib.loads(constraints_text)
-            for seg_name, seg_cfg in config.get("segments", {}).items():
-                min_r = seg_cfg.get("min_risk")
-                max_r = seg_cfg.get("max_risk")
-                if min_r is not None and max_r is not None:
-                    constraints[seg_name] = (float(min_r), float(max_r))
-                elif min_r is not None:
-                    constraints[seg_name] = (float(min_r), float("inf"))
-                elif max_r is not None:
-                    constraints[seg_name] = (0.0, float(max_r))
-            if constraints:
-                logger.info(f"Risk constraints loaded for: {list(constraints.keys())}")
-        except Exception as e:
-            logger.error(f"Error parsing constraints TOML: {e}")
-            return dbc.Alert(f"Error parsing constraints TOML: {e}", color="danger"), dash.no_update
+    if table_data:
+        for row in table_data:
+            seg = row.get("segment")
+            if not seg:
+                continue
+            sc = SegmentConstraints(
+                min_risk=row.get("min_risk") if row.get("min_risk") not in (None, "") else None,
+                max_risk=row.get("max_risk") if row.get("max_risk") not in (None, "") else None,
+                min_production=row.get("min_production") if row.get("min_production") not in (None, "") else None,
+            )
+            # Handle locking: if locked, use the current allocation's sol_fac (set after first run)
+            # For now, locked=Yes without a prior result means no lock
+            if row.get("locked") == "Yes" and row.get("locked_sol_fac") is not None:
+                sc.locked_sol_fac = int(row["locked_sol_fac"])
+            # Only add constraint if it has any non-None value
+            if (
+                sc.min_risk is not None
+                or sc.max_risk is not None
+                or sc.min_production is not None
+                or sc.locked_sol_fac is not None
+            ):
+                constraints[seg] = sc
+
+        if constraints:
+            logger.info(f"Segment constraints loaded for: {list(constraints.keys())}")
+
+    global_production_floor = global_prod_floor if global_prod_floor not in (None, "") else None
 
     logger.info(f"Running {method} optimization for target {target}% across {len(segments_found)} segments")
 
     try:
-        result = allocator.optimize(target, constraints, method=method)
+        result = allocator.optimize(
+            target,
+            constraints=constraints if constraints else None,
+            global_production_floor=global_production_floor,
+            method=method,
+        )
         result_df = result.to_full_dataframe()
         logger.info(f"Optimization successful for {len(segments_found)} segments")
+
+        # --- Binding constraints badges ---
+        binding_badges = []
+        for bc in result.binding_constraints:
+            binding_badges.append(dbc.Badge(bc.replace("_", " ").title(), color="warning", className="me-1"))
 
         # --- Create Visualizations ---
 
@@ -323,10 +421,10 @@ def run_optimization(n_clicks, target, method, scenario, constraints_text):
         apply_plotly_style(fig_prod)
 
         # --- Format Table ---
-        table_data = result_df.to_dict("records")
+        table_data_display = result_df.to_dict("records")
         table_columns = [{"name": col, "id": col} for col in result_df.columns]
 
-        for item in table_data:
+        for item in table_data_display:
             if "b2_ever_h6" in item and pd.notna(item["b2_ever_h6"]) and np.isfinite(item["b2_ever_h6"]):
                 item["b2_ever_h6"] = f"{item['b2_ever_h6']:.2%}"
             if "oa_amt_h0" in item and pd.notna(item["oa_amt_h0"]) and np.isfinite(item["oa_amt_h0"]):
@@ -334,7 +432,7 @@ def run_optimization(n_clicks, target, method, scenario, constraints_text):
 
         table = dash_table.DataTable(
             columns=table_columns,
-            data=table_data,
+            data=table_data_display,
             sort_action="native",
             page_size=10,
             style_table={"overflowX": "auto"},
@@ -394,9 +492,18 @@ def run_optimization(n_clicks, target, method, scenario, constraints_text):
         csv_string = result_df.to_csv(index=False)
 
         # --- Layout Results ---
-        results_layout = html.Div(
+        results_children = [
+            dbc.Alert(f"Optimization successful for {len(segments_found)} segments.", color="success"),
+        ]
+        if binding_badges:
+            results_children.append(
+                html.Div(
+                    [html.Strong("Binding constraints: ")] + binding_badges,
+                    className="mb-3",
+                )
+            )
+        results_children.extend(
             [
-                dbc.Alert(f"Optimization successful for {len(segments_found)} segments.", color="success"),
                 summary_cards,
                 html.Hr(),
                 dbc.Row(
@@ -412,6 +519,8 @@ def run_optimization(n_clicks, target, method, scenario, constraints_text):
                 table,
             ]
         )
+
+        results_layout = html.Div(results_children)
 
         return results_layout, csv_string
 

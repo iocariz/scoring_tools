@@ -54,7 +54,7 @@ reject_max_risk_multiplier = 3.0      # upper cap for per-bin multiplier (1.0-10
 # Hybrid MR risk inference (optional)
 # When enabled, uses MR-period observed risk per bin where sample size is sufficient,
 # falling back to main-period imputation for sparse bins. Helps detect model degradation.
-# use_mr_outcomes = true
+use_mr_outcomes = true
 # mr_min_obs_per_bin = 30
 
 # Fixed cutoffs (optional) - uncomment to skip optimization and use predefined cutoffs

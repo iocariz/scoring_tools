@@ -4,6 +4,7 @@ import pandas as pd
 from loguru import logger
 
 from src.config import PreprocessingSettings
+from src.constants import Columns
 
 
 class DataValidationError(Exception):
@@ -90,9 +91,23 @@ def load_and_prepare_data(settings: PreprocessingSettings, preloaded_data: pd.Da
             data[col] = data[col].astype("string").str.lower().str.replace(" ", "_").astype("category")
         logger.debug("Column names and categorical values standardized")
 
-    # Validate required columns exist after standardization
-    required_cols = settings.keep_vars + settings.indicators
+    # Validate required columns exist after standardization.
+    # H3 columns are optional — downstream code already handles their absence
+    # (e.g. mr_pipeline checks `"todu_30ever_h3_boo" in df.columns`).
+    h3_optional = {Columns.TODU_30EVER_H3, Columns.TODU_AMT_PILE_H3}
+    all_cols = list(dict.fromkeys(settings.keep_vars + settings.indicators))  # deduplicate, preserve order
+    required_cols = [c for c in all_cols if c not in h3_optional]
+    optional_cols = [c for c in all_cols if c in h3_optional]
+
     validate_data_columns(data, required_cols, "input data")
+
+    missing_optional = [c for c in optional_cols if c not in data.columns]
+    if missing_optional:
+        logger.warning(f"Optional H3 columns not found in data (will be skipped): {missing_optional}")
+        # Remove missing optional columns from settings so all downstream code
+        # receives a clean list without columns that don't exist in the data.
+        settings.keep_vars = [c for c in settings.keep_vars if c not in missing_optional]
+        settings.indicators = [c for c in settings.indicators if c not in missing_optional]
 
     # Schema validation: check types, value ranges, and categorical constraints
     from src.schema import validate_raw_data

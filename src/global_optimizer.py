@@ -20,6 +20,22 @@ from scipy.sparse import csc_array
 
 
 @dataclass
+class SegmentConstraints:
+    """Per-segment constraints for the global allocator."""
+
+    min_risk: float | None = None
+    max_risk: float | None = None
+    min_production: float | None = None  # production floor
+    locked_sol_fac: int | None = None  # lock to specific frontier point
+
+    def to_risk_tuple(self) -> tuple[float, float] | None:
+        """Convert to legacy (min_risk, max_risk) tuple."""
+        if self.min_risk is None and self.max_risk is None:
+            return None
+        return (self.min_risk or 0.0, self.max_risk or float("inf"))
+
+
+@dataclass
 class AllocationResult:
     global_risk: float
     global_production: float
@@ -28,6 +44,7 @@ class AllocationResult:
     method: str = ""
     target: float | None = None
     segment_details: dict[str, dict] = field(default_factory=dict)  # full frontier row per segment
+    binding_constraints: list[str] = field(default_factory=list)
 
     def to_dataframe(self) -> pd.DataFrame:
         """Return a DataFrame with allocation summary and swap details per segment."""
@@ -141,16 +158,27 @@ class GlobalAllocator:
         else:
             logger.info(f"Loaded frontier for {segment_name}: {len(sorted_df)} points")
 
-    def _warn_unknown_constraints(self, risk_constraints: dict | None) -> None:
-        if risk_constraints:
-            unknown = set(risk_constraints) - set(self.frontiers)
+    def _warn_unknown_constraints(self, constraints: dict | None) -> None:
+        if constraints:
+            unknown = set(constraints) - set(self.frontiers)
             if unknown:
                 logger.warning(f"risk_constraints for unknown segments ignored: {unknown}")
+
+    @staticmethod
+    def _convert_legacy_constraints(
+        risk_constraints: dict[str, tuple[float, float]] | None,
+    ) -> dict[str, SegmentConstraints]:
+        """Convert old-style (min_risk, max_risk) tuples to SegmentConstraints."""
+        if not risk_constraints:
+            return {}
+        return {seg: SegmentConstraints(min_risk=lo, max_risk=hi) for seg, (lo, hi) in risk_constraints.items()}
 
     def optimize(
         self,
         global_risk_target: float,
         risk_constraints: dict[str, tuple[float, float]] | None = None,
+        constraints: dict[str, SegmentConstraints] | None = None,
+        global_production_floor: float | None = None,
         method: str = "exact",
     ) -> AllocationResult:
         """
@@ -158,6 +186,13 @@ class GlobalAllocator:
 
         Parameters
         ----------
+        risk_constraints : dict, optional
+            Legacy format: {segment: (min_risk, max_risk)}.
+        constraints : dict, optional
+            New format: {segment: SegmentConstraints(...)}.
+            Takes precedence over risk_constraints.
+        global_production_floor : float, optional
+            Minimum total production across all segments.
         method : str
             "exact" uses MILP solver (globally optimal).
             "greedy" uses hill-climbing heuristic.
@@ -165,18 +200,28 @@ class GlobalAllocator:
         if not self.frontiers:
             raise ValueError("No frontiers loaded. Call load_frontier() first.")
 
+        # Convert legacy risk_constraints to SegmentConstraints if needed
+        if risk_constraints and not constraints:
+            constraints = self._convert_legacy_constraints(risk_constraints)
+
         if method == "exact":
             try:
-                return self.optimize_exact(global_risk_target, risk_constraints)
+                return self.optimize_exact(
+                    global_risk_target, constraints=constraints, global_production_floor=global_production_floor
+                )
             except (ValueError, RuntimeError) as e:
                 warnings.warn(
                     f"Exact solver failed ({e}), falling back to greedy.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
-                return self.optimize_greedy(global_risk_target, risk_constraints)
+                return self.optimize_greedy(
+                    global_risk_target, constraints=constraints, global_production_floor=global_production_floor
+                )
         elif method == "greedy":
-            return self.optimize_greedy(global_risk_target, risk_constraints)
+            return self.optimize_greedy(
+                global_risk_target, constraints=constraints, global_production_floor=global_production_floor
+            )
         else:
             raise ValueError(f"Unknown method '{method}'. Use 'exact' or 'greedy'.")
 
@@ -187,6 +232,8 @@ class GlobalAllocator:
         self,
         global_risk_target: float,
         risk_constraints: dict[str, tuple[float, float]] | None = None,
+        constraints: dict[str, SegmentConstraints] | None = None,
+        global_production_floor: float | None = None,
     ) -> AllocationResult:
         """
         Solve allocation as a Mixed-Integer Linear Program.
@@ -196,12 +243,16 @@ class GlobalAllocator:
         - Subject to:
             Σ_j x[s,j] = 1               (one point per segment)
             Σ p[s,j](r[s,j] - T) x[s,j] ≤ 0  (global risk ≤ T)
-            optional per-segment risk bounds
+            optional per-segment risk/production bounds, segment locking
         """
         if not self.frontiers:
             raise ValueError("No frontiers loaded. Call load_frontier() first.")
 
-        self._warn_unknown_constraints(risk_constraints)
+        # Convert legacy risk_constraints if new-style not provided
+        if risk_constraints and not constraints:
+            constraints = self._convert_legacy_constraints(risk_constraints)
+
+        self._warn_unknown_constraints(constraints)
 
         segments = sorted(self.frontiers.keys())
         # Build variable index map: var_offset[s] is the starting index for segment s
@@ -220,7 +271,35 @@ class GlobalAllocator:
 
         # All variables are binary
         integrality = np.ones(n_vars)
-        bounds = Bounds(lb=0, ub=1)
+        lb = np.zeros(n_vars)
+        ub = np.ones(n_vars)
+
+        # --- Handle segment locking via variable bounds ---
+        locked_segments: set[str] = set()
+        if constraints:
+            for seg, sc in constraints.items():
+                if seg not in self.frontiers or sc.locked_sol_fac is None:
+                    continue
+                df = self.frontiers[seg]
+                match = df[df["sol_fac"] == sc.locked_sol_fac]
+                if match.empty:
+                    raise ValueError(
+                        f"Locked sol_fac={sc.locked_sol_fac} not found in frontier for segment '{seg}'. "
+                        f"Available: {df['sol_fac'].tolist()}"
+                    )
+                locked_idx = match.index[0]
+                off = var_offset[seg]
+                k = len(df)
+                # Fix all vars for this segment: locked one to 1, rest to 0
+                for j in range(k):
+                    if j == locked_idx:
+                        lb[off + j] = 1.0
+                    else:
+                        ub[off + j] = 0.0
+                locked_segments.add(seg)
+                logger.info(f"Segment '{seg}' locked to sol_fac={sc.locked_sol_fac} (frontier index {locked_idx})")
+
+        bounds = Bounds(lb=lb, ub=ub)
 
         # --- Equality constraints (one point per segment) ---
         eq_rows, eq_cols, eq_data = [], [], []
@@ -237,6 +316,7 @@ class GlobalAllocator:
         # --- Inequality constraints ---
         ub_rows, ub_cols, ub_data = [], [], []
         b_ub_list: list[float] = []
+        ub_labels: list[str] = []  # for binding constraint detection
 
         # Row 0: global risk  Σ p[s,j]*(r[s,j] - T) * x[s,j] ≤ 0
         for seg in segments:
@@ -248,44 +328,75 @@ class GlobalAllocator:
             ub_cols.extend(range(off, off + k))
             ub_data.extend(coeffs.tolist())
         b_ub_list.append(0.0)
+        ub_labels.append("global_risk")
 
-        # Per-segment risk bounds (optional)
         row_idx = 1
-        if risk_constraints:
-            for seg, (min_r, max_r) in risk_constraints.items():
+
+        # Per-segment constraints (risk bounds, production floor)
+        if constraints:
+            for seg, sc in constraints.items():
                 if seg not in self.frontiers:
                     continue
                 df = self.frontiers[seg]
                 off = var_offset[seg]
                 k = len(df)
-                risks = df["b2_ever_h6"].values
 
-                # min_r ≤ Σ r[s,j]*x[s,j]  →  -Σ r[s,j]*x[s,j] ≤ -min_r
+                # Min risk: -Σ r[s,j]*x[s,j] ≤ -min_r
+                if sc.min_risk is not None:
+                    risks = df["b2_ever_h6"].values
+                    ub_rows.extend([row_idx] * k)
+                    ub_cols.extend(range(off, off + k))
+                    ub_data.extend((-risks).tolist())
+                    b_ub_list.append(-sc.min_risk)
+                    ub_labels.append(f"{seg}_min_risk")
+                    row_idx += 1
+
+                # Max risk: Σ r[s,j]*x[s,j] ≤ max_r
+                if sc.max_risk is not None:
+                    risks = df["b2_ever_h6"].values
+                    ub_rows.extend([row_idx] * k)
+                    ub_cols.extend(range(off, off + k))
+                    ub_data.extend(risks.tolist())
+                    b_ub_list.append(sc.max_risk)
+                    ub_labels.append(f"{seg}_max_risk")
+                    row_idx += 1
+
+                # Per-segment production floor: -Σ p[s,j]*x[s,j] ≤ -min_production
+                if sc.min_production is not None:
+                    prods = df["oa_amt_h0"].values
+                    ub_rows.extend([row_idx] * k)
+                    ub_cols.extend(range(off, off + k))
+                    ub_data.extend((-prods).tolist())
+                    b_ub_list.append(-sc.min_production)
+                    ub_labels.append(f"{seg}_min_production")
+                    row_idx += 1
+
+        # Global production floor: -Σ_all p[s,j]*x[s,j] ≤ -global_production_floor
+        if global_production_floor is not None:
+            for seg in segments:
+                df = self.frontiers[seg]
+                off = var_offset[seg]
+                k = len(df)
+                prods = df["oa_amt_h0"].values
                 ub_rows.extend([row_idx] * k)
                 ub_cols.extend(range(off, off + k))
-                ub_data.extend((-risks).tolist())
-                b_ub_list.append(-min_r)
-                row_idx += 1
-
-                # Σ r[s,j]*x[s,j] ≤ max_r
-                ub_rows.extend([row_idx] * k)
-                ub_cols.extend(range(off, off + k))
-                ub_data.extend(risks.tolist())
-                b_ub_list.append(max_r)
-                row_idx += 1
+                ub_data.extend((-prods).tolist())
+            b_ub_list.append(-global_production_floor)
+            ub_labels.append("global_production_floor")
+            row_idx += 1
 
         n_ub = row_idx
         A_ub = csc_array((ub_data, (ub_rows, ub_cols)), shape=(n_ub, n_vars))
         b_ub = np.array(b_ub_list)
 
-        constraints = [
+        milp_constraints = [
             LinearConstraint(A_eq, b_eq, b_eq),
             LinearConstraint(A_ub, -np.inf, b_ub),
         ]
 
         result = milp(
             c=c,
-            constraints=constraints,
+            constraints=milp_constraints,
             integrality=integrality,
             bounds=bounds,
         )
@@ -325,7 +436,18 @@ class GlobalAllocator:
 
         global_risk = total_risk_num / total_prod if total_prod > 0 else 0.0
 
+        # Detect binding constraints (slack < 1e-6)
+        binding = []
+        if n_ub > 0:
+            ub_values = A_ub.toarray() @ x
+            for i, label in enumerate(ub_labels):
+                slack = b_ub[i] - ub_values[i]
+                if abs(slack) < 1e-6:
+                    binding.append(label)
+
         logger.info(f"MILP solved: global_risk={global_risk:.4f}%, production={total_prod:,.0f}")
+        if binding:
+            logger.info(f"Binding constraints: {binding}")
         return AllocationResult(
             global_risk=global_risk,
             global_production=total_prod,
@@ -334,6 +456,7 @@ class GlobalAllocator:
             method="exact",
             target=global_risk_target,
             segment_details=segment_details,
+            binding_constraints=binding,
         )
 
     # ------------------------------------------------------------------
@@ -343,6 +466,8 @@ class GlobalAllocator:
         self,
         global_risk_target: float,
         risk_constraints: dict[str, tuple[float, float]] | None = None,
+        constraints: dict[str, SegmentConstraints] | None = None,
+        global_production_floor: float | None = None,
         max_iterations: int = 10_000,
     ) -> AllocationResult:
         """
@@ -351,22 +476,56 @@ class GlobalAllocator:
         if not self.frontiers:
             raise ValueError("No frontiers loaded. Call load_frontier() first.")
 
-        self._warn_unknown_constraints(risk_constraints)
+        # Convert legacy risk_constraints if new-style not provided
+        if risk_constraints and not constraints:
+            constraints = self._convert_legacy_constraints(risk_constraints)
+
+        self._warn_unknown_constraints(constraints)
 
         # 1. Initialize with minimum viable solution for each segment
         current_indices = dict.fromkeys(self.frontiers, 0)
+        locked_segments: set[str] = set()
 
-        # Apply min_risk constraints
-        if risk_constraints:
-            for seg, (min_r, _max_r) in risk_constraints.items():
-                if seg in self.frontiers:
-                    # Find first solution >= min_r
+        if constraints:
+            for seg, sc in constraints.items():
+                if seg not in self.frontiers:
+                    continue
+
+                # Segment locking: fix to the locked frontier point
+                if sc.locked_sol_fac is not None:
                     df = self.frontiers[seg]
-                    valid_idx = df[df["b2_ever_h6"] >= min_r].index
+                    match = df[df["sol_fac"] == sc.locked_sol_fac]
+                    if match.empty:
+                        raise ValueError(
+                            f"Locked sol_fac={sc.locked_sol_fac} not found in frontier for segment '{seg}'. "
+                            f"Available: {df['sol_fac'].tolist()}"
+                        )
+                    current_indices[seg] = match.index[0]
+                    locked_segments.add(seg)
+                    logger.info(f"Greedy: segment '{seg}' locked to sol_fac={sc.locked_sol_fac}")
+                    continue
+
+                # Apply min_risk constraints
+                if sc.min_risk is not None:
+                    df = self.frontiers[seg]
+                    valid_idx = df[df["b2_ever_h6"] >= sc.min_risk].index
                     if not valid_idx.empty:
                         current_indices[seg] = valid_idx[0]
                     else:
-                        logger.warning(f"Segment {seg} cannot meet min_risk {min_r}. Using max available.")
+                        logger.warning(f"Segment {seg} cannot meet min_risk {sc.min_risk}. Using max available.")
+                        current_indices[seg] = df.index[-1]
+
+                # Apply min_production: start at first point meeting production floor
+                if sc.min_production is not None:
+                    df = self.frontiers[seg]
+                    valid_idx = df[df["oa_amt_h0"] >= sc.min_production].index
+                    if not valid_idx.empty:
+                        # Take the max of current index and first valid production index
+                        current_indices[seg] = max(current_indices[seg], valid_idx[0])
+                    else:
+                        logger.warning(
+                            f"Segment {seg} cannot meet min_production {sc.min_production}. Using max available."
+                        )
                         current_indices[seg] = df.index[-1]
 
         # 2. Greedy Hill Climbing
@@ -401,6 +560,10 @@ class GlobalAllocator:
             best_segment_to_increment = None
 
             for seg in sorted(self.frontiers.keys()):
+                # Skip locked segments
+                if seg in locked_segments:
+                    continue
+
                 idx = current_indices[seg]
                 df = self.frontiers[seg]
 
@@ -410,9 +573,8 @@ class GlobalAllocator:
                 next_row = df.iloc[idx + 1]
 
                 # Check max_risk constraint per segment
-                if risk_constraints and seg in risk_constraints:
-                    _, max_r = risk_constraints[seg]
-                    if next_row["b2_ever_h6"] > max_r:
+                if constraints and seg in constraints and constraints[seg].max_risk is not None:
+                    if next_row["b2_ever_h6"] > constraints[seg].max_risk:
                         continue
 
                 # Calculate deltas
@@ -484,6 +646,12 @@ class GlobalAllocator:
             final_risk_num += row["b2_ever_h6"] * row["oa_amt_h0"]
 
         final_global_risk = final_risk_num / final_total_prod if final_total_prod > 0 else 0.0
+
+        # Warn if global production floor is not met (greedy only grows, so this is informational)
+        if global_production_floor is not None and final_total_prod < global_production_floor:
+            logger.warning(
+                f"Greedy result production {final_total_prod:,.0f} is below global floor {global_production_floor:,.0f}"
+            )
 
         return AllocationResult(
             global_risk=final_global_risk,

@@ -8,7 +8,7 @@ import warnings
 import pandas as pd
 import pytest
 
-from src.global_optimizer import AllocationResult, GlobalAllocator
+from src.global_optimizer import AllocationResult, GlobalAllocator, SegmentConstraints
 
 
 def _make_frontier(points: list[tuple[int, float, float]]) -> pd.DataFrame:
@@ -429,3 +429,209 @@ class TestAllocationResult:
     def test_unknown_method(self, two_segment_allocator):
         with pytest.raises(ValueError, match="Unknown method"):
             two_segment_allocator.optimize(global_risk_target=1.0, method="invalid")
+
+
+# ---------------------------------------------------------------------------
+# SegmentConstraints dataclass tests
+# ---------------------------------------------------------------------------
+
+
+class TestSegmentConstraints:
+    def test_segment_constraints_defaults(self):
+        """All fields default to None."""
+        sc = SegmentConstraints()
+        assert sc.min_risk is None
+        assert sc.max_risk is None
+        assert sc.min_production is None
+        assert sc.locked_sol_fac is None
+
+    def test_to_risk_tuple(self):
+        """Conversion to legacy (min_risk, max_risk) format."""
+        sc = SegmentConstraints(min_risk=0.5, max_risk=1.5)
+        assert sc.to_risk_tuple() == (0.5, 1.5)
+
+    def test_to_risk_tuple_partial_min(self):
+        sc = SegmentConstraints(min_risk=0.5)
+        assert sc.to_risk_tuple() == (0.5, float("inf"))
+
+    def test_to_risk_tuple_partial_max(self):
+        sc = SegmentConstraints(max_risk=1.5)
+        assert sc.to_risk_tuple() == (0.0, 1.5)
+
+    def test_to_risk_tuple_none(self):
+        sc = SegmentConstraints()
+        assert sc.to_risk_tuple() is None
+
+
+# ---------------------------------------------------------------------------
+# Production floor tests
+# ---------------------------------------------------------------------------
+
+
+class TestProductionFloor:
+    def test_milp_respects_per_segment_production_floor(self):
+        """Per-segment production floor forces a minimum production for that segment."""
+        alloc = GlobalAllocator()
+        # A: (0, 0.5%, 500), (1, 1.0%, 1500), (2, 1.5%, 3000)
+        # B: (0, 0.5%, 500), (1, 1.0%, 1000), (2, 1.5%, 1500)
+        alloc.load_frontier("A", _make_frontier([(0, 0.5, 500), (1, 1.0, 1500), (2, 1.5, 3000)]))
+        alloc.load_frontier("B", _make_frontier([(0, 0.5, 500), (1, 1.0, 1000), (2, 1.5, 1500)]))
+
+        # Without floor, solver might pick A=0 for lower risk
+        # With floor A >= 1500, must pick at least sol_fac=1
+        result = alloc.optimize_exact(
+            global_risk_target=2.0,
+            constraints={"A": SegmentConstraints(min_production=1500)},
+        )
+        assert result.segment_metrics["A"]["production"] >= 1500
+
+    def test_milp_respects_global_production_floor(self):
+        """Global production floor ensures total production meets minimum."""
+        alloc = GlobalAllocator()
+        alloc.load_frontier("A", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000), (2, 1.5, 3000)]))
+        alloc.load_frontier("B", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000), (2, 1.5, 3000)]))
+
+        result = alloc.optimize_exact(
+            global_risk_target=2.0,
+            global_production_floor=5000,
+        )
+        assert result.global_production >= 5000
+
+    def test_infeasible_production_floor_raises(self):
+        """Production floor impossible with risk target raises RuntimeError."""
+        alloc = GlobalAllocator()
+        # Max production is 200 + 200 = 400; floor of 1000 is impossible
+        alloc.load_frontier("A", _make_frontier([(0, 0.5, 100), (1, 1.0, 200)]))
+        alloc.load_frontier("B", _make_frontier([(0, 0.5, 100), (1, 1.0, 200)]))
+
+        with pytest.raises(RuntimeError):
+            alloc.optimize_exact(
+                global_risk_target=0.5,
+                global_production_floor=1000,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Segment locking tests
+# ---------------------------------------------------------------------------
+
+
+class TestSegmentLocking:
+    def test_milp_locked_segment_uses_fixed_point(self):
+        """Lock segment A to sol_fac=1, verify the allocation respects it."""
+        alloc = GlobalAllocator()
+        alloc.load_frontier("A", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000), (2, 1.5, 3000)]))
+        alloc.load_frontier("B", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000), (2, 1.5, 3000)]))
+
+        result = alloc.optimize_exact(
+            global_risk_target=2.0,
+            constraints={"A": SegmentConstraints(locked_sol_fac=1)},
+        )
+        assert result.allocations["A"] == 1
+        assert result.segment_metrics["A"]["risk"] == pytest.approx(1.0)
+        assert result.segment_metrics["A"]["production"] == pytest.approx(2000)
+
+    def test_greedy_locked_segment_skipped(self):
+        """Greedy skips locked segment in hill-climbing."""
+        alloc = GlobalAllocator()
+        alloc.load_frontier("A", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000), (2, 1.5, 3000)]))
+        alloc.load_frontier("B", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000), (2, 1.5, 3000)]))
+
+        result = alloc.optimize_greedy(
+            global_risk_target=2.0,
+            constraints={"A": SegmentConstraints(locked_sol_fac=0)},
+        )
+        # A is locked to sol_fac=0, B should be free to optimize
+        assert result.allocations["A"] == 0
+        assert result.segment_metrics["A"]["production"] == pytest.approx(1000)
+        # B should go higher since it has budget
+        assert result.allocations["B"] >= 1
+
+    def test_locked_segment_invalid_sol_fac_raises(self):
+        """Non-existent sol_fac raises ValueError."""
+        alloc = GlobalAllocator()
+        alloc.load_frontier("A", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000)]))
+
+        with pytest.raises(ValueError, match="Locked sol_fac=99 not found"):
+            alloc.optimize_exact(
+                global_risk_target=2.0,
+                constraints={"A": SegmentConstraints(locked_sol_fac=99)},
+            )
+
+    def test_greedy_locked_invalid_sol_fac_raises(self):
+        """Greedy also raises ValueError for non-existent locked sol_fac."""
+        alloc = GlobalAllocator()
+        alloc.load_frontier("A", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000)]))
+
+        with pytest.raises(ValueError, match="Locked sol_fac=99 not found"):
+            alloc.optimize_greedy(
+                global_risk_target=2.0,
+                constraints={"A": SegmentConstraints(locked_sol_fac=99)},
+            )
+
+
+# ---------------------------------------------------------------------------
+# Binding constraints tests
+# ---------------------------------------------------------------------------
+
+
+class TestBindingConstraints:
+    def test_binding_global_risk_detected(self):
+        """Tight global risk target should appear in binding_constraints."""
+        alloc = GlobalAllocator()
+        # With target=1.0, the solver is forced to pick low-risk options
+        alloc.load_frontier("A", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000), (2, 2.0, 5000)]))
+        alloc.load_frontier("B", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000), (2, 2.0, 5000)]))
+
+        result = alloc.optimize_exact(global_risk_target=1.0)
+        assert "global_risk" in result.binding_constraints
+
+    def test_no_binding_when_slack(self):
+        """Very loose target should not bind."""
+        alloc = GlobalAllocator()
+        alloc.load_frontier("A", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000)]))
+        alloc.load_frontier("B", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000)]))
+
+        # Target of 10% is very loose — both segments pick max production
+        result = alloc.optimize_exact(global_risk_target=10.0)
+        assert "global_risk" not in result.binding_constraints
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility tests
+# ---------------------------------------------------------------------------
+
+
+class TestBackwardCompatibility:
+    def test_legacy_risk_constraints_still_work(self, two_segment_allocator):
+        """Old-style risk_constraints dict still works via optimize()."""
+        result = two_segment_allocator.optimize(
+            global_risk_target=2.0,
+            risk_constraints={"A": (0.9, 1.1)},
+        )
+        assert result.segment_metrics["A"]["risk"] == pytest.approx(1.0)
+
+    def test_legacy_risk_constraints_exact(self, two_segment_allocator):
+        """Old-style risk_constraints dict works with optimize_exact directly."""
+        result = two_segment_allocator.optimize_exact(
+            global_risk_target=2.0,
+            risk_constraints={"A": (0.9, 1.1)},
+        )
+        assert result.segment_metrics["A"]["risk"] == pytest.approx(1.0)
+
+    def test_legacy_risk_constraints_greedy(self, two_segment_allocator):
+        """Old-style risk_constraints dict works with optimize_greedy directly."""
+        result = two_segment_allocator.optimize_greedy(
+            global_risk_target=2.0,
+            risk_constraints={"A": (0.9, 1.1)},
+        )
+        assert result.segment_metrics["A"]["risk"] >= 0.9
+
+    def test_new_constraints_take_precedence(self, two_segment_allocator):
+        """When both risk_constraints and constraints are given, constraints wins."""
+        result = two_segment_allocator.optimize(
+            global_risk_target=2.0,
+            risk_constraints={"A": (1.4, 1.6)},  # Would force A to sol_fac=2
+            constraints={"A": SegmentConstraints(min_risk=0.9, max_risk=1.1)},  # Forces A to sol_fac=1
+        )
+        assert result.segment_metrics["A"]["risk"] == pytest.approx(1.0)
