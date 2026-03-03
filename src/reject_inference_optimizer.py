@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from src.constants import Suffixes
+from src.constants import DEFAULT_RANDOM_STATE, Suffixes
 from src.optimization_utils import CellGrid, evaluate_solution, milp_solve_cutoffs
 from src.reject_inference import apply_parceling_adjustment
 from src.utils import calculate_b2_ever_h6
@@ -304,7 +304,7 @@ def run_reject_inference_optimization_optuna(
             return float("inf")
         return row["calibration_error"]
 
-    sampler = optuna.samplers.TPESampler(seed=42)
+    sampler = optuna.samplers.TPESampler(seed=DEFAULT_RANDOM_STATE)
     study = optuna.create_study(direction="minimize", sampler=sampler)
     study.optimize(objective, n_trials=n_trials)
 

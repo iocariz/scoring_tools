@@ -942,7 +942,12 @@ def main():
         print(f"{'=' * 60}")
         try:
             consolidated_df, _ = generate_consolidation_report(
-                output_base=args.output, segments=segments, supersegments=all_supersegments, output_path=args.output
+                output_base=args.output,
+                segments=segments,
+                supersegments=all_supersegments,
+                output_path=args.output,
+                multiplier=base_config.get("multiplier", 7),
+                multiplier_h3=base_config.get("multiplier_h3", 4),
             )
             print("\nConsolidated report saved to:")
             print(f"  - {args.output}/consolidated_risk_production.csv")
@@ -1028,6 +1033,8 @@ def main():
                     segments=successful_segments,
                     supersegments=all_supersegments,
                     output_path=args.output,
+                    multiplier=base_config.get("multiplier", 7),
+                    multiplier_h3=base_config.get("multiplier_h3", 4),
                 )
                 print("\nConsolidated report saved to:")
                 print(f"  - {args.output}/consolidated_risk_production.csv")

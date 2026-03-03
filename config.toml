@@ -1,7 +1,7 @@
 [preprocessing]
 keep_vars = [
     "authorization_id", "mis_date", "status_name", "risk_score_rf", "se_decision_id",
-    "reject_reason", "score_rf", "segment_cut_off", "early_bad", "income_t1t2_m",
+    "reject_reason", "score_rf", "segment_cut_off", "early_bad",
     "todu_30ever_h3", "todu_amt_pile_h3"
 ]
 indicators = [
@@ -28,7 +28,7 @@ score_measures = [
 log_level = "INFO"
 data_path = "data/demanda_direct_out.sas7bdat"
 n_months = 24
-variables = ['sc_octroi_new_clus', 'new_efx_clus', 'income_bin']
+variables = ['sc_octroi_new_clus', 'new_efx_clus']
 inference_variables = ['sc_octroi_new_clus', 'new_efx_clus']
 multiplier = 7
 multiplier_h3 = 4
@@ -71,11 +71,11 @@ use_mr_outcomes = true
 # To enable: 1) uncomment the blocks below, 2) add "income_t1_m" to keep_vars,
 # 3) set variables = ['sc_octroi_new_clus', 'new_efx_clus', 'income_bin']
 #
-[preprocessing.bins.income_bin]
-source_col = "income_t1t2_m"
-output_col = "income_bin"
-max_bins = 2
-method = "optimization"     # "quantile" (default) or "optimization" (production-weighted risk split)
+# [preprocessing.bins.income_bin]
+# source_col = "income_t1t2_m"
+# output_col = "income_bin"
+# max_bins = 2
+# method = "optimization"     # "quantile" (default) or "optimization" (production-weighted risk split)
 
 # # bin_edges = [-inf, 3000.0, inf]  # Optional: override with fixed edges (skips supervised learning)
 

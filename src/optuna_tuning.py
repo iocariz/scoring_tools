@@ -246,12 +246,14 @@ def tune_linear_models(
         try:
             return eval_model(model, raw_data, cv_folds, random_state)
         except Exception:
+            logger.debug(f"Model evaluation failed for {type(model).__name__}: {model}", exc_info=True)
             return np.inf, 0.0
 
     def safe_eval_fresh(model):
         try:
             return eval_model(model, raw_data, cv_folds, fresh_seed)
         except Exception:
+            logger.debug(f"Fresh-seed evaluation failed for {type(model).__name__}: {model}", exc_info=True)
             return np.inf, 0.0
 
     results = []

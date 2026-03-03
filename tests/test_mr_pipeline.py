@@ -519,16 +519,18 @@ class TestComputeHybridMRRisk:
 
     def test_h3_extrapolation_replaces_direct_mr(self, merge_keys):
         """When H3 data exists and ratio is valid, bins use h3_extrapolated risk source."""
-        # Main-period data with H3 columns
+        # Main-period data with H3 columns — need enough observations per bin (>= min_obs)
+        rng_main = np.random.RandomState(99)
+        n_main = 35  # > min_obs=30
         data_booked = pd.DataFrame(
             {
-                "bin_a": [1, 1, 2, 2],
-                "bin_b": [1, 1, 1, 1],
-                "todu_30ever_h6": [10.0, 10.0, 5.0, 5.0],
-                "todu_amt_pile_h6": [100.0, 100.0, 200.0, 200.0],
-                "todu_30ever_h3": [5.0, 5.0, 3.0, 3.0],
-                "todu_amt_pile_h3": [90.0, 90.0, 180.0, 180.0],
-                "status_name": ["booked"] * 4,
+                "bin_a": [1] * n_main + [2] * n_main,
+                "bin_b": [1] * (2 * n_main),
+                "todu_30ever_h6": np.concatenate([rng_main.uniform(8, 12, n_main), rng_main.uniform(4, 6, n_main)]),
+                "todu_amt_pile_h6": np.concatenate([rng_main.uniform(90, 110, n_main), rng_main.uniform(190, 210, n_main)]),
+                "todu_30ever_h3": np.concatenate([rng_main.uniform(4, 6, n_main), rng_main.uniform(2, 4, n_main)]),
+                "todu_amt_pile_h3": np.concatenate([rng_main.uniform(80, 100, n_main), rng_main.uniform(170, 190, n_main)]),
+                "status_name": ["booked"] * (2 * n_main),
             }
         )
 
@@ -691,15 +693,17 @@ class TestComputeHybridMRRisk:
 
     def test_h6_h3_ratio_in_comparison_df(self, merge_keys):
         """When H3 is available, h6_h3_ratio column appears in comparison_df with correct values."""
+        rng_main = np.random.RandomState(99)
+        n_main = 35  # > min_obs=30
         data_booked = pd.DataFrame(
             {
-                "bin_a": [1, 1, 2, 2],
-                "bin_b": [1, 1, 1, 1],
-                "todu_30ever_h6": [10.0, 10.0, 5.0, 5.0],
-                "todu_amt_pile_h6": [100.0, 100.0, 200.0, 200.0],
-                "todu_30ever_h3": [5.0, 5.0, 3.0, 3.0],
-                "todu_amt_pile_h3": [90.0, 90.0, 180.0, 180.0],
-                "status_name": ["booked"] * 4,
+                "bin_a": [1] * n_main + [2] * n_main,
+                "bin_b": [1] * (2 * n_main),
+                "todu_30ever_h6": np.concatenate([rng_main.uniform(8, 12, n_main), rng_main.uniform(4, 6, n_main)]),
+                "todu_amt_pile_h6": np.concatenate([rng_main.uniform(90, 110, n_main), rng_main.uniform(190, 210, n_main)]),
+                "todu_30ever_h3": np.concatenate([rng_main.uniform(4, 6, n_main), rng_main.uniform(2, 4, n_main)]),
+                "todu_amt_pile_h3": np.concatenate([rng_main.uniform(80, 100, n_main), rng_main.uniform(170, 190, n_main)]),
+                "status_name": ["booked"] * (2 * n_main),
             }
         )
 
@@ -722,9 +726,10 @@ class TestComputeHybridMRRisk:
 
         assert "h6_h3_ratio" in comparison_df.columns
 
-        # Verify ratio = b2_main / b2_main_h3
+        # Verify ratio = clipped(b2_main / b2_main_h3) within [0.5, 5.0]
         for _, row in comparison_df.iterrows():
-            expected_ratio = row["b2_main"] / row["b2_main_h3"]
+            raw_ratio = row["b2_main"] / row["b2_main_h3"]
+            expected_ratio = np.clip(raw_ratio, 0.5, 5.0)
             assert np.isclose(row["h6_h3_ratio"], expected_ratio), (
                 f"Expected ratio {expected_ratio}, got {row['h6_h3_ratio']}"
             )

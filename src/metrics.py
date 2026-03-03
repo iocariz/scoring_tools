@@ -66,7 +66,7 @@ def compute_metrics(y_true, scores):
     return gini, roc_auc, ks, cumulative_true_positive
 
 
-def bootstrap_confidence_interval(y_true, y_scores, n_iterations=1000, alpha=0.05, random_state=42):
+def bootstrap_confidence_interval(y_true, y_scores, n_iterations=1000, alpha=0.05, random_state=DEFAULT_RANDOM_STATE):
     """Compute bootstrap confidence interval for Gini and KS."""
     if random_state is None:
         random_state = DEFAULT_RANDOM_STATE

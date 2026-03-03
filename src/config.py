@@ -252,6 +252,11 @@ class PreprocessingSettings(BaseModel):
     max_swapin_production_pct: float | None = Field(default=None, ge=0, le=100)
     max_swapin_risk: float | None = Field(default=None, ge=0, le=100)
 
+    # MILP / Pareto / bootstrap tuning
+    milp_time_limit: float = Field(default=30.0, gt=0, description="MILP solver time limit in seconds")
+    pareto_n_points: int = Field(default=50, ge=5, le=500, description="Number of risk targets in Pareto sweep")
+    n_bootstraps: int = Field(default=1000, ge=100, le=50000, description="Bootstrap replicates for CI estimation")
+
     # Reject inference settings
     reject_inference_method: Literal["none", "parceling"] = "none"
     reject_parceling_method: Literal["linear", "power", "sigmoid"] = "linear"

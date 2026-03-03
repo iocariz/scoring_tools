@@ -21,6 +21,7 @@ import plotly.graph_objects as go
 from loguru import logger
 from plotly.subplots import make_subplots
 
+from .constants import DEFAULT_RISK_MULTIPLIER, DEFAULT_RISK_MULTIPLIER_H3
 from .utils import calculate_b2_ever_h6
 
 
@@ -32,6 +33,10 @@ class ConsolidatedMetrics:
     period: str  # 'main' or 'mr'
     scenario: str
     segments: list[str]
+
+    # Risk multipliers (from config; default to constants for backwards compatibility)
+    multiplier: float = float(DEFAULT_RISK_MULTIPLIER)
+    multiplier_h3: float = float(DEFAULT_RISK_MULTIPLIER_H3)
 
     # Aggregated metrics - Production (€)
     actual_production: float = 0.0
@@ -72,7 +77,8 @@ class ConsolidatedMetrics:
         return float(
             np.nan_to_num(
                 calculate_b2_ever_h6(
-                    self.actual_todu_30ever_h6, self.actual_todu_amt_pile_h6, as_percentage=True, decimals=6
+                    self.actual_todu_30ever_h6, self.actual_todu_amt_pile_h6,
+                    multiplier=self.multiplier, as_percentage=True, decimals=6,
                 )
             )
         )
@@ -82,7 +88,8 @@ class ConsolidatedMetrics:
         return float(
             np.nan_to_num(
                 calculate_b2_ever_h6(
-                    self.optimum_todu_30ever_h6, self.optimum_todu_amt_pile_h6, as_percentage=True, decimals=6
+                    self.optimum_todu_30ever_h6, self.optimum_todu_amt_pile_h6,
+                    multiplier=self.multiplier, as_percentage=True, decimals=6,
                 )
             )
         )
@@ -92,7 +99,8 @@ class ConsolidatedMetrics:
         return float(
             np.nan_to_num(
                 calculate_b2_ever_h6(
-                    self.swap_in_todu_30ever_h6, self.swap_in_todu_amt_pile_h6, as_percentage=True, decimals=6
+                    self.swap_in_todu_30ever_h6, self.swap_in_todu_amt_pile_h6,
+                    multiplier=self.multiplier, as_percentage=True, decimals=6,
                 )
             )
         )
@@ -102,12 +110,13 @@ class ConsolidatedMetrics:
         return float(
             np.nan_to_num(
                 calculate_b2_ever_h6(
-                    self.swap_out_todu_30ever_h6, self.swap_out_todu_amt_pile_h6, as_percentage=True, decimals=6
+                    self.swap_out_todu_30ever_h6, self.swap_out_todu_amt_pile_h6,
+                    multiplier=self.multiplier, as_percentage=True, decimals=6,
                 )
             )
         )
 
-    # H3 risk properties (complementary 3-month horizon metric, multiplier=4)
+    # H3 risk properties (complementary 3-month horizon metric)
     @cached_property
     def actual_risk_h3(self) -> float:
         return float(
@@ -115,7 +124,7 @@ class ConsolidatedMetrics:
                 calculate_b2_ever_h6(
                     self.actual_todu_30ever_h3,
                     self.actual_todu_amt_pile_h3,
-                    multiplier=4,
+                    multiplier=self.multiplier_h3,
                     as_percentage=True,
                     decimals=6,
                 )
@@ -129,7 +138,7 @@ class ConsolidatedMetrics:
                 calculate_b2_ever_h6(
                     self.optimum_todu_30ever_h3,
                     self.optimum_todu_amt_pile_h3,
-                    multiplier=4,
+                    multiplier=self.multiplier_h3,
                     as_percentage=True,
                     decimals=6,
                 )
@@ -143,7 +152,7 @@ class ConsolidatedMetrics:
                 calculate_b2_ever_h6(
                     self.swap_in_todu_30ever_h3,
                     self.swap_in_todu_amt_pile_h3,
-                    multiplier=4,
+                    multiplier=self.multiplier_h3,
                     as_percentage=True,
                     decimals=6,
                 )
@@ -157,7 +166,7 @@ class ConsolidatedMetrics:
                 calculate_b2_ever_h6(
                     self.swap_out_todu_30ever_h3,
                     self.swap_out_todu_amt_pile_h3,
-                    multiplier=4,
+                    multiplier=self.multiplier_h3,
                     as_percentage=True,
                     decimals=6,
                 )
@@ -523,12 +532,15 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
     return metrics
 
 
-def aggregate_metrics(metrics_list: list[dict[str, dict[str, float]]]) -> dict[str, dict[str, float]]:
+def aggregate_metrics(
+    metrics_list: list[dict[str, dict[str, float]]],
+    multiplier: float = float(DEFAULT_RISK_MULTIPLIER),
+) -> dict[str, dict[str, float]]:
     """
     Aggregate metrics from multiple segments.
 
     Sums production and raw todu values. Risk is calculated from aggregated
-    todu values: risk = sum(todu_30ever_h6) / sum(todu_amt_pile_h6) * 7
+    todu values: risk = sum(todu_30ever_h6) / sum(todu_amt_pile_h6) * multiplier
     """
     aggregated = {
         "actual": {
@@ -616,7 +628,7 @@ def aggregate_metrics(metrics_list: list[dict[str, dict[str, float]]]) -> dict[s
         if combined_risk_se > 0:
             agg_num = aggregated[key].get("todu_30ever_h6", 0)
             agg_den = aggregated[key].get("todu_amt_pile_h6", 0)
-            agg_risk_point = float(calculate_b2_ever_h6(agg_num, agg_den, as_percentage=True)) if agg_den else 0.0
+            agg_risk_point = float(calculate_b2_ever_h6(agg_num, agg_den, multiplier=multiplier, as_percentage=True)) if agg_den else 0.0
             aggregated[key]["risk_ci_lower"] = agg_risk_point - z_95 * combined_risk_se
             aggregated[key]["risk_ci_upper"] = agg_risk_point + z_95 * combined_risk_se
         else:
@@ -631,6 +643,8 @@ def consolidate_segments(
     segments: dict[str, dict[str, Any]],
     supersegments: dict[str, dict[str, Any]],
     scenarios: list[str] | None = None,
+    multiplier: float = float(DEFAULT_RISK_MULTIPLIER),
+    multiplier_h3: float = float(DEFAULT_RISK_MULTIPLIER_H3),
 ) -> pd.DataFrame:
     """
     Consolidate risk production tables across segments, supersegments, and scenarios.
@@ -640,6 +654,8 @@ def consolidate_segments(
         segments: Segment configurations
         supersegments: Supersegment configurations
         scenarios: List of scenario suffixes (e.g., ['', '_1.0', '_1.1'])
+        multiplier: H6 risk multiplier (from config.toml)
+        multiplier_h3: H3 risk multiplier (from config.toml)
 
     Returns:
         DataFrame with consolidated metrics
@@ -719,13 +735,15 @@ def consolidate_segments(
                 ]
                 if ss_segments:
                     ss_metrics_list = [segment_metrics[s] for s in ss_segments]
-                    agg = aggregate_metrics(ss_metrics_list)
+                    agg = aggregate_metrics(ss_metrics_list, multiplier=multiplier)
 
                     consolidated = ConsolidatedMetrics(
                         group_name=f"supersegment_{ss_name}",
                         period=period,
                         scenario=scenario_name,
                         segments=ss_segments,
+                        multiplier=multiplier,
+                        multiplier_h3=multiplier_h3,
                         actual_production=agg["actual"]["production"],
                         actual_todu_30ever_h6=agg["actual"]["todu_30ever_h6"],
                         actual_todu_amt_pile_h6=agg["actual"]["todu_amt_pile_h6"],
@@ -757,7 +775,7 @@ def consolidate_segments(
 
             # Add all individual segments (including those in supersegments)
             for seg_name, metrics in segment_metrics.items():
-                agg = aggregate_metrics([metrics])
+                agg = aggregate_metrics([metrics], multiplier=multiplier)
                 # Determine group name based on supersegment membership
                 if seg_name in segment_to_supersegment:
                     ss_name = segment_to_supersegment[seg_name]
@@ -770,6 +788,8 @@ def consolidate_segments(
                     period=period,
                     scenario=scenario_name,
                     segments=[seg_name],
+                    multiplier=multiplier,
+                    multiplier_h3=multiplier_h3,
                     actual_production=agg["actual"]["production"],
                     actual_todu_30ever_h6=agg["actual"]["todu_30ever_h6"],
                     actual_todu_amt_pile_h6=agg["actual"]["todu_amt_pile_h6"],
@@ -802,12 +822,14 @@ def consolidate_segments(
             # Aggregate total across all segments
             all_metrics_list = list(segment_metrics.values())
             if all_metrics_list:
-                total_agg = aggregate_metrics(all_metrics_list)
+                total_agg = aggregate_metrics(all_metrics_list, multiplier=multiplier)
                 total_consolidated = ConsolidatedMetrics(
                     group_name="TOTAL",
                     period=period,
                     scenario=scenario_name,
                     segments=list(segment_metrics.keys()),
+                    multiplier=multiplier,
+                    multiplier_h3=multiplier_h3,
                     actual_production=total_agg["actual"]["production"],
                     actual_todu_30ever_h6=total_agg["actual"]["todu_30ever_h6"],
                     actual_todu_amt_pile_h6=total_agg["actual"]["todu_amt_pile_h6"],
@@ -1024,6 +1046,8 @@ def generate_consolidation_report(
     supersegments: dict[str, dict[str, Any]],
     scenarios: list[str] | None = None,
     output_path: str | None = None,
+    multiplier: float = float(DEFAULT_RISK_MULTIPLIER),
+    multiplier_h3: float = float(DEFAULT_RISK_MULTIPLIER_H3),
 ) -> tuple[pd.DataFrame, go.Figure]:
     """
     Generate complete consolidation report with CSV and HTML dashboard.
@@ -1034,6 +1058,8 @@ def generate_consolidation_report(
         supersegments: Supersegment configurations
         scenarios: List of scenario suffixes
         output_path: Optional output path for files (defaults to output_base)
+        multiplier: H6 risk multiplier (from config.toml)
+        multiplier_h3: H3 risk multiplier (from config.toml)
 
     Returns:
         Tuple of (consolidated DataFrame, Plotly figure)
@@ -1044,7 +1070,7 @@ def generate_consolidation_report(
     logger.info("Generating consolidated risk production report...")
 
     # Consolidate data
-    df = consolidate_segments(output_base, segments, supersegments, scenarios)
+    df = consolidate_segments(output_base, segments, supersegments, scenarios, multiplier=multiplier, multiplier_h3=multiplier_h3)
 
     if df.empty:
         logger.warning("No data found to consolidate")

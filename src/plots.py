@@ -669,7 +669,11 @@ class RiskProductionVisualizer:
         # Update cut-off mask
         if self._is_2d:
             CUT_OFF = data_filtered[self.values_var0].values[0]
-            z_mask = (self.yy <= CUT_OFF) * 1
+            var1_inverted = self.directions.get(self.variables[1], 1) == -1
+            if var1_inverted:
+                z_mask = (self.yy >= CUT_OFF) * 1
+            else:
+                z_mask = (self.yy <= CUT_OFF) * 1
         elif self._pareto_masks and self._nd_grid is not None:
             # N>2: resolve selected mask from sol_fac, then project onto var0 × var1
             sol_fac = int(data_filtered.iloc[0].get("sol_fac", 0))
@@ -729,25 +733,34 @@ class RiskProductionVisualizer:
         dx = (v0[1] - v0[0]) / 2 if len(v0) > 1 else 0.5
         dy = (v1[1] - v1[0]) / 2 if len(v1) > 1 else 0.5
 
+        var1_inverted = self.directions.get(self.variables[1], 1) == -1
+
         # z_mask shape: (len(v1), len(v0)) — rows=var1, cols=var0
-        # For 2D case: it's a step function along var0 (columns).
-        # For each column, find the highest accepted var1 index.
         path_x = []
         path_y = []
 
         for ci in range(len(v0)):
-            # Find highest accepted row index in this column
-            max_accepted = -1
-            for ri in range(len(v1)):
-                if z_mask[ri][ci] == 1:
-                    max_accepted = ri
-
-            if max_accepted >= 0:
-                # Boundary sits at the top edge of the last accepted cell
-                boundary_y = v1[max_accepted] + dy
+            if var1_inverted:
+                # Inverted: accepted cells are at the top; find the lowest accepted row
+                min_accepted = len(v1)
+                for ri in range(len(v1)):
+                    if z_mask[ri][ci] == 1:
+                        min_accepted = ri
+                        break
+                if min_accepted < len(v1):
+                    boundary_y = v1[min_accepted] - dy
+                else:
+                    boundary_y = v1[-1] + dy
             else:
-                # No accepted cells in this column — boundary at bottom
-                boundary_y = v1[0] - dy
+                # Non-inverted: accepted cells are at the bottom; find the highest accepted row
+                max_accepted = -1
+                for ri in range(len(v1)):
+                    if z_mask[ri][ci] == 1:
+                        max_accepted = ri
+                if max_accepted >= 0:
+                    boundary_y = v1[max_accepted] + dy
+                else:
+                    boundary_y = v1[0] - dy
 
             left_x = v0[ci] - dx
             right_x = v0[ci] + dx
@@ -767,14 +780,6 @@ class RiskProductionVisualizer:
             path_y.append(boundary_y)
 
         return path_x, path_y
-
-    def create_slider(self):
-        """No longer used"""
-        pass
-
-    def update(self, x):
-        """No longer used"""
-        pass
 
     def display(self):
         """Display the visualization"""
@@ -1631,11 +1636,13 @@ def _add_nd_cutoff_boundary(
     y_labels: list[str],
     row: int,
     col: int,
+    var1_inverted: bool = False,
 ) -> None:
     """Draw a step-function boundary line between accepted and rejected cells on a categorical heatmap.
 
-    For each column (var0 value), finds the top-most accepted cell and draws
-    a horizontal segment just above it. Vertical connectors link the steps.
+    For each column (var0 value), finds the boundary between accepted and rejected cells.
+    For non-inverted var1: boundary sits above the top-most accepted cell.
+    For inverted var1: boundary sits below the bottom-most accepted cell.
     The line uses categorical axis coordinates (integer positions where 0 = first category).
     """
     if len(x_labels) < 1 or len(y_labels) < 1:
@@ -1648,12 +1655,20 @@ def _add_nd_cutoff_boundary(
     z = pivot_mask.values  # shape (n_y, n_x)
 
     for ci in range(len(x_labels)):
-        max_accepted = -1
-        for ri in range(len(y_labels)):
-            if z[ri, ci] == 1:
-                max_accepted = ri
-
-        boundary_y = max_accepted + 0.5 if max_accepted >= 0 else -0.5
+        if var1_inverted:
+            # Inverted: accepted cells at top, find lowest accepted row
+            min_accepted = len(y_labels)
+            for ri in range(len(y_labels)):
+                if z[ri, ci] == 1:
+                    min_accepted = ri
+                    break
+            boundary_y = min_accepted - 0.5 if min_accepted < len(y_labels) else len(y_labels) - 0.5
+        else:
+            max_accepted = -1
+            for ri in range(len(y_labels)):
+                if z[ri, ci] == 1:
+                    max_accepted = ri
+            boundary_y = max_accepted + 0.5 if max_accepted >= 0 else -0.5
         left_x = ci - 0.5
         right_x = ci + 0.5
 
@@ -1697,6 +1712,7 @@ def plot_acceptance_grid_nd(
     grid: Any,
     output_path: str | None = None,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
+    inv_vars: list[str] | None = None,
 ) -> go.Figure:
     """Plot acceptance heatmaps for a 3+-variable grid with risk annotations.
 
@@ -1814,7 +1830,8 @@ def plot_acceptance_grid_nd(
         )
 
         # Add cutoff boundary line on the acceptance heatmap
-        _add_nd_cutoff_boundary(fig, pivot_mask, x_labels, y_labels, row=1, col=col_idx)
+        var1_inv = var1 in (inv_vars or [])
+        _add_nd_cutoff_boundary(fig, pivot_mask, x_labels, y_labels, row=1, col=col_idx, var1_inverted=var1_inv)
 
         # Row 2: Risk heatmap with value annotations
         pivot_risk = slice_df.pivot(index=var1, columns=var0, values="_b2").sort_index(ascending=True)

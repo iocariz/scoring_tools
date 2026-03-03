@@ -171,9 +171,11 @@ def run_optimization_phase(
             inv_vars=settings.inv_vars,
             multiplier=settings.multiplier,
             indicators=settings.indicators,
+            n_points=settings.pareto_n_points,
             max_swapin_production_pct=settings.max_swapin_production_pct,
             max_swapin_risk=settings.max_swapin_risk,
             multiplier_h3=settings.multiplier_h3,
+            milp_time_limit=settings.milp_time_limit,
         )
 
         if pareto_df.empty:
@@ -378,7 +380,7 @@ def run_scenario_analysis(
         cut_map=cut_map,
         variables=settings.variables,
         multiplier=settings.multiplier,
-        n_bootstraps=1000,
+        n_bootstraps=settings.n_bootstraps,
         inv_var1=inv_var1,
         model_cv_se_risk=model_cv_se,
         annual_coef=annual_coef_main,
@@ -444,6 +446,7 @@ def run_scenario_analysis(
                 grid=grid,
                 output_path=output.acceptance_grid_html(suffix),
                 multiplier=settings.multiplier,
+                inv_vars=settings.inv_vars,
             )
         except Exception as e:
             logger.warning(f"[{segment}] Acceptance grid plot failed (non-blocking): {e}")
@@ -620,7 +623,9 @@ def run_sensitivity_phase(
         grid = CellGrid.from_summary(data_summary_desagregado, settings.variables)
 
         # Get baseline mask from the base scenario's optimal solution
-        baseline_mask = milp_solve_cutoffs(grid, settings.optimum_risk, settings.inv_vars, settings.multiplier)
+        baseline_mask = milp_solve_cutoffs(
+            grid, settings.optimum_risk, settings.inv_vars, settings.multiplier, time_limit=settings.milp_time_limit
+        )
         if baseline_mask is None:
             logger.warning(f"[{segment}] Sensitivity: baseline solve infeasible, skipping")
             return

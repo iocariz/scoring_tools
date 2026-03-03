@@ -15,7 +15,7 @@ from loguru import logger
 from sklearn.metrics import roc_auc_score
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
-from src.constants import Columns, RejectReason, StatusName
+from src.constants import DEFAULT_RANDOM_STATE, Columns, RejectReason, StatusName
 
 if TYPE_CHECKING:
     from src.config import BinConfig, PreprocessingSettings
@@ -303,7 +303,7 @@ def learn_income_bins(
     tree = DecisionTreeClassifier(
         max_leaf_nodes=max_bins,
         min_samples_leaf=min_samples_leaf,
-        random_state=42,
+        random_state=DEFAULT_RANDOM_STATE,
     )
     tree.fit(X, y)
 
@@ -395,7 +395,7 @@ def learn_optimization_bins(
     tree = DecisionTreeRegressor(
         max_leaf_nodes=max_bins,
         min_samples_leaf=min_samples_leaf,
-        random_state=42,
+        random_state=DEFAULT_RANDOM_STATE,
     )
     tree.fit(X, y, sample_weight=weights)
 
@@ -994,7 +994,7 @@ def _infer_monotonicity(data: pd.DataFrame, settings: "PreprocessingSettings") -
 
                 # Permutation test: assess significance of weighted covariance
                 n_permutations = 1000
-                rng = np.random.RandomState(42)
+                rng = np.random.RandomState(DEFAULT_RANDOM_STATE)
                 abs_cov_obs = abs(cov_xy) if not np.isnan(cov_xy) else 0.0
                 exceed_count = 0
                 for _ in range(n_permutations):

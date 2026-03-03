@@ -275,7 +275,7 @@ def _compute_hybrid_mr_risk(
         # MR-period H3 — only accounts with mature H3 (first 3 mis_dates in 6-month MR window)
         if all(c in mr_booked_h3.columns for c in h3_cols):
             mr_h3_valid = mr_booked_h3[
-                mr_booked_h3["todu_30ever_h3"].notna() | mr_booked_h3["todu_amt_pile_h3"].notna()
+                mr_booked_h3["todu_30ever_h3"].notna() & mr_booked_h3["todu_amt_pile_h3"].notna()
             ]
             mr_h3_agg = mr_h3_valid.groupby(merge_keys)[h3_cols].sum().reset_index()
             n_obs_mr_h3 = mr_h3_valid.groupby(merge_keys).size().reset_index(name="n_obs_mr_h3")
@@ -291,10 +291,19 @@ def _compute_hybrid_mr_risk(
     # --- Choose source per bin ---
     use_mr = combined["n_obs_mr"].fillna(0) >= min_obs
 
+    # Bins only in MR (no main data) and below threshold: leave NaN for model fallback
+    only_mr_sparse = combined["b2_main"].isna() & ~use_mr
+
     if has_h3:
         # H3 ratio: main-period H6/H3 scaling factor
-        ratio_valid = combined["b2_main_h3"].fillna(0).abs() > 1e-9
-        h6_h3_ratio = np.where(ratio_valid, combined["b2_main"] / combined["b2_main_h3"], np.nan)
+        # Require meaningful denominator (>1% risk) and sufficient observations
+        ratio_valid = (
+            (combined["b2_main_h3"].fillna(0).abs() > 0.01)
+            & (combined["n_obs_main"].fillna(0) >= min_obs)
+        )
+        h6_h3_ratio_raw = np.where(ratio_valid, combined["b2_main"] / combined["b2_main_h3"], np.nan)
+        # Clip extreme ratios to guard against noisy small-sample bins
+        h6_h3_ratio = np.clip(h6_h3_ratio_raw, 0.5, 5.0)
 
         # H3 extrapolation: observed MR H3 × main-period ratio
         has_h3_obs = combined["b2_mr_h3"].notna() & (combined["n_obs_mr_h3"].fillna(0) >= min_obs)
@@ -302,25 +311,22 @@ def _compute_hybrid_mr_risk(
         h6_from_h3 = combined["b2_mr_h3"] * h6_h3_ratio
 
         # Priority: h3_extrapolated > mr_observed > main_imputed > model_fallback
-        combined["b2_ever_h6_tmp"] = combined["b2_main"]  # default: main_imputed
-        combined["risk_source"] = "main_imputed"
+        conditions = [only_mr_sparse, can_extrapolate, use_mr]
+        risk_choices = [np.nan, h6_from_h3, combined["b2_mr"]]
+        source_choices = ["model_fallback", "h3_extrapolated", "mr_observed"]
 
-        combined.loc[use_mr, "b2_ever_h6_tmp"] = combined.loc[use_mr, "b2_mr"]
-        combined.loc[use_mr, "risk_source"] = "mr_observed"
-
-        combined.loc[can_extrapolate, "b2_ever_h6_tmp"] = h6_from_h3[can_extrapolate]
-        combined.loc[can_extrapolate, "risk_source"] = "h3_extrapolated"
+        combined["b2_ever_h6_tmp"] = np.select(conditions, risk_choices, default=combined["b2_main"])
+        combined["risk_source"] = np.select(conditions, source_choices, default="main_imputed")
 
         combined["h6_h3_ratio"] = h6_h3_ratio
     else:
         # Original logic (no H3 columns)
-        combined["b2_ever_h6_tmp"] = np.where(use_mr, combined["b2_mr"], combined["b2_main"])
-        combined["risk_source"] = np.where(use_mr, "mr_observed", "main_imputed")
+        conditions = [only_mr_sparse, use_mr]
+        risk_choices = [np.nan, combined["b2_mr"]]
+        source_choices = ["model_fallback", "mr_observed"]
 
-    # Bins only in MR (no main data) and below threshold: leave NaN for model fallback
-    only_mr_sparse = combined["b2_main"].isna() & ~use_mr
-    combined.loc[only_mr_sparse, "b2_ever_h6_tmp"] = np.nan
-    combined.loc[only_mr_sparse, "risk_source"] = "model_fallback"
+        combined["b2_ever_h6_tmp"] = np.select(conditions, risk_choices, default=combined["b2_main"])
+        combined["risk_source"] = np.select(conditions, source_choices, default="main_imputed")
 
     # --- Comparison diagnostics ---
     combined["b2_delta"] = combined["b2_mr"] - combined["b2_main"]
@@ -508,12 +514,22 @@ def process_mr_period(
                         missing_bins_df, final_model, merge_keys, stress_factor, final_features
                     )
 
-                    # Merge inferred values back into agg_data
+                    # Clip inferred risk to the observed training range to prevent extrapolation
+                    observed_risk = agg_data["b2_ever_h6_tmp"].dropna()
+                    if len(observed_risk) > 0:
+                        risk_floor = float(observed_risk.min())
+                        risk_ceil = float(observed_risk.max())
+                        missing_bins_df["b2_ever_h6"] = missing_bins_df["b2_ever_h6"].clip(
+                            lower=risk_floor, upper=risk_ceil
+                        )
+                        logger.info(
+                            f"  Clipped model-imputed risk to observed range [{risk_floor:.4f}, {risk_ceil:.4f}]"
+                        )
+
+                    # Merge clipped inferred values into data_demand_mr
                     inferred_b2 = missing_bins_df[merge_keys + ["b2_ever_h6"]].rename(
                         columns={"b2_ever_h6": "b2_ever_h6_inferred"}
                     )
-
-                    # Merge inferred values into data_demand_mr
                     data_demand_mr = pd.merge(data_demand_mr, inferred_b2, on=merge_keys, how="left")
 
                     # Fill missing b2_ever_h6_tmp with inferred values
@@ -606,7 +622,13 @@ def process_mr_period(
                     bin_sums_idx, on=merge_keys, rsuffix="_sum"
                 )
 
-                # Safe division
+                # Safe division — warn about zero-production bins that cannot be pro-rated
+                zero_prod_bins = bin_sums.loc[bin_sums["oa_amt"] == 0, merge_keys]
+                if len(zero_prod_bins) > 0:
+                    logger.warning(
+                        f"Found {len(zero_prod_bins)} bin(s) with zero total oa_amt — "
+                        f"todu_amt_pile_h6 cannot be pro-rated for these bins and will be set to 0."
+                    )
                 divisor = merged["oa_amt_sum"].replace(0, np.nan)
                 preds = merged["todu_amt_pile_h6_bin"] * (merged["oa_amt"] / divisor)
 

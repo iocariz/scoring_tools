@@ -17,7 +17,7 @@ from loguru import logger
 from scipy import sparse
 from scipy.optimize import LinearConstraint, milp
 
-from .constants import DEFAULT_RISK_MULTIPLIER, DEFAULT_RISK_MULTIPLIER_H3
+from .constants import DEFAULT_RANDOM_STATE, DEFAULT_RISK_MULTIPLIER, DEFAULT_RISK_MULTIPLIER_H3
 from .utils import calculate_b2_ever_h6
 
 # =============================================================================
@@ -187,6 +187,7 @@ def milp_solve_cutoffs(
     fixed_cells: dict[int, int] | None = None,
     max_swapin_production_pct: float | None = None,
     max_swapin_risk: float | None = None,
+    time_limit: float = 30.0,
 ) -> np.ndarray | None:
     """Solve single MILP: maximize production subject to risk budget + monotonicity.
 
@@ -275,7 +276,7 @@ def milp_solve_cutoffs(
         constraints=constraints,
         integrality=integrality,
         bounds=bounds,
-        options={"time_limit": 30},
+        options={"time_limit": time_limit},
     )
 
     if not result.success:
@@ -404,6 +405,7 @@ def trace_pareto_frontier(
     max_swapin_production_pct: float | None = None,
     max_swapin_risk: float | None = None,
     multiplier_h3: float | None = None,
+    milp_time_limit: float = 30.0,
 ) -> tuple[pd.DataFrame, CellGrid, list[np.ndarray]]:
     """Sweep risk targets, solve MILP at each, filter to Pareto-optimal set.
 
@@ -446,6 +448,7 @@ def trace_pareto_frontier(
             multiplier,
             max_swapin_production_pct=max_swapin_production_pct,
             max_swapin_risk=max_swapin_risk,
+            time_limit=milp_time_limit,
         )
         if mask is None:
             continue
@@ -729,7 +732,7 @@ def _ga_pareto_fallback(
         algorithm = GA(pop_size=100)
         termination = get_termination("n_gen", 50)
 
-        res = minimize(problem, algorithm, termination, seed=42, verbose=False)
+        res = minimize(problem, algorithm, termination, seed=DEFAULT_RANDOM_STATE, verbose=False)
 
         if res.X is not None:
             mask = np.round(res.X).astype(int)
