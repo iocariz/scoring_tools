@@ -152,12 +152,14 @@ def compute_ri_confidence(
 def _enforce_multiplier_monotonicity(
     result: pd.DataFrame,
     variables: list[str],
+    inv_vars: list[str] | None = None,
 ) -> pd.DataFrame:
     """Enforce monotonicity on reject_risk_multiplier per variable axis.
 
-    Uses isotonic regression to ensure that multipliers are non-decreasing along
-    each variable axis (marginal monotonicity). Higher risk bins (higher index)
-    should have equal or higher multipliers.
+    Uses isotonic regression to ensure that multipliers are monotonic along
+    each variable axis (marginal monotonicity). For normal variables,
+    multipliers are non-decreasing (higher bin index → higher risk uplift).
+    For inverted variables (in *inv_vars*), multipliers are non-increasing.
 
     Parameters
     ----------
@@ -165,6 +167,9 @@ def _enforce_multiplier_monotonicity(
         DataFrame with ``reject_risk_multiplier`` and *variables* columns.
     variables:
         Binning variable names.
+    inv_vars:
+        Variables whose higher bin values indicate *lower* risk. Isotonic
+        regression uses ``increasing=False`` for these.
 
     Returns
     -------
@@ -172,9 +177,11 @@ def _enforce_multiplier_monotonicity(
     """
     from sklearn.isotonic import IsotonicRegression
 
-    iso = IsotonicRegression(increasing=True, out_of_bounds="clip")
+    inv_set = set(inv_vars) if inv_vars else set()
 
     for var in variables:
+        increasing = var not in inv_set
+        iso = IsotonicRegression(increasing=increasing, out_of_bounds="clip")
         # Average multiplier along the other axes and fit isotonic per this variable
         grouped = result.groupby(var)["reject_risk_multiplier"].mean().sort_index()
         if len(grouped) < 2:
@@ -195,6 +202,7 @@ def apply_parceling_adjustment(
     max_risk_multiplier: float = 3.0,
     method: Literal["linear", "power", "sigmoid"] = "linear",
     enforce_monotonicity: bool = False,
+    inv_vars: list[str] | None = None,
 ) -> pd.DataFrame:
     """Apply per-bin risk uplift to repesca summary based on acceptance rates.
 
@@ -288,7 +296,7 @@ def apply_parceling_adjustment(
 
     # Enforce monotonicity if requested
     if enforce_monotonicity:
-        result = _enforce_multiplier_monotonicity(result, variables)
+        result = _enforce_multiplier_monotonicity(result, variables, inv_vars=inv_vars)
         # Re-clip after isotonic adjustment
         result["reject_risk_multiplier"] = result["reject_risk_multiplier"].clip(lower=1.0, upper=max_risk_multiplier)
 
@@ -330,6 +338,7 @@ def apply_reject_inference(
     bayesian_smoothing: bool = False,
     bayesian_prior_strength: float = 10.0,
     enforce_monotonicity: bool = False,
+    inv_vars: list[str] | None = None,
 ) -> pd.DataFrame:
     """Dispatcher: apply reject-inference adjustment to repesca risk predictions.
 
@@ -356,6 +365,9 @@ def apply_reject_inference(
         Strength of the Beta prior for Bayesian smoothing.
     enforce_monotonicity:
         If True, enforce monotonicity on multipliers via isotonic regression.
+    inv_vars:
+        Variables whose higher bin values indicate lower risk. Used to set
+        isotonic regression direction when *enforce_monotonicity* is True.
 
     Returns
     -------
@@ -385,6 +397,7 @@ def apply_reject_inference(
             max_risk_multiplier=max_risk_multiplier,
             method=parceling_method,
             enforce_monotonicity=enforce_monotonicity,
+            inv_vars=inv_vars,
         )
 
         # Merge per-bin confidence scores

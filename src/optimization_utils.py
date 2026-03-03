@@ -967,6 +967,8 @@ def kpi_of_fact_sol(
     indicadores: list[str],
     inv_var1: bool = False,
     chunk_size: int = 1000,
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
+    multiplier_h3: float | None = None,
 ) -> pd.DataFrame:
     """Calculate KPIs for all feasible solutions (legacy 2-var)."""
     import gc
@@ -1031,11 +1033,12 @@ def kpi_of_fact_sol(
             final_result[f"b2_ever_h6{metric}"] = calculate_b2_ever_h6(
                 final_result[t30].astype(float),
                 final_result[tamt].astype(float),
-                multiplier=DEFAULT_RISK_MULTIPLIER,
+                multiplier=multiplier,
                 as_percentage=True,
             ).fillna(0)
 
     # Compute b2_ever_h3 (complementary metric) when h3 columns are present
+    effective_multiplier_h3 = multiplier_h3 if multiplier_h3 is not None else DEFAULT_RISK_MULTIPLIER_H3
     for metric in ["", "_cut", "_rep", "_boo"]:
         t30_h3 = f"todu_30ever_h3{metric}"
         tamt_h3 = f"todu_amt_pile_h3{metric}"
@@ -1043,7 +1046,7 @@ def kpi_of_fact_sol(
             final_result[f"b2_ever_h3{metric}"] = calculate_b2_ever_h6(
                 final_result[t30_h3].astype(float),
                 final_result[tamt_h3].astype(float),
-                multiplier=DEFAULT_RISK_MULTIPLIER_H3,
+                multiplier=effective_multiplier_h3,
                 as_percentage=True,
             ).fillna(0)
 

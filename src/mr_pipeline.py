@@ -41,6 +41,7 @@ def calculate_metrics_from_cuts(
     mask: np.ndarray | None = None,
     grid: object | None = None,
     multiplier_h3: float | None = None,
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
 ) -> pd.DataFrame | None:
     """
     Generates the Risk Production Summary Table by applying optimal cuts to aggregated data.
@@ -103,7 +104,7 @@ def calculate_metrics_from_cuts(
             prod = subset[f"oa_amt_h0{suffix}"].sum()
             risk_num = subset[f"todu_30ever_h6{suffix}"].sum()
             risk_den = subset[f"todu_amt_pile_h6{suffix}"].sum()
-            b2_ever_raw = calculate_b2_ever_h6(risk_num, risk_den, as_percentage=True)
+            b2_ever_raw = calculate_b2_ever_h6(risk_num, risk_den, multiplier=multiplier, as_percentage=True)
             b2_ever = float(b2_ever_raw) if pd.notna(b2_ever_raw) else None
             # H3 metrics
             h3_rn, h3_rd, h3_risk = 0.0, 0.0, None
@@ -802,6 +803,7 @@ def process_mr_period(
             mask=mask,
             grid=grid,
             multiplier_h3=settings.multiplier_h3,
+            multiplier=settings.multiplier,
         )
 
         if mr_summary_table is not None:

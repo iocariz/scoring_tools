@@ -354,8 +354,8 @@ def run_supersegment_training(
     escaped_filters = [re.escape(sf) for sf in segment_filters]
     combined_filter = "|".join(f"({sf})" for sf in escaped_filters)
 
-    # Merge config with combined filter
-    merged_config = base_config.copy()
+    # Merge config with combined filter (deep copy to avoid mutating base_config)
+    merged_config = copy.deepcopy(base_config)
     merged_config["segment_filter"] = combined_filter
 
     # Inject globally-learned bin edges so supersegment uses the same edges as segments.

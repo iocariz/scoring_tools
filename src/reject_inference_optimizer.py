@@ -117,6 +117,7 @@ def evaluate_ri_params(
         reject_uplift_factor=uplift_factor,
         max_risk_multiplier=max_risk_multiplier,
         method=inputs.parceling_method,
+        inv_vars=inputs.inv_vars,
     )
 
     # Drop auxiliary columns

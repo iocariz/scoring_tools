@@ -1612,6 +1612,7 @@ def run_optimization_pipeline(
     reject_bayesian_prior_strength: float = 10.0,
     reject_enforce_monotonicity: bool = False,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
+    inv_vars: list[str] | None = None,
 ):
     """
     Runs the optimization pipeline: aggregates data, applies risk models, and generates visualizations.
@@ -1651,6 +1652,7 @@ def run_optimization_pipeline(
             bayesian_smoothing=reject_bayesian_smoothing,
             bayesian_prior_strength=reject_bayesian_prior_strength,
             enforce_monotonicity=reject_enforce_monotonicity,
+            inv_vars=inv_vars,
         )
         # Drop auxiliary columns before downstream merge
         data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.drop(

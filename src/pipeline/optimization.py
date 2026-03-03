@@ -83,6 +83,7 @@ def run_optimization_phase(
         reject_bayesian_prior_strength=settings.reject_bayesian_prior_strength,
         reject_enforce_monotonicity=settings.reject_enforce_monotonicity,
         multiplier=settings.multiplier,
+        inv_vars=settings.inv_vars,
     )
 
     # Build values_per_var dict for all variables
@@ -130,6 +131,8 @@ def run_optimization_phase(
             variables=settings.variables,
             indicadores=settings.indicators,
             chunk_size=100000,
+            multiplier=settings.multiplier,
+            multiplier_h3=settings.multiplier_h3,
         )
 
         # Merge df_v (with bin columns) into data_summary (with KPIs)
@@ -194,6 +197,8 @@ def run_optimization_phase(
                 variables=settings.variables,
                 indicadores=settings.indicators,
                 chunk_size=100000,
+                multiplier=settings.multiplier,
+                multiplier_h3=settings.multiplier_h3,
             )
             data_summary_sample_no_opt = data_summary.sample(min(10000, len(data_summary)))
             data_summary = get_optimal_solutions(df_v=df_v, data_sumary=data_summary, chunk_size=100000)

@@ -781,6 +781,10 @@ class RiskProductionVisualizer:
 
         return path_x, path_y
 
+    def create_slider(self):
+        """Slider creation is handled inline by create_figure; kept for API compat."""
+        pass
+
     def display(self):
         """Display the visualization"""
         self.fig.show()

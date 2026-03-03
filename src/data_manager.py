@@ -106,8 +106,13 @@ def load_and_prepare_data(settings: PreprocessingSettings, preloaded_data: pd.Da
         logger.warning(f"Optional H3 columns not found in data (will be skipped): {missing_optional}")
         # Remove missing optional columns from settings so all downstream code
         # receives a clean list without columns that don't exist in the data.
-        settings.keep_vars = [c for c in settings.keep_vars if c not in missing_optional]
-        settings.indicators = [c for c in settings.indicators if c not in missing_optional]
+        # Use new lists to avoid mutating the caller's settings object in-place.
+        settings = settings.model_copy(
+            update={
+                "keep_vars": [c for c in settings.keep_vars if c not in missing_optional],
+                "indicators": [c for c in settings.indicators if c not in missing_optional],
+            }
+        )
 
     # Schema validation: check types, value ranges, and categorical constraints
     from src.schema import validate_raw_data
