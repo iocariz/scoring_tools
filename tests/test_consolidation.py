@@ -346,6 +346,97 @@ class TestConsolidatedMetrics:
         # 0.1 * 100 = 10%
         assert np.isclose(result["production_delta_pct"], 10.0)
 
+    def test_rejection_rate_in_dict(self):
+        """Test rejection rate is computed correctly in to_dict()."""
+        metrics = ConsolidatedMetrics(
+            group_name="test",
+            period="main",
+            scenario="base",
+            segments=["seg1"],
+            actual_production=800000,
+            optimum_production=900000,
+            total_demand=1000000,
+        )
+
+        result = metrics.to_dict()
+
+        # actual rejection = (1 - 800k/1M) * 100 = 20%
+        assert np.isclose(result["actual_rejection_rate_pct"], 20.0)
+        # optimum rejection = (1 - 900k/1M) * 100 = 10%
+        assert np.isclose(result["optimum_rejection_rate_pct"], 10.0)
+
+    def test_rejection_rate_zero_demand(self):
+        """Test rejection rate is 0 when total_demand is 0."""
+        metrics = ConsolidatedMetrics(
+            group_name="test",
+            period="main",
+            scenario="base",
+            segments=["seg1"],
+            actual_production=0,
+            optimum_production=0,
+            total_demand=0,
+        )
+
+        assert metrics.actual_rejection_rate == 0.0
+        assert metrics.optimum_rejection_rate == 0.0
+
+
+class TestExtractMetricsRejectionRate:
+    """Tests for rejection rate extraction from summary tables."""
+
+    def test_total_demand_derived_from_rejection_rate(self):
+        """Test that total_demand is derived from Actual row's rejection rate."""
+        df = pd.DataFrame(
+            {
+                "Metric": ["Actual", "Swap-in", "Swap-out", "Optimum selected"],
+                "Risk (%)": [1.5, 1.2, 2.0, 1.4],
+                "Production (€)": [800000, 100000, 50000, 850000],
+                "Production (%)": [1.0, 0.125, 0.0625, 1.0625],
+                "todu_30ever_h6": [1000, 200, 300, 900],
+                "todu_amt_pile_h6": [50000, 10000, 10000, 45000],
+                "Rejection Rate (%)": [20.0, None, None, 15.0],
+            }
+        )
+
+        metrics = extract_metrics_from_table(df)
+
+        # total_demand = 800000 / (1 - 20/100) = 800000 / 0.8 = 1000000
+        assert np.isclose(metrics["_total_demand"], 1000000)
+
+    def test_total_demand_fallback_without_rejection_rate(self, sample_summary_table):
+        """Test that total_demand defaults to actual_production without rejection rate column."""
+        metrics = extract_metrics_from_table(sample_summary_table)
+
+        # No rejection_rate column → total_demand = actual_production
+        assert np.isclose(metrics["_total_demand"], 1000000)
+
+
+class TestAggregateMetricsTotalDemand:
+    """Tests for total_demand aggregation."""
+
+    def test_total_demand_summed(self):
+        """Test total_demand is summed across segments."""
+        metrics_list = [
+            {
+                "actual": {"production": 500, "todu_30ever_h6": 50, "todu_amt_pile_h6": 5000},
+                "optimum": {"production": 600, "todu_30ever_h6": 45, "todu_amt_pile_h6": 5000},
+                "swap_in": {"production": 150, "todu_30ever_h6": 5, "todu_amt_pile_h6": 500},
+                "swap_out": {"production": 50, "todu_30ever_h6": 10, "todu_amt_pile_h6": 500},
+                "_total_demand": 1000,
+            },
+            {
+                "actual": {"production": 300, "todu_30ever_h6": 30, "todu_amt_pile_h6": 3000},
+                "optimum": {"production": 350, "todu_30ever_h6": 25, "todu_amt_pile_h6": 3000},
+                "swap_in": {"production": 80, "todu_30ever_h6": 3, "todu_amt_pile_h6": 300},
+                "swap_out": {"production": 30, "todu_30ever_h6": 8, "todu_amt_pile_h6": 300},
+                "_total_demand": 600,
+            },
+        ]
+
+        result = aggregate_metrics(metrics_list)
+
+        assert np.isclose(result["_total_demand"], 1600)
+
 
 # =============================================================================
 # Full Consolidation Workflow Tests

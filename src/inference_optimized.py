@@ -378,7 +378,7 @@ def plot_3d_surface(
         Plotly Figure object or None if error occurs
     """
     try:
-        var0, var1 = variables
+        var0, var1 = variables[0], variables[1]
         logger.info(f"Creating 3D plot for {var0}, {var1}, {target_var}")
 
         # Create mesh grid for predictions
@@ -1321,7 +1321,7 @@ def inference_pipeline(
 
     # STEP 6: VISUALIZATION
     fig = None
-    if create_visualizations and len(variables) == 2:
+    if create_visualizations and len(variables) >= 2:
         logger.info("-" * 40)
         logger.info("STEP 6: 3D VISUALIZATION")
         logger.info("-" * 40)

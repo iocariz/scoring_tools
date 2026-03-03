@@ -11,8 +11,10 @@ from loguru import logger
 from src.optimization_utils import (
     CellGrid,
     _build_monotonicity_constraints,
+    _validate_nd_cutoff_structure,
     add_bin_columns,
     classify_by_mask,
+    create_fixed_cutoff_mask,
     create_fixed_cutoff_solution,
     decode_mask,
     evaluate_solution,
@@ -1248,3 +1250,267 @@ class TestSwapInConstraints:
         assert not pareto_con.empty
         # Constrained frontier should have equal or less max production
         assert pareto_con["oa_amt_h0"].max() <= pareto_unc["oa_amt_h0"].max() + 1e-6
+
+
+# =============================================================================
+# N>2 Fixed Cutoff Mask Tests
+# =============================================================================
+
+
+def _make_summary_3d(n0=3, n1=3, n2=2):
+    """Create a 3D aggregated summary DataFrame for testing."""
+    rng = np.random.RandomState(42)
+    rows = []
+    for v0 in range(1, n0 + 1):
+        for v1 in range(1, n1 + 1):
+            for v2 in range(1, n2 + 1):
+                rows.append(
+                    {
+                        "var0": float(v0),
+                        "var1": float(v1),
+                        "var2": float(v2),
+                        "todu_30ever_h6": rng.uniform(5, 50),
+                        "todu_amt_pile_h6": rng.uniform(100, 500),
+                        "oa_amt_h0": rng.uniform(1000, 10000),
+                        "todu_30ever_h6_boo": rng.uniform(5, 50),
+                        "todu_amt_pile_h6_boo": rng.uniform(100, 500),
+                        "oa_amt_h0_boo": rng.uniform(1000, 10000),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+class TestCreateFixedCutoffMask:
+    """Tests for create_fixed_cutoff_mask (N>2 fixed cutoffs)."""
+
+    def test_basic_3d(self):
+        """Basic 3D mask creation with accepted bins per variable."""
+        df = _make_summary_3d(3, 3, 2)
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0],
+            "var1": [1.0, 2.0],
+            "var2": [1.0],
+        }
+        grid, mask = create_fixed_cutoff_mask(
+            fixed_cutoffs, ["var0", "var1", "var2"], df
+        )
+
+        assert grid.n_cells == 3 * 3 * 2
+        assert mask.shape == (grid.n_cells,)
+        # (1,1,1), (1,2,1), (2,1,1), (2,2,1) should be accepted = 4 cells
+        assert mask.sum() == 4
+
+        # Verify specific cells
+        assert mask[grid.cell_index[(1.0, 1.0, 1.0)]] == 1
+        assert mask[grid.cell_index[(2.0, 2.0, 1.0)]] == 1
+        assert mask[grid.cell_index[(3.0, 1.0, 1.0)]] == 0  # var0=3 not accepted
+        assert mask[grid.cell_index[(1.0, 1.0, 2.0)]] == 0  # var2=2 not accepted
+
+    def test_all_accepted(self):
+        """All bins accepted yields all-ones mask."""
+        df = _make_summary_3d(2, 2, 2)
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0],
+            "var1": [1.0, 2.0],
+            "var2": [1.0, 2.0],
+        }
+        grid, mask = create_fixed_cutoff_mask(
+            fixed_cutoffs, ["var0", "var1", "var2"], df
+        )
+
+        assert mask.sum() == grid.n_cells
+
+    def test_none_accepted(self):
+        """Empty accepted lists yield all-zeros mask."""
+        df = _make_summary_3d(2, 2, 2)
+        fixed_cutoffs = {
+            "var0": [],
+            "var1": [],
+            "var2": [],
+        }
+        grid, mask = create_fixed_cutoff_mask(
+            fixed_cutoffs, ["var0", "var1", "var2"], df
+        )
+
+        assert mask.sum() == 0
+
+    def test_missing_variable_raises(self):
+        """Missing variable key in fixed_cutoffs raises ValueError."""
+        df = _make_summary_3d(2, 2, 2)
+        fixed_cutoffs = {
+            "var0": [1.0],
+            "var1": [1.0],
+            # var2 missing
+        }
+        with pytest.raises(ValueError, match="Missing 'var2'"):
+            create_fixed_cutoff_mask(
+                fixed_cutoffs, ["var0", "var1", "var2"], df
+            )
+
+    def test_evaluate_solution_integration(self):
+        """Mask from create_fixed_cutoff_mask works with evaluate_solution."""
+        df = _make_summary_3d(3, 3, 2)
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0],
+            "var1": [1.0, 2.0, 3.0],
+            "var2": [1.0, 2.0],
+        }
+        grid, mask = create_fixed_cutoff_mask(
+            fixed_cutoffs, ["var0", "var1", "var2"], df
+        )
+        kpis = evaluate_solution(mask, grid, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], 7)
+
+        assert "oa_amt_h0" in kpis
+        assert "b2_ever_h6" in kpis
+        assert kpis["oa_amt_h0"] > 0
+        assert kpis["b2_ever_h6"] > 0
+
+    def test_inv_vars_direction(self):
+        """inv_vars doesn't change which cells are accepted (only used for contiguity warnings)."""
+        df = _make_summary_3d(3, 3, 2)
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0],
+            "var1": [1.0],
+            "var2": [1.0],
+        }
+        _, mask_no_inv = create_fixed_cutoff_mask(
+            fixed_cutoffs, ["var0", "var1", "var2"], df, inv_vars=[]
+        )
+        _, mask_with_inv = create_fixed_cutoff_mask(
+            fixed_cutoffs, ["var0", "var1", "var2"], df, inv_vars=["var0"]
+        )
+
+        # Same accepted cells regardless of inv_vars
+        np.testing.assert_array_equal(mask_no_inv, mask_with_inv)
+
+    def test_strict_validation_unknown_bins(self):
+        """strict_validation=True raises on unknown bin values."""
+        df = _make_summary_3d(2, 2, 2)
+        fixed_cutoffs = {
+            "var0": [1.0, 99.0],  # 99.0 doesn't exist in data
+            "var1": [1.0],
+            "var2": [1.0],
+        }
+        with pytest.raises(ValueError, match="don't exist in data bins"):
+            create_fixed_cutoff_mask(
+                fixed_cutoffs, ["var0", "var1", "var2"], df, strict_validation=True
+            )
+
+    def test_meta_keys_skipped(self):
+        """Meta keys like strict_validation in fixed_cutoffs dict are skipped."""
+        df = _make_summary_3d(2, 2, 2)
+        fixed_cutoffs = {
+            "var0": [1.0],
+            "var1": [1.0],
+            "var2": [1.0],
+            "strict_validation": False,
+            "run_all_scenarios": False,
+        }
+        # Should not raise (meta keys should be ignored by _validate_nd_cutoff_structure)
+        grid, mask = create_fixed_cutoff_mask(
+            fixed_cutoffs, ["var0", "var1", "var2"], df
+        )
+        assert mask.sum() == 1
+
+
+class TestValidateNdCutoffStructure:
+    """Tests for _validate_nd_cutoff_structure helper."""
+
+    def test_basic(self):
+        """Basic extraction of per-variable accepted lists."""
+        result = _validate_nd_cutoff_structure(
+            {"var0": [1, 2], "var1": [3, 4], "strict_validation": False},
+            ["var0", "var1"],
+        )
+        assert result == {"var0": [1.0, 2.0], "var1": [3.0, 4.0]}
+
+    def test_missing_variable(self):
+        """Missing variable raises ValueError."""
+        with pytest.raises(ValueError, match="Missing 'var1'"):
+            _validate_nd_cutoff_structure({"var0": [1]}, ["var0", "var1"])
+
+    def test_non_list_raises(self):
+        """Non-list value raises ValueError."""
+        with pytest.raises(ValueError, match="must be a list"):
+            _validate_nd_cutoff_structure({"var0": 1.0, "var1": [1]}, ["var0", "var1"])
+
+
+# =============================================================================
+# N>2 mask_to_cutoffs Tests
+# =============================================================================
+
+
+class TestMaskToCutoffsNd:
+    """Tests for mask_to_cutoffs with N>2 variables."""
+
+    def test_3d_cell_dict(self):
+        """N>2 path returns _cells dict with correct entries."""
+        df = _make_summary_3d(2, 2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1", "var2"])
+        mask = np.zeros(grid.n_cells, dtype=int)
+        # Accept cells (1,1,1) and (1,2,1)
+        mask[grid.cell_index[(1.0, 1.0, 1.0)]] = 1
+        mask[grid.cell_index[(1.0, 2.0, 1.0)]] = 1
+
+        result = mask_to_cutoffs(mask, grid, inv_vars=[])
+
+        assert "_cells" in result
+        cells = result["_cells"]
+        assert cells[(1.0, 1.0, 1.0)] == 1
+        assert cells[(1.0, 2.0, 1.0)] == 1
+        assert cells[(2.0, 1.0, 1.0)] == 0
+
+    def test_3d_marginals(self):
+        """N>2 path returns per-dimension marginals."""
+        df = _make_summary_3d(2, 2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1", "var2"])
+        mask = np.zeros(grid.n_cells, dtype=int)
+        mask[grid.cell_index[(1.0, 1.0, 1.0)]] = 1
+
+        result = mask_to_cutoffs(mask, grid, inv_vars=[])
+
+        assert "_marginal_var0" in result
+        assert result["_marginal_var0"][1.0] == 1.0
+        assert result["_marginal_var0"][2.0] == 0.0
+
+        assert "_marginal_var1" in result
+        assert result["_marginal_var1"][1.0] == 1.0
+        assert result["_marginal_var1"][2.0] == 0.0
+
+        assert "_marginal_var2" in result
+        assert result["_marginal_var2"][1.0] == 1.0
+        assert result["_marginal_var2"][2.0] == 0.0
+
+    def test_3d_conditional_cutoff_last_dim(self):
+        """N>2 path returns conditional cutoff for last dimension."""
+        df = _make_summary_3d(2, 2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1", "var2"])
+        mask = np.zeros(grid.n_cells, dtype=int)
+        # Accept (1,1,1), (1,1,2), (1,2,1)
+        mask[grid.cell_index[(1.0, 1.0, 1.0)]] = 1
+        mask[grid.cell_index[(1.0, 1.0, 2.0)]] = 1
+        mask[grid.cell_index[(1.0, 2.0, 1.0)]] = 1
+
+        result = mask_to_cutoffs(mask, grid, inv_vars=[])
+
+        # Conditional cutoff for var2 (last dim, non-inverted → max accepted)
+        assert "var2" in result
+        cond = result["var2"]
+        # For prefix (1.0, 1.0): max accepted var2 = 2.0
+        assert cond[(1.0, 1.0)] == 2.0
+        # For prefix (1.0, 2.0): max accepted var2 = 1.0
+        assert cond[(1.0, 2.0)] == 1.0
+        # For prefix (2.0, 1.0): no accepted → -inf
+        assert cond[(2.0, 1.0)] == float("-inf")
+
+    def test_3d_conditional_cutoff_inverted(self):
+        """N>2 conditional cutoff with inverted last dimension."""
+        df = _make_summary_3d(2, 2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1", "var2"])
+        mask = np.ones(grid.n_cells, dtype=int)  # all accepted
+
+        result = mask_to_cutoffs(mask, grid, inv_vars=["var2"])
+
+        # Inverted → min accepted (which is 1.0 for all prefixes)
+        for prefix in result["var2"]:
+            assert result["var2"][prefix] == 1.0

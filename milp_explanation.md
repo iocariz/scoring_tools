@@ -53,7 +53,12 @@ Rather than returning just one solution, the business needs an efficient frontie
 
 ### Output and Translation
 
-Finally, the function [mask_to_cutoffs()](file:///Users/inigo_ocariz/src/scoring_tools/src/optimization_utils.py#424-486) translates the binary vector $x$ back into human-readable, actionable business rules. For example, in a 2D grid, it determines: "For Internal Score Bin 1, what is the maximum External Score Bin that was accepted?" This gives the exact `cutoff_value` seen in the summary reports.
+Finally, the function [mask_to_cutoffs()](file:///Users/inigo_ocariz/src/scoring_tools/src/optimization_utils.py#424-486) translates the binary vector $x$ back into human-readable, actionable business rules. For 2D grids, it determines: "For Internal Score Bin 1, what is the maximum External Score Bin that was accepted?" This gives the exact `cutoff_value` seen in the summary reports.
+
+For N>2 grids, the function returns a richer representation:
+- **`_cells`**: A lossless cell-level dict `{(v0, v1, v2, ...): 0_or_1}` preserving the full mask structure.
+- **`_marginal_{var}`**: Per-dimension marginals indicating whether any cell with that bin value is accepted.
+- **Conditional cutoffs for the last dimension**: For each unique combination of `variables[:-1]`, the extreme accepted value of the last variable (max if non-inverted, min if inverted). This generalizes the 2-variable cutoff pattern.
 
 > [!NOTE] 
 > If `scipy.optimize.milp` returns infeasible solutions (or if an N-dimensional grid is extremely massive), the codebase contains a fallback Genetic Algorithm (GA) implementation ([_ga_pareto_fallback](file:///Users/inigo_ocariz/src/scoring_tools/src/optimization_utils.py#569-653)) using the `pymoo` library to find near-optimal frontiers instead.

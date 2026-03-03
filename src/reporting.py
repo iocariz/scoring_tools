@@ -84,6 +84,7 @@ def csv_to_html_table(
     max_rows: int = 50,
     float_format: str = ",.2f",
     css_class: str = "report-table",
+    exclude_cols: list[str] | None = None,
 ) -> str | None:
     """Read a CSV and render it as a styled ``<table>`` element.
 
@@ -98,6 +99,9 @@ def csv_to_html_table(
         return None
     if df.empty:
         return None
+
+    if exclude_cols:
+        df = df.drop(columns=[c for c in exclude_cols if c in df.columns])
 
     if len(df) > max_rows:
         df = df.head(max_rows)
@@ -171,8 +175,6 @@ def _build_scenario_kpi_table(df: pd.DataFrame, variable_cols: list[str]) -> str
     group_cols = ["segment", "scenario"]
     for (seg, scen), grp in df.groupby(group_cols, sort=False):
         first = grp.iloc[0]
-        total = len(grp)
-        accepted = int(grp["accepted"].sum()) if "accepted" in grp.columns else total
 
         risk = first.get("risk_pct", float("nan"))
         production = first.get("production", float("nan"))
@@ -181,22 +183,19 @@ def _build_scenario_kpi_table(df: pd.DataFrame, variable_cols: list[str]) -> str
         prod_ci_lo = first.get("production_ci_lower", float("nan"))
         prod_ci_hi = first.get("production_ci_upper", float("nan"))
 
-        def _fmt_ci(lo, hi, scale=1.0, dp=2):
-            if pd.isna(lo) or pd.isna(hi):
-                return "—"
+        def _fmt_ci_pair(lo, hi, scale=1.0, dp=2):
+            if pd.isna(lo) or pd.isna(hi) or (lo == 0 and hi == 0):
+                return "\u2014"
             return f"[{lo / scale:.{dp}f}, {hi / scale:.{dp}f}]"
 
         rows.append(
             {
                 "Segment": seg,
                 "Scenario": scen,
-                "Risk (%)": f"{risk:.2f}" if pd.notna(risk) else "—",
-                "Production (M)": f"{production / 1e6:.2f}" if pd.notna(production) else "—",
-                "Risk CI": _fmt_ci(risk_ci_lo, risk_ci_hi),
-                "Prod CI (M)": _fmt_ci(prod_ci_lo, prod_ci_hi, scale=1e6),
-                "Accepted": accepted,
-                "Total": total,
-                "Acc. Rate (%)": f"{100 * accepted / total:.1f}" if total > 0 else "—",
+                "Risk (%)": f"{risk:.2f}" if pd.notna(risk) else "\u2014",
+                "Production (M)": f"{production / 1e6:.2f}" if pd.notna(production) else "\u2014",
+                "Risk CI": _fmt_ci_pair(risk_ci_lo, risk_ci_hi),
+                "Prod CI (M)": _fmt_ci_pair(prod_ci_lo, prod_ci_hi, scale=1e6),
             }
         )
 
@@ -207,7 +206,7 @@ def _build_scenario_kpi_table(df: pd.DataFrame, variable_cols: list[str]) -> str
 
     # Build semantic HTML table
     columns = list(summary.columns)
-    numeric_cols = {"Risk (%)", "Production (M)", "Risk CI", "Prod CI (M)", "Accepted", "Total", "Acc. Rate (%)"}
+    numeric_cols = {"Risk (%)", "Production (M)", "Risk CI", "Prod CI (M)"}
     ci_cols = {"Risk CI", "Prod CI (M)"}
 
     lines: list[str] = ['<table class="report-table" border="0">']
@@ -297,40 +296,34 @@ def _build_acceptance_matrices(df: pd.DataFrame, variable_cols: list[str], scena
 def _render_acceptance_pivot(pivot: pd.DataFrame, col_label: str, row_label: str) -> str:
     """Render a single acceptance pivot table as inline-styled HTML."""
     lines: list[str] = []
-    lines.append('<table style="border-collapse: collapse; font-size: 0.85em; margin: 0.5rem 0;">')
+    lines.append('<table class="report-table" style="font-size: 0.85em; margin: 0.5rem 0;">')
     # Header row
-    lines.append("<tr>")
-    lines.append(
-        f'<th style="padding: 4px 8px; border: 1px solid #d1d5db; background: #1e40af; color: #fff;">'
-        f"{row_label} \\ {col_label}</th>"
-    )
+    lines.append("<thead><tr>")
+    lines.append(f"<th>{row_label} \\ {col_label}</th>")
     for col in pivot.columns:
-        lines.append(
-            f'<th style="padding: 4px 8px; border: 1px solid #d1d5db; background: #1e40af; color: #fff;">{col}</th>'
-        )
-    lines.append("</tr>")
+        lines.append(f"<th>{col}</th>")
+    lines.append("</tr></thead>")
 
     # Data rows
+    lines.append("<tbody>")
     for idx in pivot.index:
         lines.append("<tr>")
-        lines.append(f'<th style="padding: 4px 8px; border: 1px solid #d1d5db; background: #f1f5f9;">{idx}</th>')
+        lines.append(f"<th>{idx}</th>")
         for col in pivot.columns:
             val = pivot.loc[idx, col]
             if pd.isna(val):
-                style = "background: #EAECEE; color: #7f8c8d;"
-                text = "—"
+                cls = "cell-missing"
+                text = "\u2014"
             elif val == 1:
-                style = "background: #2ECC71; color: white;"
+                cls = "cell-accept"
                 text = "&#10003;"
             else:
-                style = "background: #FADBD8; color: #922B21;"
+                cls = "cell-reject"
                 text = "&#10007;"
-            lines.append(
-                f'<td style="padding: 4px 8px; border: 1px solid #d1d5db; text-align: center; {style}">{text}</td>'
-            )
+            lines.append(f'<td class="{cls}">{text}</td>')
         lines.append("</tr>")
 
-    lines.append("</table>")
+    lines.append("</tbody></table>")
     return "\n".join(lines)
 
 
@@ -349,7 +342,14 @@ def _fmt_num(val, fmt=",.2f"):
     return format(val, fmt)
 
 
-def _build_portfolio_metric_table(row: pd.Series) -> str:
+def _fmt_ci(lo, hi, fmt=",.2f"):
+    """Format a CI pair, returning '\u2014' when both bounds are zero (not computed) or NaN."""
+    if (pd.isna(lo) and pd.isna(hi)) or (lo == 0 and hi == 0):
+        return "\u2014"
+    return _fmt_num(lo, fmt), _fmt_num(hi, fmt)
+
+
+def _build_portfolio_metric_table(row: pd.Series, *, show_ci: bool = True) -> str:
     """Render one consolidated-CSV row as a 4-row metric breakdown table.
 
     Unpivots the wide columns (actual_*, optimum_*, swap_in_*, swap_out_*)
@@ -360,13 +360,15 @@ def _build_portfolio_metric_table(row: pd.Series) -> str:
         ("Risk (%)", True),
         ("Production (\u20ac)", True),
         ("Production (%)", True),
-        ("todu_30ever_h6", True),
-        ("todu_amt_pile_h6", True),
-        ("Production CI Lower", True),
-        ("Production CI Upper", True),
-        ("Risk CI Lower", True),
-        ("Risk CI Upper", True),
+        ("Rejection Rate (%)", True),
     ]
+    if show_ci:
+        columns += [
+            ("Production CI Lower", True),
+            ("Production CI Upper", True),
+            ("Risk CI Lower", True),
+            ("Risk CI Upper", True),
+        ]
 
     lines: list[str] = ['<table class="report-table" border="0">']
     lines.append("<thead><tr>")
@@ -379,8 +381,6 @@ def _build_portfolio_metric_table(row: pd.Series) -> str:
     for label, prefix in _PORTFOLIO_METRIC_ROWS:
         risk = row.get(f"{prefix}_risk_pct", float("nan"))
         prod = row.get(f"{prefix}_production", float("nan"))
-        todu30 = row.get(f"{prefix}_todu_30ever_h6", float("nan"))
-        toduamt = row.get(f"{prefix}_todu_amt_pile_h6", float("nan"))
 
         # Production delta (%) and CIs only for Optimum
         if prefix == "optimum":
@@ -392,6 +392,14 @@ def _build_portfolio_metric_table(row: pd.Series) -> str:
         else:
             prod_pct = prod_ci_lo = prod_ci_hi = risk_ci_lo = risk_ci_hi = float("nan")
 
+        # Rejection rate: only for Actual and Optimum
+        if prefix == "actual":
+            rej_rate = row.get("actual_rejection_rate_pct", float("nan"))
+        elif prefix == "optimum":
+            rej_rate = row.get("optimum_rejection_rate_pct", float("nan"))
+        else:
+            rej_rate = float("nan")
+
         # Format production delta with sign
         if pd.notna(prod_pct):
             sign = "+" if prod_pct > 0 else ""
@@ -399,17 +407,36 @@ def _build_portfolio_metric_table(row: pd.Series) -> str:
         else:
             prod_pct_str = "\u2014"
 
-        lines.append("<tr>")
+        # Format CI pairs (show — when both bounds are 0 = not computed)
+        prod_ci = _fmt_ci(prod_ci_lo, prod_ci_hi, ",.0f")
+        risk_ci = _fmt_ci(risk_ci_lo, risk_ci_hi)
+        prod_ci_lo_str = prod_ci if isinstance(prod_ci, str) else prod_ci[0]
+        prod_ci_hi_str = "\u2014" if isinstance(prod_ci, str) else prod_ci[1]
+        risk_ci_lo_str = risk_ci if isinstance(risk_ci, str) else risk_ci[0]
+        risk_ci_hi_str = "\u2014" if isinstance(risk_ci, str) else risk_ci[1]
+
+        # Row CSS class for targeted styling
+        if prefix == "actual":
+            row_cls = "row-actual"
+        elif prefix == "optimum":
+            row_cls = "row-optimum"
+        else:
+            row_cls = "row-swap"
+
+        # KPI highlight on key risk/production cells for Actual and Optimum
+        kpi = ' kpi-highlight' if prefix in ("actual", "optimum") else ""
+
+        lines.append(f'<tr class="{row_cls}">')
         lines.append(f"<td><strong>{label}</strong></td>")
-        lines.append(f'<td class="num">{_fmt_num(risk)}</td>')
-        lines.append(f'<td class="num">{_fmt_num(prod, ",.0f")}</td>')
+        lines.append(f'<td class="num{kpi}">{_fmt_num(risk)}</td>')
+        lines.append(f'<td class="num{kpi}">{_fmt_num(prod, ",.0f")}</td>')
         lines.append(f'<td class="num">{prod_pct_str}</td>')
-        lines.append(f'<td class="num">{_fmt_num(todu30, ",.0f")}</td>')
-        lines.append(f'<td class="num">{_fmt_num(toduamt, ",.0f")}</td>')
-        lines.append(f'<td class="num ci">{_fmt_num(prod_ci_lo, ",.0f")}</td>')
-        lines.append(f'<td class="num ci">{_fmt_num(prod_ci_hi, ",.0f")}</td>')
-        lines.append(f'<td class="num ci">{_fmt_num(risk_ci_lo)}</td>')
-        lines.append(f'<td class="num ci">{_fmt_num(risk_ci_hi)}</td>')
+        lines.append(f'<td class="num">{_fmt_num(rej_rate)}</td>')
+        if show_ci:
+            lines.append(f'<td class="num ci">{prod_ci_lo_str}</td>')
+            lines.append(f'<td class="num ci">{prod_ci_hi_str}</td>')
+            lines.append(f'<td class="num ci">{risk_ci_lo_str}</td>')
+            lines.append(f'<td class="num ci">{risk_ci_hi_str}</td>')
         lines.append("</tr>")
 
     lines.append("</tbody></table>")
@@ -496,7 +523,9 @@ def _build_portfolio_summary_sections(csv_path: Path) -> list[ReportSection]:
                 badge_cls = f"badge-{scenario}" if scenario and scenario in _SCENARIO_ORDER else ""
                 label = scenario.title() if scenario else "Base"
                 heading = f'<h4><span class="badge {badge_cls}">{label}</span></h4>'
-                section.tables.append(heading + _build_portfolio_metric_table(scen_df.iloc[0]))
+                section.tables.append(
+                    heading + _build_portfolio_metric_table(scen_df.iloc[0], show_ci=period_value != "mr")
+                )
 
             if section.tables:
                 all_sections.append(section)
@@ -560,9 +589,10 @@ def build_segment_report(
     exec_section.notes = config_notes
 
     # Add per-scenario summary tables
+    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6"]
     for scenario in scenarios:
         suffix = f"_{scenario}" if scenario else ""
-        tbl = csv_to_html_table(output_paths.risk_production_summary_csv(suffix))
+        tbl = csv_to_html_table(output_paths.risk_production_summary_csv(suffix), exclude_cols=_exclude_todu)
         if tbl:
             exec_section.tables.append(f"<h4>Scenario: {scenario or 'base'}</h4>{tbl}")
     sections.append(exec_section)
@@ -594,7 +624,7 @@ def build_segment_report(
         div = extract_plotly_div(output_paths.risk_production_visualizer_html(suffix))
         if div:
             sa_section.charts.append(div)
-        tbl = csv_to_html_table(output_paths.risk_production_summary_csv(suffix))
+        tbl = csv_to_html_table(output_paths.risk_production_summary_csv(suffix), exclude_cols=_exclude_todu)
         if tbl:
             sa_section.tables.append(tbl)
         opt_tbl = csv_to_html_table(output_paths.optimal_solution_csv(suffix))
@@ -609,7 +639,7 @@ def build_segment_report(
 
         # MR Validation
         mr_section = ReportSection(id=f"mr-{label}", title=f"MR Validation — {label}")
-        mr_tbl = csv_to_html_table(output_paths.mr_risk_production_summary_csv(suffix))
+        mr_tbl = csv_to_html_table(output_paths.mr_risk_production_summary_csv(suffix), exclude_cols=_exclude_todu)
         if mr_tbl:
             mr_section.tables.append(mr_tbl)
         if mr_section.tables:
@@ -681,13 +711,14 @@ def build_consolidated_report(
         sections.append(dash_section)
 
     # --- Segment Comparison ---
+    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6"]
     comparison_section = ReportSection(id="segment-comparison", title="Segment Comparison")
     for seg_name in segments:
         seg_dir = output_base / seg_name
         seg_output = OutputPaths(base_dir=seg_dir)
         # Use base scenario summary
         for suffix in ["_base", ""]:
-            tbl = csv_to_html_table(seg_output.risk_production_summary_csv(suffix))
+            tbl = csv_to_html_table(seg_output.risk_production_summary_csv(suffix), exclude_cols=_exclude_todu)
             if tbl:
                 comparison_section.tables.append(f"<h4>{seg_name}</h4>{tbl}")
                 break

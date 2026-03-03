@@ -120,6 +120,11 @@ def calculate_metrics_from_cuts(
 
         # Actual (All Booked)
         actual_prod, actual_risk, actual_rn, actual_rd, actual_h3, actual_h3_rn, actual_h3_rd = calc_metrics(df, "_boo")
+
+        # Total demand (through the door) = booked + repesca across all cells
+        total_rep_prod = df["oa_amt_h0_rep"].sum() if "oa_amt_h0_rep" in df.columns else 0.0
+        total_demand = actual_prod + total_rep_prod
+
         row_actual = {
             "Metric": "Actual",
             "Risk (%)": actual_risk,
@@ -127,6 +132,7 @@ def calculate_metrics_from_cuts(
             "Production (%)": 1.0,
             "todu_30ever_h6": actual_rn,
             "todu_amt_pile_h6": actual_rd,
+            "Rejection Rate (%)": (1 - actual_prod / total_demand) * 100 if total_demand > 0 else 0.0,
         }
         if has_h3:
             row_actual["Risk H3 (%)"] = actual_h3
@@ -144,6 +150,7 @@ def calculate_metrics_from_cuts(
             "Production (%)": si_prod / actual_prod if actual_prod else 0,
             "todu_30ever_h6": si_rn,
             "todu_amt_pile_h6": si_rd,
+            "Rejection Rate (%)": None,
         }
         if has_h3:
             row_si["Risk H3 (%)"] = si_h3
@@ -161,6 +168,7 @@ def calculate_metrics_from_cuts(
             "Production (%)": so_prod / actual_prod if actual_prod else 0,
             "todu_30ever_h6": so_rn,
             "todu_amt_pile_h6": so_rd,
+            "Rejection Rate (%)": None,
         }
         if has_h3:
             row_so["Risk H3 (%)"] = so_h3
@@ -181,6 +189,7 @@ def calculate_metrics_from_cuts(
             "Production (%)": opt_prod / actual_prod if actual_prod else 0,
             "todu_30ever_h6": opt_rn,
             "todu_amt_pile_h6": opt_rd,
+            "Rejection Rate (%)": (1 - opt_prod / total_demand) * 100 if total_demand > 0 else 0.0,
         }
         if has_h3:
             opt_h3_rn = (actual_h3_rn - so_h3_rn) + si_h3_rn

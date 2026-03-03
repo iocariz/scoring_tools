@@ -538,9 +538,7 @@ def mask_to_cutoffs(
         Dict mapping each variable name to a dict of bin_value → cutoff_limit.
     """
     if len(grid.variables) != 2:
-        # N>2: for each dimension, find the max accepted bin for each
-        # combination of the other dimensions. This is a simplification.
-        logger.info("mask_to_cutoffs: N>2 variable case, returning per-dimension projections")
+        logger.info("mask_to_cutoffs: N>2 variable case, returning cell-level + conditional cutoffs")
 
     result = {}
     # For 2-var case, build classic cut_map: var0_bin -> max var1 accepted
@@ -572,18 +570,51 @@ def mask_to_cutoffs(
 
         result[var0] = cut_map
     else:
-        # For each variable, project the mask
+        # N>2: lossless cell-level dict + conditional cutoffs for last dimension
+        # 1) Cell-level dict: {(v0, v1, v2, ...): 0_or_1, ...}
+        cell_dict = {}
+        for combo, idx in grid.cell_index.items():
+            cell_dict[combo] = int(mask[idx])
+        result["_cells"] = cell_dict
+
+        # 2) Per-dimension marginals: is any cell with this value accepted?
         for d, var in enumerate(grid.variables):
-            cut_map = {}
+            marginal = {}
             for val in grid.values_per_var[var]:
-                # Check if any cell with this value is accepted
-                accepted = False
-                for combo, idx in grid.cell_index.items():
-                    if combo[d] == val and mask[idx] == 1:
-                        accepted = True
-                        break
-                cut_map[float(val)] = 1.0 if accepted else 0.0
-            result[var] = cut_map
+                accepted = any(mask[idx] == 1 for combo, idx in grid.cell_index.items() if combo[d] == val)
+                marginal[float(val)] = 1.0 if accepted else 0.0
+            result[f"_marginal_{var}"] = marginal
+
+        # 3) Conditional cutoffs for last dimension: for each unique combo
+        # of variables[:-1], find the extreme accepted value of variables[-1]
+        last_var = grid.variables[-1]
+        last_d = len(grid.variables) - 1
+        last_inverted = last_var in inv_vars
+        last_vals = grid.values_per_var[last_var]
+
+        cond_cutoffs = {}
+        # Get all unique combos of the first N-1 dimensions
+        prefix_combos = set()
+        for combo in grid.cell_index:
+            prefix_combos.add(combo[:last_d])
+
+        for prefix in sorted(prefix_combos):
+            extreme_val = None
+            for lv in last_vals:
+                full_combo = prefix + (lv,)
+                idx = grid.cell_index.get(full_combo)
+                if idx is not None and mask[idx] == 1:
+                    if last_inverted:
+                        if extreme_val is None or lv < extreme_val:
+                            extreme_val = lv
+                    else:
+                        if extreme_val is None or lv > extreme_val:
+                            extreme_val = lv
+            if extreme_val is None:
+                extreme_val = np.inf if last_inverted else -np.inf
+            cond_cutoffs[prefix] = float(extreme_val)
+
+        result[last_var] = cond_cutoffs
 
     return result
 
@@ -918,6 +949,128 @@ def create_fixed_cutoff_solution(
     logger.info(f"Created fixed cutoff solution: {dict(zip(var0_bins, var1_cutoffs))}")
 
     return df
+
+
+# =============================================================================
+# N>2 Fixed cutoff mask creation
+# =============================================================================
+
+
+def _validate_nd_cutoff_structure(
+    fixed_cutoffs: dict,
+    variables: list[str],
+) -> dict[str, list]:
+    """Extract per-variable accepted bin lists from fixed_cutoffs dict.
+
+    Skips meta keys like ``strict_validation`` and ``run_all_scenarios``.
+
+    Args:
+        fixed_cutoffs: Raw config dict with variable → accepted-bin-list mappings.
+        variables: Ordered variable names.
+
+    Returns:
+        Dict mapping each variable name to its list of accepted bin values.
+
+    Raises:
+        ValueError: If any variable is missing from fixed_cutoffs.
+    """
+    meta_keys = {"strict_validation", "run_all_scenarios"}
+    accepted: dict[str, list] = {}
+
+    for var in variables:
+        if var not in fixed_cutoffs:
+            raise ValueError(
+                f"fixed_cutoffs must contain all variables: {variables}. "
+                f"Missing '{var}'. Got keys: {[k for k in fixed_cutoffs if k not in meta_keys]}"
+            )
+        vals = fixed_cutoffs[var]
+        if not isinstance(vals, (list, tuple)):
+            raise ValueError(f"fixed_cutoffs['{var}'] must be a list, got {type(vals).__name__}")
+        accepted[var] = [float(v) for v in vals]
+
+    return accepted
+
+
+def create_fixed_cutoff_mask(
+    fixed_cutoffs: dict,
+    variables: list[str],
+    data_summary_desagregado: pd.DataFrame,
+    inv_vars: list[str] | None = None,
+    strict_validation: bool = False,
+) -> tuple["CellGrid", np.ndarray]:
+    """Create a CellGrid and binary mask from N-variable fixed cutoffs.
+
+    A cell is accepted iff ALL its coordinate values appear in the accepted
+    list for that variable.
+
+    Args:
+        fixed_cutoffs: Dict mapping variable names to lists of accepted bin values.
+            May also contain meta keys (``strict_validation``, ``run_all_scenarios``).
+        variables: Ordered variable names (len >= 2).
+        data_summary_desagregado: Aggregated data to build the grid from.
+        inv_vars: Variables with inverted risk ordering (used for contiguity check).
+        strict_validation: If True, raise errors instead of warnings.
+
+    Returns:
+        Tuple of (CellGrid, mask) where mask is a binary numpy array
+        (1=accept, 0=reject) aligned with grid.cell_index.
+    """
+    if inv_vars is None:
+        inv_vars = []
+
+    # Parse per-variable accepted lists
+    accepted = _validate_nd_cutoff_structure(fixed_cutoffs, variables)
+
+    # Build grid from data
+    grid = CellGrid.from_summary(data_summary_desagregado, variables)
+
+    # Validate that accepted values exist in data bins
+    for var in variables:
+        data_bins = {float(v) for v in grid.values_per_var[var]}
+        accepted_set = set(accepted[var])
+        unknown = accepted_set - data_bins
+        if unknown:
+            msg = (
+                f"Fixed cutoff values {sorted(unknown)} for '{var}' "
+                f"don't exist in data bins {sorted(data_bins)}."
+            )
+            if strict_validation:
+                raise ValueError(msg)
+            logger.warning(msg + " These values will be ignored.")
+
+    # Validate contiguity: accepted bins should form a contiguous block per dimension
+    for var in variables:
+        data_vals = grid.values_per_var[var]
+        accepted_set = set(accepted[var])
+        # Find which positions are accepted
+        positions = [i for i, v in enumerate(data_vals) if float(v) in accepted_set]
+        if len(positions) >= 2:
+            # Check contiguous
+            is_contiguous = (positions[-1] - positions[0] + 1) == len(positions)
+            if not is_contiguous:
+                msg = (
+                    f"Accepted bins for '{var}' are not contiguous: "
+                    f"accepted={sorted(accepted_set)}, data_bins={data_vals}. "
+                    f"This may break monotonicity assumptions."
+                )
+                if strict_validation:
+                    raise ValueError(msg)
+                logger.warning(msg)
+
+    # Build mask: cell is accepted iff ALL its coordinates are in accepted lists
+    mask = np.zeros(grid.n_cells, dtype=int)
+    for combo, idx in grid.cell_index.items():
+        all_accepted = all(float(combo[d]) in set(accepted[var]) for d, var in enumerate(variables))
+        if all_accepted:
+            mask[idx] = 1
+
+    n_accepted = int(mask.sum())
+    logger.info(
+        f"Fixed cutoff mask: {n_accepted}/{grid.n_cells} cells accepted "
+        f"({n_accepted / grid.n_cells * 100:.1f}%)"
+    )
+
+    return grid, mask
 
 
 # =============================================================================

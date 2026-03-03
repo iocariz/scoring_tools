@@ -496,9 +496,15 @@ def format_cutoff_summary_table(
     var0_name = variables[0] if len(variables) > 0 else "var0"
     bin_col = f"{var0_name}_bin"
 
+    # Build pivot index — include CI columns if present so they survive pivot
+    index_cols = ["segment", "scenario", "risk_pct", "production"]
+    ci_cols = ["production_ci_lower", "production_ci_upper", "risk_ci_lower", "risk_ci_upper"]
+    available_ci = [c for c in ci_cols if c in cutoff_summary.columns]
+    index_cols.extend(available_ci)
+
     # Pivot to wide format
     pivot_df = cutoff_summary.pivot_table(
-        index=["segment", "scenario", "risk_pct", "production"], columns=bin_col, values="cutoff_value", aggfunc="first"
+        index=index_cols, columns=bin_col, values="cutoff_value", aggfunc="first"
     ).reset_index()
 
     # Rename bin columns to be more readable

@@ -54,7 +54,7 @@ Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `mak
 2. **Data Loading** — `src/data_manager.py` reads SAS files, standardizes columns (H3 columns optional)
 3. **Preprocessing** — `src/pipeline/preprocessing.py` orchestrates DQ checks (`src/data_quality.py`), filtering/binning (`src/preprocess_improved.py`). Bin edge learning supports `"quantile"` (equal-count) and `"optimization"` (production-weighted risk split via `DecisionTreeRegressor`) methods, dispatched by `BinConfig.method`.
 4. **Inference** — `src/pipeline/inference.py` orchestrates model training with CV across feature sets; custom sklearn estimators in `src/estimators.py` (`HurdleRegressor`, `TweedieGLM`). Trains on `inference_variables` (subset of `variables`), decoupled from the optimization grid. Optuna hyperparameter tuning available for tree-based models.
-5. **Optimization** — `src/pipeline/optimization.py` generates all monotonic cutoff combinations, computes KPIs per solution, applies optional reject inference (parceling with linear/power/sigmoid methods, optional Bayesian smoothing), filters to Pareto frontier. Supports swap-in production/risk constraints.
+5. **Optimization** — `src/pipeline/optimization.py` generates all monotonic cutoff combinations, computes KPIs per solution, applies optional reject inference (parceling with linear/power/sigmoid methods, optional Bayesian smoothing), filters to Pareto frontier. Supports swap-in production/risk constraints. Fixed cutoffs and GA fallback are fully supported for N>2 variables.
 6. **Scenario Analysis** — selects optimal Pareto points at pessimistic/base/optimistic risk thresholds; bootstrap CI, MR validation (with H3→H6 extrapolation), PSI/CSI stability, audit tables
 7. **Sensitivity Analysis** (optional) — cutoff sensitivity analysis
 8. **RI Optimizer** (optional) — automated reject inference parameter tuning via grid/Optuna search; re-runs optimization if better params found
@@ -100,7 +100,7 @@ Two-tier config: `config.toml` (global defaults) overridden per-segment by `segm
 
 **Segment constraints** (in `segments.toml`): `min_risk`, `max_risk`, `min_production` (production floor), `locked_sol_fac` (lock to specific frontier point).
 
-**Fixed cutoffs:** `fixed_cutoffs` to skip MILP and use predefined cutoff combinations.
+**Fixed cutoffs:** `fixed_cutoffs` to skip MILP and use predefined cutoff combinations. For 2-var: paired bins/cutoffs lists. For N>2: per-variable lists of accepted bin values (cell accepted iff all coordinates are in their respective accepted lists).
 
 ## Testing
 

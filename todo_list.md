@@ -150,12 +150,12 @@
 - Add CUSUM, EWMA, or Bayesian change-point detection (e.g., `ruptures` library)
 - Add seasonal decomposition (STL) to reduce false SPC anomalies from calendar effects
 
-### Full N>2 variable support
-- `fixed_cutoffs` is hard-blocked for 3+ variables
-- `mask_to_cutoffs` uses per-dimension projections (lossy) for N>2
-- Legacy enumeration fallback is 2-var only
-- `plot_3d_surface` is 2-var only
-- Complete the N-D generalization across all code paths
+### ~~Full N>2 variable support~~ (Done)
+- ~~`fixed_cutoffs` is hard-blocked for 3+ variables~~ — N>2 uses `create_fixed_cutoff_mask` (per-variable accepted bin lists)
+- ~~`mask_to_cutoffs` uses per-dimension projections (lossy) for N>2~~ — now returns `_cells` dict, `_marginal_*`, and conditional cutoffs for last dim
+- ~~Legacy enumeration fallback is 2-var only~~ — N>2 uses GA fallback via `_ga_pareto_fallback`
+- ~~`plot_3d_surface` is 2-var only~~ — gate relaxed to `len(variables) >= 2`, uses first 2 vars for surface
+- ~~Complete the N-D generalization across all code paths~~
 
 ### Per-segment production floor in MILP
 - `min_production` exists in global allocator's `SegmentConstraints` but not in the per-segment MILP

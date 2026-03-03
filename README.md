@@ -2,11 +2,11 @@
 
 ## Overview
 
-A credit risk scoring and portfolio optimization pipeline that processes loan application data, trains risk models, and determines optimal acceptance cutoffs to maximize production while controlling risk. The system operates on a two-dimensional grid of score variables (e.g., internal score bins and external score bins), evaluating all feasible cutoff combinations under monotonicity constraints to identify Pareto-optimal strategies.
+A credit risk scoring and portfolio optimization pipeline that processes loan application data, trains risk models, and determines optimal acceptance cutoffs to maximize production while controlling risk. The system operates on an N-dimensional grid of score variables (e.g., internal score bins × external score bins, optionally × income bins), evaluating all feasible cutoff combinations under monotonicity constraints to identify Pareto-optimal strategies.
 
 ### Key Capabilities
 
-- **Pareto Optimization**: Exhaustive search of monotonic cutoff combinations on a 2D score grid, identifying the efficient frontier of risk vs. production.
+- **Pareto Optimization**: MILP-based search of monotonic cutoff combinations on an N-dimensional score grid (2D and beyond), identifying the efficient frontier of risk vs. production.
 - **Scenario Analysis**: Evaluates strategy robustness across pessimistic, base, and optimistic risk appetites.
 - **Recent Monitoring (MR)**: Validates proposed cutoffs against a holdout recent period.
 - **Stability Analysis**: PSI/CSI drift detection between main and MR periods.
@@ -16,7 +16,7 @@ A credit risk scoring and portfolio optimization pipeline that processes loan ap
 - **Marginal Impact**: Analytical O(N) computation of the production and risk impact of flipping each cell's accept/reject status.
 - **Cell-Level Confidence Intervals**: K-fold CV prediction intervals per grid cell, quantifying model uncertainty.
 - **Optimization-Aware Binning**: Supervised bin splitting using production-weighted risk differentiation, giving the optimizer maximal leverage from additional dimensions (e.g., income).
-- **Fixed Cutoffs**: Bypasses optimization to evaluate predefined cutoff configurations.
+- **Fixed Cutoffs**: Bypasses optimization to evaluate predefined cutoff configurations. Supports both 2-variable (paired bins/cutoffs) and N>2 (per-variable accepted bin lists).
 - **Swap-In Constraints**: Optional MILP constraints that cap the swap-in (repesca) population's production share and/or risk directly inside the solver, so the Pareto frontier only contains solutions with controlled swap-in exposure.
 - **Fixed-Cell Constraints**: Pin individual cells as forced-accept or forced-reject before re-optimizing.
 - **Global Allocation**: Distributes a portfolio-wide risk budget across segments using MILP or greedy solvers.
@@ -228,7 +228,7 @@ Loads SAS data (`.sas7bdat`), standardizes column names (lowercase, underscores)
 
 ### Phase 4: Inference (Model Training)
 
-Trains a polynomial surface model on the 2D score grid to predict risk (`b2_ever_h6`).
+Trains a polynomial surface model on the score grid (uses the first 2 variables for 3D visualization, supports N variables for model training) to predict risk (`b2_ever_h6`).
 
 - **Feature sets tested**: simple (2 features), base (3: with interaction), polynomial (squared/cubic), full.
 - **Estimators evaluated**: `LinearRegression`, `Ridge`, `Lasso`, `ElasticNet`, `HurdleRegressor`, `TweedieGLM`, `XGBoost`, `LightGBM` (via Optuna hyperparameter tuning).
@@ -388,7 +388,9 @@ ri_calibration_gamma = 1.0            # Power exponent for calibration target (>
 
 #### Fixed Cutoffs (Optional)
 
-Skip optimization and apply predefined cutoffs. Useful for regulatory scenarios or validating approved strategies.
+Skip optimization and apply predefined cutoffs. Useful for regulatory scenarios or validating approved strategies. Supports both 2-variable (paired bins/cutoffs) and N>2 (per-variable accepted bin lists).
+
+**2-variable** (paired bins and cutoffs):
 
 ```toml
 [preprocessing.fixed_cutoffs]
@@ -396,6 +398,17 @@ sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]  # var0
 new_efx_clus = [3, 4, 5, 6, 7, 8, 9, 10, 12, 15]                            # var1 cutoffs per bin
 strict_validation = false   # true: raise errors; false: warnings (default: false)
 run_all_scenarios = false   # true: pessimistic/base/optimistic; false: base only (default: false)
+```
+
+**N>2 variables** (each variable lists accepted bin values; a cell is accepted iff all its coordinates appear in their respective accepted lists):
+
+```toml
+[preprocessing.fixed_cutoffs]
+sc_octroi_new_clus = [1.0, 2.0, 3.0]   # accepted bins for var0
+new_efx_clus = [1.0, 2.0, 3.0, 4.0]    # accepted bins for var1
+income_bin = [1.0, 2.0]                 # accepted bins for var2
+strict_validation = false
+run_all_scenarios = false
 ```
 
 #### Swap-In Constraints (Optional)
@@ -849,6 +862,8 @@ uv run python dashboard.py
 
 When cutoffs are predetermined (e.g., approved by a committee):
 
+**2-variable** (paired bins/cutoffs):
+
 ```toml
 # In segments.toml
 [segments.my_segment.fixed_cutoffs]
@@ -856,6 +871,18 @@ sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
 new_efx_clus = [3, 4, 5, 6, 7, 8, 9, 10, 12, 15]
 strict_validation = true
 run_all_scenarios = true    # Generate all 3 scenarios with fixed cutoffs
+```
+
+**N>2 variables** (per-variable accepted bins):
+
+```toml
+# In segments.toml — cell accepted iff all coordinates in accepted lists
+[segments.my_segment.fixed_cutoffs]
+sc_octroi_new_clus = [1.0, 2.0, 3.0]
+new_efx_clus = [1.0, 2.0, 3.0, 4.0]
+income_bin = [1.0, 2.0]
+strict_validation = true
+run_all_scenarios = true
 ```
 
 ```bash

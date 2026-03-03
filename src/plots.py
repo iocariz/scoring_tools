@@ -821,6 +821,18 @@ class RiskProductionVisualizer:
 
         TODU30, TODU_AMT, TODU30_CUT, TODU_AMT_CUT, TODU30_REP, TODU_AMT_REP = raw_metrics
 
+        # Total demand (through the door) = booked + repesca across all cells
+        total_rep = (
+            self.data_summary_disaggregated["oa_amt_h0_rep"].sum()
+            if "oa_amt_h0_rep" in self.data_summary_disaggregated.columns
+            else 0.0
+        )
+        total_demand = self.OA_0 + total_rep
+
+        # Rejection rate: 1 - production / total_demand (only meaningful for Actual & Optimum)
+        actual_rej = (1 - self.OA_0 / total_demand) * 100 if total_demand > 0 else 0.0
+        optimum_rej = (1 - OA / total_demand) * 100 if total_demand > 0 else 0.0
+
         # Construct DataFrame
         summary_data = {
             "Metric": ["Actual", "Swap-in", "Swap-out", "Optimum selected", "Summary"],
@@ -847,6 +859,7 @@ class RiskProductionVisualizer:
                 TODU_AMT,
                 TODU_AMT - self.actual_todu_amt,
             ],
+            "Rejection Rate (%)": [actual_rej, None, None, optimum_rej, None],
         }
 
         df_summary = pd.DataFrame(summary_data)

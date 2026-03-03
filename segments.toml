@@ -78,3 +78,21 @@ supersegment = "no_premium"  # Use shared model from supersegment
 #   - For sc_octroi_new_clus bin 2.0 -> accept new_efx_clus <= 2
 #   - For sc_octroi_new_clus bin 3.0 -> accept new_efx_clus <= 3
 #   - For sc_octroi_new_clus bin 4.0 -> accept new_efx_clus <= 4
+#
+# =============================================================================
+# N>2 FIXED CUTOFFS EXAMPLE
+# =============================================================================
+# For 3+ variables, each variable lists its accepted bin values.
+# A cell is accepted iff ALL its coordinates appear in the accepted lists.
+#
+# [segments.segment_with_3var_fixed_cutoffs]
+# segment_filter = "your_segment"
+# optimum_risk = 1.1
+# variables = ['sc_octroi_new_clus', 'new_efx_clus', 'income_bin']
+#
+# [segments.segment_with_3var_fixed_cutoffs.fixed_cutoffs]
+# sc_octroi_new_clus = [1.0, 2.0, 3.0]   # accepted bins for var0
+# new_efx_clus = [1.0, 2.0, 3.0, 4.0]    # accepted bins for var1
+# income_bin = [1.0, 2.0]                 # accepted bins for var2
+# strict_validation = false
+# run_all_scenarios = false

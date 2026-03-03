@@ -184,6 +184,37 @@ class TestCalculateMetricsFromCuts:
         # Swap-in should be 0 (nothing passes from repesca)
         assert result.loc[1, "Production (€)"] == 0
 
+    def test_rejection_rate_column_exists(self, sample_data, optimal_solution_df, variables):
+        """Test that Rejection Rate (%) column is present."""
+        result = calculate_metrics_from_cuts(sample_data, optimal_solution_df, variables)
+
+        assert "Rejection Rate (%)" in result.columns
+
+    def test_rejection_rate_actual(self, sample_data, optimal_solution_df, variables):
+        """Test Actual rejection rate = repesca / total demand."""
+        result = calculate_metrics_from_cuts(sample_data, optimal_solution_df, variables)
+
+        # actual_prod = 10000, total_rep = 1000, total_demand = 11000
+        # rejection_rate = (1 - 10000/11000) * 100 ≈ 9.09%
+        actual_rej = result.loc[result["Metric"] == "Actual", "Rejection Rate (%)"].iloc[0]
+        assert np.isclose(actual_rej, (1 - 10000 / 11000) * 100)
+
+    def test_rejection_rate_optimum(self, sample_data, optimal_solution_df, variables):
+        """Test Optimum rejection rate = (total_demand - opt_prod) / total_demand."""
+        result = calculate_metrics_from_cuts(sample_data, optimal_solution_df, variables)
+
+        # opt_prod = 1100, total_demand = 11000
+        # rejection_rate = (1 - 1100/11000) * 100 = 90.0%
+        opt_rej = result.loc[result["Metric"] == "Optimum selected", "Rejection Rate (%)"].iloc[0]
+        assert np.isclose(opt_rej, 90.0)
+
+    def test_rejection_rate_swap_rows_none(self, sample_data, optimal_solution_df, variables):
+        """Test that Swap-in and Swap-out rejection rates are None."""
+        result = calculate_metrics_from_cuts(sample_data, optimal_solution_df, variables)
+
+        assert pd.isna(result.loc[result["Metric"] == "Swap-in", "Rejection Rate (%)"].iloc[0])
+        assert pd.isna(result.loc[result["Metric"] == "Swap-out", "Rejection Rate (%)"].iloc[0])
+
 
 # =============================================================================
 # Edge Cases Tests
@@ -776,3 +807,110 @@ class TestB2EverH3:
         so_h3_rn = result.loc[2, "todu_30ever_h3"]
         opt_h3_rn = result.loc[3, "todu_30ever_h3"]
         assert np.isclose(opt_h3_rn, actual_h3_rn - so_h3_rn + si_h3_rn)
+
+
+# =============================================================================
+# N>2 Metrics Tests (mask + grid classification)
+# =============================================================================
+
+
+class TestCalculateMetricsNd:
+    """Tests for calculate_metrics_from_cuts with N>2 variables using mask+grid."""
+
+    def test_3var_mask_grid_classification(self):
+        """Verify mask+grid classification produces valid metrics for 3-var."""
+        from src.optimization_utils import CellGrid, classify_by_mask, evaluate_solution
+
+        # Build 3D data
+        rng = np.random.RandomState(42)
+        rows = []
+        for v0 in [1.0, 2.0, 3.0]:
+            for v1 in [1.0, 2.0]:
+                for v2 in [1.0, 2.0]:
+                    rows.append(
+                        {
+                            "var0": v0,
+                            "var1": v1,
+                            "var2": v2,
+                            "todu_30ever_h6": rng.uniform(5, 50),
+                            "todu_amt_pile_h6": rng.uniform(100, 500),
+                            "oa_amt_h0": rng.uniform(1000, 10000),
+                            "todu_30ever_h6_boo": rng.uniform(5, 50),
+                            "todu_amt_pile_h6_boo": rng.uniform(100, 500),
+                            "oa_amt_h0_boo": rng.uniform(1000, 10000),
+                            "todu_30ever_h6_rep": rng.uniform(1, 10),
+                            "todu_amt_pile_h6_rep": rng.uniform(10, 50),
+                            "oa_amt_h0_rep": rng.uniform(100, 1000),
+                        }
+                    )
+
+        df = pd.DataFrame(rows)
+        variables = ["var0", "var1", "var2"]
+        grid = CellGrid.from_summary(df, variables)
+
+        # Accept cells where var0 <= 2
+        mask = np.array(
+            [1 if grid.cell_data.iloc[i]["var0"] <= 2.0 else 0 for i in range(grid.n_cells)],
+            dtype=int,
+        )
+
+        # classify_by_mask should return booleans
+        accepted = classify_by_mask(df, mask, grid)
+        assert accepted.dtype == bool
+        assert accepted.sum() > 0
+        assert accepted.sum() < len(df)
+
+        # All accepted rows should have var0 <= 2
+        assert (df.loc[accepted, "var0"] <= 2.0).all()
+        # All rejected rows should have var0 > 2
+        assert (df.loc[~accepted, "var0"] > 2.0).all()
+
+        # evaluate_solution should produce valid KPIs
+        kpis = evaluate_solution(
+            mask, grid, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], multiplier=7
+        )
+        assert kpis["oa_amt_h0"] > 0
+        assert kpis["b2_ever_h6"] > 0
+
+        # Accepted production should equal sum of accepted cells
+        expected_prod = df.loc[accepted, "oa_amt_h0"].sum()
+        assert np.isclose(kpis["oa_amt_h0"], expected_prod, rtol=1e-6)
+
+    def test_3var_calculate_metrics_from_cuts_with_mask(self):
+        """calculate_metrics_from_cuts works with mask+grid for 3-var."""
+        from src.optimization_utils import CellGrid
+
+        rng = np.random.RandomState(42)
+        rows = []
+        for v0 in [1.0, 2.0]:
+            for v1 in [1.0, 2.0]:
+                for v2 in [1.0, 2.0]:
+                    rows.append(
+                        {
+                            "var0": v0,
+                            "var1": v1,
+                            "var2": v2,
+                            "todu_30ever_h6_boo": rng.uniform(5, 50),
+                            "todu_amt_pile_h6_boo": rng.uniform(100, 500),
+                            "oa_amt_h0_boo": rng.uniform(1000, 10000),
+                            "todu_30ever_h6_rep": rng.uniform(1, 10),
+                            "todu_amt_pile_h6_rep": rng.uniform(10, 50),
+                            "oa_amt_h0_rep": rng.uniform(100, 1000),
+                        }
+                    )
+
+        df = pd.DataFrame(rows)
+        variables = ["var0", "var1", "var2"]
+        grid = CellGrid.from_summary(df, variables)
+        mask = np.ones(grid.n_cells, dtype=int)  # accept all
+
+        # calculate_metrics_from_cuts requires a non-empty optimal_solution_df
+        # (early guard check), so pass a dummy one; the mask+grid path ignores it
+        dummy_sol = pd.DataFrame({"sol_fac": [0]})
+        result = calculate_metrics_from_cuts(df, dummy_sol, variables, mask=mask, grid=grid)
+
+        assert result is not None
+        assert len(result) == 4
+        assert result["Metric"].tolist() == ["Actual", "Swap-in", "Swap-out", "Optimum selected"]
+        # All accepted → swap-out should be 0
+        assert result.loc[2, "Production (€)"] == 0

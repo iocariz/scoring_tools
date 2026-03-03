@@ -501,17 +501,17 @@ class TestBuildScenarioKpiTable:
         # Check formatted values are reasonable (not raw large numbers)
         assert "000,000" not in html
 
-    def test_acceptance_rate(self):
+    def test_no_acceptance_rate_column(self):
         df = _make_cutoff_df(scenarios=("base",))
         html = _build_scenario_kpi_table(df, ["octroi_bin", "efx_bin"])
-        assert "Acc. Rate (%)" in html
+        # Acceptance rate columns were removed (misleading for 2-var)
+        assert "Acc. Rate" not in html
+        assert "Accepted" not in html
 
     def test_without_accepted_col(self):
         df = _make_cutoff_df(include_accepted=False, scenarios=("base",))
         html = _build_scenario_kpi_table(df, ["octroi_bin", "efx_bin"])
         assert "report-table" in html
-        # All cells accepted → rate should be 100.0%
-        assert "100.0" in html
 
     def test_ci_formatting(self):
         df = _make_cutoff_df(scenarios=("base",))
@@ -584,7 +584,7 @@ class TestBuildAcceptanceMatrices:
         df = _make_cutoff_df(grid_size=(2, 2))
         html = _build_acceptance_matrices(df, ["octroi_bin", "efx_bin"])
         assert html is not None
-        assert "#2ECC71" in html or "#FADBD8" in html
+        assert "cell-accept" in html or "cell-reject" in html
 
 
 # =============================================================================
@@ -665,16 +665,18 @@ class TestBuildPortfolioMetricTable:
         html = _build_portfolio_metric_table(row)
         assert "<thead>" in html
         assert "<tbody>" in html
-        # 4 metric rows + 1 header = 5 <tr>
-        assert html.count("<tr>") == 5
+        # 4 metric rows + 1 header = 5 <tr (some have class attrs)
+        assert html.count("<tr") == 5
         for label in ["Actual", "Optimum", "Swap-in", "Swap-out"]:
             assert label in html
 
     def test_columns_present(self):
         row = _make_consolidated_row()
         html = _build_portfolio_metric_table(row)
-        for col in ["Risk (%)", "Production (\u20ac)", "Production (%)", "todu_30ever_h6", "todu_amt_pile_h6"]:
+        for col in ["Risk (%)", "Production (\u20ac)", "Production (%)", "Rejection Rate (%)"]:
             assert col in html
+        for col in ["todu_30ever_h6", "todu_amt_pile_h6"]:
+            assert col not in html
         for col in ["Production CI Lower", "Production CI Upper", "Risk CI Lower", "Risk CI Upper"]:
             assert col in html
 
@@ -696,7 +698,7 @@ class TestBuildPortfolioMetricTable:
         html = _build_portfolio_metric_table(row)
         assert "<table" in html
         # All values should be dashes
-        assert html.count("\u2014") >= 4 * 9  # 4 rows × 9 numeric columns
+        assert html.count("\u2014") >= 4 * 8  # 4 rows × 8 numeric columns
 
 
 # =============================================================================

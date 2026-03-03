@@ -65,6 +65,9 @@ class ConsolidatedMetrics:
     swap_out_todu_30ever_h3: float = 0.0
     swap_out_todu_amt_pile_h3: float = 0.0
 
+    # Total demand (through the door) — booked + repesca production
+    total_demand: float = 0.0
+
     # Confidence Intervals (for optimum solution)
     optimum_production_ci_lower: float = 0.0
     optimum_production_ci_upper: float = 0.0
@@ -174,6 +177,20 @@ class ConsolidatedMetrics:
         )
 
     @property
+    def actual_rejection_rate(self) -> float:
+        """Rejection rate under the actual (current) policy."""
+        if self.total_demand <= 0:
+            return 0.0
+        return (1 - self.actual_production / self.total_demand) * 100
+
+    @property
+    def optimum_rejection_rate(self) -> float:
+        """Rejection rate under the optimum policy."""
+        if self.total_demand <= 0:
+            return 0.0
+        return (1 - self.optimum_production / self.total_demand) * 100
+
+    @property
     def production_delta(self) -> float:
         return self.optimum_production - self.actual_production
 
@@ -218,6 +235,9 @@ class ConsolidatedMetrics:
             "production_ci_upper": self.optimum_production_ci_upper,
             "risk_ci_lower": self.optimum_risk_ci_lower,
             "risk_ci_upper": self.optimum_risk_ci_upper,
+            "total_demand": self.total_demand,
+            "actual_rejection_rate_pct": self.actual_rejection_rate,
+            "optimum_rejection_rate_pct": self.optimum_rejection_rate,
         }
         # H3 complementary risk metrics
         has_h3 = (
@@ -444,6 +464,7 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
     todu_amt_col = None
     todu_30_h3_col = None
     todu_amt_h3_col = None
+    rejection_rate_col = None
 
     for col in df.columns:
         col_lower = col.lower()
@@ -457,6 +478,8 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
             todu_30_h3_col = col
         elif col_lower == "todu_amt_pile_h3":
             todu_amt_h3_col = col
+        elif "rejection" in col_lower and "rate" in col_lower:
+            rejection_rate_col = col
 
     # Fallback for production column
     if prod_col is None:
@@ -529,6 +552,21 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
                 elif "risk_ci_upper" in col_lower:
                     metrics["optimum"]["risk_ci_upper"] = float(row[col]) if pd.notna(row[col]) else 0
 
+    # Derive total_demand from actual rejection rate: total_demand = actual_prod / (1 - rej_rate/100)
+    # Or compute directly from the Actual row's rejection rate and production
+    actual_prod = metrics["actual"]["production"]
+    actual_rej = 0.0
+    if rejection_rate_col is not None:
+        actual_row = df[df[metric_col].str.lower().str.strip().str.contains("actual|current|baseline", na=False)]
+        if not actual_row.empty:
+            rej_val = actual_row.iloc[0].get(rejection_rate_col)
+            if pd.notna(rej_val):
+                actual_rej = float(rej_val)
+    if actual_rej < 100 and actual_prod > 0:
+        metrics["_total_demand"] = actual_prod / (1 - actual_rej / 100)
+    else:
+        metrics["_total_demand"] = actual_prod  # fallback: no repesca data
+
     return metrics
 
 
@@ -573,7 +611,9 @@ def aggregate_metrics(
         },
     }
 
+    total_demand_sum = 0.0
     for metrics in metrics_list:
+        total_demand_sum += metrics.get("_total_demand", metrics["actual"]["production"])
         for key in aggregated:
             aggregated[key]["production"] += metrics[key]["production"]
             aggregated[key]["todu_30ever_h6"] += metrics[key]["todu_30ever_h6"]
@@ -634,6 +674,8 @@ def aggregate_metrics(
         else:
             aggregated[key]["risk_ci_lower"] = 0
             aggregated[key]["risk_ci_upper"] = 0
+
+    aggregated["_total_demand"] = total_demand_sum
 
     return aggregated
 
@@ -765,10 +807,13 @@ def consolidate_segments(
                         swap_in_todu_amt_pile_h3=agg["swap_in"].get("todu_amt_pile_h3", 0),
                         swap_out_todu_30ever_h3=agg["swap_out"].get("todu_30ever_h3", 0),
                         swap_out_todu_amt_pile_h3=agg["swap_out"].get("todu_amt_pile_h3", 0),
-                        # Pass aggregated CIs (Production only)
+                        # Total demand for rejection rate
+                        total_demand=agg.get("_total_demand", 0),
+                        # Pass aggregated CIs
                         optimum_production_ci_lower=agg["optimum"].get("production_ci_lower", 0),
                         optimum_production_ci_upper=agg["optimum"].get("production_ci_upper", 0),
-                        # Risk CIs are 0 for aggregated
+                        optimum_risk_ci_lower=agg["optimum"].get("risk_ci_lower", 0),
+                        optimum_risk_ci_upper=agg["optimum"].get("risk_ci_upper", 0),
                     )
                     results.append(consolidated.to_dict())
                     supersegment_data[ss_name] = agg
@@ -811,6 +856,8 @@ def consolidate_segments(
                     swap_in_todu_amt_pile_h3=agg["swap_in"].get("todu_amt_pile_h3", 0),
                     swap_out_todu_30ever_h3=agg["swap_out"].get("todu_30ever_h3", 0),
                     swap_out_todu_amt_pile_h3=agg["swap_out"].get("todu_amt_pile_h3", 0),
+                    # Total demand for rejection rate
+                    total_demand=agg.get("_total_demand", 0),
                     # Pass segment-level CIs (fully available)
                     optimum_production_ci_lower=metrics["optimum"].get("production_ci_lower", 0),
                     optimum_production_ci_upper=metrics["optimum"].get("production_ci_upper", 0),
@@ -851,10 +898,13 @@ def consolidate_segments(
                     swap_in_todu_amt_pile_h3=total_agg["swap_in"].get("todu_amt_pile_h3", 0),
                     swap_out_todu_30ever_h3=total_agg["swap_out"].get("todu_30ever_h3", 0),
                     swap_out_todu_amt_pile_h3=total_agg["swap_out"].get("todu_amt_pile_h3", 0),
-                    # Pass aggregated CIs (Production only)
+                    # Total demand for rejection rate
+                    total_demand=total_agg.get("_total_demand", 0),
+                    # Pass aggregated CIs
                     optimum_production_ci_lower=total_agg["optimum"].get("production_ci_lower", 0),
                     optimum_production_ci_upper=total_agg["optimum"].get("production_ci_upper", 0),
-                    # Risk CIs are 0 for aggregated
+                    optimum_risk_ci_lower=total_agg["optimum"].get("risk_ci_lower", 0),
+                    optimum_risk_ci_upper=total_agg["optimum"].get("risk_ci_upper", 0),
                 )
                 results.append(total_consolidated.to_dict())
 
@@ -886,6 +936,9 @@ def consolidate_segments(
         "swap_out_risk_pct",
         "swap_out_todu_30ever_h6",
         "swap_out_todu_amt_pile_h6",
+        "total_demand",
+        "actual_rejection_rate_pct",
+        "optimum_rejection_rate_pct",
         "production_ci_lower",
         "production_ci_upper",
         "risk_ci_lower",

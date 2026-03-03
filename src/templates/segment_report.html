@@ -7,109 +7,278 @@
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
     <style>
         :root {
-            --primary: #1a73e8;
-            --bg: #f8f9fa;
+            --primary: #1a56db;
+            --primary-light: #e1effe;
+            --primary-dark: #1e3a5f;
+            --accent-green: #2ECC71;
+            --accent-green-light: #eafaf1;
+            --accent-red: #E74C3C;
+            --accent-red-light: #fdedec;
+            --accent-teal: #0d9488;
+            --accent-purple: #7c3aed;
+            --bg: #f3f4f6;
             --card-bg: #ffffff;
-            --border: #dee2e6;
-            --text: #212529;
-            --text-muted: #6c757d;
+            --border: #e5e7eb;
+            --border-light: #f0f0f0;
+            --text: #1f2937;
+            --text-muted: #6b7280;
+            --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+            --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
         }
+
+        html { scroll-behavior: smooth; }
+
         * { box-sizing: border-box; margin: 0; padding: 0; }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+            font-feature-settings: "tnum";
             background: var(--bg);
             color: var(--text);
             line-height: 1.6;
             padding: 2rem;
         }
+
         .container { max-width: 1400px; margin: 0 auto; }
+
+        /* ── Header ────────────────────────────────────── */
         header {
-            background: var(--primary);
+            background: linear-gradient(135deg, var(--primary-dark), var(--primary));
             color: #fff;
-            padding: 1.5rem 2rem;
-            border-radius: 8px;
+            padding: 1.75rem 2.5rem;
+            border-radius: 16px;
             margin-bottom: 1.5rem;
+            box-shadow: 0 4px 16px rgba(26,86,219,0.2);
         }
-        header h1 { font-size: 1.5rem; font-weight: 600; }
-        header .meta { font-size: 0.85rem; opacity: 0.85; margin-top: 0.25rem; }
+        header h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.01em; }
+        header .meta {
+            display: inline-block;
+            font-size: 0.8rem;
+            opacity: 0.9;
+            margin-top: 0.5rem;
+            background: rgba(255,255,255,0.12);
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+        }
+
+        /* ── Navigation ────────────────────────────────── */
         nav {
             background: var(--card-bg);
             border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 1rem 1.5rem;
+            border-radius: 12px;
+            padding: 0.75rem 1.25rem;
             margin-bottom: 1.5rem;
+            box-shadow: var(--shadow-sm);
+            overflow-x: auto;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
         }
-        nav ul { list-style: none; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+        .nav-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        nav ul { list-style: none; display: flex; flex-wrap: wrap; gap: 0.4rem; }
         nav a {
             color: var(--primary);
             text-decoration: none;
-            font-size: 0.85rem;
-            padding: 0.25rem 0.75rem;
-            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            padding: 0.3rem 0.85rem;
+            border-radius: 20px;
             border: 1px solid var(--border);
+            transition: all 0.2s ease;
+            white-space: nowrap;
         }
-        nav a:hover { background: var(--bg); }
+        nav a:hover {
+            background: var(--primary);
+            color: #fff;
+            border-color: var(--primary);
+            box-shadow: 0 2px 8px rgba(26,86,219,0.25);
+            transform: translateY(-1px);
+        }
+
+        /* ── Section Cards ─────────────────────────────── */
         .section {
             background: var(--card-bg);
             border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 1.5rem 2rem;
+            border-left: 4px solid var(--primary);
+            border-radius: 16px;
+            padding: 1.75rem 2rem;
             margin-bottom: 1.5rem;
+            box-shadow: var(--shadow-sm);
+            transition: box-shadow 0.25s ease;
+            animation: fadeIn 0.4s ease both;
         }
+        .section:hover { box-shadow: var(--shadow-md); }
+        .section:nth-of-type(3n+1) { border-left-color: var(--primary); }
+        .section:nth-of-type(3n+2) { border-left-color: var(--accent-teal); }
+        .section:nth-of-type(3n) { border-left-color: var(--accent-purple); }
+
         .section h2 {
-            font-size: 1.2rem;
-            font-weight: 600;
-            color: var(--primary);
-            border-bottom: 2px solid var(--primary);
-            padding-bottom: 0.5rem;
-            margin-bottom: 1rem;
+            font-size: 1.35rem;
+            font-weight: 700;
+            color: var(--text);
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 0.6rem;
+            margin-bottom: 1.25rem;
         }
         .section h4 {
-            font-size: 0.95rem;
+            font-size: 1.1rem;
             font-weight: 600;
-            margin: 1rem 0 0.5rem;
-            color: var(--text-muted);
+            margin: 1.25rem 0 0.6rem;
+            color: var(--text);
+            border-left: 3px solid var(--primary);
+            padding-left: 0.75rem;
         }
-        .notes { margin-bottom: 1rem; }
+
+        /* ── Notes ─────────────────────────────────────── */
+        .notes {
+            margin-bottom: 1.25rem;
+            padding: 0.75rem 1rem 0.75rem 1.25rem;
+            border-left: 3px solid var(--accent-teal);
+            background: #f0fdfa;
+            border-radius: 0 8px 8px 0;
+            list-style: none;
+        }
         .notes li {
-            font-size: 0.9rem;
+            font-size: 0.88rem;
             color: var(--text-muted);
-            list-style: disc inside;
-            margin-bottom: 0.15rem;
+            margin-bottom: 0.3rem;
+            padding-left: 1.2rem;
+            position: relative;
         }
+        .notes li::before {
+            content: '\2022';
+            color: var(--accent-teal);
+            font-weight: 700;
+            font-size: 1.1em;
+            position: absolute;
+            left: 0;
+        }
+        .notes li:last-child { margin-bottom: 0; }
+
         .chart-container {
             margin-bottom: 1.5rem;
             overflow-x: auto;
+        }
+
+        /* ── Tables ────────────────────────────────────── */
+        .table-wrapper {
+            overflow-x: auto;
+            margin-bottom: 1.25rem;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            overflow: hidden;
         }
         .report-table {
             width: 100%;
             border-collapse: collapse;
             font-size: 0.85rem;
-            margin-bottom: 1rem;
+            margin: 0;
         }
         .report-table th, .report-table td {
-            padding: 0.4rem 0.75rem;
+            padding: 0.65rem 1rem;
             text-align: left;
-            border-bottom: 1px solid var(--border);
+            border-bottom: 1px solid var(--border-light);
         }
-        .report-table th {
-            background: var(--bg);
+        .report-table thead th {
+            background: linear-gradient(180deg, var(--primary) 0%, #1547b5 100%);
+            color: #fff;
             font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.04em;
             position: sticky;
             top: 0;
+            z-index: 1;
         }
-        .report-table tr:hover { background: #f1f3f5; }
-        .table-wrapper { overflow-x: auto; margin-bottom: 1rem; }
+        .report-table tbody tr { transition: background 0.15s ease; }
+        .report-table tbody tr:nth-child(even) { background: #fafbfc; }
+        .report-table tbody tr:hover {
+            background: var(--primary-light);
+            border-left: 3px solid var(--primary);
+        }
+        .report-table tbody tr:last-child td { border-bottom: none; }
+        .report-table tbody td:first-child { font-weight: 600; color: var(--text); }
+
+        /* Portfolio metric row classes */
+        .row-actual td { /* default styling */ }
+        .row-optimum td { background: var(--accent-green-light); }
+        .row-optimum:hover td { background: #d5f5e3; }
+        .row-swap td { opacity: 0.75; }
+        .kpi-highlight { font-size: 1rem; font-weight: 700; }
+
+        /* Acceptance matrix cell classes */
+        .cell-accept { background: var(--accent-green); color: #fff; text-align: center; border-radius: 3px; }
+        .cell-reject { background: var(--accent-red-light); color: #922B21; text-align: center; border-radius: 3px; }
+        .cell-missing { background: #EAECEE; color: #7f8c8d; text-align: center; border-radius: 3px; }
+
+        /* ── Utility Classes ───────────────────────────── */
+        .num { text-align: right; font-variant-numeric: tabular-nums; }
+        .ci { color: var(--text-muted); font-size: 0.9em; }
+        .badge {
+            display: inline-block;
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.25em 0.75em;
+            border-radius: 20px;
+            border: 1px solid transparent;
+        }
+        .badge-pessimistic { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+        .badge-base { background: #dbeafe; color: #1e40af; border-color: #bfdbfe; }
+        .badge-optimistic { background: #d1fae5; color: #065f46; border-color: #a7f3d0; }
+
+        /* ── Footer ────────────────────────────────────── */
         footer {
             text-align: center;
             font-size: 0.8rem;
             color: var(--text-muted);
             margin-top: 2rem;
-            padding: 1rem;
+            padding: 1.25rem 1rem;
+            border-top: 1px solid var(--border);
+        }
+        footer a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+            margin-left: 1rem;
+        }
+        footer a:hover { text-decoration: underline; }
+
+        /* ── Animations ────────────────────────────────── */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* ── Print ─────────────────────────────────────── */
+        @media print {
+            body { padding: 0; background: #fff; }
+            header { box-shadow: none; border-radius: 0; }
+            .section {
+                box-shadow: none;
+                break-inside: avoid;
+                page-break-before: auto;
+                border-radius: 0;
+                animation: none;
+            }
+            nav { display: none; }
+            footer a { display: none; }
+            .report-table thead th { background: var(--primary) !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .badge, .cell-accept, .cell-reject, .cell-missing, .row-optimum td {
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
         }
     </style>
 </head>
-<body>
+<body id="top">
 <div class="container">
     <header>
         <h1>{{ title }}</h1>
@@ -118,6 +287,7 @@
 
     {% if sections %}
     <nav>
+        <span class="nav-label">Jump to:</span>
         <ul>
             {% for s in sections %}
             <li><a href="#{{ s.id }}">{{ s.title }}</a></li>
@@ -150,6 +320,7 @@
 
     <footer>
         Scoring Tools &mdash; HTML Report &mdash; {{ generation_date }}
+        <a href="#top">Back to top</a>
     </footer>
 </div>
 </body>
