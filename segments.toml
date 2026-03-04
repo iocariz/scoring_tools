@@ -28,6 +28,15 @@ supersegment = "no_premium"  # Use shared model from supersegment
 min_risk = 0.8  # Optional: minimum risk for global allocation
 max_risk = 1.4  # Optional: maximum risk for global allocation
 
+[segments.no_premium_ab.fixed_cutoffs]
+sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+strict_validation = false
+run_all_scenarios = true
+
+[segments.no_premium_ab.fixed_cutoffs.new_efx_clus]
+1 = [20, 20, 20, 16, 1, 1, 1, 1, 1, 1]   # when income_bin = 1
+2 = [20, 16, 14, 11, 1, 1, 1, 1, 1, 1]   # when income_bin = 2
+
 [segments.no_premium_cd]
 segment_filter = "no_premium_cd"
 optimum_risk = 1.3
@@ -80,10 +89,10 @@ supersegment = "no_premium"  # Use shared model from supersegment
 #   - For sc_octroi_new_clus bin 4.0 -> accept new_efx_clus <= 4
 #
 # =============================================================================
-# N>2 FIXED CUTOFFS EXAMPLE
+# N>2 FIXED CUTOFFS — FLAT (PAIRED) EXAMPLE
 # =============================================================================
-# For 3+ variables, each variable lists its accepted bin values.
-# A cell is accepted iff ALL its coordinates appear in the accepted lists.
+# For 3+ variables with flat paired cutoffs: var0 lists bin values,
+# secondary variables list a cutoff threshold per var0 bin (equal length).
 #
 # [segments.segment_with_3var_fixed_cutoffs]
 # segment_filter = "your_segment"
@@ -91,8 +100,30 @@ supersegment = "no_premium"  # Use shared model from supersegment
 # variables = ['sc_octroi_new_clus', 'new_efx_clus', 'income_bin']
 #
 # [segments.segment_with_3var_fixed_cutoffs.fixed_cutoffs]
-# sc_octroi_new_clus = [1.0, 2.0, 3.0]   # accepted bins for var0
-# new_efx_clus = [1.0, 2.0, 3.0, 4.0]    # accepted bins for var1
-# income_bin = [1.0, 2.0]                 # accepted bins for var2
+# sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0]   # var0 bin values
+# new_efx_clus = [20, 20, 16, 1]               # cutoff per var0 bin
+# income_bin = [2, 2, 2, 1]                     # cutoff per var0 bin
+# strict_validation = false
+# run_all_scenarios = false
+#
+# =============================================================================
+# N>2 FIXED CUTOFFS — MATRIX EXAMPLE
+# =============================================================================
+# For different cutoff schedules depending on a conditioning variable's value.
+# The conditioning variable is ABSENT from fixed_cutoffs; its accepted values
+# are the dict keys. Each dict entry is a per-var0-bin cutoff schedule.
+#
+# [segments.segment_with_matrix_cutoffs]
+# segment_filter = "your_segment"
+# optimum_risk = 1.1
+# variables = ['sc_octroi_new_clus', 'new_efx_clus', 'income_bin']
+#
+# [segments.segment_with_matrix_cutoffs.fixed_cutoffs]
+# sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0]   # var0 bin values
+#
+# # new_efx_clus cutoffs vary by income_bin value (conditioning variable):
+# [segments.segment_with_matrix_cutoffs.fixed_cutoffs.new_efx_clus]
+# 1 = [20, 20, 16, 1]    # when income_bin = 1
+# 2 = [20, 16, 11, 1]    # when income_bin = 2
 # strict_validation = false
 # run_all_scenarios = false

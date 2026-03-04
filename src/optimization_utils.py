@@ -693,8 +693,11 @@ def add_bin_columns(
         for i, mask in enumerate(masks):
             df.at[i, "acceptance_mask"] = ",".join(str(int(v)) for v in mask)
 
-    # Add sol_fac column at the beginning
-    df.insert(0, "sol_fac", range(len(df)))
+    # Add sol_fac column at the beginning (if not already present)
+    if "sol_fac" in df.columns:
+        df["sol_fac"] = range(len(df))
+    else:
+        df.insert(0, "sol_fac", range(len(df)))
 
     return df
 
@@ -959,36 +962,116 @@ def create_fixed_cutoff_solution(
 def _validate_nd_cutoff_structure(
     fixed_cutoffs: dict,
     variables: list[str],
-) -> dict[str, list]:
-    """Extract per-variable accepted bin lists from fixed_cutoffs dict.
+) -> tuple[dict[str, list | dict[float, list]], str | None]:
+    """Extract per-variable cutoff lists from fixed_cutoffs dict.
+
+    Supports two formats for secondary variables:
+    - **Flat list**: paired cutoff per var0 bin (same length as var0).
+    - **Dict (matrix)**: cutoff schedule keyed by conditioning variable values.
+      Each value list must have the same length as var0. The conditioning
+      variable is the one variable absent from ``fixed_cutoffs`` whose
+      accepted values are the union of dict keys.
+
+    var0 must always be a flat list.
 
     Skips meta keys like ``strict_validation`` and ``run_all_scenarios``.
 
     Args:
-        fixed_cutoffs: Raw config dict with variable → accepted-bin-list mappings.
+        fixed_cutoffs: Raw config dict with variable → cutoff-list or dict mappings.
         variables: Ordered variable names.
 
     Returns:
-        Dict mapping each variable name to its list of accepted bin values.
+        Tuple of (accepted dict, conditioning variable name or None).
+        The dict maps each variable name to either a list (flat) or
+        a dict[float, list] (matrix cutoffs).
 
     Raises:
-        ValueError: If any variable is missing from fixed_cutoffs.
+        ValueError: On structural errors (missing vars, bad types, length mismatches).
     """
     meta_keys = {"strict_validation", "run_all_scenarios"}
-    accepted: dict[str, list] = {}
+    accepted: dict[str, list | dict[float, list]] = {}
+    missing_vars: list[str] = []
+    dict_vars: list[str] = []
 
-    for var in variables:
+    # var0 must always be a flat list
+    var0 = variables[0]
+    if var0 not in fixed_cutoffs:
+        raise ValueError(
+            f"fixed_cutoffs must contain var0 '{var0}'. "
+            f"Got keys: {[k for k in fixed_cutoffs if k not in meta_keys]}"
+        )
+    v0_vals = fixed_cutoffs[var0]
+    if not isinstance(v0_vals, (list, tuple)):
+        raise ValueError(f"fixed_cutoffs['{var0}'] (var0) must be a list, got {type(v0_vals).__name__}")
+    accepted[var0] = [float(v) for v in v0_vals]
+    var0_len = len(accepted[var0])
+
+    # Process secondary variables
+    for var in variables[1:]:
         if var not in fixed_cutoffs:
-            raise ValueError(
-                f"fixed_cutoffs must contain all variables: {variables}. "
-                f"Missing '{var}'. Got keys: {[k for k in fixed_cutoffs if k not in meta_keys]}"
-            )
+            missing_vars.append(var)
+            continue
         vals = fixed_cutoffs[var]
-        if not isinstance(vals, (list, tuple)):
-            raise ValueError(f"fixed_cutoffs['{var}'] must be a list, got {type(vals).__name__}")
-        accepted[var] = [float(v) for v in vals]
+        if isinstance(vals, dict):
+            # Matrix cutoffs: keys are conditioning var values, values are cutoff lists
+            converted: dict[float, list] = {}
+            for k, v in vals.items():
+                if not isinstance(v, (list, tuple)):
+                    raise ValueError(
+                        f"fixed_cutoffs['{var}']['{k}'] must be a list, got {type(v).__name__}"
+                    )
+                key = float(k)
+                row = [float(x) for x in v]
+                if len(row) != var0_len:
+                    raise ValueError(
+                        f"fixed_cutoffs['{var}']['{k}'] has length {len(row)}, "
+                        f"expected {var0_len} (same as var0)."
+                    )
+                converted[key] = row
+            accepted[var] = converted
+            dict_vars.append(var)
+        elif isinstance(vals, (list, tuple)):
+            accepted[var] = [float(v) for v in vals]
+        else:
+            raise ValueError(f"fixed_cutoffs['{var}'] must be a list or dict, got {type(vals).__name__}")
 
-    return accepted
+    # Determine conditioning variable
+    conditioning_var: str | None = None
+    if dict_vars:
+        if len(missing_vars) == 0:
+            raise ValueError(
+                f"Matrix cutoffs found for {dict_vars} but no conditioning variable is missing "
+                f"from fixed_cutoffs. Exactly one variable must be absent to serve as the "
+                f"conditioning variable."
+            )
+        if len(missing_vars) > 1:
+            raise ValueError(
+                f"Matrix cutoffs found for {dict_vars} but multiple variables are missing "
+                f"from fixed_cutoffs: {missing_vars}. Exactly one variable must be absent "
+                f"to serve as the conditioning variable."
+            )
+        conditioning_var = missing_vars[0]
+        # Conditioning var's accepted values = union of all dict keys
+        all_keys: set[float] = set()
+        for dv in dict_vars:
+            all_keys |= set(accepted[dv].keys())  # type: ignore[union-attr]
+        accepted[conditioning_var] = sorted(all_keys)
+    elif missing_vars:
+        raise ValueError(
+            f"fixed_cutoffs must contain all variables: {variables}. "
+            f"Missing {missing_vars}. Got keys: {[k for k in fixed_cutoffs if k not in meta_keys]}"
+        )
+
+    # Enforce equal length for flat lists
+    for var in variables:
+        vals = accepted[var]
+        if isinstance(vals, list) and var != conditioning_var and len(vals) != var0_len:
+            raise ValueError(
+                f"fixed_cutoffs['{var}'] has length {len(vals)}, expected {var0_len} (same as var0). "
+                f"All flat cutoff lists must have equal length."
+            )
+
+    return accepted, conditioning_var
 
 
 def create_fixed_cutoff_mask(
@@ -1000,15 +1083,22 @@ def create_fixed_cutoff_mask(
 ) -> tuple["CellGrid", np.ndarray]:
     """Create a CellGrid and binary mask from N-variable fixed cutoffs.
 
-    A cell is accepted iff ALL its coordinate values appear in the accepted
-    list for that variable.
+    Supports two cutoff formats:
+
+    **Flat (paired)**: var0 lists bin values, each secondary variable lists a
+    cutoff threshold per var0 bin. A cell is accepted iff var0 matches AND
+    cell.var_d <= cutoff_d[i] (or >= if inverted).
+
+    **Matrix**: a secondary variable maps conditioning-variable values to
+    per-var0-bin cutoff schedules. The conditioning variable is absent from
+    ``fixed_cutoffs``; its accepted values are the dict keys.
 
     Args:
-        fixed_cutoffs: Dict mapping variable names to lists of accepted bin values.
+        fixed_cutoffs: Dict mapping variable names to cutoff lists or dicts.
             May also contain meta keys (``strict_validation``, ``run_all_scenarios``).
         variables: Ordered variable names (len >= 2).
         data_summary_desagregado: Aggregated data to build the grid from.
-        inv_vars: Variables with inverted risk ordering (used for contiguity check).
+        inv_vars: Variables with inverted risk ordering (>= instead of <=).
         strict_validation: If True, raise errors instead of warnings.
 
     Returns:
@@ -1018,51 +1108,154 @@ def create_fixed_cutoff_mask(
     if inv_vars is None:
         inv_vars = []
 
-    # Parse per-variable accepted lists
-    accepted = _validate_nd_cutoff_structure(fixed_cutoffs, variables)
+    # Parse and validate cutoff structure
+    cutoffs, conditioning_var = _validate_nd_cutoff_structure(fixed_cutoffs, variables)
 
     # Build grid from data
     grid = CellGrid.from_summary(data_summary_desagregado, variables)
 
-    # Validate that accepted values exist in data bins
-    for var in variables:
-        data_bins = {float(v) for v in grid.values_per_var[var]}
-        accepted_set = set(accepted[var])
-        unknown = accepted_set - data_bins
-        if unknown:
+    var0 = variables[0]
+    var0_bins = cutoffs[var0]  # always a flat list
+    secondary_vars = variables[1:]
+
+    # Validate var0 bin values exist in data
+    data_bins_var0 = {float(v) for v in grid.values_per_var[var0]}
+    unknown_var0 = set(var0_bins) - data_bins_var0
+    if unknown_var0:
+        msg = (
+            f"Fixed cutoff var0 bin values {sorted(unknown_var0)} for '{var0}' "
+            f"don't exist in data bins {sorted(data_bins_var0)}."
+        )
+        if strict_validation:
+            raise ValueError(msg)
+        logger.warning(msg + " These entries will be ignored.")
+
+    # Validate conditioning variable keys exist in data
+    if conditioning_var is not None:
+        data_cond_vals = {float(v) for v in grid.values_per_var[conditioning_var]}
+        cond_keys = set(cutoffs[conditioning_var])  # type: ignore[arg-type]
+        unknown_cond = cond_keys - data_cond_vals
+        if unknown_cond:
             msg = (
-                f"Fixed cutoff values {sorted(unknown)} for '{var}' "
-                f"don't exist in data bins {sorted(data_bins)}."
+                f"Conditioning variable '{conditioning_var}' dict keys {sorted(unknown_cond)} "
+                f"don't exist in data bins {sorted(data_cond_vals)}."
             )
             if strict_validation:
                 raise ValueError(msg)
-            logger.warning(msg + " These values will be ignored.")
+            logger.warning(msg + " These entries will be ignored.")
 
-    # Validate contiguity: accepted bins should form a contiguous block per dimension
-    for var in variables:
+    # Collect all cutoff values per variable for range validation
+    def _all_cutoff_values(var: str) -> list[float]:
+        entry = cutoffs[var]
+        if isinstance(entry, dict):
+            return [v for row in entry.values() for v in row]
+        return entry
+
+    # Validate cutoff range for secondary variables
+    for var in secondary_vars:
+        if var == conditioning_var:
+            continue
         data_vals = grid.values_per_var[var]
-        accepted_set = set(accepted[var])
-        # Find which positions are accepted
-        positions = [i for i, v in enumerate(data_vals) if float(v) in accepted_set]
-        if len(positions) >= 2:
-            # Check contiguous
-            is_contiguous = (positions[-1] - positions[0] + 1) == len(positions)
-            if not is_contiguous:
-                msg = (
-                    f"Accepted bins for '{var}' are not contiguous: "
-                    f"accepted={sorted(accepted_set)}, data_bins={data_vals}. "
-                    f"This may break monotonicity assumptions."
-                )
-                if strict_validation:
-                    raise ValueError(msg)
-                logger.warning(msg)
+        if len(data_vals) == 0:
+            continue
+        min_val, max_val = float(min(data_vals)), float(max(data_vals))
+        all_vals = _all_cutoff_values(var)
+        out_of_range = [c for c in all_vals if c < min_val or c > max_val]
+        if out_of_range:
+            msg = (
+                f"Cutoff values {sorted(set(out_of_range))} for '{var}' are outside data range "
+                f"[{min_val}, {max_val}]. This may result in unexpected acceptance rates."
+            )
+            if strict_validation:
+                raise ValueError(msg)
+            logger.warning(msg)
 
-    # Build mask: cell is accepted iff ALL its coordinates are in accepted lists
+    # Validate monotonicity for secondary variables
+    sorted_indices = sorted(range(len(var0_bins)), key=lambda i: var0_bins[i])
+
+    def _check_monotonicity(var: str, var_cutoffs: list[float]) -> None:
+        sorted_cutoffs = [var_cutoffs[i] for i in sorted_indices]
+        inverted = var in inv_vars
+        issues = []
+        for j in range(1, len(sorted_cutoffs)):
+            prev_c, curr_c = sorted_cutoffs[j - 1], sorted_cutoffs[j]
+            prev_b = var0_bins[sorted_indices[j - 1]]
+            curr_b = var0_bins[sorted_indices[j]]
+            if inverted:
+                if curr_c > prev_c:
+                    issues.append(f"bin {prev_b} (cutoff={prev_c}) -> bin {curr_b} (cutoff={curr_c})")
+            else:
+                if curr_c < prev_c:
+                    issues.append(f"bin {prev_b} (cutoff={prev_c}) -> bin {curr_b} (cutoff={curr_c})")
+        if issues:
+            direction = "non-increasing" if inverted else "non-decreasing"
+            msg = (
+                f"Non-monotonic cutoffs for '{var}'. Expected {direction} cutoffs "
+                f"for ascending '{var0}' bins. Issues: {issues}."
+            )
+            if strict_validation:
+                raise ValueError(msg)
+            logger.warning(msg)
+
+    for var in secondary_vars:
+        if var == conditioning_var:
+            continue
+        entry = cutoffs[var]
+        if isinstance(entry, dict):
+            for _cond_key, row in entry.items():
+                _check_monotonicity(var, row)
+        else:
+            _check_monotonicity(var, entry)
+
+    # Build variable-to-dimension index for quick lookup
+    var_dim = {v: d for d, v in enumerate(variables)}
+    cond_dim = var_dim[conditioning_var] if conditioning_var is not None else None
+
+    # Build mask
     mask = np.zeros(grid.n_cells, dtype=int)
-    for combo, idx in grid.cell_index.items():
-        all_accepted = all(float(combo[d]) in set(accepted[var]) for d, var in enumerate(variables))
-        if all_accepted:
-            mask[idx] = 1
+    for i, v0_bin in enumerate(var0_bins):
+        if v0_bin not in data_bins_var0:
+            continue
+        for combo, idx in grid.cell_index.items():
+            if float(combo[0]) != v0_bin:
+                continue
+            accepted = True
+            for var in secondary_vars:
+                cell_val = float(combo[var_dim[var]])
+                if var == conditioning_var:
+                    # Conditioning variable: accept if value is in the dict keys
+                    if cell_val not in set(cutoffs[conditioning_var]):  # type: ignore[arg-type]
+                        accepted = False
+                        break
+                elif isinstance(cutoffs[var], dict):
+                    # Matrix cutoff: look up schedule by conditioning var value
+                    cond_val = float(combo[cond_dim])  # type: ignore[index]
+                    schedule = cutoffs[var].get(cond_val)
+                    if schedule is None:
+                        accepted = False
+                        break
+                    cutoff = schedule[i]
+                    if var in inv_vars:
+                        if cell_val < cutoff:
+                            accepted = False
+                            break
+                    else:
+                        if cell_val > cutoff:
+                            accepted = False
+                            break
+                else:
+                    # Flat cutoff
+                    cutoff = cutoffs[var][i]
+                    if var in inv_vars:
+                        if cell_val < cutoff:
+                            accepted = False
+                            break
+                    else:
+                        if cell_val > cutoff:
+                            accepted = False
+                            break
+            if accepted:
+                mask[idx] = 1
 
     n_accepted = int(mask.sum())
     logger.info(

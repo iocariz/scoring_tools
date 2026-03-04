@@ -1281,15 +1281,17 @@ def _make_summary_3d(n0=3, n1=3, n2=2):
 
 
 class TestCreateFixedCutoffMask:
-    """Tests for create_fixed_cutoff_mask (N>2 fixed cutoffs)."""
+    """Tests for create_fixed_cutoff_mask (N>2 fixed cutoffs, per-var0-bin paired cutoffs)."""
 
-    def test_basic_3d(self):
-        """Basic 3D mask creation with accepted bins per variable."""
+    def test_basic_3d_paired(self):
+        """Per-var0-bin paired cutoffs: var0=[1,2], var1 cutoffs=[2,1], var2 cutoffs=[2,1]."""
         df = _make_summary_3d(3, 3, 2)
+        # var0 bin 1 → accept var1<=2, var2<=2 (all var2 bins)
+        # var0 bin 2 → accept var1<=1, var2<=1
         fixed_cutoffs = {
             "var0": [1.0, 2.0],
-            "var1": [1.0, 2.0],
-            "var2": [1.0],
+            "var1": [2.0, 1.0],
+            "var2": [2.0, 1.0],
         }
         grid, mask = create_fixed_cutoff_mask(
             fixed_cutoffs, ["var0", "var1", "var2"], df
@@ -1297,22 +1299,25 @@ class TestCreateFixedCutoffMask:
 
         assert grid.n_cells == 3 * 3 * 2
         assert mask.shape == (grid.n_cells,)
-        # (1,1,1), (1,2,1), (2,1,1), (2,2,1) should be accepted = 4 cells
-        assert mask.sum() == 4
+        # var0=1: var1 in {1,2}, var2 in {1,2} → 2*2 = 4 cells
+        # var0=2: var1 in {1}, var2 in {1} → 1 cell
+        # var0=3: not listed → 0 cells
+        assert mask.sum() == 5
 
         # Verify specific cells
         assert mask[grid.cell_index[(1.0, 1.0, 1.0)]] == 1
-        assert mask[grid.cell_index[(2.0, 2.0, 1.0)]] == 1
-        assert mask[grid.cell_index[(3.0, 1.0, 1.0)]] == 0  # var0=3 not accepted
-        assert mask[grid.cell_index[(1.0, 1.0, 2.0)]] == 0  # var2=2 not accepted
+        assert mask[grid.cell_index[(1.0, 2.0, 2.0)]] == 1
+        assert mask[grid.cell_index[(2.0, 1.0, 1.0)]] == 1
+        assert mask[grid.cell_index[(2.0, 2.0, 1.0)]] == 0  # var1=2 > cutoff 1
+        assert mask[grid.cell_index[(3.0, 1.0, 1.0)]] == 0  # var0=3 not listed
 
     def test_all_accepted(self):
-        """All bins accepted yields all-ones mask."""
+        """Max cutoffs for all var0 bins yields all matching cells accepted."""
         df = _make_summary_3d(2, 2, 2)
         fixed_cutoffs = {
             "var0": [1.0, 2.0],
-            "var1": [1.0, 2.0],
-            "var2": [1.0, 2.0],
+            "var1": [2.0, 2.0],  # cutoff = max bin for both
+            "var2": [2.0, 2.0],
         }
         grid, mask = create_fixed_cutoff_mask(
             fixed_cutoffs, ["var0", "var1", "var2"], df
@@ -1321,7 +1326,7 @@ class TestCreateFixedCutoffMask:
         assert mask.sum() == grid.n_cells
 
     def test_none_accepted(self):
-        """Empty accepted lists yield all-zeros mask."""
+        """Empty lists yield all-zeros mask."""
         df = _make_summary_3d(2, 2, 2)
         fixed_cutoffs = {
             "var0": [],
@@ -1335,14 +1340,27 @@ class TestCreateFixedCutoffMask:
         assert mask.sum() == 0
 
     def test_missing_variable_raises(self):
-        """Missing variable key in fixed_cutoffs raises ValueError."""
+        """Missing variable key in fixed_cutoffs (no dict entries) raises ValueError."""
         df = _make_summary_3d(2, 2, 2)
         fixed_cutoffs = {
             "var0": [1.0],
             "var1": [1.0],
             # var2 missing
         }
-        with pytest.raises(ValueError, match="Missing 'var2'"):
+        with pytest.raises(ValueError, match="Missing"):
+            create_fixed_cutoff_mask(
+                fixed_cutoffs, ["var0", "var1", "var2"], df
+            )
+
+    def test_unequal_lengths_raises(self):
+        """Unequal-length cutoff lists raise ValueError."""
+        df = _make_summary_3d(3, 3, 2)
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0, 3.0],
+            "var1": [1.0, 2.0],  # length 2 != 3
+            "var2": [1.0, 2.0, 1.0],
+        }
+        with pytest.raises(ValueError, match="equal length"):
             create_fixed_cutoff_mask(
                 fixed_cutoffs, ["var0", "var1", "var2"], df
             )
@@ -1350,10 +1368,11 @@ class TestCreateFixedCutoffMask:
     def test_evaluate_solution_integration(self):
         """Mask from create_fixed_cutoff_mask works with evaluate_solution."""
         df = _make_summary_3d(3, 3, 2)
+        # var0=[1,2], var1 cutoff=[3,2], var2 cutoff=[2,2]
         fixed_cutoffs = {
             "var0": [1.0, 2.0],
-            "var1": [1.0, 2.0, 3.0],
-            "var2": [1.0, 2.0],
+            "var1": [3.0, 2.0],
+            "var2": [2.0, 2.0],
         }
         grid, mask = create_fixed_cutoff_mask(
             fixed_cutoffs, ["var0", "var1", "var2"], df
@@ -1366,30 +1385,39 @@ class TestCreateFixedCutoffMask:
         assert kpis["b2_ever_h6"] > 0
 
     def test_inv_vars_direction(self):
-        """inv_vars doesn't change which cells are accepted (only used for contiguity warnings)."""
+        """inv_vars flips acceptance to >= instead of <=."""
         df = _make_summary_3d(3, 3, 2)
+        # var0=[1,2], var1 cutoff=[2,2]
+        # Without inv: var1<=2 → accepts var1 in {1,2}
+        # With inv on var1: var1>=2 → accepts var1 in {2,3}
         fixed_cutoffs = {
             "var0": [1.0, 2.0],
-            "var1": [1.0],
-            "var2": [1.0],
+            "var1": [2.0, 2.0],
+            "var2": [2.0, 2.0],
         }
         _, mask_no_inv = create_fixed_cutoff_mask(
             fixed_cutoffs, ["var0", "var1", "var2"], df, inv_vars=[]
         )
         _, mask_with_inv = create_fixed_cutoff_mask(
-            fixed_cutoffs, ["var0", "var1", "var2"], df, inv_vars=["var0"]
+            fixed_cutoffs, ["var0", "var1", "var2"], df, inv_vars=["var1"]
         )
 
-        # Same accepted cells regardless of inv_vars
-        np.testing.assert_array_equal(mask_no_inv, mask_with_inv)
+        # Without inv: var1 in {1,2} accepted; with inv: var1 in {2,3} accepted
+        # They should differ (var1=1 vs var1=3 swap)
+        assert not np.array_equal(mask_no_inv, mask_with_inv)
+
+        grid = CellGrid.from_summary(df, ["var0", "var1", "var2"])
+        # With inv_vars=["var1"], var1=1 should be rejected (1 < 2), var1=3 accepted (3 >= 2)
+        assert mask_with_inv[grid.cell_index[(1.0, 1.0, 1.0)]] == 0
+        assert mask_with_inv[grid.cell_index[(1.0, 3.0, 1.0)]] == 1
 
     def test_strict_validation_unknown_bins(self):
-        """strict_validation=True raises on unknown bin values."""
+        """strict_validation=True raises on unknown var0 bin values."""
         df = _make_summary_3d(2, 2, 2)
         fixed_cutoffs = {
             "var0": [1.0, 99.0],  # 99.0 doesn't exist in data
-            "var1": [1.0],
-            "var2": [1.0],
+            "var1": [1.0, 1.0],
+            "var2": [1.0, 1.0],
         }
         with pytest.raises(ValueError, match="don't exist in data bins"):
             create_fixed_cutoff_mask(
@@ -1412,27 +1440,255 @@ class TestCreateFixedCutoffMask:
         )
         assert mask.sum() == 1
 
+    def test_single_var0_bin(self):
+        """Single var0 bin with cutoffs for secondary vars."""
+        df = _make_summary_3d(3, 3, 2)
+        fixed_cutoffs = {
+            "var0": [2.0],
+            "var1": [2.0],
+            "var2": [1.0],
+        }
+        grid, mask = create_fixed_cutoff_mask(
+            fixed_cutoffs, ["var0", "var1", "var2"], df
+        )
+        # Only var0=2 cells, var1<=2, var2<=1 → var1 in {1,2}, var2 in {1} → 2 cells
+        assert mask.sum() == 2
+        assert mask[grid.cell_index[(2.0, 1.0, 1.0)]] == 1
+        assert mask[grid.cell_index[(2.0, 2.0, 1.0)]] == 1
+        assert mask[grid.cell_index[(2.0, 3.0, 1.0)]] == 0
+
+    def test_matrix_cutoff_basic(self):
+        """Matrix cutoffs: different var1 schedules per conditioning var (var2) value."""
+        df = _make_summary_3d(3, 3, 2)  # var0: 1-3, var1: 1-3, var2: 1-2
+        # var2 is conditioning variable (absent from fixed_cutoffs).
+        # When var2=1: accept var1 <= [3, 2, 1] for var0=[1,2,3]
+        # When var2=2: accept var1 <= [2, 1, 1] for var0=[1,2,3]
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0, 3.0],
+            "var1": {
+                "1": [3, 2, 1],  # when var2=1
+                "2": [2, 1, 1],  # when var2=2
+            },
+        }
+        grid, mask = create_fixed_cutoff_mask(
+            fixed_cutoffs, ["var0", "var1", "var2"], df
+        )
+
+        # var0=1, var2=1: var1 <= 3 → {1,2,3} → 3 cells
+        assert mask[grid.cell_index[(1.0, 1.0, 1.0)]] == 1
+        assert mask[grid.cell_index[(1.0, 2.0, 1.0)]] == 1
+        assert mask[grid.cell_index[(1.0, 3.0, 1.0)]] == 1
+        # var0=1, var2=2: var1 <= 2 → {1,2} → 2 cells
+        assert mask[grid.cell_index[(1.0, 1.0, 2.0)]] == 1
+        assert mask[grid.cell_index[(1.0, 2.0, 2.0)]] == 1
+        assert mask[grid.cell_index[(1.0, 3.0, 2.0)]] == 0
+        # var0=2, var2=1: var1 <= 2 → {1,2} → 2 cells
+        assert mask[grid.cell_index[(2.0, 1.0, 1.0)]] == 1
+        assert mask[grid.cell_index[(2.0, 2.0, 1.0)]] == 1
+        assert mask[grid.cell_index[(2.0, 3.0, 1.0)]] == 0
+        # var0=2, var2=2: var1 <= 1 → {1} → 1 cell
+        assert mask[grid.cell_index[(2.0, 1.0, 2.0)]] == 1
+        assert mask[grid.cell_index[(2.0, 2.0, 2.0)]] == 0
+        # var0=3, var2=1: var1 <= 1 → {1} → 1 cell
+        assert mask[grid.cell_index[(3.0, 1.0, 1.0)]] == 1
+        assert mask[grid.cell_index[(3.0, 2.0, 1.0)]] == 0
+        # var0=3, var2=2: var1 <= 1 → {1} → 1 cell
+        assert mask[grid.cell_index[(3.0, 1.0, 2.0)]] == 1
+        assert mask[grid.cell_index[(3.0, 2.0, 2.0)]] == 0
+        # Total: 3+2+2+1+1+1 = 10
+        assert mask.sum() == 10
+
+    def test_matrix_cutoff_inv_vars(self):
+        """Matrix cutoffs with inv_vars flips direction to >=."""
+        df = _make_summary_3d(2, 3, 2)  # var0: 1-2, var1: 1-3, var2: 1-2
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0],
+            "var1": {
+                "1": [2, 3],  # when var2=1: var1 >= 2 for var0=1, var1 >= 3 for var0=2
+                "2": [1, 2],  # when var2=2: var1 >= 1 for var0=1, var1 >= 2 for var0=2
+            },
+        }
+        grid, mask = create_fixed_cutoff_mask(
+            fixed_cutoffs, ["var0", "var1", "var2"], df, inv_vars=["var1"]
+        )
+
+        # var0=1, var2=1: var1 >= 2 → {2,3}
+        assert mask[grid.cell_index[(1.0, 1.0, 1.0)]] == 0
+        assert mask[grid.cell_index[(1.0, 2.0, 1.0)]] == 1
+        assert mask[grid.cell_index[(1.0, 3.0, 1.0)]] == 1
+        # var0=1, var2=2: var1 >= 1 → {1,2,3}
+        assert mask[grid.cell_index[(1.0, 1.0, 2.0)]] == 1
+        assert mask[grid.cell_index[(1.0, 2.0, 2.0)]] == 1
+        assert mask[grid.cell_index[(1.0, 3.0, 2.0)]] == 1
+        # var0=2, var2=1: var1 >= 3 → {3}
+        assert mask[grid.cell_index[(2.0, 1.0, 1.0)]] == 0
+        assert mask[grid.cell_index[(2.0, 2.0, 1.0)]] == 0
+        assert mask[grid.cell_index[(2.0, 3.0, 1.0)]] == 1
+        # var0=2, var2=2: var1 >= 2 → {2,3}
+        assert mask[grid.cell_index[(2.0, 1.0, 2.0)]] == 0
+        assert mask[grid.cell_index[(2.0, 2.0, 2.0)]] == 1
+        assert mask[grid.cell_index[(2.0, 3.0, 2.0)]] == 1
+
+    def test_matrix_mixed_flat_and_dict(self):
+        """4-var with mixed flat and dict cutoff entries."""
+        # var0: 1-2, var1: 1-3, var2: 1-2, var3: 1-2
+        rng = np.random.RandomState(42)
+        rows = []
+        for v0 in range(1, 3):
+            for v1 in range(1, 4):
+                for v2 in range(1, 3):
+                    for v3 in range(1, 3):
+                        rows.append({
+                            "var0": float(v0), "var1": float(v1),
+                            "var2": float(v2), "var3": float(v3),
+                            "todu_30ever_h6": rng.uniform(5, 50),
+                            "todu_amt_pile_h6": rng.uniform(100, 500),
+                            "oa_amt_h0": rng.uniform(1000, 10000),
+                            "todu_30ever_h6_boo": rng.uniform(5, 50),
+                            "todu_amt_pile_h6_boo": rng.uniform(100, 500),
+                            "oa_amt_h0_boo": rng.uniform(1000, 10000),
+                        })
+        df = pd.DataFrame(rows)
+
+        # var3 is conditioning variable (absent), var1 is matrix, var2 is flat
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0],
+            "var1": {
+                "1": [3, 2],  # when var3=1
+                "2": [2, 1],  # when var3=2
+            },
+            "var2": [2, 1],  # flat: cutoff per var0 bin
+        }
+        grid, mask = create_fixed_cutoff_mask(
+            fixed_cutoffs, ["var0", "var1", "var2", "var3"], df
+        )
+
+        # var0=1, var3=1: var1<=3, var2<=2 → all var1, all var2 → 3*2=6
+        # var0=1, var3=2: var1<=2, var2<=2 → var1 in {1,2}, all var2 → 2*2=4
+        # var0=2, var3=1: var1<=2, var2<=1 → var1 in {1,2}, var2 in {1} → 2*1=2
+        # var0=2, var3=2: var1<=1, var2<=1 → var1 in {1}, var2 in {1} → 1*1=1
+        # Total: 6+4+2+1 = 13
+        assert mask.sum() == 13
+
+        # Spot check
+        assert mask[grid.cell_index[(1.0, 3.0, 2.0, 1.0)]] == 1  # var3=1, var1=3 <=3 ok
+        assert mask[grid.cell_index[(1.0, 3.0, 2.0, 2.0)]] == 0  # var3=2, var1=3 > 2 fail
+        assert mask[grid.cell_index[(2.0, 1.0, 1.0, 1.0)]] == 1  # var3=1, var1=1<=2, var2=1<=1 ok
+        assert mask[grid.cell_index[(2.0, 1.0, 2.0, 1.0)]] == 0  # var2=2 > 1 fail
+
+    def test_matrix_conditioning_var_not_in_data(self):
+        """Strict validation raises when conditioning var keys don't exist in data."""
+        df = _make_summary_3d(2, 2, 2)  # var2 has values 1, 2
+        fixed_cutoffs = {
+            "var0": [1.0, 2.0],
+            "var1": {
+                "5": [2, 1],  # var2=5 doesn't exist in data
+                "6": [2, 1],  # var2=6 doesn't exist in data
+            },
+        }
+        with pytest.raises(ValueError, match="don't exist in data bins"):
+            create_fixed_cutoff_mask(
+                fixed_cutoffs, ["var0", "var1", "var2"], df, strict_validation=True
+            )
+
 
 class TestValidateNdCutoffStructure:
     """Tests for _validate_nd_cutoff_structure helper."""
 
     def test_basic(self):
-        """Basic extraction of per-variable accepted lists."""
-        result = _validate_nd_cutoff_structure(
+        """Basic extraction of per-variable cutoff lists."""
+        result, cond_var = _validate_nd_cutoff_structure(
             {"var0": [1, 2], "var1": [3, 4], "strict_validation": False},
             ["var0", "var1"],
         )
         assert result == {"var0": [1.0, 2.0], "var1": [3.0, 4.0]}
+        assert cond_var is None
 
-    def test_missing_variable(self):
-        """Missing variable raises ValueError."""
-        with pytest.raises(ValueError, match="Missing 'var1'"):
+    def test_missing_variable_no_dict(self):
+        """Missing variable without dict entries raises ValueError."""
+        with pytest.raises(ValueError, match="Missing"):
             _validate_nd_cutoff_structure({"var0": [1]}, ["var0", "var1"])
 
     def test_non_list_raises(self):
         """Non-list value raises ValueError."""
         with pytest.raises(ValueError, match="must be a list"):
             _validate_nd_cutoff_structure({"var0": 1.0, "var1": [1]}, ["var0", "var1"])
+
+    def test_unequal_lengths_raises(self):
+        """Unequal-length lists raise ValueError."""
+        with pytest.raises(ValueError, match="equal length"):
+            _validate_nd_cutoff_structure(
+                {"var0": [1, 2, 3], "var1": [1, 2], "var2": [1, 2, 3]},
+                ["var0", "var1", "var2"],
+            )
+
+    def test_dict_entry_matrix(self):
+        """Dict entry parsed as matrix cutoffs with conditioning variable detected."""
+        result, cond_var = _validate_nd_cutoff_structure(
+            {
+                "var0": [1, 2, 3],
+                "var1": {"1": [10, 8, 5], "2": [10, 6, 3]},
+                # var2 missing → conditioning variable
+            },
+            ["var0", "var1", "var2"],
+        )
+        assert cond_var == "var2"
+        assert isinstance(result["var1"], dict)
+        assert result["var1"][1.0] == [10.0, 8.0, 5.0]
+        assert result["var1"][2.0] == [10.0, 6.0, 3.0]
+        # Conditioning var gets sorted union of keys
+        assert result["var2"] == [1.0, 2.0]
+
+    def test_mixed_flat_and_dict(self):
+        """Mix of flat lists and dict entries with one conditioning variable."""
+        result, cond_var = _validate_nd_cutoff_structure(
+            {
+                "var0": [1, 2],
+                "var1": {"1": [5, 3], "2": [4, 2]},
+                "var2": [10, 8],
+                # var3 missing → conditioning variable
+            },
+            ["var0", "var1", "var2", "var3"],
+        )
+        assert cond_var == "var3"
+        assert isinstance(result["var1"], dict)
+        assert result["var2"] == [10.0, 8.0]
+        assert result["var3"] == [1.0, 2.0]
+
+    def test_dict_no_missing_var_raises(self):
+        """Dict entry with no missing conditioning variable raises ValueError."""
+        with pytest.raises(ValueError, match="no conditioning variable is missing"):
+            _validate_nd_cutoff_structure(
+                {
+                    "var0": [1, 2],
+                    "var1": {"1": [5, 3]},
+                    "var2": [10, 8],
+                },
+                ["var0", "var1", "var2"],
+            )
+
+    def test_dict_multiple_missing_vars_raises(self):
+        """Dict entry with multiple missing variables raises ValueError."""
+        with pytest.raises(ValueError, match="multiple variables are missing"):
+            _validate_nd_cutoff_structure(
+                {
+                    "var0": [1, 2],
+                    "var1": {"1": [5, 3]},
+                    # var2 and var3 both missing
+                },
+                ["var0", "var1", "var2", "var3"],
+            )
+
+    def test_dict_row_length_mismatch_raises(self):
+        """Dict row with wrong length raises ValueError."""
+        with pytest.raises(ValueError, match="has length 2.*expected 3"):
+            _validate_nd_cutoff_structure(
+                {
+                    "var0": [1, 2, 3],
+                    "var1": {"1": [5, 3]},  # length 2 != 3
+                },
+                ["var0", "var1", "var2"],
+            )
 
 
 # =============================================================================
