@@ -123,13 +123,11 @@ def main(
             output=output,
         )
 
-        # Compute total demand (booked + all rejected + canceled = everything through the door)
-        total_demand = data_demand["oa_amt_h0"].sum() if "oa_amt_h0" in data_demand.columns else 0.0
-        canceled_amount = (
-            data_demand.loc[data_demand["status_name"] == "canceled", "oa_amt_h0"].sum()
-            if "status_name" in data_demand.columns and "oa_amt_h0" in data_demand.columns
-            else 0.0
-        )
+        # Compute total demand (booked + rejected, excluding canceled)
+        if "status_name" in data_demand.columns and "oa_amt_h0" in data_demand.columns:
+            total_demand = data_demand.loc[data_demand["status_name"] != "canceled", "oa_amt_h0"].sum()
+        else:
+            total_demand = data_demand["oa_amt_h0"].sum() if "oa_amt_h0" in data_demand.columns else 0.0
 
         # Step 6: Scenario analysis loop
         use_fixed_cutoffs = settings.fixed_cutoffs is not None and len(settings.fixed_cutoffs) > 0
@@ -157,7 +155,6 @@ def main(
                 pareto_masks=pareto_masks,
                 output=output,
                 total_demand=total_demand,
-                canceled_amount=canceled_amount,
             )
             cutoff_summaries.append(summary)
 
@@ -242,7 +239,6 @@ def main(
                         pareto_masks=pareto_masks,
                         output=output,
                         total_demand=total_demand,
-                        canceled_amount=canceled_amount,
                     )
                     cutoff_summaries.append(summary)
 

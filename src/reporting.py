@@ -752,7 +752,7 @@ def build_segment_report(
     exec_section.notes = config_notes
 
     # Add per-scenario summary tables
-    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)", "Canceled Amount (€)"]
+    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)"]
     for scenario in scenarios:
         suffix = f"_{scenario}" if scenario else ""
         tbl = csv_to_html_table(output_paths.risk_production_summary_csv(suffix), exclude_cols=_exclude_todu)
@@ -874,7 +874,7 @@ def build_consolidated_report(
         sections.append(dash_section)
 
     # --- Segment Comparison ---
-    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)", "Canceled Amount (€)"]
+    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)"]
     comparison_section = ReportSection(id="segment-comparison", title="Segment Comparison")
     for seg_name in segments:
         seg_dir = output_base / seg_name

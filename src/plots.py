@@ -399,7 +399,6 @@ class RiskProductionVisualizer:
         grid: Any | None = None,
         multiplier: float = DEFAULT_RISK_MULTIPLIER,
         total_demand: float | None = None,
-        canceled_amount: float = 0.0,
     ):
         """
         Initialize the RiskProductionVisualizer.
@@ -445,7 +444,6 @@ class RiskProductionVisualizer:
         self._nd_grid = grid
         self.multiplier = multiplier
         self._total_demand = total_demand
-        self._canceled_amount = canceled_amount
 
         # Calculate initial metrics
         self.calculate_initial_metrics()
@@ -837,10 +835,9 @@ class RiskProductionVisualizer:
             )
             total_demand = self.OA_0 + total_rep
 
-        # Rejection rate = rejected / total_demand (excludes canceled from numerator)
-        canceled = self._canceled_amount
-        actual_rej = (total_demand - self.OA_0 - canceled) / total_demand * 100 if total_demand > 0 else 0.0
-        optimum_rej = (total_demand - OA - canceled) / total_demand * 100 if total_demand > 0 else 0.0
+        # Rejection rate = rejected / total_demand (total_demand excludes canceled)
+        actual_rej = (1 - self.OA_0 / total_demand) * 100 if total_demand > 0 else 0.0
+        optimum_rej = (1 - OA / total_demand) * 100 if total_demand > 0 else 0.0
 
         # Construct DataFrame
         summary_data = {
@@ -870,7 +867,6 @@ class RiskProductionVisualizer:
             ],
             "Rejection Rate (%)": [actual_rej, None, None, optimum_rej, None],
             "Total Demand (€)": [total_demand, None, None, None, None],
-            "Canceled Amount (€)": [canceled, None, None, None, None],
         }
 
         df_summary = pd.DataFrame(summary_data)

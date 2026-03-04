@@ -43,7 +43,6 @@ def calculate_metrics_from_cuts(
     multiplier_h3: float | None = None,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
     total_demand: float = 0.0,
-    canceled_amount: float = 0.0,
 ) -> pd.DataFrame | None:
     """
     Generates the Risk Production Summary Table by applying optimal cuts to aggregated data.
@@ -138,11 +137,8 @@ def calculate_metrics_from_cuts(
             "Production (%)": 1.0,
             "todu_30ever_h6": actual_rn,
             "todu_amt_pile_h6": actual_rd,
-            "Rejection Rate (%)": (_total_demand - actual_prod - canceled_amount) / _total_demand * 100
-            if _total_demand > 0
-            else 0.0,
+            "Rejection Rate (%)": (1 - actual_prod / _total_demand) * 100 if _total_demand > 0 else 0.0,
             "Total Demand (€)": _total_demand,
-            "Canceled Amount (€)": canceled_amount,
         }
         if has_h3:
             row_actual["Risk H3 (%)"] = actual_h3
@@ -199,9 +195,7 @@ def calculate_metrics_from_cuts(
             "Production (%)": opt_prod / actual_prod if actual_prod else 0,
             "todu_30ever_h6": opt_rn,
             "todu_amt_pile_h6": opt_rd,
-            "Rejection Rate (%)": (_total_demand - opt_prod - canceled_amount) / _total_demand * 100
-            if _total_demand > 0
-            else 0.0,
+            "Rejection Rate (%)": (1 - opt_prod / _total_demand) * 100 if _total_demand > 0 else 0.0,
         }
         if has_h3:
             opt_h3_rn = (actual_h3_rn - so_h3_rn) + si_h3_rn
@@ -816,12 +810,10 @@ def process_mr_period(
         # --- Generate Risk Production Summary Table for MR ---
         logger.info("Generating Risk Production Summary Table for MR period...")
 
-        mr_total_demand = data_demand_mr["oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0.0
-        mr_canceled_amount = (
-            data_demand_mr.loc[data_demand_mr["status_name"] == "canceled", "oa_amt_h0"].sum()
-            if "status_name" in data_demand_mr.columns and "oa_amt_h0" in data_demand_mr.columns
-            else 0.0
-        )
+        if "status_name" in data_demand_mr.columns and "oa_amt_h0" in data_demand_mr.columns:
+            mr_total_demand = data_demand_mr.loc[data_demand_mr["status_name"] != "canceled", "oa_amt_h0"].sum()
+        else:
+            mr_total_demand = data_demand_mr["oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0.0
 
         mr_summary_table = calculate_metrics_from_cuts(
             data_summary_desagregado_mr,
@@ -833,7 +825,6 @@ def process_mr_period(
             multiplier_h3=settings.multiplier_h3,
             multiplier=settings.multiplier,
             total_demand=mr_total_demand,
-            canceled_amount=mr_canceled_amount,
         )
 
         if mr_summary_table is not None:
