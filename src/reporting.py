@@ -115,6 +115,167 @@ def csv_to_html_table(
 
 
 # ---------------------------------------------------------------------------
+# Cutoff reference table (segment report)
+# ---------------------------------------------------------------------------
+
+# Columns that hold KPI / metadata (not bin cutoff values)
+_CUTOFF_META_COLS = {"segment", "scenario", "risk_pct", "production"}
+_CUTOFF_CI_COLS = {"production_ci_lower", "production_ci_upper", "risk_ci_lower", "risk_ci_upper"}
+_CUTOFF_CELL_META = {"accepted"}  # N>2 cell-level summary column
+
+_SCENARIO_BADGE = {
+    "pessimistic": "badge-pessimistic",
+    "base": "badge-base",
+    "optimistic": "badge-optimistic",
+}
+
+
+def _build_cutoff_reference_table(csv_path: str | Path, max_rows: int = 200) -> str | None:
+    """Render the cutoff reference CSV as a readable, scenario-grouped HTML table.
+
+    Improvements over raw ``csv_to_html_table``:
+    - Scenario group headers with colored badges
+    - Bin/cutoff columns visually separated from KPI columns
+    - Numeric formatting and risk color-coding
+    - CI columns collapsed into a single column per metric
+    """
+    path = Path(csv_path)
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_csv(path)
+    except (pd.errors.ParserError, OSError, ValueError):
+        return None
+    if df.empty:
+        return None
+    if len(df) > max_rows:
+        df = df.head(max_rows)
+
+    has_scenario = "scenario" in df.columns
+    has_accepted = "accepted" in df.columns
+
+    # Identify bin / cutoff columns (everything that's not a known meta/CI column)
+    all_meta = _CUTOFF_META_COLS | _CUTOFF_CI_COLS | _CUTOFF_CELL_META
+    bin_cols = [c for c in df.columns if c not in all_meta]
+
+    # Determine which CI columns are present
+    ci_pairs = []
+    if "production_ci_lower" in df.columns and "production_ci_upper" in df.columns:
+        ci_pairs.append(("production_ci_lower", "production_ci_upper", "Production CI"))
+    if "risk_ci_lower" in df.columns and "risk_ci_upper" in df.columns:
+        ci_pairs.append(("risk_ci_lower", "risk_ci_upper", "Risk CI"))
+
+    # Build display column order: bin cols, then KPIs
+    kpi_display = []
+    if "risk_pct" in df.columns:
+        kpi_display.append(("risk_pct", "Risk (%)"))
+    if "production" in df.columns:
+        kpi_display.append(("production", "Production"))
+    for _lo_col, _hi_col, label in ci_pairs:
+        kpi_display.append((f"_ci_{label}", label))
+    if has_accepted:
+        kpi_display.append(("accepted", "Accepted"))
+
+    # Pretty-print bin column headers
+    bin_labels = []
+    for c in bin_cols:
+        label = c.replace("_", " ").replace("bin ", "Bin ")
+        if label[0].islower():
+            label = label[0].upper() + label[1:]
+        bin_labels.append(label)
+
+    lines: list[str] = []
+    lines.append('<table class="report-table cutoff-ref-table" border="0">')
+
+    # ── Header ──
+    lines.append("<thead><tr>")
+    for label in bin_labels:
+        lines.append(f'<th class="col-bin">{label}</th>')
+    for _col_key, label in kpi_display:
+        lines.append(f'<th class="num">{label}</th>')
+    lines.append("</tr></thead>")
+
+    # ── Body (optionally grouped by scenario) ──
+    lines.append("<tbody>")
+    if has_scenario:
+        scenarios = df["scenario"].unique()
+        for scenario in scenarios:
+            badge_cls = _SCENARIO_BADGE.get(scenario, "")
+            lines.append(
+                f'<tr class="scenario-header"><td colspan="{len(bin_cols) + len(kpi_display)}">'
+                f'<span class="badge {badge_cls}">{scenario.title()}</span></td></tr>'
+            )
+            sub = df[df["scenario"] == scenario]
+            for _, row in sub.iterrows():
+                lines.append(_cutoff_ref_row(row, bin_cols, kpi_display, ci_pairs, has_accepted))
+    else:
+        for _, row in df.iterrows():
+            lines.append(_cutoff_ref_row(row, bin_cols, kpi_display, ci_pairs, has_accepted))
+
+    lines.append("</tbody></table>")
+    return "\n".join(lines)
+
+
+def _cutoff_ref_row(
+    row: pd.Series,
+    bin_cols: list[str],
+    kpi_display: list[tuple[str, str]],
+    ci_pairs: list[tuple[str, str, str]],
+    has_accepted: bool,
+) -> str:
+    """Render a single row of the cutoff reference table."""
+    cells: list[str] = []
+
+    # Bin / cutoff value cells
+    for c in bin_cols:
+        val = row.get(c, float("nan"))
+        if pd.isna(val):
+            cells.append('<td class="col-bin">\u2014</td>')
+        elif isinstance(val, float) and val == int(val):
+            cells.append(f'<td class="col-bin">{int(val)}</td>')
+        elif isinstance(val, float):
+            cells.append(f'<td class="col-bin">{val:,.2f}</td>')
+        else:
+            cells.append(f'<td class="col-bin">{val}</td>')
+
+    # KPI cells
+    ci_lookup = {label: (lo, hi) for lo, hi, label in ci_pairs}
+    for col_key, label in kpi_display:
+        if col_key == "risk_pct":
+            val = row.get("risk_pct", float("nan"))
+            if pd.notna(val):
+                cls = "num risk-high" if val > 5 else "num risk-med" if val > 3 else "num risk-low"
+                cells.append(f'<td class="{cls}">{val:,.2f}%</td>')
+            else:
+                cells.append('<td class="num">\u2014</td>')
+        elif col_key == "production":
+            val = row.get("production", float("nan"))
+            cells.append(f'<td class="num">{format(val, ",.0f") if pd.notna(val) else "\u2014"}</td>')
+        elif col_key.startswith("_ci_"):
+            lo_col, hi_col = ci_lookup[label]
+            lo = row.get(lo_col, float("nan"))
+            hi = row.get(hi_col, float("nan"))
+            if pd.notna(lo) and pd.notna(hi) and not (lo == 0 and hi == 0):
+                fmt = ",.0f" if "production" in label.lower() else ",.2f"
+                cells.append(f'<td class="num ci">[{format(lo, fmt)}, {format(hi, fmt)}]</td>')
+            else:
+                cells.append('<td class="num ci">\u2014</td>')
+        elif col_key == "accepted":
+            val = row.get("accepted", float("nan"))
+            if pd.notna(val):
+                cls = "cell-accept" if val == 1 else "cell-reject"
+                text = "&#10003;" if val == 1 else "&#10007;"
+                cells.append(f'<td class="{cls}">{text}</td>')
+            else:
+                cells.append('<td class="cell-missing">\u2014</td>')
+        else:
+            val = row.get(col_key, float("nan"))
+            cells.append(f'<td class="num">{format(val, ",.2f") if pd.notna(val) else "\u2014"}</td>')
+
+    return f"<tr>{''.join(cells)}</tr>"
+
+
+# ---------------------------------------------------------------------------
 # Cutoff comparison helpers (consolidated report)
 # ---------------------------------------------------------------------------
 
@@ -267,16 +428,16 @@ def _build_acceptance_matrices(df: pd.DataFrame, variable_cols: list[str], scena
         else:
             group_items = [(None, seg_df)]
 
-        parts.append('<div style="display: flex; gap: 1.5rem; flex-wrap: wrap;">')
+        parts.append('<div class="matrix-grid">')
         for slice_key, slice_df in group_items:
             if slice_key is not None:
                 if isinstance(slice_key, tuple):
                     label = ", ".join(f"{v}={k}" for v, k in zip(slice_vars, slice_key))
                 else:
                     label = f"{slice_vars[0]}={slice_key}"
-                parts.append(f"<div><strong>{label}</strong>")
+                parts.append(f'<div class="matrix-cell"><div class="matrix-label">{label}</div>')
             else:
-                parts.append("<div>")
+                parts.append('<div class="matrix-cell">')
 
             pivot = slice_df.pivot_table(index=row_var, columns=col_var, values="accepted", aggfunc="first")
             # Sort index and columns numerically if possible
@@ -294,36 +455,31 @@ def _build_acceptance_matrices(df: pd.DataFrame, variable_cols: list[str], scena
 
 
 def _render_acceptance_pivot(pivot: pd.DataFrame, col_label: str, row_label: str) -> str:
-    """Render a single acceptance pivot table as inline-styled HTML."""
+    """Render a single acceptance pivot as a compact color-coded heatmap grid."""
     lines: list[str] = []
-    lines.append('<table class="report-table" style="font-size: 0.85em; margin: 0.5rem 0;">')
-    # Header row
-    lines.append("<thead><tr>")
-    lines.append(f"<th>{row_label} \\ {col_label}</th>")
+    lines.append('<table class="matrix-table">')
+    # Axis labels as a caption-like first row
+    lines.append(f'<tr><td class="matrix-corner">{row_label}\u2009\\\u2009{col_label}</td>')
     for col in pivot.columns:
-        lines.append(f"<th>{col}</th>")
-    lines.append("</tr></thead>")
+        lines.append(f'<td class="matrix-col-hdr">{col}</td>')
+    lines.append("</tr>")
 
     # Data rows
-    lines.append("<tbody>")
     for idx in pivot.index:
         lines.append("<tr>")
-        lines.append(f"<th>{idx}</th>")
+        lines.append(f'<td class="matrix-row-hdr">{idx}</td>')
         for col in pivot.columns:
             val = pivot.loc[idx, col]
             if pd.isna(val):
-                cls = "cell-missing"
-                text = "\u2014"
+                cls = "m-na"
             elif val == 1:
-                cls = "cell-accept"
-                text = "&#10003;"
+                cls = "m-ok"
             else:
-                cls = "cell-reject"
-                text = "&#10007;"
-            lines.append(f'<td class="{cls}">{text}</td>')
+                cls = "m-no"
+            lines.append(f'<td class="{cls}"></td>')
         lines.append("</tr>")
 
-    lines.append("</tbody></table>")
+    lines.append("</table>")
     return "\n".join(lines)
 
 
@@ -551,7 +707,14 @@ def _build_cutoff_comparison_section(output_base: Path, segments: dict) -> Repor
     if "accepted" in df.columns:
         matrices_html = _build_acceptance_matrices(df, variable_cols)
         if matrices_html:
-            section.tables.append("<h4>Acceptance Matrices (Base Scenario)</h4>" + matrices_html)
+            legend = (
+                '<div class="matrix-legend">'
+                '<span><i style="background: var(--accent-green)"></i> Accept</span>'
+                '<span><i style="background: var(--accent-red); opacity: 0.7"></i> Reject</span>'
+                '<span><i style="background: var(--border)"></i> N/A</span>'
+                "</div>"
+            )
+            section.tables.append("<h4>Acceptance Matrices (Base Scenario)</h4>" + legend + matrices_html)
 
     if not section.tables:
         return None
@@ -589,7 +752,7 @@ def build_segment_report(
     exec_section.notes = config_notes
 
     # Add per-scenario summary tables
-    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6"]
+    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)", "Canceled Amount (€)"]
     for scenario in scenarios:
         suffix = f"_{scenario}" if scenario else ""
         tbl = csv_to_html_table(output_paths.risk_production_summary_csv(suffix), exclude_cols=_exclude_todu)
@@ -669,7 +832,7 @@ def build_segment_report(
 
     # --- Cutoff Reference ---
     cutoff_section = ReportSection(id="cutoff-reference", title="Cutoff Reference")
-    tbl = csv_to_html_table(output_paths.cutoff_summary_wide_csv, max_rows=200)
+    tbl = _build_cutoff_reference_table(output_paths.cutoff_summary_wide_csv)
     if tbl:
         cutoff_section.tables.append(tbl)
     if cutoff_section.tables:
@@ -711,7 +874,7 @@ def build_consolidated_report(
         sections.append(dash_section)
 
     # --- Segment Comparison ---
-    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6"]
+    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)", "Canceled Amount (€)"]
     comparison_section = ReportSection(id="segment-comparison", title="Segment Comparison")
     for seg_name in segments:
         seg_dir = output_base / seg_name

@@ -398,6 +398,8 @@ class RiskProductionVisualizer:
         pareto_masks: list[np.ndarray] | None = None,
         grid: Any | None = None,
         multiplier: float = DEFAULT_RISK_MULTIPLIER,
+        total_demand: float | None = None,
+        canceled_amount: float = 0.0,
     ):
         """
         Initialize the RiskProductionVisualizer.
@@ -442,6 +444,8 @@ class RiskProductionVisualizer:
         self._pareto_masks = pareto_masks or []
         self._nd_grid = grid
         self.multiplier = multiplier
+        self._total_demand = total_demand
+        self._canceled_amount = canceled_amount
 
         # Calculate initial metrics
         self.calculate_initial_metrics()
@@ -821,17 +825,22 @@ class RiskProductionVisualizer:
 
         TODU30, TODU_AMT, TODU30_CUT, TODU_AMT_CUT, TODU30_REP, TODU_AMT_REP = raw_metrics
 
-        # Total demand (through the door) = booked + repesca across all cells
-        total_rep = (
-            self.data_summary_disaggregated["oa_amt_h0_rep"].sum()
-            if "oa_amt_h0_rep" in self.data_summary_disaggregated.columns
-            else 0.0
-        )
-        total_demand = self.OA_0 + total_rep
+        # Total demand (through the door) = booked + all rejected + canceled
+        if self._total_demand is not None and self._total_demand > 0:
+            total_demand = self._total_demand
+        else:
+            # Backward compat fallback: booked + repesca
+            total_rep = (
+                self.data_summary_disaggregated["oa_amt_h0_rep"].sum()
+                if "oa_amt_h0_rep" in self.data_summary_disaggregated.columns
+                else 0.0
+            )
+            total_demand = self.OA_0 + total_rep
 
-        # Rejection rate: 1 - production / total_demand (only meaningful for Actual & Optimum)
-        actual_rej = (1 - self.OA_0 / total_demand) * 100 if total_demand > 0 else 0.0
-        optimum_rej = (1 - OA / total_demand) * 100 if total_demand > 0 else 0.0
+        # Rejection rate = rejected / total_demand (excludes canceled from numerator)
+        canceled = self._canceled_amount
+        actual_rej = (total_demand - self.OA_0 - canceled) / total_demand * 100 if total_demand > 0 else 0.0
+        optimum_rej = (total_demand - OA - canceled) / total_demand * 100 if total_demand > 0 else 0.0
 
         # Construct DataFrame
         summary_data = {
@@ -860,6 +869,8 @@ class RiskProductionVisualizer:
                 TODU_AMT - self.actual_todu_amt,
             ],
             "Rejection Rate (%)": [actual_rej, None, None, optimum_rej, None],
+            "Total Demand (€)": [total_demand, None, None, None, None],
+            "Canceled Amount (€)": [canceled, None, None, None, None],
         }
 
         df_summary = pd.DataFrame(summary_data)

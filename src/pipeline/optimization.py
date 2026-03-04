@@ -295,6 +295,8 @@ def run_scenario_analysis(
     grid: CellGrid | None = None,
     pareto_masks: list | None = None,
     output: OutputPaths | None = None,
+    total_demand: float = 0.0,
+    canceled_amount: float = 0.0,
 ) -> pd.DataFrame:
     """Run scenario analysis for a single risk threshold: visualization, MR processing, audit.
 
@@ -341,6 +343,8 @@ def run_scenario_analysis(
         pareto_masks=pareto_masks,
         grid=grid,
         multiplier=settings.multiplier,
+        total_demand=total_demand,
+        canceled_amount=canceled_amount,
     )
 
     suffix = f"_{scenario_name}"

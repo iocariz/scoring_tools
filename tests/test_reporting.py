@@ -531,8 +531,8 @@ class TestBuildAcceptanceMatrices:
         html = _build_acceptance_matrices(df, ["octroi_bin", "efx_bin"])
         assert html is not None
         assert "seg_a" in html
-        # Contains checkmarks and crosses
-        assert "&#10003;" in html or "&#10007;" in html
+        # Contains accept/reject color cells
+        assert "m-ok" in html or "m-no" in html
 
     def test_returns_none_without_accepted(self):
         df = _make_cutoff_df(include_accepted=False)
@@ -584,7 +584,7 @@ class TestBuildAcceptanceMatrices:
         df = _make_cutoff_df(grid_size=(2, 2))
         html = _build_acceptance_matrices(df, ["octroi_bin", "efx_bin"])
         assert html is not None
-        assert "cell-accept" in html or "cell-reject" in html
+        assert "m-ok" in html or "m-no" in html
 
 
 # =============================================================================

@@ -403,6 +403,26 @@ class TestExtractMetricsRejectionRate:
         # total_demand = 800000 / (1 - 20/100) = 800000 / 0.8 = 1000000
         assert np.isclose(metrics["_total_demand"], 1000000)
 
+    def test_total_demand_from_explicit_column(self):
+        """Test that total_demand is read from 'Total Demand (€)' column when present."""
+        df = pd.DataFrame(
+            {
+                "Metric": ["Actual", "Swap-in", "Swap-out", "Optimum selected"],
+                "Risk (%)": [1.5, 1.2, 2.0, 1.4],
+                "Production (€)": [800000, 100000, 50000, 850000],
+                "Production (%)": [1.0, 0.125, 0.0625, 1.0625],
+                "todu_30ever_h6": [1000, 200, 300, 900],
+                "todu_amt_pile_h6": [50000, 10000, 10000, 45000],
+                "Rejection Rate (%)": [20.0, None, None, 15.0],
+                "Total Demand (€)": [1200000, None, None, None],
+            }
+        )
+
+        metrics = extract_metrics_from_table(df)
+
+        # Should use explicit column, not derive from rejection rate
+        assert np.isclose(metrics["_total_demand"], 1200000)
+
     def test_total_demand_fallback_without_rejection_rate(self, sample_summary_table):
         """Test that total_demand defaults to actual_production without rejection rate column."""
         metrics = extract_metrics_from_table(sample_summary_table)
