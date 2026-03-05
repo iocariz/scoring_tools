@@ -14,7 +14,7 @@ import pandas as pd
 from joblib import Parallel, delayed
 from loguru import logger
 
-from .constants import DEFAULT_RISK_MULTIPLIER
+from .constants import DEFAULT_N_BOOTSTRAPS, DEFAULT_RISK_MULTIPLIER
 
 # Cap parallel workers to avoid OOM on many-core servers.
 # Override with SCORING_TOOLS_MAX_JOBS environment variable.
@@ -82,6 +82,101 @@ def calculate_todu_30ever_from_b2(
         Calculated todu_30ever_h6 values
     """
     return b2_ever_h6 * todu_amt_pile_h6 / multiplier
+
+
+def extrapolate_h3_to_h6(
+    b2_h3: pd.Series | np.ndarray | float,
+    h6_h3_ratio: pd.Series | np.ndarray | float,
+    method: str = "linear",
+    curvature: float = 1.0,
+) -> pd.Series | np.ndarray | float:
+    """Extrapolate H6 risk from observed H3 risk using a configurable curve.
+
+    Args:
+        b2_h3: Observed H3 risk metric values.
+        h6_h3_ratio: Main-period H6/H3 ratio used as base scaling factor.
+        method: Extrapolation curve — ``"linear"``, ``"power"``, or ``"logistic"``.
+        curvature: Tuning parameter. For **power**: exponent alpha (1.0 = linear).
+            For **logistic**: steepness *k*. Ignored for linear.
+
+    Returns:
+        Extrapolated H6 risk values, same type/shape as *b2_h3*.
+    """
+    if method == "linear":
+        return b2_h3 * h6_h3_ratio
+    elif method == "power":
+        return b2_h3 * np.power(h6_h3_ratio, curvature)
+    elif method == "logistic":
+        # Smoothly caps the scaling for extreme ratios while approaching
+        # linear for moderate ratios (ratio ≈ 1).
+        # Uses tanh to compress deviations: cap at 1 + 2/curvature.
+        # Slope at ratio=1 equals 1 (matches linear for small deviations).
+        scale = 1 + 2 * np.tanh(curvature * (h6_h3_ratio - 1) / 2) / curvature
+        return b2_h3 * scale
+    else:
+        raise ValueError(f"Unknown extrapolation method: {method!r}. Use 'linear', 'power', or 'logistic'.")
+
+
+def fit_h3_extrapolation_curve(
+    b2_h3: np.ndarray,
+    b2_h6: np.ndarray,
+    weights: np.ndarray | None = None,
+    min_bins: int = 4,
+) -> tuple[str, float, dict]:
+    """Fit the H3→H6 extrapolation curvature from observed main-period data.
+
+    Performs weighted log-log regression ``log(b2_h6) = c + alpha * log(b2_h3)``
+    to determine whether the relationship is convex (alpha > 1), linear (~1),
+    or concave (alpha < 1).
+
+    Args:
+        b2_h3: Per-bin H3 risk values (main period).
+        b2_h6: Per-bin H6 risk values (main period).
+        weights: Optional observation counts per bin for weighted regression.
+        min_bins: Minimum valid bins required for fitting.
+
+    Returns:
+        ``(method, curvature, diagnostics)`` where *method* is ``"linear"`` or
+        ``"power"``, *curvature* is the fitted alpha (clipped to [0.3, 3.0]),
+        and *diagnostics* is a dict with ``alpha``, ``se``, ``r_squared``, ``n_bins``.
+    """
+    valid = (np.asarray(b2_h3) > 0) & (np.asarray(b2_h6) > 0)
+    n_valid = int(valid.sum())
+
+    fallback_diag = {"alpha": 1.0, "se": float("nan"), "r_squared": float("nan"), "n_bins": n_valid}
+    if n_valid < min_bins:
+        return ("linear", 1.0, {**fallback_diag, "note": "insufficient bins"})
+
+    log_h3 = np.log(np.asarray(b2_h3)[valid])
+    log_h6 = np.log(np.asarray(b2_h6)[valid])
+    w = np.asarray(weights)[valid] if weights is not None else None
+
+    # Weighted log-log regression: log(h6) = c + alpha * log(h3)
+    coeffs = np.polyfit(log_h3, log_h6, 1, w=w)
+    alpha = float(coeffs[0])
+    intercept = float(coeffs[1])
+
+    # Residuals and standard error of slope
+    predicted = alpha * log_h3 + intercept
+    residuals = log_h6 - predicted
+    ss_res = float(np.sum(residuals**2))
+    ss_tot = float(np.sum((log_h6 - np.average(log_h6, weights=w)) ** 2))
+    r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+    # SE of slope: sqrt(MSE / sum((x - x_mean)^2))
+    mse = ss_res / max(n_valid - 2, 1)
+    x_mean = np.average(log_h3, weights=w)
+    ss_x = float(np.sum((log_h3 - x_mean) ** 2))
+    se = float(np.sqrt(mse / ss_x)) if ss_x > 0 else float("inf")
+
+    diagnostics = {"alpha": alpha, "se": se, "r_squared": r_squared, "n_bins": n_valid}
+
+    # Decision: if 95% CI includes 1.0, use linear
+    if abs(alpha - 1.0) < 2.0 * se:
+        return ("linear", 1.0, diagnostics)
+
+    curvature = float(np.clip(alpha, 0.3, 3.0))
+    return ("power", curvature, diagnostics)
 
 
 def get_data_information(df: pd.DataFrame) -> pd.DataFrame:
@@ -262,7 +357,7 @@ def calculate_bootstrap_intervals(
     cut_map: dict[float, float],
     variables: list[str],
     multiplier: float,
-    n_bootstraps: int = 1000,
+    n_bootstraps: int = DEFAULT_N_BOOTSTRAPS,
     confidence_level: float = 0.95,
     random_state: int | None = 42,
     inv_var1: bool = False,
@@ -305,8 +400,10 @@ def calculate_bootstrap_intervals(
     else:
         seeds = [None] * n_bootstraps
 
-    # Parallel execution (capped to avoid OOM)
-    results = Parallel(n_jobs=MAX_PARALLEL_JOBS)(
+    # Parallel execution (capped to avoid OOM).
+    # prefer="threads" avoids heavy fork overhead; numpy releases the GIL so
+    # threads still achieve true parallelism for the numerical work.
+    results = Parallel(n_jobs=MAX_PARALLEL_JOBS, prefer="threads")(
         delayed(_bootstrap_worker)(
             data_booked,
             cut_map,

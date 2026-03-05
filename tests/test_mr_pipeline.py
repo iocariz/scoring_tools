@@ -513,6 +513,8 @@ class TestComputeHybridMRRisk:
             "b2_delta",
             "b2_delta_pct",
             "mr_production",
+            "fitted_method",
+            "fitted_curvature",
         }
         assert expected_cols == set(comparison_df.columns)
 
@@ -764,6 +766,141 @@ class TestComputeHybridMRRisk:
             assert np.isclose(row["h6_h3_ratio"], expected_ratio), (
                 f"Expected ratio {expected_ratio}, got {row['h6_h3_ratio']}"
             )
+
+
+# =============================================================================
+# Auto-Calibration Tests
+# =============================================================================
+
+
+class TestAutoCalibration:
+    """Tests for mr_extrapolation_method='auto' in _compute_hybrid_mr_risk."""
+
+    @pytest.fixture
+    def merge_keys(self):
+        return ["bin_a", "bin_b"]
+
+    def test_auto_method_selects_linear_for_uniform_ratios(self, merge_keys):
+        """Constant H6/H3 ratio across bins → auto resolves to linear."""
+        rng = np.random.RandomState(42)
+        n_main = 35
+        # Create data where H6 = 2 * H3 consistently → alpha ≈ 1
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1] * n_main + [2] * n_main + [3] * n_main + [4] * n_main,
+                "bin_b": [1] * (4 * n_main),
+                "todu_30ever_h6": np.concatenate([rng.uniform(9, 11, n_main) for _ in range(4)]),
+                "todu_amt_pile_h6": np.concatenate([rng.uniform(90, 110, n_main) for _ in range(4)]),
+                "todu_30ever_h3": np.concatenate([rng.uniform(4.5, 5.5, n_main) for _ in range(4)]),
+                "todu_amt_pile_h3": np.concatenate([rng.uniform(90, 110, n_main) for _ in range(4)]),
+                "status_name": ["booked"] * (4 * n_main),
+            }
+        )
+
+        n = 40
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * n + [2] * n + [3] * n + [4] * n,
+                "bin_b": [1] * (4 * n),
+                "todu_30ever_h6": rng.uniform(5, 15, 4 * n),
+                "todu_amt_pile_h6": rng.uniform(80, 120, 4 * n),
+                "todu_30ever_h3": rng.uniform(2, 8, 4 * n),
+                "todu_amt_pile_h3": rng.uniform(70, 110, 4 * n),
+                "oa_amt_h0": rng.uniform(500, 1500, 4 * n),
+                "status_name": ["booked"] * (4 * n),
+            }
+        )
+
+        _, comparison_df = _compute_hybrid_mr_risk(
+            data_booked, data_demand_mr, merge_keys, min_obs=30,
+            multiplier_h3=4, mr_extrapolation_method="auto",
+        )
+
+        assert (comparison_df["fitted_method"] == "linear").all()
+        assert (comparison_df["fitted_curvature"] == 1.0).all()
+
+    def test_auto_method_selects_power_for_convex_data(self, merge_keys):
+        """Increasing H6/H3 ratio → auto resolves to power with alpha > 1."""
+        rng = np.random.RandomState(42)
+        n_main = 35
+
+        # Create bins with increasing H6/H3 ratio (convex relationship)
+        h3_levels = [2.0, 4.0, 8.0, 16.0]
+        h6_levels = [h3**1.5 for h3 in h3_levels]  # alpha = 1.5
+
+        h3_data, h6_data, bin_a_data = [], [], []
+        for i, (h3_base, h6_base) in enumerate(zip(h3_levels, h6_levels), 1):
+            h3_data.extend(rng.normal(h3_base, 0.01, n_main))
+            h6_data.extend(rng.normal(h6_base, 0.01, n_main))
+            bin_a_data.extend([i] * n_main)
+
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": bin_a_data,
+                "bin_b": [1] * (4 * n_main),
+                "todu_30ever_h6": h6_data,
+                "todu_amt_pile_h6": [100.0] * (4 * n_main),
+                "todu_30ever_h3": h3_data,
+                "todu_amt_pile_h3": [100.0] * (4 * n_main),
+                "status_name": ["booked"] * (4 * n_main),
+            }
+        )
+
+        n = 40
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * n + [2] * n + [3] * n + [4] * n,
+                "bin_b": [1] * (4 * n),
+                "todu_30ever_h6": rng.uniform(5, 15, 4 * n),
+                "todu_amt_pile_h6": rng.uniform(80, 120, 4 * n),
+                "todu_30ever_h3": rng.uniform(2, 8, 4 * n),
+                "todu_amt_pile_h3": rng.uniform(70, 110, 4 * n),
+                "oa_amt_h0": rng.uniform(500, 1500, 4 * n),
+                "status_name": ["booked"] * (4 * n),
+            }
+        )
+
+        _, comparison_df = _compute_hybrid_mr_risk(
+            data_booked, data_demand_mr, merge_keys, min_obs=30,
+            multiplier_h3=4, mr_extrapolation_method="auto",
+        )
+
+        assert (comparison_df["fitted_method"] == "power").all()
+        assert (comparison_df["fitted_curvature"] > 1.0).all()
+
+    def test_auto_fallback_without_h3(self, merge_keys):
+        """No H3 data → auto falls back to linear."""
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1, 1, 2, 2],
+                "bin_b": [1, 1, 1, 1],
+                "todu_30ever_h6": [10.0, 10.0, 5.0, 5.0],
+                "todu_amt_pile_h6": [100.0, 100.0, 200.0, 200.0],
+                "status_name": ["booked"] * 4,
+            }
+        )
+
+        rng = np.random.RandomState(42)
+        n = 40
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * n + [2] * n,
+                "bin_b": [1] * (2 * n),
+                "todu_30ever_h6": rng.uniform(5, 15, 2 * n),
+                "todu_amt_pile_h6": rng.uniform(80, 120, 2 * n),
+                "oa_amt_h0": rng.uniform(500, 1500, 2 * n),
+                "status_name": ["booked"] * (2 * n),
+            }
+        )
+
+        _, comparison_df = _compute_hybrid_mr_risk(
+            data_booked, data_demand_mr, merge_keys, min_obs=30,
+            mr_extrapolation_method="auto",
+        )
+
+        # No H3 columns → should fall back to linear
+        assert (comparison_df["fitted_method"] == "linear").all()
+        assert (comparison_df["fitted_curvature"] == 1.0).all()
 
 
 # =============================================================================

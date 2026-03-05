@@ -28,6 +28,7 @@ dependencies = [
     "lightgbm>=4.0.0",
     "optuna>=3.6.0",
     "statsmodels>=0.14.6",
+    "gradio>=6.8.0",
 ]
 
 [project.optional-dependencies]

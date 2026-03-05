@@ -11,6 +11,7 @@ Provides:
 import numpy as np
 import pandas as pd
 
+from .constants import DEFAULT_SENSITIVITY_LEVELS
 from .optimization_utils import CellGrid, evaluate_solution, mask_to_cutoffs, milp_solve_cutoffs
 from .utils import calculate_b2_ever_h6
 
@@ -71,7 +72,7 @@ def run_sensitivity_analysis(
         n_reject_to_accept, new_production, new_risk.
     """
     if perturbation_levels is None:
-        perturbation_levels = [-20, -10, -5, 5, 10, 20]
+        perturbation_levels = list(DEFAULT_SENSITIVITY_LEVELS)
 
     # Get var0 bin values for cutoff columns
     base_grid = CellGrid.from_summary(data_summary, variables)
@@ -160,7 +161,7 @@ def sensitivity_cell_detail(
         flip_direction.
     """
     if perturbation_levels is None:
-        perturbation_levels = [-20, -10, -5, 5, 10, 20]
+        perturbation_levels = list(DEFAULT_SENSITIVITY_LEVELS)
 
     # Sort levels by absolute value to find minimum flip threshold
     sorted_levels = sorted(perturbation_levels, key=abs)

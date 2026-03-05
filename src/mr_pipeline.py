@@ -27,7 +27,7 @@ from src.inference_optimized import run_optimization_pipeline
 from src.models import calculate_B2
 from src.preprocess_improved import filter_by_date
 from src.stability import compare_main_vs_mr
-from src.utils import calculate_b2_ever_h6, calculate_todu_30ever_from_b2
+from src.utils import calculate_b2_ever_h6, calculate_todu_30ever_from_b2, extrapolate_h3_to_h6
 
 if TYPE_CHECKING:
     from src.config import PreprocessingSettings
@@ -229,6 +229,8 @@ def _compute_hybrid_mr_risk(
     min_obs: int,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
     multiplier_h3: float | None = None,
+    mr_extrapolation_method: str = "linear",
+    mr_extrapolation_curvature: float = 1.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Compute per-bin ``b2_ever_h6_tmp`` using MR outcomes when sufficient, else main-period.
 
@@ -304,6 +306,34 @@ def _compute_hybrid_mr_risk(
             combined["b2_mr_h3"] = np.nan
             combined["n_obs_mr_h3"] = 0
 
+    # --- Auto-calibrate extrapolation curvature ---
+    if mr_extrapolation_method == "auto" and has_h3:
+        from src.utils import fit_h3_extrapolation_curve
+
+        valid_fit = combined["b2_main_h3"].notna() & combined["b2_main"].notna()
+        if valid_fit.sum() >= 4:
+            method_auto, curvature_auto, fit_diag = fit_h3_extrapolation_curve(
+                combined.loc[valid_fit, "b2_main_h3"].values,
+                combined.loc[valid_fit, "b2_main"].values,
+                weights=combined.loc[valid_fit, "n_obs_main"].values,
+            )
+            mr_extrapolation_method = method_auto
+            mr_extrapolation_curvature = curvature_auto
+            logger.info(
+                f"Auto-calibrated H3→H6 extrapolation: method={method_auto}, "
+                f"curvature={curvature_auto:.3f} (alpha={fit_diag['alpha']:.3f}, "
+                f"SE={fit_diag['se']:.3f}, R²={fit_diag['r_squared']:.3f}, "
+                f"n_bins={fit_diag['n_bins']})"
+            )
+        else:
+            mr_extrapolation_method = "linear"
+            mr_extrapolation_curvature = 1.0
+            logger.warning("Auto-calibration: insufficient bins for fitting, falling back to linear.")
+    elif mr_extrapolation_method == "auto":
+        mr_extrapolation_method = "linear"
+        mr_extrapolation_curvature = 1.0
+        logger.warning("Auto-calibration requires H3 data (multiplier_h3). Falling back to linear.")
+
     # --- Choose source per bin ---
     use_mr = combined["n_obs_mr"].fillna(0) >= min_obs
 
@@ -324,7 +354,10 @@ def _compute_hybrid_mr_risk(
         # H3 extrapolation: observed MR H3 × main-period ratio
         has_h3_obs = combined["b2_mr_h3"].notna() & (combined["n_obs_mr_h3"].fillna(0) >= min_obs)
         can_extrapolate = use_mr & ratio_valid & has_h3_obs
-        h6_from_h3 = combined["b2_mr_h3"] * h6_h3_ratio
+        h6_from_h3 = extrapolate_h3_to_h6(
+            combined["b2_mr_h3"], h6_h3_ratio,
+            method=mr_extrapolation_method, curvature=mr_extrapolation_curvature,
+        )
 
         # Priority: h3_extrapolated > mr_observed > main_imputed > model_fallback
         conditions = [only_mr_sparse, can_extrapolate, use_mr]
@@ -375,6 +408,10 @@ def _compute_hybrid_mr_risk(
         comparison_cols += ["b2_main_h3", "b2_mr_h3", "n_obs_mr_h3", "b2_delta_h3", "b2_delta_pct_h3", "h6_h3_ratio"]
 
     comparison_df = combined[comparison_cols].copy()
+
+    # Record resolved extrapolation settings (useful when auto was used)
+    comparison_df["fitted_method"] = mr_extrapolation_method
+    comparison_df["fitted_curvature"] = mr_extrapolation_curvature
 
     merge_df = combined[merge_keys + ["b2_ever_h6_tmp"]].copy()
     return merge_df, comparison_df
@@ -444,6 +481,8 @@ def process_mr_period(
                 settings.mr_min_obs_per_bin,
                 multiplier=settings.multiplier,
                 multiplier_h3=settings.multiplier_h3,
+                mr_extrapolation_method=settings.mr_extrapolation_method,
+                mr_extrapolation_curvature=settings.mr_extrapolation_curvature,
             )
 
             # Save comparison CSV

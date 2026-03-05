@@ -6,6 +6,8 @@ from typing import Any, Literal
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .constants import DEFAULT_N_BOOTSTRAPS, DEFAULT_SENSITIVITY_LEVELS
+
 
 @dataclass
 class OutputPaths:
@@ -235,7 +237,7 @@ class PreprocessingSettings(BaseModel):
 
     # Sensitivity analysis
     run_sensitivity: bool = False
-    sensitivity_levels: list[float] = [-20, -10, -5, 5, 10, 20]
+    sensitivity_levels: list[float] = DEFAULT_SENSITIVITY_LEVELS
 
     # Reject inference parameter optimization
     run_ri_optimizer: bool = False
@@ -247,6 +249,8 @@ class PreprocessingSettings(BaseModel):
     # Hybrid MR risk inference
     use_mr_outcomes: bool = False
     mr_min_obs_per_bin: int = Field(default=30, ge=1)
+    mr_extrapolation_method: Literal["linear", "power", "logistic", "auto"] = "linear"
+    mr_extrapolation_curvature: float = Field(default=1.0, gt=0, le=5.0)
 
     # Swap-in (repesca) constraints for MILP optimization
     max_swapin_production_pct: float | None = Field(default=None, ge=0, le=100)
@@ -255,7 +259,9 @@ class PreprocessingSettings(BaseModel):
     # MILP / Pareto / bootstrap tuning
     milp_time_limit: float = Field(default=30.0, gt=0, description="MILP solver time limit in seconds")
     pareto_n_points: int = Field(default=50, ge=5, le=500, description="Number of risk targets in Pareto sweep")
-    n_bootstraps: int = Field(default=1000, ge=100, le=50000, description="Bootstrap replicates for CI estimation")
+    n_bootstraps: int = Field(
+        default=DEFAULT_N_BOOTSTRAPS, ge=100, le=50000, description="Bootstrap replicates for CI estimation"
+    )
 
     # Reject inference settings
     reject_inference_method: Literal["none", "parceling"] = "none"

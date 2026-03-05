@@ -33,7 +33,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import auc, average_precision_score, precision_recall_curve, roc_curve
 from sklearn.preprocessing import StandardScaler
 
-from src.constants import DEFAULT_RANDOM_STATE, PSI_EPSILON
+from src.constants import DEFAULT_N_BOOTSTRAPS, DEFAULT_RANDOM_STATE, PSI_EPSILON
 
 
 def train_logistic_regression(X, y):
@@ -66,7 +66,9 @@ def compute_metrics(y_true, scores):
     return gini, roc_auc, ks, cumulative_true_positive
 
 
-def bootstrap_confidence_interval(y_true, y_scores, n_iterations=1000, alpha=0.05, random_state=DEFAULT_RANDOM_STATE):
+def bootstrap_confidence_interval(
+    y_true, y_scores, n_iterations=DEFAULT_N_BOOTSTRAPS, alpha=0.05, random_state=DEFAULT_RANDOM_STATE
+):
     """Compute bootstrap confidence interval for Gini and KS."""
     if random_state is None:
         random_state = DEFAULT_RANDOM_STATE
@@ -265,7 +267,7 @@ def model_summary(
     score_columns: dict,
     combined_columns: dict = None,
     plot: bool = True,
-    n_iterations: int = 1000,
+    n_iterations: int = DEFAULT_N_BOOTSTRAPS,
     alpha: float = 0.05,
 ) -> pd.DataFrame:
     """

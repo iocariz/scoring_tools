@@ -14,6 +14,8 @@ from src.utils import (
     calculate_stress_factor,
     calculate_todu_30ever_from_b2,
     consolidate_cutoff_summaries,
+    extrapolate_h3_to_h6,
+    fit_h3_extrapolation_curve,
     format_cutoff_summary_table,
     generate_cutoff_summary,
     get_data_information,
@@ -528,6 +530,155 @@ class TestCalculateTodu30everFromB2:
         recovered_b2 = calculate_b2_ever_h6(todu, pile_values)
 
         np.testing.assert_array_almost_equal(recovered_b2, b2_values, decimal=2)
+
+
+# =============================================================================
+# extrapolate_h3_to_h6 Tests
+# =============================================================================
+
+
+class TestExtrapolateH3ToH6:
+    """Tests for the extrapolate_h3_to_h6 function."""
+
+    def test_linear_matches_direct_multiplication(self):
+        """Linear method should give h3 * ratio."""
+        h3 = pd.Series([0.5, 1.0, 2.0])
+        ratio = pd.Series([2.0, 1.5, 3.0])
+        result = extrapolate_h3_to_h6(h3, ratio, method="linear")
+        expected = h3 * ratio
+        np.testing.assert_array_almost_equal(result, expected)
+
+    def test_power_curvature_1_equals_linear(self):
+        """Power with alpha=1.0 should match linear."""
+        h3 = pd.Series([0.5, 1.0, 2.0])
+        ratio = pd.Series([2.0, 1.5, 3.0])
+        linear = extrapolate_h3_to_h6(h3, ratio, method="linear")
+        power = extrapolate_h3_to_h6(h3, ratio, method="power", curvature=1.0)
+        np.testing.assert_array_almost_equal(power, linear)
+
+    def test_power_convex(self):
+        """Alpha > 1 should produce higher values than linear for ratio > 1."""
+        h3 = 1.0
+        ratio = 2.0
+        linear = extrapolate_h3_to_h6(h3, ratio, method="linear")
+        power = extrapolate_h3_to_h6(h3, ratio, method="power", curvature=1.5)
+        assert power > linear
+
+    def test_power_concave(self):
+        """Alpha < 1 should produce lower values than linear for ratio > 1."""
+        h3 = 1.0
+        ratio = 2.0
+        linear = extrapolate_h3_to_h6(h3, ratio, method="linear")
+        power = extrapolate_h3_to_h6(h3, ratio, method="power", curvature=0.5)
+        assert power < linear
+
+    def test_logistic_caps_extreme_ratios(self):
+        """Logistic output should grow slower than linear for large ratios."""
+        h3 = 1.0
+        ratio = 5.0
+        linear = extrapolate_h3_to_h6(h3, ratio, method="linear")
+        logistic = extrapolate_h3_to_h6(h3, ratio, method="logistic", curvature=1.0)
+        # Logistic scaling caps extreme ratios, so result < linear
+        assert logistic < linear
+
+    def test_logistic_near_linear_for_moderate_ratios(self):
+        """Logistic should approximate linear when ratio is close to 1."""
+        h3 = 1.0
+        ratio = 1.05
+        linear = extrapolate_h3_to_h6(h3, ratio, method="linear")
+        logistic = extrapolate_h3_to_h6(h3, ratio, method="logistic", curvature=1.0)
+        assert abs(logistic - linear) < 0.01
+
+    def test_scalar_series_array_support(self):
+        """All input types (scalar, Series, ndarray) should work."""
+        # Scalar
+        s = extrapolate_h3_to_h6(1.0, 2.0, method="power", curvature=1.5)
+        assert isinstance(s, float)
+
+        # Series
+        ser = extrapolate_h3_to_h6(pd.Series([1.0, 2.0]), pd.Series([2.0, 1.5]), method="power", curvature=1.5)
+        assert isinstance(ser, pd.Series)
+        assert len(ser) == 2
+
+        # ndarray
+        arr = extrapolate_h3_to_h6(np.array([1.0, 2.0]), np.array([2.0, 1.5]), method="power", curvature=1.5)
+        assert isinstance(arr, np.ndarray)
+        assert len(arr) == 2
+
+    def test_unknown_method_raises(self):
+        """Unknown method should raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown extrapolation method"):
+            extrapolate_h3_to_h6(1.0, 2.0, method="cubic")
+
+
+# =============================================================================
+# fit_h3_extrapolation_curve Tests
+# =============================================================================
+
+
+class TestFitH3ExtrapolationCurve:
+    """Tests for the fit_h3_extrapolation_curve function."""
+
+    def test_linear_relationship_returns_linear(self):
+        """Bins with constant H6/H3 ratio → alpha ≈ 1 → 'linear'."""
+        rng = np.random.RandomState(42)
+        b2_h3 = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
+        b2_h6 = b2_h3 * 2.0 + rng.normal(0, 0.001, len(b2_h3))  # Nearly perfect linear scaling
+        method, curvature, diag = fit_h3_extrapolation_curve(b2_h3, b2_h6)
+        assert method == "linear"
+        assert curvature == 1.0
+        assert abs(diag["alpha"] - 1.0) < 0.1
+
+    def test_convex_relationship_returns_power_gt1(self):
+        """Bins where H6/H3 ratio increases with H3 → alpha > 1 → 'power'."""
+        b2_h3 = np.array([0.5, 1.0, 2.0, 4.0, 8.0])
+        # H6 = H3^1.5 → log-log slope = 1.5
+        b2_h6 = b2_h3**1.5
+        method, curvature, diag = fit_h3_extrapolation_curve(b2_h3, b2_h6)
+        assert method == "power"
+        assert curvature > 1.0
+        assert np.isclose(diag["alpha"], 1.5, atol=0.01)
+
+    def test_concave_relationship_returns_power_lt1(self):
+        """Bins where ratio decreases with H3 → alpha < 1 → 'power'."""
+        b2_h3 = np.array([0.5, 1.0, 2.0, 4.0, 8.0])
+        # H6 = H3^0.5 → log-log slope = 0.5
+        b2_h6 = b2_h3**0.5
+        method, curvature, diag = fit_h3_extrapolation_curve(b2_h3, b2_h6)
+        assert method == "power"
+        assert curvature < 1.0
+        assert np.isclose(diag["alpha"], 0.5, atol=0.01)
+
+    def test_insufficient_bins_returns_linear(self):
+        """Fewer than min_bins valid bins → fallback to linear."""
+        b2_h3 = np.array([1.0, 2.0, 3.0])  # Only 3 < default min_bins=4
+        b2_h6 = b2_h3**1.5
+        method, curvature, diag = fit_h3_extrapolation_curve(b2_h3, b2_h6)
+        assert method == "linear"
+        assert curvature == 1.0
+        assert "note" in diag
+
+    def test_weights_influence_fit(self):
+        """Heavier weight on convex bins shifts alpha up."""
+        b2_h3 = np.array([1.0, 2.0, 4.0, 8.0, 16.0])
+        # Mix of linear and convex points
+        b2_h6 = np.array([1.0, 2.0, 4.0, 12.0, 40.0])
+        # Uniform weights
+        _, _, diag_uniform = fit_h3_extrapolation_curve(b2_h3, b2_h6, weights=np.ones(5))
+        # Heavy weight on the convex tail
+        heavy_weights = np.array([1.0, 1.0, 1.0, 100.0, 100.0])
+        _, _, diag_heavy = fit_h3_extrapolation_curve(b2_h3, b2_h6, weights=heavy_weights)
+        assert diag_heavy["alpha"] > diag_uniform["alpha"]
+
+    def test_diagnostics_dict_keys(self):
+        """Returned diagnostics dict has alpha, se, r_squared, n_bins."""
+        b2_h3 = np.array([0.5, 1.0, 2.0, 4.0, 8.0])
+        b2_h6 = b2_h3 * 2.0
+        _, _, diag = fit_h3_extrapolation_curve(b2_h3, b2_h6)
+        assert "alpha" in diag
+        assert "se" in diag
+        assert "r_squared" in diag
+        assert "n_bins" in diag
 
 
 # =============================================================================

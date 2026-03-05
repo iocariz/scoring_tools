@@ -118,6 +118,12 @@ SCORE_SCALE_MAX: Final[int] = 9
 # Decision tree default min samples per leaf
 DEFAULT_MIN_SAMPLES_LEAF: Final[int] = 500
 
+# Bootstrap resampling defaults
+DEFAULT_N_BOOTSTRAPS: Final[int] = 1000
+
+# Sensitivity analysis default perturbation levels (%)
+DEFAULT_SENSITIVITY_LEVELS: Final[list[float]] = [-20, -10, -5, 5, 10, 20]
+
 
 # =============================================================================
 # HELPER FUNCTIONS
