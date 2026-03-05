@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Credit risk scoring and portfolio optimization pipeline. Processes loan application data (SAS `.sas7bdat` files), trains risk models on an N-dimensional score grid (e.g., internal "octroi" bins × external "EFX" bins, optionally × income bins), and finds optimal acceptance cutoffs via MILP with monotonicity constraints over a Pareto frontier of risk (`b2_ever_h6`) vs. production (`oa_amt_h0`). Supports H3 (3-month) early risk metrics alongside H6, hybrid MR extrapolation, advanced reject inference with Bayesian smoothing, and multi-segment batch runs with global bin learning and per-segment constraints.
+Credit risk scoring and portfolio optimization pipeline. Processes loan application data (SAS `.sas7bdat` files), trains risk models on an N-dimensional score grid (e.g., internal "octroi" bins × external "EFX" bins, optionally × income bins), and finds optimal acceptance cutoffs via MILP with monotonicity constraints over a Pareto frontier of risk (`b2_ever_h6`) vs. production (`oa_amt_h0`). Supports H3 (3-month) early risk metrics alongside H6, hybrid MR extrapolation with auto-calibrated H3→H6 curvature, advanced reject inference with Bayesian smoothing, and multi-segment batch runs with global bin learning and per-segment constraints.
 
 ## Commands
 
@@ -72,7 +72,7 @@ Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `mak
   - Reject inference: `reject_inference.py`, `reject_inference_optimizer.py`
   - Analysis: `mr_pipeline.py`, `stability.py`, `sensitivity.py`, `trends.py`, `alerts.py`, `audit.py`
   - Output: `consolidation.py`, `reporting.py`, `plots.py`, `styles.py`, `metrics.py`, `utils.py`
-- Entry points: `main.py` (single segment), `run_batch.py` (multi-segment with global bin learning), `run_allocation.py` (MILP allocation with segment constraints/locking), `run_score_metrics.py` (score discriminance), `dashboard.py` / `interactive_allocator.py` (Dash web UIs)
+- Entry points: `main.py` (single segment), `run_batch.py` (multi-segment with global bin learning), `run_allocation.py` (MILP allocation with segment constraints/locking), `run_score_metrics.py` (score discriminance), `dashboard.py` / `interactive_allocator.py` (Dash web UIs), `gradio_dashboard.py` (Gradio web UI)
 
 ### Key Design Patterns
 
@@ -80,7 +80,7 @@ Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `mak
 - **`PreprocessingSettings` Pydantic model** — all config flows through this with field/model validators (≥ 2 variables, bin edges ≥ 2, date parsing, MR period pairing, range constraints)
 - **`BinConfig` dataclass** — N-variable binning config (`source_col`, `output_col`, `bin_edges`/`max_bins`, `method`) replacing legacy `octroi_bins`/`efx_bins`
 - **`SegmentConstraints` dataclass** — per-segment risk bounds (`min_risk`/`max_risk`), production floors (`min_production`), frontier locking (`locked_sol_fac`)
-- **`StatusName` / `RejectReason` / `Columns` enums** in `src/constants.py` — centralized string constants across the codebase
+- **`StatusName` / `RejectReason` / `Columns` enums** in `src/constants.py` — centralized string constants and numeric defaults (`DEFAULT_N_BOOTSTRAPS`, `DEFAULT_SENSITIVITY_LEVELS`) across the codebase
 - **Custom sklearn estimators** — `HurdleRegressor` and `TweedieGLM` implement full `BaseEstimator`/`RegressorMixin` interface
 - **Chunked processing** in optimization — feasible solutions processed in memory-efficient chunks for the combinatorial N-D grid search
 
@@ -94,7 +94,7 @@ Two-tier config: `config.toml` (global defaults) overridden per-segment by `segm
 
 **Reject inference:** `reject_inference_method` ("none"/"parceling"), `reject_parceling_method` ("linear"/"power"/"sigmoid"), `reject_bayesian_smoothing`, `reject_bayesian_prior_strength`, `reject_enforce_monotonicity`, `ri_calibration_gamma`, `ri_optimizer_method` ("grid"/"optuna"), `ri_optuna_n_trials`.
 
-**H3 metrics:** `multiplier_h3` (scaling factor for 3-month risk), `use_mr_outcomes` (enable H3→H6 extrapolation), `mr_min_obs_per_bin`.
+**H3 metrics:** `multiplier_h3` (scaling factor for 3-month risk), `use_mr_outcomes` (enable H3→H6 extrapolation), `mr_min_obs_per_bin`, `mr_extrapolation_method` (`"linear"` / `"power"` / `"logistic"` / `"auto"`), `mr_extrapolation_curvature` (power exponent; ignored when method is `"auto"` — curvature is fitted from main-period data via weighted log-log regression in `fit_h3_extrapolation_curve`).
 
 **Swap-in constraints:** `max_swapin_production_pct`, `max_swapin_risk`.
 
