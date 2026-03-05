@@ -10,6 +10,7 @@
 - ~~Bootstrap CI stratification~~ — was already correct; neither bootstrap resamples the frontier; invalid finding
 - ~~Full N>2 variable support~~ — N-D fixed cutoffs, GA fallback, conditional reporting all implemented
 - ~~MR H6 extrapolation assumes linear scaling~~ — `extrapolate_h3_to_h6()` in `src/utils.py` supports linear/power/logistic curves; configured via `mr_extrapolation_method` / `mr_extrapolation_curvature` in `PreprocessingSettings`
+- ~~Auto-calibrate H3→H6 curvature~~ — `fit_h3_extrapolation_curve()` in `src/utils.py` fits curvature via weighted log-log regression; `mr_extrapolation_method = "auto"` resolves to linear or power based on main-period data; diagnostics in `mr_risk_comparison_*.csv`
 
 ## Audit Findings — High Priority
 

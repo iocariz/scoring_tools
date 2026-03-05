@@ -65,8 +65,19 @@ For each bin, the pipeline selects a risk estimate following a strict priority:
 
 ```
 h6_h3_ratio = b2_main / b2_main_h3        (main-period scaling factor)
-b2_ever_h6  = b2_mr_h3 × h6_h3_ratio      (extrapolated MR risk)
+b2_ever_h6  = extrapolate_h3_to_h6(b2_mr_h3, h6_h3_ratio, method, curvature)
 ```
+
+The extrapolation curve is controlled by `mr_extrapolation_method`:
+
+| Method | Formula | When to use |
+|--------|---------|-------------|
+| `linear` (default) | `b2_mr_h3 × ratio` | Proportional H6/H3 relationship |
+| `power` | `b2_mr_h3 × ratio^curvature` | Convex (curvature > 1) or concave (< 1) relationship |
+| `logistic` | `b2_mr_h3 × (1 + 2·tanh(k·(ratio-1)/2)/k)` | Caps extreme ratios smoothly |
+| `auto` | Fits curvature from main-period data | No manual tuning needed |
+
+**Auto-calibration** (`method = "auto"`): Before computing the ratio, performs a weighted log-log regression `log(b2_h6) = c + α·log(b2_h3)` across main-period bins. If α's 95% CI includes 1.0, selects `linear`; otherwise selects `power` with the fitted α (clipped to [0.3, 3.0]). Requires ≥ 4 valid bins; falls back to linear if insufficient. Diagnostics (α, SE, R², n_bins) are logged and saved as `fitted_method` / `fitted_curvature` in the comparison CSV.
 
 **Rationale:** Mature 3-month MR outcomes, scaled by the main period's H6/H3 relationship, provide an early estimate of 6-month risk before H6 outcomes fully mature.
 
@@ -133,10 +144,11 @@ Consider bin (octroi=2, efx=5):
 
 **MR period (H3 mature, H6 immature):**
 - `todu_30ever_h3` = 8, `todu_amt_pile_h3` = 160 → `b2_mr_h3` = 4 × 8/160 = 20%
-- **Extrapolated H6 risk:** 20% × 3.5 = **70%**
+- **Extrapolated H6 risk (linear):** 20% × 3.5 = **70%**
+- **Extrapolated H6 risk (power, α=1.3):** 20% × 3.5^1.3 = **98.8%**
 - **Risk source:** `h3_extrapolated`
 
-The MR 3-month outcomes (20%), scaled by the main period's natural H6/H3 relationship (3.5×), estimate 6-month MR risk at 70%.
+The MR 3-month outcomes (20%), scaled by the main period's natural H6/H3 relationship (3.5×), estimate 6-month MR risk at 70% (linear). With `mr_extrapolation_method = "auto"`, the curvature α is fitted from data — if the H6/H3 relationship is convex (α > 1), the estimate adjusts accordingly.
 
 ## Comparison Diagnostics
 
@@ -152,7 +164,7 @@ b2_delta_pct_h3 = (b2_delta_h3 / b2_main_h3) × 100
 h6_h3_ratio     = b2_main / b2_main_h3
 ```
 
-Output is saved as `mr_risk_comparison{suffix}.csv` containing per-bin: `b2_main`, `b2_mr`, `n_obs_main`, `n_obs_mr`, `b2_ever_h6_tmp`, `risk_source`, `b2_delta`, `b2_delta_pct`, `mr_production`, and optional H3 columns.
+Output is saved as `mr_risk_comparison{suffix}.csv` containing per-bin: `b2_main`, `b2_mr`, `n_obs_main`, `n_obs_mr`, `b2_ever_h6_tmp`, `risk_source`, `b2_delta`, `b2_delta_pct`, `mr_production`, `fitted_method`, `fitted_curvature`, and optional H3 columns.
 
 ## Risk Production Summary
 
@@ -187,13 +199,15 @@ CSI (Characteristic Stability Index) uses the same formula applied to categorica
 
 All MR parameters are set in `config.toml` (or per-segment in `segments.toml`):
 
-| Parameter               | Type    | Default | Description                                           |
-|-------------------------|---------|---------|-------------------------------------------------------|
-| `use_mr_outcomes`       | bool    | false   | Enable hybrid MR risk computation                     |
-| `date_ini_book_obs_mr`  | string  | null    | MR window start date                                  |
-| `date_fin_book_obs_mr`  | string  | null    | MR window end date                                    |
-| `multiplier`            | float   | 7.0     | H6 risk multiplier                                    |
-| `multiplier_h3`         | float   | 4.0     | H3 risk multiplier                                    |
-| `mr_min_obs_per_bin`    | int     | 30      | Minimum observations per bin to use MR-observed risk   |
+| Parameter                    | Type    | Default    | Description                                                    |
+|------------------------------|---------|------------|----------------------------------------------------------------|
+| `use_mr_outcomes`            | bool    | false      | Enable hybrid MR risk computation                              |
+| `date_ini_book_obs_mr`       | string  | null       | MR window start date                                           |
+| `date_fin_book_obs_mr`       | string  | null       | MR window end date                                             |
+| `multiplier`                 | float   | 7.0        | H6 risk multiplier                                             |
+| `multiplier_h3`              | float   | 4.0        | H3 risk multiplier                                             |
+| `mr_min_obs_per_bin`         | int     | 30         | Minimum observations per bin to use MR-observed risk           |
+| `mr_extrapolation_method`    | string  | `"linear"` | H3→H6 curve: `"linear"`, `"power"`, `"logistic"`, or `"auto"` |
+| `mr_extrapolation_curvature` | float   | 1.0        | Power exponent (ignored when method is `"auto"`)               |
 
 Both MR dates must be provided together (all-or-nothing validation).

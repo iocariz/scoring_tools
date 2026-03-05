@@ -330,6 +330,10 @@ n_months = 24             # Rolling window for transformation rate (default: 12)
 inv_var1 = false          # Invert var1 comparison: >= instead of <= (default: false)
 run_sensitivity = false   # Run sensitivity analysis after optimization (default: false)
 
+# H3→H6 extrapolation curve (used with use_mr_outcomes = true)
+mr_extrapolation_method = "linear"  # "linear", "power", "logistic", or "auto" (default: "linear")
+mr_extrapolation_curvature = 1.0    # Power exponent; ignored when method = "auto" (default: 1.0)
+
 # Logging
 log_level = "INFO"        # default: "INFO"
 
@@ -559,21 +563,32 @@ In the main period, all booked applications have a full 6-month performance wind
 The 3-month horizon indicator (`b2_ever_h3`) matures in half the time of H6. In a 6-month MR window, the first 3 monthly cohorts have reliable H3 outcomes while none have fully matured H6. The pipeline exploits this by using the **main-period H6/H3 ratio** as a scaling factor:
 
 ```
-b2_h6_estimated = b2_mr_h3 × (b2_main_h6 / b2_main_h3)
+b2_h6_estimated = b2_mr_h3 × f(b2_main_h6 / b2_main_h3)
 ```
 
 Where, for each score bin:
 - `b2_main_h6` and `b2_main_h3` are computed from the main period (all applications fully matured)
 - `b2_mr_h3` is computed from **only** the MR accounts with mature H3 data (accounts from months with at least 3 months of performance history; immature accounts with NaN H3 are excluded from the aggregation)
+- `f(ratio)` is the extrapolation curve controlled by `mr_extrapolation_method`
 
-The ratio `b2_main_h6 / b2_main_h3` captures the bin-level relationship between 3-month and 6-month default rates. Multiplying the observed MR H3 rate by this ratio produces a more reliable H6 estimate than either direct (immature) MR H6 observation or static main-period imputation.
+**Extrapolation methods** (`mr_extrapolation_method`):
+
+| Method | Formula | Use case |
+|:-------|:--------|:---------|
+| `linear` (default) | `b2_mr_h3 × ratio` | Proportional H6/H3 relationship |
+| `power` | `b2_mr_h3 × ratio^curvature` | Convex/concave H6/H3 relationship |
+| `logistic` | `b2_mr_h3 × (1 + 2·tanh(k·(ratio-1)/2)/k)` | Caps extreme ratios |
+| `auto` | Fits curvature from main-period data | No domain expertise needed |
+
+**Auto-calibration** (`mr_extrapolation_method = "auto"`): Performs a weighted log-log regression `log(b2_h6) = c + α·log(b2_h3)` across main-period bins to determine the H3→H6 curvature. If α's 95% confidence interval includes 1.0, linear is selected; otherwise power with the fitted α (clipped to [0.3, 3.0]) is used. Weights are per-bin observation counts (`n_obs_main`), downweighting noisy thin bins. The resolved method, curvature, and diagnostics (α, SE, R², n_bins) are logged and saved as `fitted_method` / `fitted_curvature` columns in `mr_risk_comparison_*.csv`.
 
 **Safeguards:**
 - Bins where `b2_main_h3 ≈ 0` have an undefined ratio and fall back to `mr_observed`.
 - The number of MR accounts with mature H3 (`n_obs_mr_h3`) must meet the `mr_min_obs_per_bin` threshold; otherwise the bin falls back to `mr_observed` or `main_imputed`.
 - The per-bin `h6_h3_ratio` and `n_obs_mr_h3` are included in the comparison CSV (`mr_risk_comparison_*.csv`) for auditing.
+- Auto-calibration requires at least 4 valid bins with positive H3 and H6; falls back to linear otherwise.
 
-This feature activates automatically when `use_mr_outcomes = true` and `multiplier_h3` is configured. No additional configuration is required.
+This feature activates automatically when `use_mr_outcomes = true` and `multiplier_h3` is configured. No additional configuration is required beyond the optional `mr_extrapolation_method`.
 
 ### Stability Analysis (PSI/CSI)
 
@@ -723,6 +738,7 @@ Monthly aggregation of approval rate, production volume, mean production, and ri
 | `run_score_metrics.py` | Score discriminance analysis |
 | `dashboard.py` | Interactive Dash results dashboard |
 | `interactive_allocator.py` | Interactive allocation dashboard |
+| `gradio_dashboard.py` | Gradio web UI for results exploration |
 
 #### Pipeline Orchestration (`src/pipeline/`)
 
@@ -759,8 +775,8 @@ Monthly aggregation of approval rate, production volume, mean production, and ri
 | `metrics.py` | Gini, lift, precision-recall, ROC, DeLong test |
 | `plots.py` | `RiskProductionVisualizer` and Plotly chart generation |
 | `styles.py` | Consistent plot styling and color palette |
-| `utils.py` | `calculate_b2_ever_h6`, bootstrap CI, cutoff summary generation |
-| `constants.py` | Enums (`StatusName`, `RejectReason`, `Columns`) and defaults |
+| `utils.py` | `calculate_b2_ever_h6`, `extrapolate_h3_to_h6`, `fit_h3_extrapolation_curve`, bootstrap CI, cutoff summary generation |
+| `constants.py` | Enums (`StatusName`, `RejectReason`, `Columns`), numeric defaults (`DEFAULT_N_BOOTSTRAPS`, `DEFAULT_SENSITIVITY_LEVELS`) |
 | `schema.py` | Pandera data schema validators |
 | `alerts.py` | Alert generation for drift anomalies |
 
