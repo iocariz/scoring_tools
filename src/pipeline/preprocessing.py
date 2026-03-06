@@ -78,6 +78,11 @@ def run_preprocessing_phase(
     )
     result["figure"].write_html(output.transformation_rate_html)
     tasa_fin = result["overall_rate"]
+    if tasa_fin <= 0:
+        logger.warning(f"[{segment}] tasa_fin={tasa_fin:.4f} is non-positive; defaulting to 1.0")
+        tasa_fin = 1.0
+    elif tasa_fin > 5.0:
+        logger.warning(f"[{segment}] tasa_fin={tasa_fin:.4f} is unusually high (>5.0) — verify transformation rate")
 
     elapsed = time.perf_counter() - t0
     logger.info(

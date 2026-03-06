@@ -44,6 +44,10 @@ def generate_audit_table(
     Returns:
         DataFrame with audit information for each record.
     """
+    if optimal_solution_df is None or optimal_solution_df.empty:
+        logger.warning("optimal_solution_df is missing or empty. Cannot generate audit table.")
+        return pd.DataFrame()
+
     var0_col = variables[0]
     var1_col = variables[1]
 

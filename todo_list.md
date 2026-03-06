@@ -16,36 +16,213 @@
 - ~~Silent data loss from unlogged `dropna()`~~ — added row-count logging before each `dropna()` in `preprocess_improved.py` (5 locations: `learn_quantile_bins`, `learn_income_bins`, `learn_optimization_bins`, `assess_binning_gini`, `_apply_binning_from_config`)
 - ~~`calculate_stress_factor` returns 0.0 on empty data~~ — changed to return neutral `1.0` to prevent zeroing all risk predictions; also handles zero `overall_bad_rate` case
 - ~~Reject inference denominator warning~~ — enhanced warning in `reject_inference.py:compute_acceptance_rates` to log non-score rejection share of all rejections; escalates to `WARNING` when >5% of demand, adds actionable guidance when >10%
+- ~~Reject inference parceling per-variable overwrites grid structure~~ — `_enforce_multiplier_monotonicity` now iterates isotonic passes across all variables until convergence (max 10 iterations, tol=1e-6) instead of single-pass per variable
+- ~~Stressor bounds validation~~ — `calculate_B2` in `src/models.py` now clamps non-positive stressor to 0.01 and warns when >5.0
+- ~~`tasa_fin` validation~~ — `src/pipeline/preprocessing.py` now validates `tasa_fin > 0` (defaults to 1.0 if non-positive) and warns if >5.0
+- ~~MR pipeline / audit unchecked `.iloc[0]`~~ — `mr_pipeline.py:70` was already guarded; added missing guard in `src/audit.py:generate_audit_table` which had no empty-check before `.iloc[0]`
+- ~~Missing column existence checks in optimization~~ — added explicit `required_cols` validation in both `trace_pareto_frontier` and `_pareto_ga_fallback` in `src/optimization_utils.py`; returns empty result with descriptive error instead of `KeyError`
 
 ---
 
-## Audit Findings — High Priority
+## Code Audit Findings (2026-03-06)
 
-### Reject inference parceling per-variable overwrites grid structure
-- `_enforce_multiplier_monotonicity` at `src/reject_inference.py:182-191` applies isotonic per variable independently
-- Second pass overwrites multipliers set by the first pass (last-variable-wins)
-- For 2D grids, should fit a bivariate isotonic regression or iterate until convergence
+Items below are new findings from a comprehensive codebase audit. Duplicates against existing
+todo items have been removed. Items marked **(partially fixed)** overlap with "Recently Fixed"
+entries above but have residual issues.
 
-### Stressor applied as multiplicative factor without bounds
-- `src/models.py:269` applies `stressor` directly: `risk *= stressor`
-- ~~`calculate_stress_factor` returns `0.0` on empty data~~ — fixed: now returns `1.0`
-- No validation that stressor is within a reasonable range (e.g., 0.5–3.0)
-- Add bounds validation in `PreprocessingSettings`
+### BUG — CRITICAL
 
-### `tasa_fin` applied after reject inference but not validated
-- Financing rate `tasa_fin` is multiplied into indicators at `src/inference_optimized.py:1669`
-- No check that `tasa_fin > 0`, no warning if it exceeds typical ranges
-- Could silently zero out all risk metrics if set to 0
+#### C1: Optuna `tune_linear_models` reuses unfitted model across folds
+- `src/optuna_tuning.py:324-328` — model object is not cloned between CV folds
+- Each fold trains on the already-fitted model from the prior fold, leaking information
+- Fix: `clone(model)` before each fold's `.fit()`
 
-### MR pipeline unchecked `.iloc[0]`
-- `src/mr_pipeline.py:70` assumes `optimal_solution_df` is non-empty
-- `IndexError` if optimization produced no solutions (empty Pareto frontier)
-- Add a guard or raise a descriptive error before the `.iloc[0]` access
+#### C2: Inconsistent sample weights between `inference_optimized` and `optuna_tuning`
+- `src/inference_optimized.py` passes `sample_weight` to model `.fit()` during CV
+- `src/optuna_tuning.py` may not propagate the same weighting scheme
+- Models selected via Optuna are evaluated under different conditions than final training
 
-### Missing column existence checks in optimization
-- `src/optimization_utils.py:429-431` accesses `todu_30ever_h6`, `todu_amt_pile_h6` without checking existence — will raise cryptic `KeyError`
-- `src/optimization_utils.py:735-737` same unchecked access in GA fallback path
-- Add explicit guards or raise descriptive errors before column access
+#### C3: MR pipeline missing `multiplier` in Optimum row risk calculation
+- `src/mr_pipeline.py:189` — `calculate_b2_ever_h6(opt_rn, opt_rd, as_percentage=True)` omits `multiplier=multiplier`
+- Optimum row always uses default multiplier (7) regardless of config
+- Causes incorrect risk display in MR comparison tables
+
+### BUG — HIGH
+
+#### H1: H3 extrapolation prioritized over direct H6 observations in hybrid risk
+- `src/mr_pipeline.py:362-368` — condition ordering: `[only_mr_sparse, can_extrapolate, use_mr]`
+- `can_extrapolate` (H3→H6 extrapolation) is checked before `use_mr` (direct H6 observations)
+- When both H3 and H6 data exist, the extrapolated value is used instead of the direct observation
+- Fix: swap order so `use_mr` is checked before `can_extrapolate`
+
+#### H2: Weighted R² and SE computation uses unweighted residuals
+- `src/utils.py:155-170` — `np.polyfit` does WLS but `ss_res = np.sum(residuals**2)` is unweighted
+- R² is inconsistent (weighted fit, unweighted goodness-of-fit)
+- SE of slope is wrong, affecting confidence in extrapolation parameters
+- Fix: `ss_res = np.sum(w * residuals**2)`
+
+#### H3: Settings H3 field cleanup not propagated in data_manager **(partially fixed)**
+- `src/data_manager.py:105-115` — settings object may be mutated for H3 column cleanup
+- "Recently Fixed" entry says `model_copy()` is used, but the H3-specific cleanup path may still mutate the original
+- Verify that all H3 column name standardization uses the copied settings
+
+#### H4: Inconsistent `dayfirst` parsing in date columns
+- `src/preprocess_improved.py` — some `pd.to_datetime` calls use `dayfirst=True`, others don't
+- Ambiguous dates (e.g., "03/04/2025") parsed differently depending on code path
+- Fix: centralize date parsing with explicit format or consistent `dayfirst` setting
+
+#### H5: TweedieGLM drops `sample_weight` when exposure column is present
+- `src/estimators.py:280-290` — when exposure is used, `sample_weight` passed to `.fit()` is ignored
+- Exposure handling replaces weighting rather than composing with it
+- Weighted training (e.g., for vintage imbalance) silently has no effect
+
+#### H7: TweedieGLM `predict` division by zero on zero exposure
+- `src/estimators.py:310-320` — `predictions / exposure` when exposure contains zeros
+- No guard against zero exposure values
+- Fix: clip exposure to minimum positive value before division
+
+#### H8: HurdleRegressor can produce negative predictions
+- `src/estimators.py:180-200` — combines P(event) × E[amount|event]
+- Continuous sub-model can predict negative amounts; product can be negative
+- Credit risk predictions must be non-negative
+- Fix: `np.clip(predictions, 0, None)` at output
+
+#### H10: Degenerate Beta prior in reject inference Bayesian smoothing
+- `src/reject_inference.py:76-85` — Beta prior with `alpha = global_rate * prior_strength`, `beta = (1 - global_rate) * prior_strength`
+- When `global_rate` ≈ 0 or ≈ 1, one parameter approaches 0, creating a degenerate prior
+- Fix: add floor `max(alpha, 0.5)`, `max(beta, 0.5)` (Jeffreys-like minimum)
+
+#### H9: Isotonic monotonicity collapses N-D structure to 1-D marginals **(partially fixed)**
+- `src/reject_inference.py` — `_enforce_multiplier_monotonicity` iterates isotonic passes per variable
+- "Recently Fixed" entry says convergence loop added, but isotonic regression on marginals doesn't guarantee joint monotonicity in N-D
+- A cell can satisfy all marginal monotonicity constraints while violating the partial-order constraint
+- Consider lattice-based isotonic regression for true N-D monotonicity
+
+#### H11: Global optimizer MILP fallback uses `argmax` on rounded values
+- `src/global_optimizer.py` — when MILP returns fractional solution, `argmax(rounded)` may select dominated point
+- Should use proper rounding heuristic that respects constraints
+
+#### H12: Global optimizer greedy fallback ignores `production_floor`
+- `src/global_optimizer.py` — greedy allocation doesn't check per-segment `min_production` constraint
+- Segments may receive less than their production floor
+
+#### H13: Consolidation ratio SE treated as additive
+- `src/consolidation.py` — aggregates risk CIs across segments by adding SEs
+- Ratio statistics (risk = defaults/exposure) don't have additive standard errors
+- Should use delta method or bootstrap for aggregate CI
+
+#### H14: `bins_tuple` ordering follows dict insertion order
+- `src/pipeline/inference.py:91-93` — `bins_tuple` constructed from dict keys
+- If dict order doesn't match `inference_vars` order, bin assignments misalign with model expectations
+- Fix: explicitly order by `inference_vars`
+
+### BUG — MEDIUM
+
+#### M5: `classify_by_mask` assumes column named "index"
+- `src/optimization_utils.py` — references hardcoded `"index"` column name
+- Fails if DataFrame index was not reset or has different name
+- Fix: use `.reset_index()` or parametrize column name
+
+#### M6: GA fallback rounds continuous variables to integers
+- `src/optimization_utils.py` — GA treats bin indices as continuous, rounds at evaluation
+- Rounding creates flat fitness landscape regions where gradient is zero
+- GA may fail to converge near optimal integer solutions
+
+#### M7: Non-strict Pareto dominance filter
+- `src/optimization_utils.py` — Pareto filter uses `<=` instead of `<` for at least one objective
+- Weakly dominated solutions remain on frontier, inflating solution count
+- Fix: require strict improvement in at least one objective
+
+#### M8: `_transform_variables_2d` mutates input DataFrame
+- `src/models.py` — modifies input DataFrame in-place via column assignment
+- Callers may not expect side effects
+- Fix: operate on `.copy()` at function entry
+
+#### M9: HurdleRegressor `get_params` breaks sklearn `clone()`
+- `src/estimators.py` — `get_params()` returns nested estimator objects
+- `sklearn.base.clone()` fails when sub-estimators aren't properly clonable
+- Affects Optuna tuning and CV where `clone(model)` is called
+
+#### M11: Cell-level CI uses normal distribution instead of t-distribution
+- `src/inference_optimized.py` — `z * se` for confidence intervals
+- With small cell counts (n < 30), normal approximation is anti-conservative
+- Fix: use `t.ppf(alpha/2, df=n-1)` instead of `norm.ppf`
+
+#### M12: SPC numpy operations lose DataFrame index
+- `src/trends.py` — numpy operations on rolling statistics drop the datetime index
+- Anomaly detection results can't be joined back to source data by date
+- Fix: preserve index through numpy operations
+
+#### M13: SPC trend detection has look-ahead bias
+- `src/trends.py` — rolling statistics computed on the full series including future data
+- In production, SPC bounds should only use data available at each point in time
+- Fix: use expanding or strictly backward-looking windows
+
+#### M14: Outlier removal in inference can remove high-risk bins
+- `src/inference_optimized.py` — outlier detection based on statistical criteria
+- High-risk bins are natural outliers in credit data; removing them biases risk estimates downward
+- Fix: only remove outliers on features, not on the target variable
+
+#### M16: `str.match` partial matching in preprocessing
+- `src/preprocess_improved.py` — `str.match()` matches from start of string but doesn't require full match
+- Can match unintended column names that share a prefix
+- Fix: use `str.fullmatch()` or anchor with `$`
+
+#### M17: Consolidation production CI uses midpoints instead of bounds
+- `src/consolidation.py` — production confidence intervals computed from midpoint estimates
+- Should use the actual lower/upper bounds from bootstrap
+
+#### M18: Scenario auto-detection stops at first segment
+- `src/consolidation.py` — scenario detection logic only checks the first segment
+- If first segment has no scenarios but others do, scenarios are missed
+- Fix: check across all segments
+
+### BUG — LOW
+
+#### L1: `plt.show()` blocks execution in non-interactive environments
+- `src/models.py` — calls `plt.show()` which blocks in headless/CI environments
+- Fix: guard with `if plt.isinteractive()` or remove in favor of `savefig()`
+
+#### L4: Rolling mean column actually contains median
+- `src/trends.py` — column named `rolling_mean` is computed with `.rolling().median()`
+- Misleading column name
+- Fix: rename to `rolling_median`
+
+#### L5: Annualization with `n_months=0` not guarded
+- `src/audit.py` — annualization formula divides by `n_months`
+- If date range produces 0 months, division by zero occurs
+- Fix: `max(n_months, 1)` or return un-annualized value
+
+### STATISTICAL — HIGH
+
+#### S1: PSI epsilon-protected log but unprotected difference breaks non-negativity **(partially fixed)**
+- `src/stability.py:196-201` — epsilon inside `log(p/q)` but `(p - q)` term is unprotected
+- PSI = Σ(p-q)·log(p/q) should be ≥ 0 by construction (KL divergence property)
+- With asymmetric epsilon application, individual terms can go negative
+- "Recently Fixed" says epsilon is only inside log now, but the (p-q) difference still uses raw values
+- Fix: apply same epsilon to both terms, or use symmetric KL formulation
+
+### STATISTICAL — MEDIUM
+
+#### S2: Bootstrap only resamples booked population
+- `src/utils.py:425-433` — bootstrap CIs computed only on booked/accepted loans
+- Reject inference adjustments not propagated through bootstrap
+- CIs reflect sampling uncertainty of booked data only, not total portfolio uncertainty
+- Underestimates true CI width when reject inference adjustment is significant
+
+### METHODOLOGICAL — MEDIUM
+
+#### M10: Acceptance rate `fillna(0)` creates extreme reject inference multipliers
+- `src/reject_inference.py` — missing acceptance rates filled with 0
+- `1 / acceptance_rate` with rate = 0 produces infinity; clipped but extreme
+- Fix: fill with minimum observed positive rate or use Bayesian prior
+
+### NUMERICAL — MEDIUM
+
+#### N1: `nan_to_num` silently converts NaN risk to 0 in MR pipeline
+- `src/mr_pipeline.py:189` — `np.nan_to_num(...)` converts NaN to 0.0
+- NaN risk (from empty bins or missing data) becomes zero-risk, an optimistic assumption
+- Should flag NaN bins and exclude from comparison rather than treating as zero
 
 ---
 
@@ -116,24 +293,9 @@
 
 ## Statistical & Methodological — Critical
 
-### Non-nested cross-validation for hyperparameter tuning (optimistic bias)
-- `src/optuna_tuning.py:120-124,155-156` — Optuna tunes hyperparameters on full dataset, then CV evaluates on same dataset with different seed
-- Code acknowledges this: "R² may be slightly optimistic due to hyperparameter selection on the same data"
-- Violates cardinal principle that hyperparameter selection must use different data than evaluation
-- Implement proper nested CV: outer loop for performance estimation, inner loop for Optuna tuning
-
-### Reject inference denominator excludes non-score rejections
-- `src/reject_inference.py:60-108` — acceptance rate = `n_booked / (n_booked + n_score_rejected)`
-- Non-score rejections (manual review, fraud, missing docs) excluded from denominator
-- Inflates acceptance rate, leading to understated reject multipliers
-- Bins with high non-score rejection rates will underestimate reject population risk
-- If non-score rejections are >5-10% of total, bias becomes material
-
-### Bin edges learned on full training data without holdout
-- `src/preprocess_improved.py:330-420` — `learn_optimization_bins()` fits DecisionTreeRegressor on full booked population
-- Same data used for bin learning and downstream model training/evaluation
-- Biases bin edges toward training distribution; no validation-fold assessment of bin stability
-- Use stratified train/validation split (80/20); learn edges on train fold, validate stability on holdout
+- ~~Non-nested cross-validation for hyperparameter tuning~~ — `tune_tree_models` and `tune_linear_models` now use 80/20 stratified holdout split: Optuna tunes on tuning set, final evaluation on held-out data for unbiased RMSE. Falls back to fresh-seed CV when dataset < 200 rows or holdout produces too few bins.
+- ~~Reject inference denominator excludes non-score rejections~~ — added `reject_include_all_rejections` config field (default False for backward compat). When True, all rejections count in denominator, producing lower acceptance rates and higher multipliers. Wired through config → `pipeline/optimization.py` → `inference_optimized.py` → `reject_inference.py:compute_acceptance_rates`.
+- ~~Bin edges learned on full training data without holdout~~ — `learn_optimization_bins` now runs a holdout stability check: applies learned edges to 80/20 train/holdout split, logs per-bin risk on both folds, warns if risk ordering reverses on holdout (overfit signal). Bin edges still learned on full data for maximum signal.
 
 ---
 

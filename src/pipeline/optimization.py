@@ -84,6 +84,7 @@ def run_optimization_phase(
         reject_bayesian_smoothing=settings.reject_bayesian_smoothing,
         reject_bayesian_prior_strength=settings.reject_bayesian_prior_strength,
         reject_enforce_monotonicity=settings.reject_enforce_monotonicity,
+        reject_include_all_rejections=settings.reject_include_all_rejections,
         multiplier=settings.multiplier,
         inv_vars=settings.inv_vars,
     )
@@ -771,7 +772,9 @@ def run_ri_optimizer_phase(
         )
 
         # Step 2: Compute acceptance rates
-        acceptance_rates = compute_acceptance_rates(data_demand, settings.variables)
+        acceptance_rates = compute_acceptance_rates(
+            data_demand, settings.variables, include_all_rejections=settings.reject_include_all_rejections
+        )
 
         # Step 3: Build optimizer inputs
         optimizer_inputs = OptimizerInputs(
@@ -819,7 +822,10 @@ def run_ri_optimizer_phase(
                     variables=settings.variables,
                     annual_coef=annual_coef_mr,
                 )
-                mr_acceptance_rates = compute_acceptance_rates(data_demand_mr, settings.variables)
+                mr_acceptance_rates = compute_acceptance_rates(
+                    data_demand_mr, settings.variables,
+                    include_all_rejections=settings.reject_include_all_rejections,
+                )
                 mr_optimizer_inputs = OptimizerInputs(
                     booked_summary=mr_booked_summary,
                     repesca_pre_ri=mr_repesca_pre_ri,

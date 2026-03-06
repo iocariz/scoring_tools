@@ -1629,6 +1629,7 @@ def run_optimization_pipeline(
     reject_bayesian_smoothing: bool = False,
     reject_bayesian_prior_strength: float = 10.0,
     reject_enforce_monotonicity: bool = False,
+    reject_include_all_rejections: bool = False,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
     inv_vars: list[str] | None = None,
 ):
@@ -1671,6 +1672,7 @@ def run_optimization_pipeline(
             bayesian_prior_strength=reject_bayesian_prior_strength,
             enforce_monotonicity=reject_enforce_monotonicity,
             inv_vars=inv_vars,
+            include_all_rejections=reject_include_all_rejections,
         )
         # Drop auxiliary columns before downstream merge
         data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.drop(

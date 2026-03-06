@@ -424,6 +424,13 @@ def trace_pareto_frontier(
     """
     grid = CellGrid.from_summary(data_summary_desagregado, variables)
 
+    # Validate required columns exist in cell_data
+    required_cols = ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"]
+    missing = [c for c in required_cols if c not in grid.cell_data.columns]
+    if missing:
+        logger.error(f"CellGrid missing required columns: {missing}. Cannot trace Pareto frontier.")
+        return pd.DataFrame(), grid, []
+
     # Determine risk sweep range
     # Max risk = all cells accepted
     all_t30 = grid.cell_data["todu_30ever_h6"].sum()
@@ -732,6 +739,12 @@ def _ga_pareto_fallback(
     logger.info("Running GA fallback for Pareto frontier...")
 
     cell = grid.cell_data
+    required_cols = ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"]
+    missing = [c for c in required_cols if c not in cell.columns]
+    if missing:
+        logger.error(f"CellGrid missing required columns for GA fallback: {missing}.")
+        return pd.DataFrame(), grid, []
+
     todu_30 = cell["todu_30ever_h6"].values.astype(float)
     todu_amt = cell["todu_amt_pile_h6"].values.astype(float)
     production = cell["oa_amt_h0"].values.astype(float)

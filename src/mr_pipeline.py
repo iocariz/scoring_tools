@@ -561,12 +561,17 @@ def process_mr_period(
                     if final_features is None:
                         raise KeyError("'features' not found in risk_inference")
 
+                    # Use the model's actual training variables (inference_variables),
+                    # not merge_keys (settings.variables) which may include extra
+                    # dimensions the model was not trained on.
+                    model_vars = risk_inference.get("model_variables", merge_keys)
+
                     # Create a DataFrame with missing bin combinations for prediction
                     missing_bins_df = missing_bins.copy()
 
                     # Apply calculate_B2 to predict b2_ever_h6 for missing bins
                     missing_bins_df = calculate_B2(
-                        missing_bins_df, final_model, merge_keys, stress_factor, final_features
+                        missing_bins_df, final_model, model_vars, stress_factor, final_features
                     )
 
                     # Clip inferred risk to the observed training range to prevent extrapolation
@@ -728,6 +733,7 @@ def process_mr_period(
             reject_bayesian_smoothing=settings.reject_bayesian_smoothing,
             reject_bayesian_prior_strength=settings.reject_bayesian_prior_strength,
             reject_enforce_monotonicity=settings.reject_enforce_monotonicity,
+            reject_include_all_rejections=settings.reject_include_all_rejections,
         )
 
         # Save MR summary

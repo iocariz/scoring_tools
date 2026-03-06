@@ -428,6 +428,25 @@ def learn_optimization_bins(
         f"(max_bins={max_bins}): thresholds={thresholds}"
     )
     logger.info(f"  Bin edges: {edges}")
+
+    # Holdout stability validation: check that bin edges differentiate risk on unseen data
+    if len(valid) >= min_samples_leaf * 3:
+        from sklearn.model_selection import train_test_split
+
+        train_fold, holdout_fold = train_test_split(valid, test_size=0.2, random_state=DEFAULT_RANDOM_STATE + 1)
+        train_binned = pd.cut(train_fold[source_col], bins=edges, labels=False)
+        holdout_binned = pd.cut(holdout_fold[source_col], bins=edges, labels=False)
+        train_risk = train_fold.groupby(train_binned, observed=True)[target_col].mean()
+        holdout_risk = holdout_fold.groupby(holdout_binned, observed=True)[target_col].mean()
+        logger.info(f"  Bin stability: train_risk={train_risk.round(4).to_dict()}, holdout_risk={holdout_risk.round(4).to_dict()}")
+        if len(train_risk) >= 2 and len(holdout_risk) >= 2:
+            train_diff = float(train_risk.iloc[-1] - train_risk.iloc[0])
+            holdout_diff = float(holdout_risk.iloc[-1] - holdout_risk.iloc[0])
+            if train_diff * holdout_diff < 0:
+                logger.warning("  Bin edges may be overfit: risk ordering reversed on holdout fold")
+            else:
+                logger.info("  Bin stability OK: risk ordering consistent between train and holdout")
+
     return edges
 
 

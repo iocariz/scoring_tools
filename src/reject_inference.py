@@ -28,16 +28,20 @@ def compute_acceptance_rates(
     *,
     bayesian_smoothing: bool = False,
     bayesian_prior_strength: float = 10.0,
+    include_all_rejections: bool = False,
 ) -> pd.DataFrame:
     """Compute per-bin acceptance rates from the demand population.
 
     For each unique combination of *variables* bins, the acceptance rate is
     defined as::
 
-        acceptance_rate = n_booked / (n_booked + n_score_rejected)
+        acceptance_rate = n_booked / (n_booked + n_rejected)
 
-    Only ``09-score`` rejections are counted (``08-other`` are excluded because
-    they are not candidates for cutoff changes).
+    By default, only ``09-score`` rejections are counted (``08-other`` are
+    excluded because they are not candidates for cutoff changes).  When
+    *include_all_rejections* is True, **all** rejections are included in the
+    denominator, producing lower (more conservative) acceptance rates and
+    higher reject-inference multipliers.
 
     Parameters
     ----------
@@ -51,20 +55,31 @@ def compute_acceptance_rates(
         If True, apply Beta-Binomial posterior smoothing to acceptance rates.
     bayesian_prior_strength:
         Strength of the Beta prior (higher = more shrinkage toward global rate).
+    include_all_rejections:
+        If True, include all rejections (not just score rejections) in the
+        denominator.  Use when non-score rejections are a material share of
+        demand (>5-10%).
 
     Returns
     -------
     DataFrame with columns ``[*variables, "n_booked", "n_score_rejected", "acceptance_rate"]``.
+    When *include_all_rejections* is True, ``"n_score_rejected"`` contains the
+    count of **all** rejections.
     When *bayesian_smoothing* is True, also includes ``"smoothed_acceptance_rate"``.
     """
     booked = data_demand[data_demand["status_name"] == StatusName.BOOKED.value]
-    score_rejected = data_demand[
-        (data_demand["status_name"] == StatusName.REJECTED.value)
-        & (data_demand["reject_reason"] == RejectReason.SCORE.value)
-    ]
+
+    if include_all_rejections:
+        rejected = data_demand[data_demand["status_name"] == StatusName.REJECTED.value]
+        logger.info("Acceptance rates use ALL rejections in denominator (include_all_rejections=True)")
+    else:
+        rejected = data_demand[
+            (data_demand["status_name"] == StatusName.REJECTED.value)
+            & (data_demand["reject_reason"] == RejectReason.SCORE.value)
+        ]
 
     n_booked = booked.groupby(variables).size().reset_index(name="n_booked")
-    n_rejected = score_rejected.groupby(variables).size().reset_index(name="n_score_rejected")
+    n_rejected = rejected.groupby(variables).size().reset_index(name="n_score_rejected")
 
     rates = n_booked.merge(n_rejected, on=variables, how="outer").fillna(0)
     rates["n_booked"] = rates["n_booked"].astype(int)
@@ -165,13 +180,16 @@ def _enforce_multiplier_monotonicity(
     result: pd.DataFrame,
     variables: list[str],
     inv_vars: list[str] | None = None,
+    *,
+    max_iterations: int = 10,
+    tol: float = 1e-6,
 ) -> pd.DataFrame:
     """Enforce monotonicity on reject_risk_multiplier per variable axis.
 
-    Uses isotonic regression to ensure that multipliers are monotonic along
-    each variable axis (marginal monotonicity). For normal variables,
-    multipliers are non-decreasing (higher bin index → higher risk uplift).
-    For inverted variables (in *inv_vars*), multipliers are non-increasing.
+    Uses alternating isotonic regression passes until convergence to ensure
+    that multipliers are monotonic along each variable axis (marginal
+    monotonicity).  Iterating avoids the single-pass problem where the last
+    variable's projection overwrites earlier ones.
 
     Parameters
     ----------
@@ -182,6 +200,10 @@ def _enforce_multiplier_monotonicity(
     inv_vars:
         Variables whose higher bin values indicate *lower* risk. Isotonic
         regression uses ``increasing=False`` for these.
+    max_iterations:
+        Maximum number of full passes over all variables.
+    tol:
+        Convergence tolerance on max absolute change between iterations.
 
     Returns
     -------
@@ -191,16 +213,25 @@ def _enforce_multiplier_monotonicity(
 
     inv_set = set(inv_vars) if inv_vars else set()
 
-    for var in variables:
-        increasing = var not in inv_set
-        iso = IsotonicRegression(increasing=increasing, out_of_bounds="clip")
-        # Average multiplier along the other axes and fit isotonic per this variable
-        grouped = result.groupby(var)["reject_risk_multiplier"].mean().sort_index()
-        if len(grouped) < 2:
-            continue
-        iso_values = iso.fit_transform(grouped.index.values.astype(float), grouped.values)
-        iso_map = dict(zip(grouped.index, iso_values))
-        result["reject_risk_multiplier"] = result[var].map(iso_map).fillna(result["reject_risk_multiplier"])
+    for iteration in range(max_iterations):
+        prev_values = result["reject_risk_multiplier"].values.copy()
+
+        for var in variables:
+            increasing = var not in inv_set
+            iso = IsotonicRegression(increasing=increasing, out_of_bounds="clip")
+            grouped = result.groupby(var)["reject_risk_multiplier"].mean().sort_index()
+            if len(grouped) < 2:
+                continue
+            iso_values = iso.fit_transform(grouped.index.values.astype(float), grouped.values)
+            iso_map = dict(zip(grouped.index, iso_values))
+            result["reject_risk_multiplier"] = result[var].map(iso_map).fillna(result["reject_risk_multiplier"])
+
+        max_change = np.abs(result["reject_risk_multiplier"].values - prev_values).max()
+        if max_change < tol:
+            logger.debug(f"Isotonic monotonicity converged after {iteration + 1} iteration(s) (max_change={max_change:.2e})")
+            break
+    else:
+        logger.debug(f"Isotonic monotonicity did not converge after {max_iterations} iterations (max_change={max_change:.2e})")
 
     return result
 
@@ -351,6 +382,7 @@ def apply_reject_inference(
     bayesian_prior_strength: float = 10.0,
     enforce_monotonicity: bool = False,
     inv_vars: list[str] | None = None,
+    include_all_rejections: bool = False,
 ) -> pd.DataFrame:
     """Dispatcher: apply reject-inference adjustment to repesca risk predictions.
 
@@ -380,6 +412,8 @@ def apply_reject_inference(
     inv_vars:
         Variables whose higher bin values indicate lower risk. Used to set
         isotonic regression direction when *enforce_monotonicity* is True.
+    include_all_rejections:
+        If True, include all rejections in acceptance rate denominator.
 
     Returns
     -------
@@ -399,6 +433,7 @@ def apply_reject_inference(
             variables,
             bayesian_smoothing=bayesian_smoothing,
             bayesian_prior_strength=bayesian_prior_strength,
+            include_all_rejections=include_all_rejections,
         )
 
         result = apply_parceling_adjustment(

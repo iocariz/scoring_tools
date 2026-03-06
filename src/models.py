@@ -264,6 +264,12 @@ def calculate_B2(
     Returns:
         DataFrame with transformed variables and 'b2_ever_h6' predictions.
     """
+    if stressor <= 0:
+        logger.warning(f"Stressor value {stressor} is non-positive; clamping to 0.01")
+        stressor = 0.01
+    elif stressor > 5.0:
+        logger.warning(f"Stressor value {stressor:.4f} exceeds 5.0 — verify stress factor calculation")
+
     data_out = transform_variables(df.copy(), variables)
     X = prepare_model_input(data_out, var_reg, model_risk)
     data_out["b2_ever_h6"] = np.clip(stressor * model_risk.predict(X), a_min=0, a_max=None)
