@@ -23,7 +23,7 @@ from scipy.stats import zscore
 # Scikit-learn imports
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, StratifiedKFold
 
 from src import styles
 from src.constants import (
@@ -44,6 +44,24 @@ from src.persistence import (
     save_model_with_metadata,
 )
 from src.utils import calculate_b2_ever_h6
+
+
+def _stratified_cv_splitter(
+    raw_data: pd.DataFrame, cv_folds: int, random_state: int, indicators: list[str]
+):
+    """Create a StratifiedKFold splitter using a binarized risk indicator.
+
+    Falls back to plain KFold when the indicator column is missing or has only
+    one class.
+    """
+    strat_col = indicators[0] if indicators else None
+    if strat_col and strat_col in raw_data.columns:
+        y_strat = (raw_data[strat_col] > 0).astype(int)
+        if y_strat.nunique() >= 2 and y_strat.sum() >= cv_folds and (len(y_strat) - y_strat.sum()) >= cv_folds:
+            skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+            return skf.split(raw_data, y_strat)
+    kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+    return kfold.split(raw_data)
 
 
 def _get_model_complexity(model_name: str) -> int:
@@ -547,13 +565,13 @@ def _select_feature_set_cv(
     """
     from sklearn.base import clone
 
-    kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=DEFAULT_RANDOM_STATE)
     feature_results = []
 
     for feature_name, features in feature_sets.items():
         cv_scores = []
         cv_r2_scores = []
-        for train_idx, val_idx in kfold.split(raw_data):
+        splits = _stratified_cv_splitter(raw_data, cv_folds, DEFAULT_RANDOM_STATE, indicators)
+        for train_idx, val_idx in splits:
             raw_train, raw_val = raw_data.iloc[train_idx].copy(), raw_data.iloc[val_idx].copy()
 
             train_agg = process_dataset(
@@ -689,10 +707,10 @@ def compute_cell_level_ci(
     from scipy import stats
     from sklearn.base import clone
 
-    kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=DEFAULT_RANDOM_STATE)
+    splits = _stratified_cv_splitter(raw_data, cv_folds, DEFAULT_RANDOM_STATE, indicators)
     cell_predictions: dict[tuple, list[float]] = defaultdict(list)
 
-    for train_idx, val_idx in kfold.split(raw_data):
+    for train_idx, val_idx in splits:
         raw_train = raw_data.iloc[train_idx].copy()
         raw_val = raw_data.iloc[val_idx].copy()
 

@@ -227,7 +227,11 @@ def learn_quantile_bins(
     """
     validate_dataframe_columns(data, [source_col], "learn_quantile_bins")
 
+    n_before = len(data)
     valid = data[source_col].dropna()
+    n_dropped = n_before - len(valid)
+    if n_dropped > 0:
+        logger.info(f"learn_quantile_bins: dropped {n_dropped:,} NaN rows ({n_dropped / n_before:.1%}) from '{source_col}'")
     if len(valid) < max_bins * 2:
         raise ValueError(f"learn_quantile_bins: only {len(valid)} valid records for '{source_col}'")
 
@@ -293,7 +297,11 @@ def learn_income_bins(
     """
     validate_dataframe_columns(data_booked, [source_col, target_col], "learn_income_bins")
 
+    n_before = len(data_booked)
     valid = data_booked[[source_col, target_col]].dropna()
+    n_dropped = n_before - len(valid)
+    if n_dropped > 0:
+        logger.info(f"learn_income_bins: dropped {n_dropped:,} NaN rows ({n_dropped / n_before:.1%}) from '{source_col}'/'{target_col}'")
     if len(valid) < min_samples_leaf * 2:
         raise ValueError(f"learn_income_bins: only {len(valid)} valid records — need at least {min_samples_leaf * 2}")
 
@@ -370,7 +378,11 @@ def learn_optimization_bins(
     """
     validate_dataframe_columns(data_booked, [source_col, target_col], "learn_optimization_bins")
 
+    n_before = len(data_booked)
     valid = data_booked[[source_col, target_col]].dropna()
+    n_dropped = n_before - len(valid)
+    if n_dropped > 0:
+        logger.info(f"learn_optimization_bins: dropped {n_dropped:,} NaN rows ({n_dropped / n_before:.1%}) from '{source_col}'/'{target_col}'")
 
     # Determine sample weights
     weights = None
@@ -448,7 +460,11 @@ def assess_binning_gini(
     """
     validate_dataframe_columns(data, [raw_col, binned_col, target_col], "assess_binning_gini")
 
+    n_before = len(data)
     valid = data[[raw_col, binned_col, target_col]].dropna()
+    n_dropped = n_before - len(valid)
+    if n_dropped > 0:
+        logger.info(f"assess_binning_gini: dropped {n_dropped:,} NaN rows ({n_dropped / n_before:.1%})")
     y = valid[target_col].values.astype(int)
 
     if len(np.unique(y)) < 2:
@@ -581,6 +597,10 @@ def _apply_binning_from_config(
                 # Any remaining NaNs (e.g., NaN source values) are dropped
                 remaining_nan = transformed_data[bc.output_col].isna().sum()
                 if remaining_nan > 0:
+                    logger.info(
+                        f"Dropping {remaining_nan:,} records with NaN source values in '{bc.output_col}' "
+                        f"({remaining_nan / len(transformed_data):.1%} of data)"
+                    )
                     transformed_data = transformed_data.dropna(subset=[bc.output_col])
                 logger.info(f"Assigned {nan_count - remaining_nan:,} out-of-range records to boundary bins")
 

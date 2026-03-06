@@ -294,7 +294,8 @@ class TestCalculateStressFactor:
             }
         )
         stress = calculate_stress_factor(df)
-        assert stress == 0.0
+        # Returns neutral 1.0 (not 0.0) to avoid zeroing out all risk predictions
+        assert stress == 1.0
 
     def test_stress_factor_greater_than_1(self):
         """Worst fraction should typically have higher risk than overall."""
@@ -707,7 +708,7 @@ class TestCalculateStressFactorEdgeCases:
         assert np.isfinite(stress)
 
     def test_empty_dataframe_after_filtering(self):
-        """DataFrame with no matching status should return 0.0."""
+        """DataFrame with no matching status should return neutral 1.0."""
         df = pd.DataFrame(
             {
                 "status_name": ["rejected"] * 10 + ["cancelled"] * 5,
@@ -719,4 +720,5 @@ class TestCalculateStressFactorEdgeCases:
 
         stress = calculate_stress_factor(df, target_status="booked")
 
-        assert stress == 0.0
+        # Returns neutral 1.0 (not 0.0) to avoid zeroing out all risk predictions
+        assert stress == 1.0

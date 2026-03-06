@@ -9,7 +9,7 @@ from lightgbm import LGBMRegressor
 from loguru import logger
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, LogisticRegression, Ridge
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, StratifiedKFold
 from xgboost import XGBRegressor
 
 from src.constants import DEFAULT_RANDOM_STATE
@@ -17,6 +17,29 @@ from src.estimators import HurdleRegressor, TweedieGLM, prepare_model_input
 
 # Disable optuna's default trial-level logging to keep the console clean
 optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+
+def _stratified_cv_splitter(
+    raw_data: pd.DataFrame, cv_folds: int, random_state: int, indicators: list[str]
+):
+    """Create a StratifiedKFold splitter using a binarized risk indicator.
+
+    Credit risk data is heavily imbalanced (5-15% bad rate).  Standard KFold
+    produces folds with highly variable bad-rate distributions, biasing model
+    selection.  Stratifying on a binary default indicator keeps the bad rate
+    stable across folds.
+
+    Falls back to plain KFold when the indicator column is missing or has only
+    one class (e.g., synthetic test data).
+    """
+    strat_col = indicators[0] if indicators else None
+    if strat_col and strat_col in raw_data.columns:
+        y_strat = (raw_data[strat_col] > 0).astype(int)
+        if y_strat.nunique() >= 2 and y_strat.sum() >= cv_folds and (len(y_strat) - y_strat.sum()) >= cv_folds:
+            skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+            return skf.split(raw_data, y_strat)
+    kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+    return kfold.split(raw_data)
 
 
 def tune_tree_models(
@@ -58,9 +81,9 @@ def tune_tree_models(
     from src.inference_optimized import process_dataset
 
     def eval_model(model, raw_eval, cv_folds, random_state):
-        kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+        splits = _stratified_cv_splitter(raw_eval, cv_folds, random_state, indicators)
         scores = []
-        for train_idx, val_idx in kfold.split(raw_eval):
+        for train_idx, val_idx in splits:
             raw_train, raw_val = raw_eval.iloc[train_idx].copy(), raw_eval.iloc[val_idx].copy()
 
             # Aggregate train/val completely independently to prevent validation leakage
@@ -204,9 +227,9 @@ def tune_linear_models(
     from src.inference_optimized import process_dataset
 
     def eval_model(model, raw_eval, cv_folds, random_state):
-        kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+        splits = _stratified_cv_splitter(raw_eval, cv_folds, random_state, indicators)
         scores = []
-        for train_idx, val_idx in kfold.split(raw_eval):
+        for train_idx, val_idx in splits:
             raw_train, raw_val = raw_eval.iloc[train_idx].copy(), raw_eval.iloc[val_idx].copy()
 
             # Aggregate train/val completely independently to prevent validation leakage

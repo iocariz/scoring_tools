@@ -211,15 +211,14 @@ def calculate_psi_by_period(
     df["Expected Percent"] = df["Expected Count"] / len(expected)
     df["Actual Percent"] = df["Actual Count"] / len(actual)
 
-    # Replace exact zeros with epsilon to avoid log(0), then re-normalize
+    # Apply epsilon only in the log term to avoid log(0) without distorting
+    # the actual distributions (re-normalizing would change divergence scale).
     epsilon = PSI_EPSILON
-    df["Expected Percent"] = df["Expected Percent"].where(df["Expected Percent"] > 0, epsilon)
-    df["Actual Percent"] = df["Actual Percent"].where(df["Actual Percent"] > 0, epsilon)
-    df["Expected Percent"] = df["Expected Percent"] / df["Expected Percent"].sum()
-    df["Actual Percent"] = df["Actual Percent"] / df["Actual Percent"].sum()
+    expected_safe = df["Expected Percent"].where(df["Expected Percent"] > 0, epsilon)
+    actual_safe = df["Actual Percent"].where(df["Actual Percent"] > 0, epsilon)
 
-    # Compute PSI
-    df["PSI"] = (df["Actual Percent"] - df["Expected Percent"]) * np.log(df["Actual Percent"] / df["Expected Percent"])
+    # Compute PSI (use original percentages for the difference, epsilon only in log)
+    df["PSI"] = (df["Actual Percent"] - df["Expected Percent"]) * np.log(actual_safe / expected_safe)
     total_psi = df["PSI"].sum()
 
     # Plotting
@@ -455,12 +454,11 @@ def calc_iv(df: pd.DataFrame, var: str, target: str) -> float:
 
     df_tmp["perc_bad"] = df_tmp["sum"] / total_bad
     df_tmp["perc_good"] = (df_tmp["count"] - df_tmp["sum"]) / total_good
-    # Replace exact zeros with epsilon to avoid log(0), then re-normalize
-    df_tmp["perc_bad"] = df_tmp["perc_bad"].where(df_tmp["perc_bad"] > 0, PSI_EPSILON)
-    df_tmp["perc_good"] = df_tmp["perc_good"].where(df_tmp["perc_good"] > 0, PSI_EPSILON)
-    df_tmp["perc_bad"] = df_tmp["perc_bad"] / df_tmp["perc_bad"].sum()
-    df_tmp["perc_good"] = df_tmp["perc_good"] / df_tmp["perc_good"].sum()
-    df_tmp["woe"] = np.log(df_tmp["perc_good"] / df_tmp["perc_bad"])
+    # Apply epsilon only in the log term to avoid log(0) without distorting
+    # the actual distributions (re-normalizing would change IV scale).
+    perc_bad_safe = df_tmp["perc_bad"].where(df_tmp["perc_bad"] > 0, PSI_EPSILON)
+    perc_good_safe = df_tmp["perc_good"].where(df_tmp["perc_good"] > 0, PSI_EPSILON)
+    df_tmp["woe"] = np.log(perc_good_safe / perc_bad_safe)
     df_tmp["iv"] = (df_tmp["perc_good"] - df_tmp["perc_bad"]) * df_tmp["woe"]
     iv = df_tmp["iv"].sum()
 

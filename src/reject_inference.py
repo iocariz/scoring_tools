@@ -84,21 +84,33 @@ def compute_acceptance_rates(
             f"global_rate={global_rate:.3f} | alpha={alpha:.2f}, beta={beta:.2f}"
         )
 
-    # Warn about non-score rejections that are excluded from acceptance rate
+    # Warn about non-score rejections that are excluded from acceptance rate.
+    # The denominator is n_booked + n_score_rejected (not all rejected).
+    # Non-score rejections (manual review, fraud, missing docs) are excluded
+    # because they are not candidates for cutoff changes.  However, excluding
+    # them inflates acceptance rates when they are a material share of demand.
     n_other_rejected = len(
         data_demand[
             (data_demand["status_name"] == StatusName.REJECTED.value)
             & (data_demand["reject_reason"] != RejectReason.SCORE.value)
         ]
     )
+    n_total_rejected = len(data_demand[data_demand["status_name"] == StatusName.REJECTED.value])
     n_total_demand = len(data_demand)
     if n_other_rejected > 0:
         other_pct = n_other_rejected / n_total_demand * 100
-        logger.info(
+        other_of_rejected_pct = n_other_rejected / max(n_total_rejected, 1) * 100
+        log_fn = logger.warning if other_pct > 5.0 else logger.info
+        log_fn(
             f"Acceptance rates exclude {n_other_rejected:,} non-score rejections "
-            f"({other_pct:.1f}% of demand). Bins with many non-score rejections "
-            f"may have overstated acceptance rates."
+            f"({other_pct:.1f}% of demand, {other_of_rejected_pct:.1f}% of all rejections). "
+            f"Bins with many non-score rejections may have overstated acceptance rates."
         )
+        if other_pct > 10.0:
+            logger.warning(
+                "Non-score rejections exceed 10% of demand — acceptance rate bias may be material. "
+                "Consider including all rejections in the denominator or adjusting reject_uplift_factor."
+            )
 
     logger.debug(
         f"Acceptance rates computed for {len(rates)} bins | "

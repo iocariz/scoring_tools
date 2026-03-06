@@ -190,14 +190,15 @@ def calculate_psi(
     baseline_pct = baseline_pct.reindex(all_bins, fill_value=0)
     comparison_pct = comparison_pct.reindex(all_bins, fill_value=0)
 
-    # Replace exact zeros with epsilon to avoid log(0), then re-normalize
-    baseline_pct = baseline_pct.where(baseline_pct > 0, min_pct)
-    comparison_pct = comparison_pct.where(comparison_pct > 0, min_pct)
-    baseline_pct = baseline_pct / baseline_pct.sum()
-    comparison_pct = comparison_pct / comparison_pct.sum()
+    # Apply epsilon only in the log term to avoid log(0) without distorting
+    # the actual distributions.  Re-normalizing after epsilon replacement would
+    # redistribute mass and make PSI values non-comparable to standard thresholds.
+    baseline_safe = baseline_pct.where(baseline_pct > 0, min_pct)
+    comparison_safe = comparison_pct.where(comparison_pct > 0, min_pct)
 
-    # Calculate PSI components
-    psi_components = (comparison_pct - baseline_pct) * np.log(comparison_pct / baseline_pct)
+    # Calculate PSI components (use original percentages for the difference,
+    # epsilon-protected values only inside the log)
+    psi_components = (comparison_pct - baseline_pct) * np.log(comparison_safe / baseline_safe)
     psi_value = psi_components.sum()
 
     # Create breakdown DataFrame
@@ -377,12 +378,12 @@ def plot_stability_dashboard(report: StabilityReport, top_n: int = 10) -> go.Fig
         vertical_spacing=0.15,
     )
 
-    # Color based on status
+    # Color based on status (using centralized thresholds)
     colors = []
     for _, row in df.iterrows():
-        if row["psi"] >= 0.25:
+        if row["psi"] >= PSI_UNSTABLE_THRESHOLD:
             colors.append("red")
-        elif row["psi"] >= 0.1:
+        elif row["psi"] >= PSI_STABLE_THRESHOLD:
             colors.append("orange")
         else:
             colors.append("green")
@@ -401,16 +402,22 @@ def plot_stability_dashboard(report: StabilityReport, top_n: int = 10) -> go.Fig
         col=1,
     )
 
-    # Add threshold lines
-    fig.add_hline(y=0.1, line_dash="dash", line_color="orange", annotation_text="Moderate (0.1)", row=1, col=1)
-    fig.add_hline(y=0.25, line_dash="dash", line_color="red", annotation_text="Unstable (0.25)", row=1, col=1)
+    # Add threshold lines (using centralized constants)
+    fig.add_hline(
+        y=PSI_STABLE_THRESHOLD, line_dash="dash", line_color="orange",
+        annotation_text=f"Moderate ({PSI_STABLE_THRESHOLD})", row=1, col=1,
+    )
+    fig.add_hline(
+        y=PSI_UNSTABLE_THRESHOLD, line_dash="dash", line_color="red",
+        annotation_text=f"Unstable ({PSI_UNSTABLE_THRESHOLD})", row=1, col=1,
+    )
 
     # Histogram of PSI values
     fig.add_trace(go.Histogram(x=df["psi"], nbinsx=20, marker_color="steelblue", name="Distribution"), row=2, col=1)
 
-    # Add threshold lines to histogram
-    fig.add_vline(x=0.1, line_dash="dash", line_color="orange", row=2, col=1)
-    fig.add_vline(x=0.25, line_dash="dash", line_color="red", row=2, col=1)
+    # Add threshold lines to histogram (using centralized constants)
+    fig.add_vline(x=PSI_STABLE_THRESHOLD, line_dash="dash", line_color="orange", row=2, col=1)
+    fig.add_vline(x=PSI_UNSTABLE_THRESHOLD, line_dash="dash", line_color="red", row=2, col=1)
 
     fig.update_layout(
         height=800,
@@ -496,14 +503,13 @@ def calculate_csi_for_categorical(
     baseline_pct = baseline_pct.reindex(all_cats, fill_value=0)
     comparison_pct = comparison_pct.reindex(all_cats, fill_value=0)
 
-    # Apply minimum percentage, then re-normalize so percentages sum to 1
-    baseline_pct = baseline_pct.clip(lower=min_pct)
-    comparison_pct = comparison_pct.clip(lower=min_pct)
-    baseline_pct = baseline_pct / baseline_pct.sum()
-    comparison_pct = comparison_pct / comparison_pct.sum()
+    # Apply epsilon only in the log term to avoid log(0) without distorting
+    # the actual distributions (re-normalizing would change divergence scale).
+    baseline_safe = baseline_pct.clip(lower=min_pct)
+    comparison_safe = comparison_pct.clip(lower=min_pct)
 
     # Calculate CSI (same formula as PSI)
-    csi_components = (comparison_pct - baseline_pct) * np.log(comparison_pct / baseline_pct)
+    csi_components = (comparison_pct - baseline_pct) * np.log(comparison_safe / baseline_safe)
     csi_value = csi_components.sum()
 
     breakdown = pd.DataFrame(

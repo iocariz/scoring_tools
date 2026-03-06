@@ -251,8 +251,8 @@ def calculate_stress_factor(
     df_target = df[df[status_col] == target_status].copy()
 
     if df_target.empty:
-        logger.warning(f"No records found with {status_col} = {target_status}")
-        return 0.0
+        logger.warning(f"No records found with {status_col} = {target_status}; returning neutral stress factor 1.0")
+        return 1.0
 
     # Calculate overall bad rate
     total_num = df_target[num_col].sum()
@@ -283,7 +283,8 @@ def calculate_stress_factor(
     if overall_bad_rate > 0:
         stress_factor = worst_bad_rate / overall_bad_rate
     else:
-        stress_factor = 0.0
+        logger.warning("Overall bad rate is 0; returning neutral stress factor 1.0")
+        stress_factor = 1.0
 
     return float(stress_factor)
 
