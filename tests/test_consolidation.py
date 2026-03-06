@@ -27,6 +27,7 @@ from src.consolidation import (
     ConsolidatedMetrics,
     aggregate_metrics,
     consolidate_segments,
+    export_consolidated_excel,
     extract_metrics_from_table,
     find_scenario_suffix,
     map_scenario_names,
@@ -730,6 +731,174 @@ class TestScenarioDeduplication:
         # Should prefer '_base' over ''
         assert seen_names["base"] == "_base"
         assert len(seen_names) == 3  # base, pessimistic, optimistic
+
+
+# =============================================================================
+# Excel Export Tests
+# =============================================================================
+
+
+class TestExportConsolidatedExcel:
+    """Tests for export_consolidated_excel function."""
+
+    def _make_consolidated_df(self):
+        """Create a minimal consolidated DataFrame with expected structure."""
+        return pd.DataFrame(
+            [
+                {"group": "TOTAL", "period": "main", "scenario": "base", "n_segments": 1, "segments": "seg1",
+                 "actual_production": 1000000, "actual_risk_pct": 1.5, "optimum_production": 1050000,
+                 "optimum_risk_pct": 1.4, "production_delta": 50000, "production_delta_pct": 5.0},
+                {"group": "supersegment_ss1", "period": "main", "scenario": "base", "n_segments": 1,
+                 "segments": "seg1", "actual_production": 1000000, "actual_risk_pct": 1.5,
+                 "optimum_production": 1050000, "optimum_risk_pct": 1.4, "production_delta": 50000,
+                 "production_delta_pct": 5.0},
+                {"group": "ss1/seg1", "period": "main", "scenario": "base", "n_segments": 1, "segments": "seg1",
+                 "actual_production": 1000000, "actual_risk_pct": 1.5, "optimum_production": 1050000,
+                 "optimum_risk_pct": 1.4, "production_delta": 50000, "production_delta_pct": 5.0},
+            ]
+        )
+
+    def test_creates_file_with_expected_sheets(self, temp_output_dir):
+        """Verify .xlsx is created and has expected sheets including grid sheets."""
+        df = self._make_consolidated_df()
+        seg_dir = temp_output_dir / "seg1" / "data"
+        seg_dir.mkdir(parents=True)
+        # Cutoff data with accepted column for acceptance grid
+        pd.DataFrame({
+            "octroi_bin": [1, 1, 2, 2],
+            "efx_bin": [1, 2, 1, 2],
+            "accepted": [1, 0, 1, 1],
+            "segment": ["seg1"] * 4,
+            "scenario": ["base"] * 4,
+            "risk_pct": [1.0, 2.0, 1.5, 1.8],
+            "production": [100, 200, 150, 180],
+        }).to_csv(seg_dir / "cutoff_summary_wide.csv", index=False)
+        pd.DataFrame({"Metric": ["Actual"], "Risk (%)": [1.5], "Production (€)": [1000000]}).to_csv(
+            seg_dir / "risk_production_summary_table_base.csv", index=False
+        )
+
+        xlsx_path = export_consolidated_excel(df, temp_output_dir, {"seg1": {"name": "seg1"}})
+
+        assert xlsx_path.exists()
+        import openpyxl
+
+        wb = openpyxl.load_workbook(xlsx_path)
+        sheet_names = wb.sheetnames
+        assert "Executive Summary" in sheet_names
+        assert "Portfolio Summary" in sheet_names
+        assert "Segment Detail" in sheet_names
+        assert "Cutoff Comparison" in sheet_names
+        assert "Grid seg1" in sheet_names
+        assert "RP seg1" in sheet_names
+        wb.close()
+
+    def test_sheet_contents(self, temp_output_dir):
+        """Verify Portfolio Summary sheet has correct rows/columns."""
+        df = self._make_consolidated_df()
+        xlsx_path = export_consolidated_excel(df, temp_output_dir, {})
+
+        result = pd.read_excel(xlsx_path, sheet_name="Portfolio Summary")
+        assert len(result) == 2  # TOTAL + supersegment_ss1
+        assert "Actual Production (€)" in result.columns
+        assert result["Actual Production (€)"].iloc[0] == 1000000
+
+    def test_executive_summary_has_kpi_cards(self, temp_output_dir):
+        """Verify Executive Summary sheet has KPI values and table."""
+        df = self._make_consolidated_df()
+        # Add required fields for TOTAL row KPI extraction
+        df.loc[df["group"] == "TOTAL", "risk_delta_pct"] = -0.1
+        df.loc[df["group"] == "TOTAL", "optimum_rejection_rate_pct"] = 15.0
+        xlsx_path = export_consolidated_excel(df, temp_output_dir, {})
+
+        import openpyxl
+
+        wb = openpyxl.load_workbook(xlsx_path)
+        ws = wb["Executive Summary"]
+        # Title row
+        assert "Dashboard" in str(ws["A1"].value)
+        # KPI card row 4: optimum production value should be present
+        kpi_values = [ws.cell(row=4, column=c).value for c in range(1, 9)]
+        assert any(v is not None and "1,050,000" in str(v) for v in kpi_values)
+        wb.close()
+
+    def test_acceptance_grid_rendered(self, temp_output_dir):
+        """Verify acceptance grid has A/R cells with correct coloring."""
+        df = self._make_consolidated_df()
+        seg_dir = temp_output_dir / "seg1" / "data"
+        seg_dir.mkdir(parents=True)
+        pd.DataFrame({
+            "octroi_bin": [1, 1, 2, 2],
+            "efx_bin": [1, 2, 1, 2],
+            "accepted": [1, 0, 1, 1],
+            "segment": ["seg1"] * 4,
+            "scenario": ["base"] * 4,
+            "risk_pct": [1.0, 2.0, 1.5, 1.8],
+            "production": [100, 200, 150, 180],
+        }).to_csv(seg_dir / "cutoff_summary_wide.csv", index=False)
+
+        xlsx_path = export_consolidated_excel(df, temp_output_dir, {"seg1": {"name": "seg1"}})
+
+        import openpyxl
+
+        wb = openpyxl.load_workbook(xlsx_path)
+        ws = wb["Grid seg1"]
+        # Collect all cell values in the grid sheet
+        all_values = []
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column, values_only=True):
+            all_values.extend(v for v in row if v is not None)
+        # Should contain A (accept) and R (reject) cells
+        assert "A" in all_values
+        assert "R" in all_values
+        wb.close()
+
+    def test_acceptance_grid_3d_slices_by_income_bin(self, temp_output_dir):
+        """Verify 3-variable grids produce sub-grids sliced by income_bin."""
+        df = self._make_consolidated_df()
+        seg_dir = temp_output_dir / "seg1" / "data"
+        seg_dir.mkdir(parents=True)
+        # 3 variables: octroi_bin x efx_bin x income_bin
+        rows = []
+        for inc in [1, 2]:
+            for o in [1, 2]:
+                for e in [1, 2]:
+                    rows.append({
+                        "octroi_bin": o, "efx_bin": e, "income_bin": inc,
+                        "accepted": 1 if (o + e + inc) <= 4 else 0,
+                        "segment": "seg1", "scenario": "base",
+                        "risk_pct": 1.0, "production": 100,
+                    })
+        pd.DataFrame(rows).to_csv(seg_dir / "cutoff_summary_wide.csv", index=False)
+
+        xlsx_path = export_consolidated_excel(df, temp_output_dir, {"seg1": {"name": "seg1"}})
+
+        import openpyxl
+
+        wb = openpyxl.load_workbook(xlsx_path)
+        ws = wb["Grid seg1"]
+        # Collect all values — should have slice labels like "income_bin=1"
+        all_values = [
+            str(ws.cell(row=r, column=c).value or "")
+            for r in range(1, ws.max_row + 1)
+            for c in range(1, ws.max_column + 1)
+        ]
+        assert any("income_bin=1" in v for v in all_values)
+        assert any("income_bin=2" in v for v in all_values)
+        # Should still have A and R cells
+        assert "A" in all_values
+        assert "R" in all_values
+        wb.close()
+
+    def test_empty_dataframe(self, temp_output_dir):
+        """Verify graceful handling of empty DataFrame."""
+        df = pd.DataFrame(columns=["group", "period", "scenario", "actual_production"])
+        xlsx_path = export_consolidated_excel(df, temp_output_dir, {})
+
+        assert xlsx_path.exists()
+        import openpyxl
+
+        wb = openpyxl.load_workbook(xlsx_path)
+        assert "Executive Summary" in wb.sheetnames
+        wb.close()
 
 
 # =============================================================================
