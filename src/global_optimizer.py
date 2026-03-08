@@ -558,6 +558,10 @@ class GlobalAllocator:
             # Find best next step
             best_score = -float("inf")
             best_segment_to_increment = None
+            best_candidate_risk = float("inf")
+            needs_more_production = (
+                global_production_floor is not None and total_production < global_production_floor
+            )
 
             for seg in sorted(self.frontiers.keys()):
                 # Skip locked segments
@@ -606,14 +610,21 @@ class GlobalAllocator:
                     new_global_risk = new_risk_num / new_prod if new_prod > 0 else 0
 
                     if new_global_risk <= global_risk_target:
-                        if delta_risk_mass <= 1e-9:
-                            score = float("inf")
+                        if needs_more_production:
+                            score = delta_p
+                            if score > best_score or (score == best_score and new_global_risk < best_candidate_risk):
+                                best_score = score
+                                best_candidate_risk = new_global_risk
+                                best_segment_to_increment = seg
                         else:
-                            score = delta_p / delta_risk_mass
+                            if delta_risk_mass <= 1e-9:
+                                score = float("inf")
+                            else:
+                                score = delta_p / delta_risk_mass
 
-                        if score > best_score:
-                            best_score = score
-                            best_segment_to_increment = seg
+                            if score > best_score:
+                                best_score = score
+                                best_segment_to_increment = seg
 
             if best_segment_to_increment is None:
                 if is_recovery_mode:
@@ -651,6 +662,10 @@ class GlobalAllocator:
         if global_production_floor is not None and final_total_prod < global_production_floor:
             logger.warning(
                 f"Greedy result production {final_total_prod:,.0f} is below global floor {global_production_floor:,.0f}"
+            )
+            raise RuntimeError(
+                f"Greedy solver could not satisfy global production floor {global_production_floor:,.0f} "
+                f"(achieved {final_total_prod:,.0f}) under target {global_risk_target:.4f}%"
             )
 
         return AllocationResult(

@@ -728,15 +728,15 @@ def filter_by_date(data: pd.DataFrame, date_field: str, start_date: str, end_dat
     if not pd.api.types.is_datetime64_any_dtype(result[date_field]):
         logger.info(f"Converting {date_field} to datetime")
         try:
-            result[date_field] = pd.to_datetime(result[date_field])
+            result[date_field] = pd.to_datetime(result[date_field], dayfirst=False)
         except (ValueError, TypeError) as e:
             logger.error(f"Error converting {date_field} to datetime: {e}")
             raise ValueError(f"Cannot convert {date_field} to datetime: {e}") from e
 
     # Apply date filter
     try:
-        start_date_dt = pd.to_datetime(start_date)
-        end_date_dt = pd.to_datetime(end_date)
+        start_date_dt = pd.to_datetime(start_date, dayfirst=False)
+        end_date_dt = pd.to_datetime(end_date, dayfirst=False)
     except (ValueError, TypeError) as e:
         raise ValueError(f"Invalid date format: {e}") from e
 

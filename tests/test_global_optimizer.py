@@ -497,6 +497,18 @@ class TestProductionFloor:
         )
         assert result.global_production >= 5000
 
+    def test_greedy_respects_global_production_floor(self):
+        """Greedy should keep growing until the global production floor is met."""
+        alloc = GlobalAllocator()
+        alloc.load_frontier("A", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000), (2, 1.5, 3000)]))
+        alloc.load_frontier("B", _make_frontier([(0, 0.5, 1000), (1, 1.0, 2000), (2, 1.5, 3000)]))
+
+        result = alloc.optimize_greedy(
+            global_risk_target=2.0,
+            global_production_floor=5000,
+        )
+        assert result.global_production >= 5000
+
     def test_infeasible_production_floor_raises(self):
         """Production floor impossible with risk target raises RuntimeError."""
         alloc = GlobalAllocator()
@@ -506,6 +518,18 @@ class TestProductionFloor:
 
         with pytest.raises(RuntimeError):
             alloc.optimize_exact(
+                global_risk_target=0.5,
+                global_production_floor=1000,
+            )
+
+    def test_greedy_infeasible_global_production_floor_raises(self):
+        """Greedy should raise when it cannot satisfy a global production floor."""
+        alloc = GlobalAllocator()
+        alloc.load_frontier("A", _make_frontier([(0, 0.5, 100), (1, 1.0, 200)]))
+        alloc.load_frontier("B", _make_frontier([(0, 0.5, 100), (1, 1.0, 200)]))
+
+        with pytest.raises(RuntimeError, match="global production floor"):
+            alloc.optimize_greedy(
                 global_risk_target=0.5,
                 global_production_floor=1000,
             )

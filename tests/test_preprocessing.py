@@ -272,6 +272,20 @@ def test_filter_by_date_string_conversion():
     assert len(result) == 2
 
 
+def test_filter_by_date_uses_explicit_month_first_parsing():
+    """Ambiguous string dates should be parsed consistently with dayfirst=False."""
+    data = pd.DataFrame(
+        {
+            "date_col": ["03/04/2024", "04/03/2024"],
+            "value": [1, 2],
+        }
+    )
+
+    result = filter_by_date(data, "date_col", "2024-03-01", "2024-03-31")
+
+    assert result["value"].tolist() == [1]
+
+
 def test_filter_by_date_invalid_range():
     """Test error for invalid date range (start > end)."""
     data = pd.DataFrame(

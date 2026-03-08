@@ -12,7 +12,7 @@
 - ~~MR H6 extrapolation assumes linear scaling~~ — `extrapolate_h3_to_h6()` in `src/utils.py` supports linear/power/logistic curves; configured via `mr_extrapolation_method` / `mr_extrapolation_curvature` in `PreprocessingSettings`
 - ~~Auto-calibrate H3→H6 curvature~~ — `fit_h3_extrapolation_curve()` in `src/utils.py` fits curvature via weighted log-log regression; `mr_extrapolation_method = "auto"` resolves to linear or power based on main-period data; diagnostics in `mr_risk_comparison_*.csv`
 - ~~StratifiedKFold for imbalanced CV~~ — replaced `KFold` with `StratifiedKFold` (binarized risk indicator) in `optuna_tuning.py` and `inference_optimized.py`; falls back to `KFold` when stratification not possible
-- ~~PSI epsilon handling distorts divergence~~ — epsilon now applied only inside `log(p/q)`, not by re-normalizing distributions; fixed in `stability.py`, `metrics.py` (PSI + IV); also replaced hardcoded thresholds in plotting with `PSI_STABLE_THRESHOLD`/`PSI_UNSTABLE_THRESHOLD` constants
+- ~~PSI epsilon handling distorts divergence~~ — PSI/CSI in `src/stability.py` now use epsilon-adjusted percentages consistently in both the difference and `log(p/q)` terms without re-normalizing distributions; plotting thresholds remain centralized via `PSI_STABLE_THRESHOLD`/`PSI_UNSTABLE_THRESHOLD`
 - ~~Silent data loss from unlogged `dropna()`~~ — added row-count logging before each `dropna()` in `preprocess_improved.py` (5 locations: `learn_quantile_bins`, `learn_income_bins`, `learn_optimization_bins`, `assess_binning_gini`, `_apply_binning_from_config`)
 - ~~`calculate_stress_factor` returns 0.0 on empty data~~ — changed to return neutral `1.0` to prevent zeroing all risk predictions; also handles zero `overall_bad_rate` case
 - ~~Reject inference denominator warning~~ — enhanced warning in `reject_inference.py:compute_acceptance_rates` to log non-score rejection share of all rejections; escalates to `WARNING` when >5% of demand, adds actionable guidance when >10%
@@ -21,11 +21,6 @@
 - ~~`tasa_fin` validation~~ — `src/pipeline/preprocessing.py` now validates `tasa_fin > 0` (defaults to 1.0 if non-positive) and warns if >5.0
 - ~~MR pipeline / audit unchecked `.iloc[0]`~~ — `mr_pipeline.py:70` was already guarded; added missing guard in `src/audit.py:generate_audit_table` which had no empty-check before `.iloc[0]`
 - ~~Missing column existence checks in optimization~~ — added explicit `required_cols` validation in both `trace_pareto_frontier` and `_pareto_ga_fallback` in `src/optimization_utils.py`; returns empty result with descriptive error instead of `KeyError`
-- ~~Optuna linear/GLM fold leakage~~ — `src/optuna_tuning.py` now clones models per CV fold before fitting, preventing state leakage across validation folds
-- ~~Regression sample-weight mismatch across tuning / feature selection / final training~~ — `src/optuna_tuning.py` and `src/inference_optimized.py` now use the same weight precedence: `todu_amt_pile_h6` → `oa_amt_h0` → `n_observations`
-- ~~MR optimum row uses default multiplier + NaN→0 risk~~ — `src/mr_pipeline.py` now passes `multiplier` explicitly and preserves undefined risk as null instead of optimistic zero
-- ~~Hybrid MR risk prioritized H3 extrapolation over direct H6~~ — `src/mr_pipeline.py` now prefers direct MR H6 when sufficient; H3 extrapolation is used only when H6 is insufficient and H3 data is available
-- ~~Weighted H3→H6 fit diagnostics were unweighted~~ — `src/utils.py` now computes weighted residual, total-sum-of-squares, and slope SE diagnostics consistently
 - ~~TweedieGLM ignored `sample_weight` with exposure~~ — `src/estimators.py` now forwards `sample_weight` in exposure-aware fits
 - ~~TweedieGLM divide-by-zero on zero exposure~~ — `src/estimators.py` now clips exposure to a minimum positive value during prediction
 - ~~HurdleRegressor negative predictions~~ — `src/estimators.py` now clips outputs to non-negative values
@@ -37,6 +32,9 @@
 - ~~Consolidation ratio SE treated as additive~~ — `src/consolidation.py` now combines optimum risk CI uncertainty via an exposure-weighted delta-method instead of adding ratio SEs directly
 - ~~Consolidation production CI used midpoint-derived intervals~~ — `src/consolidation.py` now aggregates production CI by summing segment lower/upper bounds
 - ~~Scenario auto-detection stopped at first segment~~ — `consolidate_segments()` now scans all segment folders and keeps named-suffix deduplication for base scenarios
+- ~~Pipeline orchestration layer coverage~~ — added focused wrapper tests in `tests/test_pipeline_orchestration.py` for `run_preprocessing_phase()`, `run_inference_phase()`, `run_optimization_phase()`, `generate_segment_report()`, and `generate_batch_reports()`
+- ~~Inconsistent `dayfirst` parsing in `filter_by_date()`~~ — `src/preprocess_improved.py` now parses source values and filter bounds with explicit `dayfirst=False`; ambiguous-date regression added in `tests/test_preprocessing.py`
+- ~~Greedy global production floor enforcement~~ — `src/global_optimizer.py` now prioritizes production growth until `global_production_floor` is met and raises if infeasible; regression coverage added in `tests/test_global_optimizer.py`
 
 ---
 
@@ -82,10 +80,9 @@ entries above but have residual issues.
 - "Recently Fixed" entry says `model_copy()` is used, but the H3-specific cleanup path may still mutate the original
 - Verify that all H3 column name standardization uses the copied settings
 
-#### H4: Inconsistent `dayfirst` parsing in date columns
-- `src/preprocess_improved.py` — some `pd.to_datetime` calls use `dayfirst=True`, others don't
-- Ambiguous dates (e.g., "03/04/2025") parsed differently depending on code path
-- Fix: centralize date parsing with explicit format or consistent `dayfirst` setting
+#### ~~H4: Inconsistent `dayfirst` parsing in date columns~~
+- `src/preprocess_improved.py` — `filter_by_date()` now parses both source values and boundary dates with explicit `dayfirst=False`
+- Regression coverage added in `tests/test_preprocessing.py` for ambiguous string dates
 
 #### ~~H5: TweedieGLM drops `sample_weight` when exposure column is present~~
 - `src/estimators.py:280-290` — when exposure is used, `sample_weight` passed to `.fit()` is ignored
@@ -118,9 +115,10 @@ entries above but have residual issues.
 - `src/global_optimizer.py` — when MILP returns fractional solution, `argmax(rounded)` may select dominated point
 - Should use proper rounding heuristic that respects constraints
 
-#### H12: Global optimizer greedy fallback ignores `production_floor`
-- `src/global_optimizer.py` — greedy allocation doesn't check per-segment `min_production` constraint
-- Segments may receive less than their production floor
+#### ~~H12: Greedy global production floor was not enforced~~
+- `src/global_optimizer.py` — per-segment `min_production` was already handled; the remaining gap was `global_production_floor` in the greedy path
+- `optimize_greedy()` now prioritizes production growth until the floor is met and raises `RuntimeError` when infeasible under the risk target
+- Regression coverage added in `tests/test_global_optimizer.py`
 
 #### ~~H13: Consolidation ratio SE treated as additive~~
 - `src/consolidation.py` — optimum risk CIs now use an exposure-weighted delta-method combination of per-segment uncertainty
@@ -210,12 +208,10 @@ entries above but have residual issues.
 
 ### STATISTICAL — HIGH
 
-#### S1: PSI epsilon-protected log but unprotected difference breaks non-negativity **(partially fixed)**
-- `src/stability.py:196-201` — epsilon inside `log(p/q)` but `(p - q)` term is unprotected
-- PSI = Σ(p-q)·log(p/q) should be ≥ 0 by construction (KL divergence property)
-- With asymmetric epsilon application, individual terms can go negative
-- "Recently Fixed" says epsilon is only inside log now, but the (p-q) difference still uses raw values
-- Fix: apply same epsilon to both terms, or use symmetric KL formulation
+#### ~~S1: PSI epsilon-protected log but unprotected difference breaks non-negativity~~
+- `src/stability.py` now uses epsilon-adjusted percentages consistently in both the difference and `log(p/q)` terms for PSI
+- Mirrored the same formula fix in categorical CSI calculations
+- Regression coverage added in `tests/test_stability.py`
 
 ### STATISTICAL — MEDIUM
 
@@ -495,12 +491,9 @@ entries above but have residual issues.
 
 ## Testing Gaps — Critical
 
-### No tests for pipeline orchestration layers
-- `src/pipeline/preprocessing.py` — `run_preprocessing_phase()` untested
-- `src/pipeline/inference.py` — `run_inference_phase()` untested
-- `src/pipeline/optimization.py` — `run_optimization_phase()` untested
-- `src/pipeline/reporting.py` — `generate_segment_report()`, `generate_batch_reports()` untested
-- These are the main entry points that wire modules together; failures here break the whole pipeline
+### ~~No tests for pipeline orchestration layers~~
+- Added focused wrapper coverage in `tests/test_pipeline_orchestration.py` for `src/pipeline/preprocessing.py`, `src/pipeline/inference.py`, `src/pipeline/optimization.py`, and `src/pipeline/reporting.py`
+- The main entry points used by `main.py` and `run_batch.py` now have direct regression coverage
 
 ### Massive untested surface in inference_optimized.py
 - ~20 functions with zero direct test coverage including:
@@ -510,10 +503,9 @@ entries above but have residual issues.
   - `compute_pre_reject_inference_data()`, `_compute_shap_values()`
 - Most complex module in the codebase (1713 LOC) with least proportional coverage
 
-### Untested reject inference orchestration
-- `apply_reject_inference()` — the main orchestration function — has no direct tests
-- `_enforce_multiplier_monotonicity()` — the isotonic enforcement — untested
-- Edge cases: zero acceptance rate bins, unknown method names, empty demand data
+### ~~Untested reject inference orchestration~~
+- `tests/test_reject_inference.py` already has direct coverage for `apply_reject_inference()` and `_enforce_multiplier_monotonicity()`
+- Remaining useful gaps are narrower edge cases such as empty demand data and more zero-acceptance-rate scenarios
 
 ### Missing error path tests across modules
 - `data_manager.py:load_and_prepare_data()` — FileNotFoundError, encoding errors untested
