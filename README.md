@@ -145,17 +145,22 @@ uv run python run_allocation.py --target TARGET [OPTIONS]
 | `--scenario NAME` | Scenario to use (default: `base`) |
 | `--method {exact,greedy}` | Optimization method (default: `exact`) |
 | `--segments-config PATH` | Segments config file for min/max risk constraints (default: `segments.toml`) |
+| `--production-floor FLOAT` | Optional global minimum production target enforced during allocation |
+| `--lock SEGMENT:SOL_FAC` | Lock a segment to a specific frontier point (repeatable) |
 
 **Methods:**
 
 - **`exact`** (MILP via `scipy.optimize.milp`): Globally optimal allocation. Falls back to greedy if infeasible.
-- **`greedy`**: Hill-climbing heuristic. Faster but may find local optima.
+- **`greedy`**: Hill-climbing heuristic. Faster but may find local optima; when `--production-floor` is supplied, it still grows production until the floor is met or raises if the floor is infeasible under the target.
 
 **Examples:**
 
 ```bash
 # Optimal allocation at 1.0% global risk
 uv run python run_allocation.py --target 1.0
+
+# Enforce a minimum global production floor
+uv run python run_allocation.py --target 1.0 --production-floor 50000
 
 # Greedy solver with custom scenario
 uv run python run_allocation.py --target 1.2 --method greedy --scenario optimistic
@@ -362,143 +367,98 @@ reject_enforce_monotonicity = false   # Isotonic regression on multipliers (defa
 
 **Parceling methods** (per bin):
 
-- **Linear** (default): `multiplier = 1 + uplift_factor * (1 - acceptance_rate)`
-- **Power**: `multiplier = (1 / acceptance_rate) ^ uplift_factor` — non-linear, grows faster at low acceptance rates
-- **Sigmoid**: `multiplier = 1 + uplift_factor / (1 + exp(10 * (acceptance_rate - 0.5)))` — smooth S-curve with steep transition around 50% acceptance
+- **Linear** (default): `multiplier = 1 + uplift_factor * (1 - rate)`
+- **Power**: `multiplier = (1 / rate) ^ uplift_factor` — non-linear, grows faster at low acceptance rates
+- **Sigmoid**: `multiplier = 1 + uplift_factor / (1 + exp(10 * (rate - 0.5)))` — smooth S-curve with steep transition around 50% acceptance
 
-**Bayesian smoothing**: When enabled, raw per-bin acceptance rates are smoothed using a Beta-Binomial posterior. The global acceptance rate serves as the prior, and `prior_strength` controls shrinkage (higher = more shrinkage toward global rate). This stabilizes noisy rates in small bins.
+**Bayesian smoothing**: When enabled, raw per-bin acceptance rates are smoothed using a Beta-Binomial posterior with the global acceptance rate as prior. The `prior_strength` parameter controls the degree of shrinkage toward the global rate.
 
 **Monotonicity enforcement**: When enabled, applies isotonic regression (`sklearn.isotonic.IsotonicRegression`) per variable axis to ensure risk multipliers are non-decreasing with bin index — lower-risk bins cannot receive higher multipliers than higher-risk bins.
 
-**Per-bin confidence**: Each bin receives a confidence score `1 - exp(-n_total / 50)` based on the total number of observations (booked + score-rejected). These are included in the parceling output for diagnostics but dropped before downstream optimization.
+**Per-bin confidence scores** (`1 - exp(-n_total / 50)`) quantify the reliability of each bin's reject inference adjustment based on sample size. Included in diagnostic output.
 
 #### Reject Inference Optimizer (Optional)
 
-Searches over RI parameters to find the pair that minimizes calibration error against the selection-bias model. Supports grid search and Optuna TPE optimization.
+Searches over RI parameters to find the pair that minimizes **calibration error** against the selection-bias model.
 
-```toml
-run_ri_optimizer = false               # Enable RI parameter optimization (default: false)
-ri_optimizer_method = "grid"           # "grid" (default) or "optuna"
-ri_uplift_range = [0.0, 5.0]          # Search range for reject_uplift_factor
-ri_uplift_steps = 11                   # Grid steps for uplift_factor (grid method only)
-ri_max_mult_range = [1.0, 5.0]        # Search range for reject_max_risk_multiplier
-ri_max_mult_steps = 9                  # Grid steps for max_risk_multiplier (grid method only)
-ri_optuna_n_trials = 100              # Number of Optuna TPE trials (10-10000, default: 100)
-ri_calibration_gamma = 1.0            # Power exponent for calibration target (>0, <=1, default: 1.0)
-```
+The calibration target for each cell is `booked_risk / acceptance_rate^gamma`, based on the standard selection-bias model: if a bin accepts the least-risky fraction *a* of applicants, the true population risk is approximately `observed / a^gamma`. The `gamma` parameter (default 1.0) controls target aggressiveness — lower values reduce the assumed separation between booked and rejected risk.
 
-**Calibration target**: `target_risk = booked_risk / acceptance_rate^gamma`. With `gamma=1.0` (default), this is the standard `1/a` selection model. Lower gamma (e.g., 0.7) produces less aggressive targets, useful when the uniform-within-bin assumption is violated.
+Two optimization methods are available:
 
-**MR validation**: When MR-period data is available, the optimizer automatically applies the best parameters to MR data and reports `degradation_ratio = mr_error / main_error`. A ratio near 1.0 indicates temporal stability of the calibration.
+- **Grid search** (`ri_optimizer_method = "grid"`): Exhaustive evaluation over a regular grid of parameter combinations. Deterministic and transparent.
+- **Optuna TPE** (`ri_optimizer_method = "optuna"`): Tree-structured Parzen Estimator with `seed=42` for reproducibility. More sample-efficient for large search spaces.
 
-#### Fixed Cutoffs (Optional)
+Both methods use the same selection rule: minimum calibration error among feasible solutions, with ties within 5% of the minimum broken by maximizing production.
 
-Skip optimization and apply predefined cutoffs. Useful for regulatory scenarios or validating approved strategies. Supports both 2-variable (paired bins/cutoffs) and N>2 (per-variable accepted bin lists).
+**Out-of-time MR validation**: When MR-period data is available, the optimizer automatically applies the best parameters to the MR period and reports `degradation_ratio = mr_error / main_error`. This validates temporal stability of the calibration — a ratio near 1.0 indicates the RI correction generalizes well to the holdout period.
 
-**2-variable** (paired bins and cutoffs):
+### Global Portfolio Allocation
 
-```toml
-[preprocessing.fixed_cutoffs]
-sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]  # var0 bins
-new_efx_clus = [3, 4, 5, 6, 7, 8, 9, 10, 12, 15]                            # var1 cutoffs per bin
-strict_validation = false   # true: raise errors; false: warnings (default: false)
-run_all_scenarios = false   # true: pessimistic/base/optimistic; false: base only (default: false)
-```
+After running all segments, `run_allocation.py` solves a portfolio-level optimization: select one point from each segment's efficient frontier to maximize total production subject to a weighted-average global risk constraint. The MILP formulation uses binary decision variables and linear constraints. Per-segment bounds (`min_risk`, `max_risk`, `min_production` in `segments.toml`) are respected, and an optional portfolio-wide production floor can be enforced via `--production-floor`.
 
-**N>2 variables** (each variable lists accepted bin values; a cell is accepted iff all its coordinates appear in their respective accepted lists):
+### Score Discriminance
 
-```toml
-[preprocessing.fixed_cutoffs]
-sc_octroi_new_clus = [1.0, 2.0, 3.0]   # accepted bins for var0
-new_efx_clus = [1.0, 2.0, 3.0, 4.0]    # accepted bins for var1
-income_bin = [1.0, 2.0]                 # accepted bins for var2
-strict_validation = false
-run_all_scenarios = false
-```
+`run_score_metrics.py` evaluates all score variables defined in `score_measures`:
 
-#### Swap-In Constraints (Optional)
+- Gini coefficient and KS statistic per score
+- Lift tables (decile-based)
+- Precision-recall and ROC curves
+- DeLong test for pairwise statistical comparison between models
+- Per-segment and per-supersegment analysis
+- Main period and MR period comparison
 
-Limits on the swap-in (repesca) population directly inside the MILP solver. Without these, the optimizer can freely accept high-risk repesca cells as long as the overall portfolio risk stays under budget. These constraints ensure the Pareto frontier only contains solutions with controlled swap-in exposure.
+### Sensitivity Analysis
 
-```toml
-max_swapin_production_pct = 30.0  # Max % of total accepted production from swap-in (e.g. 30%)
-max_swapin_risk = 5.0             # Max b2_ever_h6 (%) for the swap-in population only
-```
+Measures how stable the optimized cutoffs are under model risk uncertainty. The pipeline perturbs the risk indicator (`todu_30ever_h6_rep`) by configurable percentages, re-solves the MILP at each level, and compares the resulting masks:
 
-| Parameter | Type | Default | Description |
-|:----------|:-----|:--------|:------------|
-| `max_swapin_production_pct` | `float \| None` | `None` | Max percentage of total accepted production that may come from swap-in applicants. `None` = no limit. |
-| `max_swapin_risk` | `float \| None` | `None` | Max `b2_ever_h6` (%) for the swap-in sub-population. `None` = no limit. |
+- **Aggregate summary**: Number of cells that flip, accept-to-reject vs reject-to-accept transitions, new production and risk at each perturbation level.
+- **Per-cell detail**: Minimum perturbation percentage at which each cell changes status, with flip direction.
 
-Both constraints are linearized ratios added as inequality rows in the MILP, following the same pattern as the overall risk budget. When set to `None` (default), the solver behaves exactly as before.
+### Marginal Impact
 
-#### N-Variable Bins (Optional)
+For each cell in the grid, analytically computes the effect of flipping its status (accept → reject or vice versa) on portfolio production and risk. Uses baseline sums computed once, then adjusts numerator/denominator per cell — O(N) total, not O(N²).
 
-Add extra optimization dimensions (e.g., income) via the `[preprocessing.bins.*]` section. Each entry defines a binning variable with automatic edge learning.
+Output columns: `delta_production` (EUR change), `delta_risk_pct` (percentage point change in `b2_ever_h6`), `cell_production`, `cell_risk`.
 
-```toml
-[preprocessing.bins.income_bin]
-source_col = "income_t1_m"       # Raw column name
-output_col = "income_bin"        # Binned column created in the DataFrame
-max_bins = 2                     # Number of bins (tree leaf nodes)
-method = "optimization"          # "quantile" (default) or "optimization"
-# bin_edges = [-inf, 3000.0, inf]  # Optional: fixed edges (skips learning)
-```
+### Cell-Level Confidence Intervals
 
-| Field | Description |
-|:------|:------------|
-| `source_col` | Raw column name in the data |
-| `output_col` | Name of the binned column created |
-| `max_bins` | Number of bins when learning edges automatically |
-| `method` | `"quantile"`: equal-count splits (median for 2 bins). `"optimization"`: `DecisionTreeRegressor` weighted by `oa_amt_h0`, splitting where production-weighted risk rate differs most. |
-| `bin_edges` | Optional explicit edges. When set, `max_bins` and `method` are ignored. |
+During model training, K-fold cross-validation produces per-cell prediction intervals:
 
-The `"optimization"` method is designed for dimensions like income where equal-count splits often produce bins with similar risk rates. By weighting the tree by production (`oa_amt_h0`), the split maximizes the production-weighted risk differentiation, giving the MILP optimizer meaningful leverage from the extra dimension.
+1. For each fold, train on the train split, aggregate the validation split by grid bins, and predict the target variable per cell.
+2. Across folds, compute mean, standard deviation, and confidence interval bounds per cell.
+3. For small sample counts, interval half-widths use a Student-t critical value; otherwise a normal approximation is used.
 
-### `segments.toml` -- Batch Segment Configuration
+Cells observed in fewer than 2 folds receive NaN intervals. Results are saved to `cell_level_ci.csv` and optionally displayed as uncertainty annotations on the dashboard heatmap.
 
-Defines segments and supersegments for `run_batch.py`. Per-segment settings override `config.toml` values.
+### Fixed-Cell Constraints
 
-```toml
-# --- Supersegments ---
-# Train a single model on combined data from multiple segments.
-[supersegments.no_premium]
-segment_filters = [
-    "personal_loans,_fusion_and_tj_direct-no_premium-a-b",
-    "personal_loans,_fusion_and_tj_direct-no_premium-c-d",
-    "personal_loans,_fusion_and_tj_direct-no_premium-e-f"
-]
+Individual cells can be pinned as forced-accept or forced-reject before re-optimization. The MILP solver enforces these by setting `lb = ub = value` for pinned cells, while monotonicity and risk constraints remain active. If the constraints are contradictory (same cell pinned as both accept and reject, or pins make the risk target infeasible), the solver returns `None`.
 
-# --- Segments ---
-[segments.no_premium_ab]
-segment_filter = "personal_loans,_fusion_and_tj_direct-no_premium-a-b"
-optimum_risk = 1.1          # Per-segment risk appetite
-risk_step = 0.1             # Per-segment scenario step
-supersegment = "no_premium" # Use shared model
-min_risk = 0.8              # Optional: floor for global allocation
-max_risk = 1.4              # Optional: ceiling for global allocation
+Available through:
+- **`solve_with_fixed_cells()`** in `src/optimization_utils.py` for programmatic use.
+- **Pin Mode** in the dashboard Cutoff Explorer: click cells to cycle through unpinned → accept → reject → unpinned, then re-optimize.
 
-# Optional: fixed cutoffs for this segment
-[segments.no_premium_ab.fixed_cutoffs]
-sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
-new_efx_clus = [3, 4, 5, 6, 7, 8, 9, 10, 12, 15]
-strict_validation = true
-run_all_scenarios = true
+### Swap-In Constraints
 
-[segments.no_premium_cd]
-segment_filter = "personal_loans,_fusion_and_tj_direct-no_premium-c-d"
-optimum_risk = 1.3
-risk_step = 0.1
-supersegment = "no_premium"
+The MILP solver accepts two optional constraints that limit the swap-in (repesca) population — score-rejected applicants that would be accepted under the new optimized cutoffs:
 
-[segments.premium]
-segment_filter = "personal_loans,_fusion_and_tj_direct-premium-"
-optimum_risk = 0.9
-risk_step = 0.1
-# No supersegment = individual model training
-```
+1. **Production share cap** (`max_swapin_production_pct`): Ensures the fraction of total accepted production coming from swap-in does not exceed a given percentage. Linearized as:
 
-**Per-segment overridable fields:** `segment_filter`, `optimum_risk`, `risk_step`, `inv_var1`, `max_swapin_production_pct`, `max_swapin_risk`, `reject_inference_method`, `reject_parceling_method`, `reject_uplift_factor`, `reject_max_risk_multiplier`, `reject_bayesian_smoothing`, `reject_bayesian_prior_strength`, `reject_enforce_monotonicity`, `ri_calibration_gamma`, `ri_optimizer_method`, `ri_optuna_n_trials`, and any `[preprocessing]` key from `config.toml`.
+   ```
+   sum((oa_amt_h0_rep[i] - pct/100 * oa_amt_h0[i]) * x[i]) <= 0
+   ```
+
+2. **Risk cap** (`max_swapin_risk`): Ensures the `b2_ever_h6` of the swap-in sub-population stays below a given percentage. Linearized as:
+
+   ```
+   sum((multiplier * todu_30ever_h6_rep[i] - max_risk/100 * todu_amt_pile_h6_rep[i]) * x[i]) <= 0
+   ```
+
+Both are added as inequality rows alongside the existing risk budget and monotonicity constraints. When `None` (default), the MILP behaves exactly as before. If the constraints are too tight, the solver returns `None` (infeasible).
+
+### Trend Analysis
+
+Monthly aggregation of approval rate, production volume, mean production, and risk metrics. Anomalies are detected using robust Statistical Process Control: a lagged rolling median is used as the center line, MAD is converted to a standard-deviation-equivalent scale, and short windows use a Student-t critical value instead of a fixed z-score.
 
 ---
 
@@ -594,7 +554,7 @@ This feature activates automatically when `use_mr_outcomes = true` and `multipli
 
 ### Stability Analysis (PSI/CSI)
 
-Compares distributions between the main and MR periods using the Population Stability Index. A unified epsilon constant (`PSI_EPSILON = 0.0001`) is used across all PSI/CSI calculations to prevent `log(0)`.
+Compares distributions between the main and MR periods using the Population Stability Index. A unified epsilon constant (`PSI_EPSILON = 0.0001`) is applied consistently to zero-percentage bins/categories in both the difference and `log(p/q)` terms used by PSI/CSI, preventing `log(0)` and avoiding asymmetric smoothing artifacts.
 
 ```
 PSI = sum( (Actual% - Expected%) * ln(Actual% / Expected%) )
@@ -659,7 +619,7 @@ Both methods use the same selection rule: minimum calibration error among feasib
 
 ### Global Portfolio Allocation
 
-After running all segments, `run_allocation.py` solves a portfolio-level optimization: select one point from each segment's efficient frontier to maximize total production subject to a weighted-average global risk constraint. The MILP formulation uses binary decision variables and linear constraints. Per-segment risk bounds (`min_risk`, `max_risk` in `segments.toml`) are respected.
+After running all segments, `run_allocation.py` solves a portfolio-level optimization: select one point from each segment's efficient frontier to maximize total production subject to a weighted-average global risk constraint. The MILP formulation uses binary decision variables and linear constraints. Per-segment bounds (`min_risk`, `max_risk`, `min_production` in `segments.toml`) are respected, and an optional portfolio-wide production floor can be enforced via `--production-floor`.
 
 ### Score Discriminance
 
