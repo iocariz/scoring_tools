@@ -638,54 +638,70 @@ def aggregate_metrics(
                 if "_ci_segments" not in aggregated[key]:
                     aggregated[key]["_ci_segments"] = []
 
+                prod_point = float(metrics[key].get("production", 0) or 0)
+                risk_den = float(metrics[key].get("todu_amt_pile_h6", 0) or 0)
+                risk_num = float(metrics[key].get("todu_30ever_h6", 0) or 0)
+                risk_point_raw = calculate_b2_ever_h6(
+                    risk_num,
+                    risk_den,
+                    multiplier=multiplier,
+                    as_percentage=True,
+                    decimals=6,
+                )
+                risk_point = float(risk_point_raw) if pd.notna(risk_point_raw) else 0.0
+                prod_lower = metrics[key].get("production_ci_lower")
+                prod_upper = metrics[key].get("production_ci_upper")
+                risk_lower = metrics[key].get("risk_ci_lower")
+                risk_upper = metrics[key].get("risk_ci_upper")
+
                 aggregated[key]["_ci_segments"].append(
                     {
-                        "prod_lower": metrics[key].get("production_ci_lower", 0),
-                        "prod_upper": metrics[key].get("production_ci_upper", 0),
-                        "risk_lower": metrics[key].get("risk_ci_lower", 0),
-                        "risk_upper": metrics[key].get("risk_ci_upper", 0),
+                        "prod_lower": float(prod_lower) if pd.notna(prod_lower) else prod_point,
+                        "prod_upper": float(prod_upper) if pd.notna(prod_upper) else prod_point,
+                        "risk_lower": float(risk_lower) if pd.notna(risk_lower) else risk_point,
+                        "risk_upper": float(risk_upper) if pd.notna(risk_upper) else risk_point,
+                        "risk_den": risk_den,
                     }
                 )
 
     # Combine segment CIs using variance addition rule (assumes independence).
     # SE_i ≈ (upper - lower) / (2 * z_95); combined SE = sqrt(sum(SE_i²))
-    import numpy as np
-
     z_95 = 1.96
     for key in aggregated:
         segments = aggregated[key].pop("_ci_segments", [])
         if not segments:
             aggregated[key].setdefault("production_ci_lower", 0)
             aggregated[key].setdefault("production_ci_upper", 0)
+            aggregated[key].setdefault("risk_ci_lower", 0)
+            aggregated[key].setdefault("risk_ci_upper", 0)
             continue
 
-        prod_means, prod_ses = [], []
-        risk_means, risk_ses = [], []
-        for s in segments:
-            p_lo, p_hi = s["prod_lower"], s["prod_upper"]
-            r_lo, r_hi = s["risk_lower"], s["risk_upper"]
-            prod_means.append((p_lo + p_hi) / 2)
-            prod_ses.append((p_hi - p_lo) / (2 * z_95) if p_hi != p_lo else 0)
-            risk_means.append((r_lo + r_hi) / 2)
-            risk_ses.append((r_hi - r_lo) / (2 * z_95) if r_hi != r_lo else 0)
+        aggregated[key]["production_ci_lower"] = sum(s["prod_lower"] for s in segments)
+        aggregated[key]["production_ci_upper"] = sum(s["prod_upper"] for s in segments)
 
-        combined_prod_mean = sum(prod_means)
-        combined_prod_se = np.sqrt(sum(se**2 for se in prod_ses))
-        aggregated[key]["production_ci_lower"] = combined_prod_mean - z_95 * combined_prod_se
-        aggregated[key]["production_ci_upper"] = combined_prod_mean + z_95 * combined_prod_se
-
-        # Risk CIs: compute the center from aggregated todu components (ratio metric,
-        # not additive — cannot use sum of segment means).
-        combined_risk_se = np.sqrt(sum(se**2 for se in risk_ses))
-        if combined_risk_se > 0:
-            agg_num = aggregated[key].get("todu_30ever_h6", 0)
-            agg_den = aggregated[key].get("todu_amt_pile_h6", 0)
-            agg_risk_point = float(calculate_b2_ever_h6(agg_num, agg_den, multiplier=multiplier, as_percentage=True)) if agg_den else 0.0
-            aggregated[key]["risk_ci_lower"] = agg_risk_point - z_95 * combined_risk_se
+        agg_num = aggregated[key].get("todu_30ever_h6", 0)
+        agg_den = aggregated[key].get("todu_amt_pile_h6", 0)
+        agg_risk_point_raw = calculate_b2_ever_h6(
+            agg_num,
+            agg_den,
+            multiplier=multiplier,
+            as_percentage=True,
+            decimals=6,
+        )
+        agg_risk_point = float(agg_risk_point_raw) if pd.notna(agg_risk_point_raw) else 0.0
+        if agg_den:
+            combined_risk_var = 0.0
+            for segment_ci in segments:
+                risk_width = max(segment_ci["risk_upper"] - segment_ci["risk_lower"], 0.0)
+                risk_se = risk_width / (2 * z_95) if risk_width else 0.0
+                risk_weight = segment_ci["risk_den"] / agg_den if agg_den else 0.0
+                combined_risk_var += (risk_weight * risk_se) ** 2
+            combined_risk_se = float(np.sqrt(combined_risk_var))
+            aggregated[key]["risk_ci_lower"] = max(agg_risk_point - z_95 * combined_risk_se, 0.0)
             aggregated[key]["risk_ci_upper"] = agg_risk_point + z_95 * combined_risk_se
         else:
-            aggregated[key]["risk_ci_lower"] = 0
-            aggregated[key]["risk_ci_upper"] = 0
+            aggregated[key]["risk_ci_lower"] = 0.0
+            aggregated[key]["risk_ci_upper"] = 0.0
 
     aggregated["_total_demand"] = total_demand_sum
 
@@ -715,20 +731,19 @@ def consolidate_segments(
         DataFrame with consolidated metrics
     """
     if scenarios is None:
-        # Auto-detect scenarios from first segment
         scenarios = []
+        seen_scenarios = set()
         for seg_name in segments:
             seg_dir = output_base / seg_name / "data"
             if seg_dir.exists():
-                for f in seg_dir.glob("risk_production_summary_table*.csv"):
+                for f in sorted(seg_dir.glob("risk_production_summary_table*.csv")):
                     # Skip MR files for scenario detection
                     if "_mr" in f.name:
                         continue
                     suffix = find_scenario_suffix(f.name)
-                    if suffix not in scenarios:
+                    if suffix not in seen_scenarios:
                         scenarios.append(suffix)
-                if scenarios:
-                    break
+                        seen_scenarios.add(suffix)
 
         # Ensure we have at least one scenario
         if not scenarios:
@@ -742,12 +757,12 @@ def consolidate_segments(
     seen_names = {}
     for suffix in scenarios:
         name = scenario_name_map.get(suffix, "base")
-        if name not in seen_names:
+        if name not in seen_names or (suffix and not seen_names[name]):
             seen_names[name] = suffix
 
     # Rebuild scenarios list with deduplicated suffixes
     scenarios = list(seen_names.values())
-    scenario_name_map = {s: map_scenario_names([s]).get(s, "base") for s in scenarios}
+    scenario_name_map = {suffix: name for name, suffix in seen_names.items()}
 
     logger.info(f"Consolidating data for scenarios: {scenario_name_map}")
 
@@ -961,6 +976,39 @@ def consolidate_segments(
     return df
 
 
+def _display_group_name(group: str) -> str:
+    group = str(group)
+    if group == "TOTAL":
+        return "Total"
+    if group.startswith("supersegment_"):
+        return f"Supersegment · {group.replace('supersegment_', '', 1)}"
+    if "/" in group:
+        parent, child = group.split("/", 1)
+        return f"{child} · {parent}"
+    if group.startswith("segment_"):
+        return group.replace("segment_", "", 1)
+    return group
+
+
+def _sort_consolidated_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    ordered = df.copy()
+    ordered["_scenario_order"] = ordered["scenario"].map(
+        {"pessimistic": 0, "base": 1, "optimistic": 2}
+    ).fillna(99)
+    ordered["_period_order"] = ordered["period"].map({"main": 0, "mr": 1}).fillna(99)
+    ordered["_group_order"] = ordered["group"].map(
+        lambda value: 0 if value == "TOTAL" else 1 if str(value).startswith("supersegment_") else 2
+    )
+    ordered["group_display"] = ordered["group"].map(_display_group_name)
+    return ordered.sort_values(
+        ["_group_order", "group_display", "_period_order", "_scenario_order"],
+        kind="stable",
+    )
+
+
 def create_consolidation_dashboard(df: pd.DataFrame, title: str = "Consolidated Risk Production Report") -> go.Figure:
     """
     Create an interactive dashboard for consolidated metrics.
@@ -977,131 +1025,398 @@ def create_consolidation_dashboard(df: pd.DataFrame, title: str = "Consolidated 
         fig.add_annotation(text="No data available", x=0.5, y=0.5, showarrow=False)
         return fig
 
-    # Filter to TOTAL rows for overview
-    total_df = df[df["group"] == "TOTAL"].copy()
+    ordered_df = _sort_consolidated_rows(df)
+    total_df = ordered_df[ordered_df["group"] == "TOTAL"].copy()
+    if total_df.empty:
+        total_df = ordered_df.copy()
 
-    # Create subplots
+    segment_df = ordered_df[
+        ~(ordered_df["group"].eq("TOTAL") | ordered_df["group"].astype(str).str.startswith("supersegment_"))
+    ].copy()
+    focus_scenario = "base" if "base" in ordered_df["scenario"].astype(str).values else str(ordered_df.iloc[0]["scenario"])
+    focus_label = focus_scenario.title()
+
     fig = make_subplots(
-        rows=2,
+        rows=4,
         cols=2,
+        specs=[
+            [{"type": "indicator"}, {"type": "indicator"}],
+            [{"type": "indicator"}, {"type": "indicator"}],
+            [{"type": "bar"}, {"type": "scatter"}],
+            [{"type": "heatmap"}, {"type": "bar"}],
+        ],
         subplot_titles=(
-            "Production by Period & Scenario",
-            "Risk by Period & Scenario",
-            "Production Delta (Optimum vs Actual)",
-            "Swap Analysis",
+            "Main Base — Optimum Production",
+            "Main Base — Optimum Risk",
+            "MR Base — Optimum Production",
+            "MR Base — Optimum Risk",
+            "Total Production by Scenario",
+            "Risk vs Production by Scenario",
+            f"{focus_label} Scenario — Production Delta Heatmap",
+            f"Top Groups — {focus_label} Scenario",
         ),
-        specs=[[{"type": "bar"}, {"type": "bar"}], [{"type": "bar"}, {"type": "bar"}]],
-        vertical_spacing=0.15,
-        horizontal_spacing=0.1,
+        vertical_spacing=0.08,
+        horizontal_spacing=0.08,
+        row_heights=[0.16, 0.16, 0.34, 0.34],
     )
 
-    # Color scheme
-    colors = {"main": "steelblue", "mr": "coral"}
+    def _pick_total_row(period: str) -> pd.Series | None:
+        rows = total_df[(total_df["period"] == period) & (total_df["scenario"] == "base")]
+        if rows.empty:
+            rows = total_df[total_df["period"] == period].sort_values(["_scenario_order"]).head(1)
+        return rows.iloc[0] if not rows.empty else None
 
-    # 1. Production by Period & Scenario
+    def _add_indicator(
+        row_data: pd.Series | None,
+        *,
+        row: int,
+        col: int,
+        title_text: str,
+        value_key: str,
+        reference_key: str,
+        prefix: str = "",
+        suffix: str = "",
+        relative: bool = False,
+        valueformat: str = ",.0f",
+        inverse_delta: bool = False,
+    ) -> None:
+        if row_data is None:
+            fig.add_trace(
+                go.Indicator(
+                    mode="number",
+                    value=0,
+                    number={"prefix": prefix, "suffix": suffix, "valueformat": valueformat},
+                    title={"text": f"<span style='font-size:0.88em;color:#94a3b8'>{title_text}<br>No data</span>"},
+                ),
+                row=row,
+                col=col,
+            )
+            return
+
+        value = float(row_data.get(value_key, 0) or 0)
+        reference_value = float(row_data.get(reference_key, 0) or 0)
+        indicator = go.Indicator(
+            mode="number+delta",
+            value=value,
+            number={
+                "prefix": prefix,
+                "suffix": suffix,
+                "valueformat": valueformat,
+                "font": {"color": "#0f172a", "size": 30},
+            },
+            title={
+                "text": (
+                    f"<span style='font-size:0.88em;color:#0f172a'>{title_text}</span><br>"
+                    f"<span style='font-size:0.74em;color:#64748b'>Actual baseline: {prefix}{reference_value:{valueformat}}{suffix}</span>"
+                )
+            },
+        )
+        if reference_value != 0:
+            indicator.delta = {
+                "reference": reference_value,
+                "relative": relative,
+                "valueformat": ".1%" if relative else ".2f",
+                "increasing": {"color": "#dc2626" if inverse_delta else "#2563eb"},
+                "decreasing": {"color": "#059669" if inverse_delta else "#dc2626"},
+            }
+        fig.add_trace(indicator, row=row, col=col)
+
+    _add_indicator(
+        _pick_total_row("main"),
+        row=1,
+        col=1,
+        title_text="Main period optimum production",
+        value_key="optimum_production",
+        reference_key="actual_production",
+        prefix="€",
+        relative=True,
+    )
+    _add_indicator(
+        _pick_total_row("main"),
+        row=1,
+        col=2,
+        title_text="Main period optimum risk",
+        value_key="optimum_risk_pct",
+        reference_key="actual_risk_pct",
+        suffix="%",
+        valueformat=".2f",
+        inverse_delta=True,
+    )
+    _add_indicator(
+        _pick_total_row("mr"),
+        row=2,
+        col=1,
+        title_text="MR period optimum production",
+        value_key="optimum_production",
+        reference_key="actual_production",
+        prefix="€",
+        relative=True,
+    )
+    _add_indicator(
+        _pick_total_row("mr"),
+        row=2,
+        col=2,
+        title_text="MR period optimum risk",
+        value_key="optimum_risk_pct",
+        reference_key="actual_risk_pct",
+        suffix="%",
+        valueformat=".2f",
+        inverse_delta=True,
+    )
+
+    period_palette = {
+        "main": {"actual": "#93c5fd", "optimum": "#2563eb", "line": "#1d4ed8"},
+        "mr": {"actual": "#fdba74", "optimum": "#f97316", "line": "#ea580c"},
+    }
+    scenario_category = ["Pessimistic", "Base", "Optimistic"]
     for period in ["main", "mr"]:
-        period_data = total_df[total_df["period"] == period]
+        period_data = total_df[total_df["period"] == period].sort_values(["_scenario_order"])
+        if period_data.empty:
+            continue
+
+        scenario_labels = [str(value).title() for value in period_data["scenario"]]
+        prod_upper = None
+        prod_lower = None
+        error_visible = False
+        if {"production_ci_upper", "production_ci_lower"}.issubset(period_data.columns):
+            prod_upper = (period_data["production_ci_upper"] - period_data["optimum_production"]).clip(lower=0)
+            prod_lower = (period_data["optimum_production"] - period_data["production_ci_lower"]).clip(lower=0)
+            error_visible = bool(np.any((prod_upper.fillna(0) + prod_lower.fillna(0)).to_numpy() > 0))
+
         fig.add_trace(
             go.Bar(
-                name=f"{period.upper()} - Actual",
-                x=period_data["scenario"],
+                name=f"{period.upper()} Actual",
+                x=scenario_labels,
                 y=period_data["actual_production"],
-                marker_color=colors[period],
-                opacity=0.6,
-                legendgroup=period,
+                marker_color=period_palette[period]["actual"],
+                opacity=0.82,
+                legendgroup=f"{period}-production",
+                offsetgroup=f"{period}-actual",
+                hovertemplate=(
+                    "<b>%{x}</b><br>Period: " + period.upper() + "<br>Actual production: €%{y:,.0f}<extra></extra>"
+                ),
             ),
-            row=1,
+            row=3,
             col=1,
         )
         fig.add_trace(
             go.Bar(
-                name=f"{period.upper()} - Optimum",
-                x=period_data["scenario"],
+                name=f"{period.upper()} Optimum",
+                x=scenario_labels,
                 y=period_data["optimum_production"],
-                marker_color=colors[period],
-                opacity=1.0,
-                legendgroup=period,
+                marker_color=period_palette[period]["optimum"],
+                legendgroup=f"{period}-production",
+                offsetgroup=f"{period}-optimum",
+                text=[f"{value:+.1f}%" for value in period_data["production_delta_pct"]],
+                textposition="outside",
+                cliponaxis=False,
+                customdata=np.column_stack([period_data["risk_delta_pct"].to_numpy()]),
+                error_y={
+                    "type": "data",
+                    "array": prod_upper.tolist() if prod_upper is not None else [0] * len(period_data),
+                    "arrayminus": prod_lower.tolist() if prod_lower is not None else [0] * len(period_data),
+                    "visible": error_visible,
+                },
+                hovertemplate=(
+                    "<b>%{x}</b><br>Period: " + period.upper() + "<br>Optimum production: €%{y:,.0f}"
+                    + "<br>Production delta: %{text}<br>Risk delta: %{customdata[0]:+.2f} pp<extra></extra>"
+                ),
             ),
-            row=1,
+            row=3,
             col=1,
         )
-
-    # 2. Risk by Period & Scenario
-    for period in ["main", "mr"]:
-        period_data = total_df[total_df["period"] == period]
         fig.add_trace(
-            go.Bar(
-                name=f"{period.upper()} Risk",
-                x=period_data["scenario"],
-                y=period_data["actual_risk_pct"],
-                marker_color=colors[period],
+            go.Scatter(
+                name=f"{period.upper()} Optimum path",
+                x=period_data["optimum_risk_pct"],
+                y=period_data["optimum_production"],
+                mode="lines+markers+text",
+                text=scenario_labels,
+                textposition="top center",
+                line={"color": period_palette[period]["line"], "width": 3},
+                marker={
+                    "size": 12,
+                    "color": period_palette[period]["optimum"],
+                    "line": {"width": 1.5, "color": "#ffffff"},
+                },
                 showlegend=False,
+                customdata=np.column_stack([period_data["optimum_rejection_rate_pct"].to_numpy()]),
+                hovertemplate=(
+                    "<b>%{text}</b><br>Period: " + period.upper() + "<br>Optimum risk: %{x:.2f}%"
+                    + "<br>Optimum production: €%{y:,.0f}<br>Optimum rejection rate: %{customdata[0]:.1f}%<extra></extra>"
+                ),
             ),
-            row=1,
+            row=3,
             col=2,
         )
+        baseline = _pick_total_row(period)
+        if baseline is not None:
+            fig.add_trace(
+                go.Scatter(
+                    name=f"{period.upper()} Actual baseline",
+                    x=[baseline.get("actual_risk_pct", 0)],
+                    y=[baseline.get("actual_production", 0)],
+                    mode="markers+text",
+                    text=[f"{period.upper()} Actual"],
+                    textposition="bottom center",
+                    marker={
+                        "size": 15,
+                        "color": period_palette[period]["actual"],
+                        "symbol": "diamond",
+                        "line": {"width": 2, "color": period_palette[period]["line"]},
+                    },
+                    showlegend=False,
+                    hovertemplate=(
+                        "<b>Actual baseline</b><br>Period: " + period.upper() + "<br>Risk: %{x:.2f}%"
+                        + "<br>Production: €%{y:,.0f}<extra></extra>"
+                    ),
+                ),
+                row=3,
+                col=2,
+            )
 
-    # 3. Production Delta
-    for period in ["main", "mr"]:
-        period_data = total_df[total_df["period"] == period]
+    heat_df = ordered_df[ordered_df["scenario"] == focus_scenario].copy()
+    if not heat_df.empty:
+        if heat_df["group_display"].nunique() > 12:
+            ranked_groups = (
+                heat_df.assign(_rank_value=heat_df["production_delta"].abs())
+                .sort_values(["_group_order", "_rank_value"], ascending=[True, False])
+                ["group_display"]
+                .drop_duplicates()
+                .head(12)
+            )
+            heat_df = heat_df[heat_df["group_display"].isin(ranked_groups)]
+
+        heat_df = heat_df.sort_values(["_group_order", "group_display", "_period_order"])
+        heat_index = heat_df["group_display"].drop_duplicates().tolist()
+        heat_cols = [value for value in ["main", "mr"] if value in heat_df["period"].values]
+        heat_pivot = heat_df.pivot_table(index="group_display", columns="period", values="production_delta_pct", aggfunc="first")
+        heat_pivot = heat_pivot.reindex(index=heat_index, columns=heat_cols)
+        heat_eur = heat_df.pivot_table(index="group_display", columns="period", values="production_delta", aggfunc="first")
+        heat_eur = heat_eur.reindex(index=heat_index, columns=heat_cols)
+        heat_risk = heat_df.pivot_table(index="group_display", columns="period", values="risk_delta_pct", aggfunc="first")
+        heat_risk = heat_risk.reindex(index=heat_index, columns=heat_cols)
+
+        heat_text = []
+        hovertext = []
+        for group_name in heat_pivot.index:
+            text_row = []
+            hover_row = []
+            for period_name in heat_pivot.columns:
+                pct_val = heat_pivot.loc[group_name, period_name]
+                eur_val = heat_eur.loc[group_name, period_name]
+                risk_val = heat_risk.loc[group_name, period_name]
+                if pd.isna(pct_val):
+                    text_row.append("")
+                    hover_row.append(f"<b>{group_name}</b><br>Period: {str(period_name).upper()}<br>No data")
+                else:
+                    text_row.append(f"{pct_val:+.1f}%")
+                    hover_row.append(
+                        f"<b>{group_name}</b><br>Period: {str(period_name).upper()}"
+                        f"<br>Production delta: €{eur_val:,.0f}"
+                        f"<br>Production delta %: {pct_val:+.1f}%"
+                        f"<br>Risk delta: {risk_val:+.2f} pp"
+                    )
+            heat_text.append(text_row)
+            hovertext.append(hover_row)
+
         fig.add_trace(
-            go.Bar(
-                name=f"{period.upper()} Delta",
-                x=period_data["scenario"],
-                y=period_data["production_delta"],
-                marker_color=colors[period],
-                text=[f"{v:.1f}%" for v in period_data["production_delta_pct"]],
-                textposition="outside",
-                showlegend=False,
+            go.Heatmap(
+                x=[str(value).upper() for value in heat_pivot.columns],
+                y=heat_pivot.index.tolist(),
+                z=heat_pivot.to_numpy(),
+                text=heat_text,
+                texttemplate="%{text}",
+                textfont={"size": 11},
+                hovertext=hovertext,
+                hovertemplate="%{hovertext}<extra></extra>",
+                zmid=0,
+                colorscale=[[0.0, "#b91c1c"], [0.5, "#f8fafc"], [1.0, "#15803d"]],
+                colorbar={"title": "Prod Δ %", "ticksuffix": "%"},
             ),
-            row=2,
+            row=4,
             col=1,
         )
 
-    # 4. Swap Analysis (stacked bar for latest scenario)
-    latest_scenario = total_df["scenario"].iloc[-1] if not total_df.empty else "base"
-    swap_data = total_df[total_df["scenario"] == latest_scenario]
+    top_groups = segment_df[segment_df["scenario"] == focus_scenario].copy()
+    if top_groups.empty:
+        top_groups = ordered_df[(ordered_df["scenario"] == focus_scenario) & (~ordered_df["group"].eq("TOTAL"))].copy()
+    if not top_groups.empty:
+        ranked = (
+            top_groups.groupby("group_display", as_index=False)["production_delta"].max()
+            .sort_values("production_delta", ascending=False)
+            .head(8)
+        )
+        ranked_order = ranked.sort_values("production_delta", ascending=True)["group_display"].tolist()
+        top_groups = top_groups[top_groups["group_display"].isin(ranked_order)].copy()
+        top_groups["group_display"] = pd.Categorical(top_groups["group_display"], categories=ranked_order, ordered=True)
+        top_groups = top_groups.sort_values(["group_display", "_period_order"])
 
-    for period in ["main", "mr"]:
-        period_swap = swap_data[swap_data["period"] == period]
-        if not period_swap.empty:
+        for period in [value for value in ["main", "mr"] if value in top_groups["period"].values]:
+            period_groups = top_groups[top_groups["period"] == period].sort_values("group_display")
             fig.add_trace(
                 go.Bar(
-                    name=f"{period.upper()} Swap-In",
-                    x=[period.upper()],
-                    y=period_swap["swap_in_production"].values,
-                    marker_color="green",
-                    showlegend=(period == "main"),
+                    name=f"{period.upper()} Production Δ",
+                    y=period_groups["group_display"],
+                    x=period_groups["production_delta"],
+                    orientation="h",
+                    marker_color=period_palette[period]["optimum"],
+                    text=[f"{value:+.1f}%" for value in period_groups["production_delta_pct"]],
+                    textposition="outside",
+                    cliponaxis=False,
+                    customdata=np.column_stack([
+                        period_groups["risk_delta_pct"].to_numpy(),
+                        period_groups["optimum_risk_pct"].to_numpy(),
+                    ]),
+                    hovertemplate=(
+                        "<b>%{y}</b><br>Period: " + period.upper() + "<br>Production delta: €%{x:,.0f}"
+                        + "<br>Production delta %: %{text}<br>Risk delta: %{customdata[0]:+.2f} pp"
+                        + "<br>Optimum risk: %{customdata[1]:.2f}%<extra></extra>"
+                    ),
                 ),
-                row=2,
-                col=2,
-            )
-            fig.add_trace(
-                go.Bar(
-                    name=f"{period.upper()} Swap-Out",
-                    x=[period.upper()],
-                    y=[-period_swap["swap_out_production"].values[0]],  # Negative for visual
-                    marker_color="red",
-                    showlegend=(period == "main"),
-                ),
-                row=2,
+                row=4,
                 col=2,
             )
 
     fig.update_layout(
-        title=dict(text=title, x=0.5),
-        height=800,
+        title={
+            "text": title + "<br><sup>Executive portfolio view across scenarios, periods, and segment opportunities</sup>",
+            "x": 0.5,
+            "xanchor": "center",
+        },
+        height=1450,
         barmode="group",
         template="plotly_white",
-        legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5),
+        paper_bgcolor="#f8fafc",
+        plot_bgcolor="#ffffff",
+        margin={"t": 120, "r": 40, "b": 70, "l": 70},
+        font={"family": "Arial, sans-serif", "size": 12, "color": "#0f172a"},
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": -0.06,
+            "xanchor": "center",
+            "x": 0.5,
+            "bgcolor": "rgba(255,255,255,0.85)",
+        },
+        hoverlabel={"bgcolor": "#0f172a", "font": {"color": "#ffffff"}},
     )
-
-    # Update axes labels
-    fig.update_yaxes(title_text="Production (€)", row=1, col=1)
-    fig.update_yaxes(title_text="Risk (%)", row=1, col=2)
-    fig.update_yaxes(title_text="Delta (€)", row=2, col=1)
-    fig.update_yaxes(title_text="Production (€)", row=2, col=2)
-
+    fig.update_annotations(font={"size": 13, "color": "#0f172a"})
+    fig.update_xaxes(categoryorder="array", categoryarray=scenario_category, title_text="Scenario", row=3, col=1)
+    fig.update_yaxes(title_text="Production (€)", tickformat=",.0f", row=3, col=1)
+    fig.update_xaxes(title_text="Risk (%)", ticksuffix="%", row=3, col=2)
+    fig.update_yaxes(title_text="Production (€)", tickformat=",.0f", row=3, col=2)
+    fig.update_xaxes(title_text="Period", row=4, col=1)
+    fig.update_yaxes(title_text="Group", automargin=True, row=4, col=1)
+    fig.update_xaxes(
+        title_text="Production Delta (€)",
+        tickformat=",.0f",
+        zeroline=True,
+        zerolinecolor="#cbd5e1",
+        row=4,
+        col=2,
+    )
+    fig.update_yaxes(title_text="Group", automargin=True, row=4, col=2)
     return fig
 
 
@@ -1151,7 +1466,14 @@ def generate_consolidation_report(
 
     # Save HTML
     html_path = output_path / "consolidated_risk_production.html"
-    fig.write_html(str(html_path))
+    fig.write_html(
+        str(html_path),
+        config={
+            "displaylogo": False,
+            "responsive": True,
+            "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+        },
+    )
     logger.info(f"Consolidated dashboard saved to {html_path}")
 
     # Export Excel workbook
@@ -1404,7 +1726,7 @@ def export_consolidated_excel(
             ws.row_dimensions[r].height = 20
             is_total = False
             if highlight_total and group_col_idx:
-                is_total = str(ws.cell(row=r, column=group_col_idx).value or "") == "TOTAL"
+                is_total = str(ws.cell(row=r, column=group_col_idx).value or "").strip().lower().startswith("total")
             for col_idx in range(1, n_cols + 1):
                 data_cell = ws.cell(row=r, column=col_idx)
                 if is_total:
@@ -1491,7 +1813,7 @@ def export_consolidated_excel(
                 cell.alignment = _ALIGN_LEFT if col_name in _TEXT_COLS else _ALIGN_RIGHT
                 _apply_number_format(cell, col_name)
 
-            is_total = group_col_idx and str(ws.cell(row=ri, column=group_col_idx).value or "") == "TOTAL"
+            is_total = group_col_idx and str(ws.cell(row=ri, column=group_col_idx).value or "").strip().lower().startswith("total")
             for ci, col_name in enumerate(cols_list, 1):
                 cell = ws.cell(row=ri, column=ci)
                 if is_total:
@@ -1670,6 +1992,60 @@ def export_consolidated_excel(
 
         return legend_row + 2
 
+    def _prepare_export_df(source_df, cols):
+        if source_df.empty:
+            return source_df.copy()
+
+        export_df = source_df.copy()
+        if {"group", "period", "scenario"}.issubset(export_df.columns):
+            export_df = _sort_consolidated_rows(export_df)
+        export_df = export_df[[c for c in cols if c in export_df.columns]].copy()
+        if "group" in export_df.columns:
+            export_df["group"] = export_df["group"].map(_display_group_name)
+        if "period" in export_df.columns:
+            export_df["period"] = export_df["period"].astype(str).str.upper()
+        if "scenario" in export_df.columns:
+            export_df["scenario"] = export_df["scenario"].astype(str).str.title()
+        return export_df
+
+    def _build_top_movers_df(source_df, *, period: str) -> pd.DataFrame:
+        movers = source_df.copy()
+        if movers.empty:
+            return movers
+
+        if "scenario" in movers.columns:
+            movers = movers[movers["scenario"] == "base"]
+        if "period" in movers.columns:
+            movers = movers[movers["period"] == period]
+        movers = movers[
+            ~(movers["group"].eq("TOTAL") | movers["group"].astype(str).str.startswith("supersegment_"))
+        ]
+        if movers.empty:
+            return movers
+
+        sort_cols = [c for c in ["production_delta", "risk_delta_pct"] if c in movers.columns]
+        ascending = [False if c == "production_delta" else True for c in sort_cols]
+        if sort_cols:
+            movers = movers.sort_values(sort_cols, ascending=ascending)
+        movers = movers.head(8)
+        movers = movers[
+            [
+                c
+                for c in [
+                    "group",
+                    "optimum_production",
+                    "production_delta",
+                    "production_delta_pct",
+                    "optimum_risk_pct",
+                    "risk_delta_pct",
+                    "optimum_rejection_rate_pct",
+                ]
+                if c in movers.columns
+            ]
+        ].copy()
+        movers["group"] = movers["group"].map(_display_group_name)
+        return movers
+
     def _get_total_row(period: str, scenario: str = "base"):
         mask = (
             (consolidated_df["group"] == "TOTAL")
@@ -1677,7 +2053,12 @@ def export_consolidated_excel(
             & (consolidated_df["scenario"] == scenario)
         )
         rows = consolidated_df[mask]
-        return rows.iloc[0] if not rows.empty else None
+        if not rows.empty:
+            return rows.iloc[0]
+        fallback = consolidated_df[
+            (consolidated_df["group"] == "TOTAL") & (consolidated_df["period"] == period)
+        ]
+        return fallback.iloc[0] if not fallback.empty else None
 
     # =====================================================================
     # Build workbook
@@ -1708,7 +2089,10 @@ def export_consolidated_excel(
         ws_exec.row_dimensions[1].height = 44
 
         ws_exec.merge_cells("A2:J2")
-        ws_exec["A2"].value = f"  Generated {date.today().strftime('%d %b %Y')}  |  {len(segments)} segment(s)"
+        ws_exec["A2"].value = (
+            f"  Generated {date.today().strftime('%d %b %Y')}  |  {len(segments)} segment(s)  |  "
+            "Consolidated portfolio view"
+        )
         ws_exec["A2"].font = Font(bold=False, color=_CLR_ACCENT_LIGHT, size=11, name=_FN)
         ws_exec["A2"].fill = title_fill
         ws_exec["A2"].alignment = _ALIGN_LEFT
@@ -1789,15 +2173,50 @@ def export_consolidated_excel(
             "production_delta_pct", "actual_risk_pct", "optimum_risk_pct", "risk_delta_pct",
         ]
         main_base_mask = (consolidated_df["period"] == "main") & (consolidated_df["scenario"] == "base")
-        exec_main = consolidated_df.loc[main_base_mask, [c for c in exec_cols if c in consolidated_df.columns]].copy()
+        exec_main = _prepare_export_df(
+            consolidated_df.loc[main_base_mask],
+            exec_cols,
+        )
         if not exec_main.empty:
             next_row = _write_exec_table(ws_exec, exec_main, next_row, "Main Period — Base Scenario")
 
         # --- MR-period summary table ---
         mr_base_mask = (consolidated_df["period"] == "mr") & (consolidated_df["scenario"] == "base")
-        exec_mr = consolidated_df.loc[mr_base_mask, [c for c in exec_cols if c in consolidated_df.columns]].copy()
+        exec_mr = _prepare_export_df(
+            consolidated_df.loc[mr_base_mask],
+            exec_cols,
+        )
         if not exec_mr.empty:
             next_row = _write_exec_table(ws_exec, exec_mr, next_row, "MR Period — Base Scenario")
+
+        total_overview_cols = [
+            "group",
+            "period",
+            "scenario",
+            "actual_production",
+            "optimum_production",
+            "production_delta",
+            "production_delta_pct",
+            "actual_risk_pct",
+            "optimum_risk_pct",
+            "risk_delta_pct",
+            "actual_rejection_rate_pct",
+            "optimum_rejection_rate_pct",
+        ]
+        total_overview_df = _prepare_export_df(
+            consolidated_df[consolidated_df["group"] == "TOTAL"],
+            total_overview_cols,
+        )
+        if not total_overview_df.empty:
+            next_row = _write_exec_table(ws_exec, total_overview_df, next_row, "Scenario Overview — Total Portfolio", n_table_cols=12)
+
+        main_top_movers = _build_top_movers_df(consolidated_df, period="main")
+        if not main_top_movers.empty:
+            next_row = _write_exec_table(ws_exec, main_top_movers, next_row, "Top Segment Opportunities — Main Base Scenario")
+
+        mr_top_movers = _build_top_movers_df(consolidated_df, period="mr")
+        if not mr_top_movers.empty:
+            next_row = _write_exec_table(ws_exec, mr_top_movers, next_row, "Top Segment Opportunities — MR Base Scenario")
 
         # --- Acceptance grids per segment on Executive Summary ---
         cutoff_data: dict[str, pd.DataFrame] = {}
@@ -1828,7 +2247,27 @@ def export_consolidated_excel(
         # Sheet 2: Portfolio Summary
         # =============================================================
         portfolio_mask = consolidated_df["group"].str.match(r"^(TOTAL|supersegment_)")
-        portfolio_df = consolidated_df[portfolio_mask]
+        portfolio_cols = [
+            "group",
+            "period",
+            "scenario",
+            "n_segments",
+            "actual_production",
+            "optimum_production",
+            "production_delta",
+            "production_delta_pct",
+            "actual_risk_pct",
+            "optimum_risk_pct",
+            "risk_delta_pct",
+            "actual_rejection_rate_pct",
+            "optimum_rejection_rate_pct",
+            "total_demand",
+            "production_ci_lower",
+            "production_ci_upper",
+            "risk_ci_lower",
+            "risk_ci_upper",
+        ]
+        portfolio_df = _prepare_export_df(consolidated_df[portfolio_mask], portfolio_cols)
         if not portfolio_df.empty:
             portfolio_df.to_excel(writer, sheet_name="Portfolio Summary", index=False)
             _style_table(writer.sheets["Portfolio Summary"], portfolio_df.columns)
@@ -1838,7 +2277,24 @@ def export_consolidated_excel(
         # Sheet 3: Segment Detail
         # =============================================================
         segment_mask = ~consolidated_df["group"].str.match(r"^(TOTAL|supersegment_)")
-        segment_df = consolidated_df[segment_mask]
+        segment_cols = [
+            "group",
+            "period",
+            "scenario",
+            "segments",
+            "actual_production",
+            "optimum_production",
+            "production_delta",
+            "production_delta_pct",
+            "actual_risk_pct",
+            "optimum_risk_pct",
+            "risk_delta_pct",
+            "actual_rejection_rate_pct",
+            "optimum_rejection_rate_pct",
+            "swap_in_production",
+            "swap_out_production",
+        ]
+        segment_df = _prepare_export_df(consolidated_df[segment_mask], segment_cols)
         if not segment_df.empty:
             segment_df.to_excel(writer, sheet_name="Segment Detail", index=False)
             _style_table(writer.sheets["Segment Detail"], segment_df.columns)

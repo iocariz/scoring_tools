@@ -34,6 +34,9 @@
 - ~~`classify_by_mask` assumed reset-index column named `index`~~ — `src/optimization_utils.py` now maps masks via variable tuples and preserves the original index
 - ~~Global optimizer MILP fallback used `argmax(rounded)`~~ — `src/global_optimizer.py` now decodes near-integral solutions via `argmax(seg_x)`
 - ~~MR `calculate_todu_30ever_from_b2` omitted configured multiplier~~ — `src/mr_pipeline.py` now passes `settings.multiplier` explicitly when reconstructing `todu_30ever_h6`
+- ~~Consolidation ratio SE treated as additive~~ — `src/consolidation.py` now combines optimum risk CI uncertainty via an exposure-weighted delta-method instead of adding ratio SEs directly
+- ~~Consolidation production CI used midpoint-derived intervals~~ — `src/consolidation.py` now aggregates production CI by summing segment lower/upper bounds
+- ~~Scenario auto-detection stopped at first segment~~ — `consolidate_segments()` now scans all segment folders and keeps named-suffix deduplication for base scenarios
 
 ---
 
@@ -119,10 +122,10 @@ entries above but have residual issues.
 - `src/global_optimizer.py` — greedy allocation doesn't check per-segment `min_production` constraint
 - Segments may receive less than their production floor
 
-#### H13: Consolidation ratio SE treated as additive
-- `src/consolidation.py` — aggregates risk CIs across segments by adding SEs
-- Ratio statistics (risk = defaults/exposure) don't have additive standard errors
-- Should use delta method or bootstrap for aggregate CI
+#### ~~H13: Consolidation ratio SE treated as additive~~
+- `src/consolidation.py` — optimum risk CIs now use an exposure-weighted delta-method combination of per-segment uncertainty
+- Ratio statistics (risk = defaults/exposure) are no longer combined by adding segment ratio SEs directly
+- Regression coverage added in `tests/test_consolidation.py`
 
 #### ~~H14: `bins_tuple` ordering follows dict insertion order~~
 - `src/pipeline/inference.py:91-93` — `bins_tuple` constructed from dict keys
@@ -181,14 +184,13 @@ entries above but have residual issues.
 - Can match unintended column names that share a prefix
 - Fix: use `str.fullmatch()` or anchor with `$`
 
-#### M17: Consolidation production CI uses midpoints instead of bounds
-- `src/consolidation.py` — production confidence intervals computed from midpoint estimates
-- Should use the actual lower/upper bounds from bootstrap
+#### ~~M17: Consolidation production CI uses midpoints instead of bounds~~
+- `src/consolidation.py` — aggregate production confidence intervals now sum segment lower/upper bounds directly
+- No longer reconstructs aggregate intervals from midpoint estimates
 
-#### M18: Scenario auto-detection stops at first segment
-- `src/consolidation.py` — scenario detection logic only checks the first segment
-- If first segment has no scenarios but others do, scenarios are missed
-- Fix: check across all segments
+#### ~~M18: Scenario auto-detection stops at first segment~~
+- `src/consolidation.py` — scenario detection now scans all segment folders instead of stopping after the first populated one
+- Preserves base-scenario deduplication and prefers named `_base` over the empty suffix when both exist
 
 ### BUG — LOW
 

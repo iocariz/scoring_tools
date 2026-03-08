@@ -27,6 +27,7 @@ from src.consolidation import (
     ConsolidatedMetrics,
     aggregate_metrics,
     consolidate_segments,
+    create_consolidation_dashboard,
     export_consolidated_excel,
     extract_metrics_from_table,
     find_scenario_suffix,
@@ -260,6 +261,88 @@ class TestAggregateMetrics:
 
         assert result["actual"]["production"] == 0
         assert result["actual"]["todu_30ever_h6"] == 0
+
+    def test_production_ci_aggregates_using_bounds(self):
+        """Test that aggregate production CI sums segment lower and upper bounds."""
+        metrics = [
+            {
+                "actual": {"production": 1000, "todu_30ever_h6": 10, "todu_amt_pile_h6": 100},
+                "optimum": {
+                    "production": 1100,
+                    "todu_30ever_h6": 9,
+                    "todu_amt_pile_h6": 100,
+                    "production_ci_lower": 1000,
+                    "production_ci_upper": 1200,
+                    "risk_ci_lower": 8,
+                    "risk_ci_upper": 10,
+                },
+                "swap_in": {"production": 200, "todu_30ever_h6": 1, "todu_amt_pile_h6": 20},
+                "swap_out": {"production": 100, "todu_30ever_h6": 2, "todu_amt_pile_h6": 20},
+            },
+            {
+                "actual": {"production": 2000, "todu_30ever_h6": 20, "todu_amt_pile_h6": 200},
+                "optimum": {
+                    "production": 2200,
+                    "todu_30ever_h6": 18,
+                    "todu_amt_pile_h6": 200,
+                    "production_ci_lower": 2100,
+                    "production_ci_upper": 2300,
+                    "risk_ci_lower": 8,
+                    "risk_ci_upper": 10,
+                },
+                "swap_in": {"production": 400, "todu_30ever_h6": 2, "todu_amt_pile_h6": 40},
+                "swap_out": {"production": 200, "todu_30ever_h6": 4, "todu_amt_pile_h6": 40},
+            },
+        ]
+
+        result = aggregate_metrics(metrics, multiplier=1)
+
+        assert result["optimum"]["production_ci_lower"] == 3100
+        assert result["optimum"]["production_ci_upper"] == 3500
+
+    def test_risk_ci_uses_exposure_weighted_delta_method(self):
+        """Test that aggregate risk CI is weighted by segment exposure, not added directly."""
+        metrics = [
+            {
+                "actual": {"production": 1000, "todu_30ever_h6": 20, "todu_amt_pile_h6": 100},
+                "optimum": {
+                    "production": 1100,
+                    "todu_30ever_h6": 20,
+                    "todu_amt_pile_h6": 100,
+                    "production_ci_lower": 1050,
+                    "production_ci_upper": 1150,
+                    "risk_ci_lower": 10.0,
+                    "risk_ci_upper": 30.0,
+                },
+                "swap_in": {"production": 200, "todu_30ever_h6": 1, "todu_amt_pile_h6": 20},
+                "swap_out": {"production": 100, "todu_30ever_h6": 2, "todu_amt_pile_h6": 20},
+            },
+            {
+                "actual": {"production": 2000, "todu_30ever_h6": 90, "todu_amt_pile_h6": 900},
+                "optimum": {
+                    "production": 2200,
+                    "todu_30ever_h6": 90,
+                    "todu_amt_pile_h6": 900,
+                    "production_ci_lower": 2150,
+                    "production_ci_upper": 2250,
+                    "risk_ci_lower": 8.0,
+                    "risk_ci_upper": 12.0,
+                },
+                "swap_in": {"production": 400, "todu_30ever_h6": 2, "todu_amt_pile_h6": 40},
+                "swap_out": {"production": 200, "todu_30ever_h6": 4, "todu_amt_pile_h6": 40},
+            },
+        ]
+
+        result = aggregate_metrics(metrics, multiplier=1)
+
+        z_95 = 1.96
+        seg1_se = (30.0 - 10.0) / (2 * z_95)
+        seg2_se = (12.0 - 8.0) / (2 * z_95)
+        expected_point = (20 + 90) / (100 + 900) * 100
+        expected_se = np.sqrt((0.1 * seg1_se) ** 2 + (0.9 * seg2_se) ** 2)
+
+        assert np.isclose(result["optimum"]["risk_ci_lower"], expected_point - z_95 * expected_se)
+        assert np.isclose(result["optimum"]["risk_ci_upper"], expected_point + z_95 * expected_se)
 
 
 # =============================================================================
@@ -656,6 +739,34 @@ class TestConsolidateSegments:
         expected_risk_pct = (300 / 15000 * 7) * 100  # 14.0
         assert np.isclose(total_row["actual_risk_pct"].values[0], expected_risk_pct, rtol=0.01)
 
+    def test_auto_detect_scenarios_across_all_segments(self, temp_output_dir):
+        """Test that scenario auto-detection scans all segments, not just the first one."""
+        seg1_dir = temp_output_dir / "seg1" / "data"
+        seg1_dir.mkdir(parents=True)
+        seg2_dir = temp_output_dir / "seg2" / "data"
+        seg2_dir.mkdir(parents=True)
+
+        df = pd.DataFrame(
+            {
+                "Metric": ["Actual", "Swap-in", "Swap-out", "Optimum selected"],
+                "Risk (%)": [1.5, 1.2, 2.0, 1.4],
+                "Production (€)": [1000000, 200000, 150000, 1050000],
+                "Production (%)": [1.0, 0.2, 0.15, 1.05],
+                "todu_30ever_h6": [1000, 200, 300, 900],
+                "todu_amt_pile_h6": [50000, 10000, 10000, 45000],
+            }
+        )
+
+        df.to_csv(seg1_dir / "risk_production_summary_table_base.csv", index=False)
+        df.to_csv(seg2_dir / "risk_production_summary_table_pessimistic.csv", index=False)
+        df.to_csv(seg2_dir / "risk_production_summary_table_optimistic.csv", index=False)
+
+        segments = {"seg1": {"name": "seg1"}, "seg2": {"name": "seg2"}}
+        result = consolidate_segments(temp_output_dir, segments, {})
+
+        scenarios_found = set(result["scenario"].unique().tolist())
+        assert scenarios_found == {"pessimistic", "base", "optimistic"}
+
 
 # =============================================================================
 # Scenario Order Tests
@@ -731,6 +842,56 @@ class TestScenarioDeduplication:
         # Should prefer '_base' over ''
         assert seen_names["base"] == "_base"
         assert len(seen_names) == 3  # base, pessimistic, optimistic
+
+
+# =============================================================================
+# Dashboard Tests
+# =============================================================================
+
+
+class TestCreateConsolidationDashboard:
+    """Tests for create_consolidation_dashboard function."""
+
+    def test_dashboard_has_executive_layout(self):
+        """Verify the dashboard includes KPI, scenario, heatmap, and ranking views."""
+        df = pd.DataFrame(
+            [
+                {"group": "TOTAL", "period": "main", "scenario": "pessimistic", "actual_production": 1000, "optimum_production": 900,
+                 "production_delta": -100, "production_delta_pct": -10.0, "actual_risk_pct": 1.6, "optimum_risk_pct": 1.2,
+                 "risk_delta_pct": -0.4, "optimum_rejection_rate_pct": 18.0, "production_ci_lower": 850, "production_ci_upper": 950},
+                {"group": "TOTAL", "period": "main", "scenario": "base", "actual_production": 1000, "optimum_production": 1050,
+                 "production_delta": 50, "production_delta_pct": 5.0, "actual_risk_pct": 1.6, "optimum_risk_pct": 1.3,
+                 "risk_delta_pct": -0.3, "optimum_rejection_rate_pct": 15.0, "production_ci_lower": 1000, "production_ci_upper": 1100},
+                {"group": "TOTAL", "period": "main", "scenario": "optimistic", "actual_production": 1000, "optimum_production": 1120,
+                 "production_delta": 120, "production_delta_pct": 12.0, "actual_risk_pct": 1.6, "optimum_risk_pct": 1.45,
+                 "risk_delta_pct": -0.15, "optimum_rejection_rate_pct": 13.0, "production_ci_lower": 1080, "production_ci_upper": 1160},
+                {"group": "TOTAL", "period": "mr", "scenario": "base", "actual_production": 980, "optimum_production": 1040,
+                 "production_delta": 60, "production_delta_pct": 6.1, "actual_risk_pct": 1.5, "optimum_risk_pct": 1.0,
+                 "risk_delta_pct": -0.5, "optimum_rejection_rate_pct": 14.0, "production_ci_lower": 1000, "production_ci_upper": 1080},
+                {"group": "supersegment_ss1", "period": "main", "scenario": "base", "actual_production": 1000, "optimum_production": 1050,
+                 "production_delta": 50, "production_delta_pct": 5.0, "actual_risk_pct": 1.6, "optimum_risk_pct": 1.3,
+                 "risk_delta_pct": -0.3, "optimum_rejection_rate_pct": 15.0},
+                {"group": "supersegment_ss1", "period": "mr", "scenario": "base", "actual_production": 980, "optimum_production": 1040,
+                 "production_delta": 60, "production_delta_pct": 6.1, "actual_risk_pct": 1.5, "optimum_risk_pct": 1.0,
+                 "risk_delta_pct": -0.5, "optimum_rejection_rate_pct": 14.0},
+                {"group": "ss1/seg1", "period": "main", "scenario": "base", "actual_production": 500, "optimum_production": 560,
+                 "production_delta": 60, "production_delta_pct": 12.0, "actual_risk_pct": 1.8, "optimum_risk_pct": 1.4,
+                 "risk_delta_pct": -0.4, "optimum_rejection_rate_pct": 16.0},
+                {"group": "ss1/seg1", "period": "mr", "scenario": "base", "actual_production": 480, "optimum_production": 530,
+                 "production_delta": 50, "production_delta_pct": 10.4, "actual_risk_pct": 1.7, "optimum_risk_pct": 1.1,
+                 "risk_delta_pct": -0.6, "optimum_rejection_rate_pct": 15.0},
+            ]
+        )
+
+        fig = create_consolidation_dashboard(df)
+
+        trace_types = {trace.type for trace in fig.data}
+        assert "indicator" in trace_types
+        assert "heatmap" in trace_types
+        assert "bar" in trace_types
+        assert "scatter" in trace_types
+        assert fig.layout.height == 1450
+        assert "Executive portfolio view" in fig.layout.title.text
 
 
 # =============================================================================
