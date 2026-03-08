@@ -28,6 +28,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from dash import Input, Output, State, callback_context, dash_table, dcc, html
+from dash.dash_table.Format import Format, Group, Scheme, Symbol
 from dash.dependencies import MATCH
 from flask import send_from_directory
 from loguru import logger
@@ -41,6 +42,7 @@ from src.styles import (
     COLOR_RISK,
     apply_plotly_style,
 )
+from src.utils import calculate_b2_ever_h6
 
 # --- Constants ---
 SCENARIO_ORDER: dict[str, int] = {"pessimistic": 0, "base": 1, "optimistic": 2}
@@ -827,7 +829,7 @@ def create_audit_tab_content(scenario: str, segment: str | None = None, period: 
         filter_action="native",
         sort_action="native",
         style_table={"overflowX": "auto"},
-        style_cell={"textAlign": "right", "padding": "6px 10px", "fontSize": "0.83rem"},
+        style_cell={"textAlign": "right", "padding": "6px", "fontSize": "0.83rem"},
         style_header={"backgroundColor": "#f8f9fa", "fontWeight": "600", "borderBottom": "2px solid #dee2e6"},
         style_data_conditional=style_data_conditional,
     )
@@ -1200,6 +1202,615 @@ def load_cutoff_data(
     return summary_data, optimal_solution, pareto_solutions, variables, inv_vars, multiplier, cell_ci, optimal_mask
 
 
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or pd.isna(value):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_currency(value: Any, compact: bool = False) -> str:
+    amount = _coerce_float(value)
+    sign = "-" if amount < 0 else ""
+    abs_amount = abs(amount)
+    if compact:
+        if abs_amount >= 1_000_000_000:
+            return f"{sign}€{abs_amount / 1_000_000_000:.2f}B"
+        if abs_amount >= 1_000_000:
+            return f"{sign}€{abs_amount / 1_000_000:.1f}M"
+        if abs_amount >= 1_000:
+            return f"{sign}€{abs_amount / 1_000:.0f}k"
+    return f"{sign}€{abs_amount:,.0f}"
+
+
+def _build_risk_marks(risk_min: float, risk_max: float) -> dict[float, str]:
+    if risk_max <= risk_min:
+        rounded = round(risk_min, 2)
+        return {rounded: f"{rounded:.2f}%"}
+    marks = {}
+    for value in np.linspace(risk_min, risk_max, 5):
+        rounded = round(float(value), 2)
+        marks[rounded] = f"{rounded:.2f}%"
+    return dict(sorted(marks.items()))
+
+
+def _build_cutoff_stat_card(title: str, value: str, subtitle: str, accent: str) -> dbc.Card:
+    return dbc.Card(
+        dbc.CardBody(
+            [
+                html.Div(title, className="text-muted text-uppercase small fw-semibold mb-1"),
+                html.Div(value, className="fw-bold mb-1", style={"fontSize": "1.1rem"}),
+                html.Div(subtitle, className="text-muted small"),
+            ]
+        ),
+        className="h-100 shadow-sm border-0",
+        style={"borderTop": f"4px solid {accent}"},
+    )
+
+
+def _build_cutoff_results_content(
+    current_metrics: dict[str, Any], reference_metrics: dict[str, Any], reference_label: str
+) -> html.Div:
+    actual_prod = _coerce_float(current_metrics.get("actual_prod"))
+    current_prod = _coerce_float(current_metrics.get("opt_prod"))
+    current_risk = _coerce_float(current_metrics.get("opt_risk"))
+    current_prod_pct = _coerce_float(current_metrics.get("opt_prod_pct")) * 100
+    reference_prod = _coerce_float(reference_metrics.get("opt_prod"))
+    reference_risk = _coerce_float(reference_metrics.get("opt_risk"))
+    reference_prod_pct = _coerce_float(reference_metrics.get("opt_prod_pct")) * 100
+    risk_gap = current_risk - reference_risk
+    prod_gap = current_prod - reference_prod
+    prod_gap_pct = current_prod_pct - reference_prod_pct
+    risk_accent = COLOR_GOOD if risk_gap <= 0 else COLOR_BAD
+    gap_accent = COLOR_GOOD if prod_gap >= 0 else COLOR_BAD
+
+    summary_cards = dbc.Row(
+        [
+            dbc.Col(
+                _build_cutoff_stat_card(
+                    "Actual booked",
+                    _format_currency(actual_prod, compact=True),
+                    "Baseline production before cut changes",
+                    COLOR_NEUTRAL,
+                ),
+                md=6,
+                xl=3,
+                className="mb-3",
+            ),
+            dbc.Col(
+                _build_cutoff_stat_card(
+                    "Current production",
+                    _format_currency(current_prod, compact=True),
+                    f"{current_prod_pct:.1f}% of actual booked production",
+                    COLOR_PRODUCTION,
+                ),
+                md=6,
+                xl=3,
+                className="mb-3",
+            ),
+            dbc.Col(
+                _build_cutoff_stat_card(
+                    "Current risk",
+                    f"{current_risk:.2f}%",
+                    f"{risk_gap:+.2f}pp vs {reference_label.lower()}",
+                    risk_accent,
+                ),
+                md=6,
+                xl=3,
+                className="mb-3",
+            ),
+            dbc.Col(
+                _build_cutoff_stat_card(
+                    f"Gap vs {reference_label}",
+                    _format_currency(prod_gap, compact=True),
+                    f"{prod_gap_pct:+.1f} pts production share vs {reference_label.lower()}",
+                    gap_accent,
+                ),
+                md=6,
+                xl=3,
+                className="mb-3",
+            ),
+        ],
+        className="g-3",
+    )
+
+    comparison_table = dbc.Table(
+        [
+            html.Thead(
+                html.Tr(
+                    [
+                        html.Th("Configuration"),
+                        html.Th("Risk"),
+                        html.Th("Production"),
+                        html.Th("Share of Actual"),
+                        html.Th("Swap-in"),
+                        html.Th("Swap-out"),
+                    ]
+                )
+            ),
+            html.Tbody(
+                [
+                    html.Tr(
+                        [
+                            html.Td(html.Strong("Current")),
+                            html.Td(f"{current_risk:.2f}%"),
+                            html.Td(_format_currency(current_prod)),
+                            html.Td(f"{current_prod_pct:.1f}%"),
+                            html.Td(_format_currency(current_metrics.get("swap_in_prod"))),
+                            html.Td(_format_currency(current_metrics.get("swap_out_prod"))),
+                        ]
+                    ),
+                    html.Tr(
+                        [
+                            html.Td(reference_label),
+                            html.Td(f"{reference_risk:.2f}%"),
+                            html.Td(_format_currency(reference_prod)),
+                            html.Td(f"{reference_prod_pct:.1f}%"),
+                            html.Td(_format_currency(reference_metrics.get("swap_in_prod"))),
+                            html.Td(_format_currency(reference_metrics.get("swap_out_prod"))),
+                        ]
+                    ),
+                ]
+            ),
+        ],
+        size="sm",
+        hover=True,
+        responsive=True,
+        className="mb-0 align-middle",
+    )
+
+    return html.Div([summary_cards, comparison_table])
+
+
+def _build_pareto_frontier_figure(
+    pareto_solutions: list[dict[str, Any]],
+    current_metrics: dict[str, Any],
+    reference_metrics: dict[str, Any],
+    reference_label: str,
+) -> go.Figure:
+    fig = go.Figure()
+    frontier_df = pd.DataFrame(pareto_solutions or [])
+    if not frontier_df.empty and {"b2_ever_h6", "oa_amt_h0"}.issubset(frontier_df.columns):
+        frontier_df = frontier_df.copy()
+        frontier_df["b2_ever_h6"] = pd.to_numeric(frontier_df["b2_ever_h6"], errors="coerce")
+        frontier_df["oa_amt_h0"] = pd.to_numeric(frontier_df["oa_amt_h0"], errors="coerce")
+        frontier_df = frontier_df.dropna(subset=["b2_ever_h6", "oa_amt_h0"]).sort_values("b2_ever_h6")
+
+    if not frontier_df.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=frontier_df["b2_ever_h6"],
+                y=frontier_df["oa_amt_h0"],
+                mode="lines+markers",
+                name="Pareto frontier",
+                line=dict(color=COLOR_NEUTRAL, width=2),
+                marker=dict(size=7, color=COLOR_NEUTRAL, opacity=0.8),
+                hovertemplate="Pareto frontier<br>Risk %{x:.2f}%<br>Production €%{y:,.0f}<extra></extra>",
+            )
+        )
+
+    actual_prod = _coerce_float(current_metrics.get("actual_prod"))
+    if actual_prod > 0:
+        fig.add_hline(
+            y=actual_prod,
+            line=dict(color=COLOR_NEUTRAL, dash="dot", width=1.5),
+            annotation_text="Actual booked baseline",
+            annotation_position="top left",
+        )
+
+    fig.add_trace(
+        go.Scatter(
+            x=[_coerce_float(current_metrics.get("opt_risk"))],
+            y=[_coerce_float(current_metrics.get("opt_prod"))],
+            mode="markers",
+            name="Current configuration",
+            marker=dict(color=COLOR_PRIMARY, size=14, symbol="diamond", line=dict(color="white", width=1.5)),
+            hovertemplate="Current configuration<br>Risk %{x:.2f}%<br>Production €%{y:,.0f}<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[_coerce_float(reference_metrics.get("opt_risk"))],
+            y=[_coerce_float(reference_metrics.get("opt_prod"))],
+            mode="markers",
+            name=reference_label,
+            marker=dict(color=COLOR_PRODUCTION, size=12, symbol="circle", line=dict(color="white", width=1.5)),
+            hovertemplate=f"{reference_label}<br>Risk %{{x:.2f}}%<br>Production €%{{y:,.0f}}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        margin=dict(l=50, r=20, t=30, b=45),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        xaxis_title="Risk (%)",
+        yaxis_title="Production (€)",
+        hovermode="closest",
+    )
+    apply_plotly_style(fig, height=320)
+    return fig
+
+
+def _pin_counts(pinned_cells: dict[str, int] | None) -> tuple[int, int, int]:
+    pins = pinned_cells or {}
+    n_pins = len(pins)
+    n_accept = sum(1 for value in pins.values() if value == 1)
+    n_reject = sum(1 for value in pins.values() if value == 0)
+    return n_pins, n_accept, n_reject
+
+
+def _format_pin_state(pin_value: int | None) -> str:
+    if pin_value == 1:
+        return "Pinned Accept"
+    if pin_value == 0:
+        return "Pinned Reject"
+    return "Unpinned"
+
+
+def _build_nd_acceptance_table_columns(variables: list[str]) -> list[dict[str, Any]]:
+    currency_format = Format(precision=0, scheme=Scheme.fixed, group=Group.yes, symbol=Symbol.yes, symbol_prefix="€")
+    pct_format = Format(precision=2, scheme=Scheme.fixed)
+    columns = [{"name": var, "id": var, "type": "numeric"} for var in variables]
+    columns.extend(
+        [
+            {"name": "Current", "id": "current_state"},
+            {"name": "Reference", "id": "reference_state"},
+            {"name": "Pin", "id": "pin_state"},
+            {"name": "Delta", "id": "decision_delta"},
+            {"name": "Booked €", "id": "booked_prod", "type": "numeric", "format": currency_format},
+            {"name": "Repesca €", "id": "rep_prod", "type": "numeric", "format": currency_format},
+            {"name": "Booked Risk %", "id": "booked_risk_pct", "type": "numeric", "format": pct_format},
+        ]
+    )
+    return columns
+
+
+def _build_nd_acceptance_table_rows(
+    summary_data: pd.DataFrame,
+    variables: list[str],
+    current_mask: list[int] | np.ndarray | None,
+    optimal_mask: list[int] | np.ndarray | None,
+    pinned_cells: dict[str, int] | None,
+    multiplier: float,
+) -> list[dict[str, Any]]:
+    from src.optimization_utils import CellGrid
+
+    grid = CellGrid.from_summary(summary_data, variables)
+    pins = pinned_cells or {}
+    fallback_mask = np.zeros(grid.n_cells, dtype=int)
+    if optimal_mask is not None:
+        fallback_mask = np.asarray(optimal_mask, dtype=int)
+    current_mask_arr = np.asarray(current_mask, dtype=int) if current_mask is not None else fallback_mask
+    optimal_mask_arr = np.asarray(optimal_mask, dtype=int) if optimal_mask is not None else current_mask_arr
+    rows: list[dict[str, Any]] = []
+
+    for combo, idx in grid.cell_index.items():
+        cell_key = ",".join(str(int(value)) for value in combo)
+        cell_row = grid.cell_data.iloc[idx]
+        booked_prod = _coerce_float(cell_row.get("oa_amt_h0_boo"))
+        rep_prod = _coerce_float(cell_row.get("oa_amt_h0_rep"))
+        risk_num = _coerce_float(cell_row.get("todu_30ever_h6_boo"))
+        risk_den = _coerce_float(cell_row.get("todu_amt_pile_h6_boo"))
+        booked_risk_raw = calculate_b2_ever_h6(
+            risk_num,
+            risk_den,
+            multiplier=multiplier,
+            as_percentage=True,
+            decimals=2,
+        )
+        current_state = "Accept" if current_mask_arr[idx] == 1 else "Reject"
+        reference_state = "Accept" if optimal_mask_arr[idx] == 1 else "Reject"
+        row = {
+            "id": cell_key,
+            "current_state": current_state,
+            "reference_state": reference_state,
+            "pin_state": _format_pin_state(pins.get(cell_key)),
+            "decision_delta": "Changed" if current_state != reference_state else "Reference",
+            "booked_prod": booked_prod,
+            "rep_prod": rep_prod,
+            "booked_risk_pct": _coerce_float(booked_risk_raw),
+        }
+        for dim, variable in enumerate(variables):
+            row[variable] = int(combo[dim])
+        rows.append(row)
+
+    return rows
+
+
+def _build_pin_status_children(pin_mode: bool, pinned_cells: dict[str, int] | None) -> html.Div:
+    n_pins, n_accept, n_reject = _pin_counts(pinned_cells)
+    badges: list[dbc.Badge] = [
+        dbc.Badge("Pin Mode On" if pin_mode else "Pin Mode Off", color="warning" if pin_mode else "secondary"),
+        dbc.Badge(f"{n_pins} pinned", color="dark"),
+    ]
+    if n_pins:
+        badges.extend(
+            [
+                dbc.Badge(f"{n_accept} accept", color="success"),
+                dbc.Badge(f"{n_reject} reject", color="danger"),
+            ]
+        )
+    helper_text = (
+        "Click a table row or heatmap cell to cycle unpinned → accept → reject while Pin Mode is enabled."
+        if pin_mode
+        else "Enable Pin Mode to add or update pinned constraints."
+    )
+    return html.Div(
+        [
+            html.Div(badges, className="d-flex flex-wrap gap-2 mb-1"),
+            html.Div(helper_text, className="text-muted small"),
+        ]
+    )
+
+
+def _build_pin_feedback_alert(feedback: dict[str, Any] | None) -> html.Div | dbc.Alert:
+    if not feedback or not feedback.get("message"):
+        return html.Div()
+    tone = str(feedback.get("tone", "secondary"))
+    color_map = {
+        "success": "success",
+        "warning": "warning",
+        "danger": "danger",
+        "info": "info",
+        "secondary": "secondary",
+    }
+    return dbc.Alert(feedback["message"], color=color_map.get(tone, "secondary"), className="py-2 mb-0")
+
+
+def _format_bin_label(value: Any) -> str:
+    numeric = _coerce_float(value, np.nan)
+    if pd.notna(numeric):
+        if float(numeric).is_integer():
+            return str(int(numeric))
+        return f"{numeric:g}"
+    return str(value)
+
+
+def _format_nd_prefix_label(prefix_values: tuple[Any, ...], prefix_vars: list[str]) -> str:
+    if not prefix_vars:
+        return "All cells"
+    return " | ".join(
+        f"{var}={_format_bin_label(value)}" for var, value in zip(prefix_vars, prefix_values, strict=False)
+    )
+
+
+def _build_nd_slice_grid_figure(
+    summary_data: pd.DataFrame,
+    variables: list[str],
+    slice_value: Any,
+    current_mask: list[int] | np.ndarray | None,
+    optimal_mask: list[int] | np.ndarray | None,
+    pinned_cells: dict[str, int] | None,
+    multiplier: float,
+) -> go.Figure:
+    from src.optimization_utils import CellGrid
+
+    if len(variables) != 3:
+        return go.Figure()
+
+    grid = CellGrid.from_summary(summary_data, variables)
+    x_var, y_var, slice_var = variables[0], variables[1], variables[2]
+    x_values = list(grid.values_per_var[x_var])
+    y_values = list(grid.values_per_var[y_var])
+    x_labels = [_format_bin_label(value) for value in x_values]
+    y_labels = [_format_bin_label(value) for value in y_values]
+    slice_label = _format_bin_label(slice_value)
+    pins = pinned_cells or {}
+    fallback_mask = np.zeros(grid.n_cells, dtype=int)
+    if optimal_mask is not None:
+        fallback_mask = np.asarray(optimal_mask, dtype=int)
+    current_mask_arr = np.asarray(current_mask, dtype=int) if current_mask is not None else fallback_mask
+    optimal_mask_arr = np.asarray(optimal_mask, dtype=int) if optimal_mask is not None else current_mask_arr
+
+    z_values: list[list[int]] = []
+    customdata: list[list[list[Any]]] = []
+    changed_x: list[str] = []
+    changed_y: list[str] = []
+    changed_keys: list[str] = []
+    pinned_accept_x: list[str] = []
+    pinned_accept_y: list[str] = []
+    pinned_accept_keys: list[str] = []
+    pinned_reject_x: list[str] = []
+    pinned_reject_y: list[str] = []
+    pinned_reject_keys: list[str] = []
+
+    for y_value, y_label in zip(y_values, y_labels, strict=False):
+        row_values: list[int] = []
+        row_customdata: list[list[Any]] = []
+        for x_value, x_label in zip(x_values, x_labels, strict=False):
+            combo = (x_value, y_value, slice_value)
+            idx = grid.cell_index[combo]
+            cell_key = ",".join(str(int(value)) for value in combo)
+            cell_row = grid.cell_data.iloc[idx]
+            booked_prod = _coerce_float(cell_row.get("oa_amt_h0_boo"))
+            rep_prod = _coerce_float(cell_row.get("oa_amt_h0_rep"))
+            risk_num = _coerce_float(cell_row.get("todu_30ever_h6_boo"))
+            risk_den = _coerce_float(cell_row.get("todu_amt_pile_h6_boo"))
+            booked_risk_raw = calculate_b2_ever_h6(
+                risk_num,
+                risk_den,
+                multiplier=multiplier,
+                as_percentage=True,
+                decimals=2,
+            )
+            current_state = "Accept" if current_mask_arr[idx] == 1 else "Reject"
+            reference_state = "Accept" if optimal_mask_arr[idx] == 1 else "Reject"
+            decision_delta = "Changed" if current_state != reference_state else "Reference"
+            pin_state = _format_pin_state(pins.get(cell_key))
+
+            row_values.append(int(current_mask_arr[idx]))
+            row_customdata.append(
+                [
+                    cell_key,
+                    current_state,
+                    reference_state,
+                    decision_delta,
+                    pin_state,
+                    booked_prod,
+                    rep_prod,
+                    _coerce_float(booked_risk_raw),
+                ]
+            )
+
+            if decision_delta == "Changed":
+                changed_x.append(x_label)
+                changed_y.append(y_label)
+                changed_keys.append(cell_key)
+            if pin_state == "Pinned Accept":
+                pinned_accept_x.append(x_label)
+                pinned_accept_y.append(y_label)
+                pinned_accept_keys.append(cell_key)
+            elif pin_state == "Pinned Reject":
+                pinned_reject_x.append(x_label)
+                pinned_reject_y.append(y_label)
+                pinned_reject_keys.append(cell_key)
+
+        z_values.append(row_values)
+        customdata.append(row_customdata)
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z_values,
+            x=x_labels,
+            y=y_labels,
+            zmin=0,
+            zmax=1,
+            colorscale=[[0, "#ffcccc"], [1, "#ccffcc"]],
+            showscale=False,
+            xgap=1,
+            ygap=1,
+            customdata=customdata,
+            hovertemplate=(
+                f"{x_var}: %{{x}}<br>{y_var}: %{{y}}<br>{slice_var}: {slice_label}"
+                "<br>Current: %{customdata[1]}"
+                "<br>Reference: %{customdata[2]}"
+                "<br>Delta: %{customdata[3]}"
+                "<br>Pin: %{customdata[4]}"
+                "<br>Booked production: €%{customdata[5]:,.0f}"
+                "<br>Repesca production: €%{customdata[6]:,.0f}"
+                "<br>Booked risk: %{customdata[7]:.2f}%<extra></extra>"
+            ),
+        )
+    )
+
+    if changed_x:
+        fig.add_trace(
+            go.Scatter(
+                x=changed_x,
+                y=changed_y,
+                mode="markers",
+                customdata=changed_keys,
+                marker=dict(symbol="diamond-open", size=10, color="#f1c40f", line=dict(width=2, color="#c8a500")),
+                hovertemplate="Changed vs reference<extra></extra>",
+                showlegend=False,
+            )
+        )
+    if pinned_accept_x:
+        fig.add_trace(
+            go.Scatter(
+                x=pinned_accept_x,
+                y=pinned_accept_y,
+                mode="markers",
+                customdata=pinned_accept_keys,
+                marker=dict(symbol="star", size=12, color="#0b7a30", line=dict(width=1, color="white")),
+                hovertemplate="Pinned accept<extra></extra>",
+                showlegend=False,
+            )
+        )
+    if pinned_reject_x:
+        fig.add_trace(
+            go.Scatter(
+                x=pinned_reject_x,
+                y=pinned_reject_y,
+                mode="markers",
+                customdata=pinned_reject_keys,
+                marker=dict(symbol="x", size=11, color="#8b0000", line=dict(width=2, color="#8b0000")),
+                hovertemplate="Pinned reject<extra></extra>",
+                showlegend=False,
+            )
+        )
+
+    fig.update_layout(
+        xaxis_title=x_var,
+        yaxis_title=y_var,
+        margin=dict(l=45, r=10, t=10, b=40),
+        clickmode="event+select",
+        showlegend=False,
+    )
+    apply_plotly_style(fig, height=250)
+    return fig
+
+
+def _build_nd_slice_grid_panel(
+    summary_data: pd.DataFrame,
+    variables: list[str],
+    current_mask: list[int] | np.ndarray | None,
+    optimal_mask: list[int] | np.ndarray | None,
+    pinned_cells: dict[str, int] | None,
+    multiplier: float,
+) -> list[Any]:
+    from src.optimization_utils import CellGrid
+
+    if len(variables) != 3:
+        return []
+
+    grid = CellGrid.from_summary(summary_data, variables)
+    slice_var = variables[2]
+    slice_values = list(grid.values_per_var[slice_var])
+    fallback_mask = np.zeros(grid.n_cells, dtype=int)
+    if optimal_mask is not None:
+        fallback_mask = np.asarray(optimal_mask, dtype=int)
+    current_mask_arr = np.asarray(current_mask, dtype=int) if current_mask is not None else fallback_mask
+
+    columns: list[dbc.Col] = []
+    for slice_value in slice_values:
+        slice_indices = [idx for combo, idx in grid.cell_index.items() if combo[2] == slice_value]
+        accepted_count = int(current_mask_arr[slice_indices].sum()) if slice_indices else 0
+        total_cells = len(slice_indices)
+        slice_label = _format_bin_label(slice_value)
+        columns.append(
+            dbc.Col(
+                dbc.Card(
+                    [
+                        dbc.CardHeader(
+                            [
+                                html.Span(f"{slice_var} = {slice_label}", className="fw-bold"),
+                                dbc.Badge(
+                                    f"{accepted_count}/{total_cells} accepted",
+                                    color="light",
+                                    text_color="dark",
+                                    className="float-end",
+                                ),
+                            ]
+                        ),
+                        dbc.CardBody(
+                            dcc.Graph(
+                                id={"type": "nd-slice-grid", "index": slice_label},
+                                figure=_build_nd_slice_grid_figure(
+                                    summary_data,
+                                    variables,
+                                    slice_value,
+                                    current_mask,
+                                    optimal_mask,
+                                    pinned_cells,
+                                    multiplier,
+                                ),
+                                config={"displayModeBar": False},
+                                style={"height": "250px"},
+                            ),
+                            className="p-2",
+                        ),
+                    ],
+                    className="h-100",
+                ),
+                md=6,
+                className="mb-3",
+            )
+        )
+
+    return [dbc.Row(columns, className="g-3")]
+
+
 def calculate_metrics_from_custom_cuts(
     data: pd.DataFrame,
     cut_map: dict,
@@ -1351,10 +1962,30 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
 
     scenario_display = scenario.capitalize()
     segment_display = f" - {segment}" if segment else ""
+    explorer_mode_label = "2D cutoff map" if not is_nd else f"{len(variables)}D cell mask"
+    if not is_nd:
+        acceptance_rule_label = f"{variables[1]} {'≥' if variables[1] in inv_vars else '≤'} cutoff"
+        acceptance_rule_detail = f"{len(summary_data[variables[0]].unique())} {variables[0]} bins"
+    else:
+        acceptance_rule_label = "Cell-level accept / reject mask"
+        acceptance_rule_detail = f"{len(variables)} variables, {len(optimal_mask) if optimal_mask else 0} cells"
+    frontier_label = f"{len(pareto_data)} points" if pareto_data else "Not loaded"
+    frontier_detail = f"{risk_min:.2f}% to {risk_max:.2f}% risk"
+    uncertainty_label = "Available" if has_ci else "Not loaded"
+    uncertainty_detail = "Toggle uncertainty overlay to inspect cell CI width" if has_ci else "No cell_level_ci.csv found"
+    guide_message = (
+        "Use the risk selector to jump to the closest Pareto solution. Drag individual cutoffs to run what-if analysis."
+        if not is_nd
+        else (
+            "Use the risk selector to jump to a frontier solution, then click the current acceptance grids to toggle cells. "
+            "Pin Mode on the overview heatmap still lets you lock cells before re-optimizing."
+            if len(variables) == 3
+            else "Use the risk selector to jump to a frontier solution, then enable Pin Mode to lock cells before re-optimizing."
+        )
+    )
 
     # Create risk slider marks
-    risk_step = (risk_max - risk_min) / 4 if risk_max > risk_min else 0.25
-    risk_marks = {round(risk_min + i * risk_step, 2): f"{round(risk_min + i * risk_step, 2):.2f}%" for i in range(5)}
+    risk_marks = _build_risk_marks(risk_min, risk_max)
 
     # ------------------------------------------------------------------
     # 2-var path: sliders + per-bin cutoffs (unchanged)
@@ -1481,14 +2112,26 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
 
         grid = CellGrid.from_summary(summary_data, variables)
 
-        # Build table rows: one per cell, columns = variable values + status
-        table_rows = []
-        for combo, idx in grid.cell_index.items():
-            row = {variables[d]: int(combo[d]) for d in range(len(variables))}
-            row["status"] = "Accept" if (optimal_mask and optimal_mask[idx] == 1) else "Reject"
-            table_rows.append(row)
+        editor_help_text = (
+            f"Click a cell to toggle Accept \u2192 Reject. One grid is shown per {variables[2]} value."
+            if len(variables) == 3
+            else "Click a row in Pin Mode to cycle: unpinned \u2192 accept \u2192 reject \u2192 unpinned"
+        )
+        grid_children = (
+            _build_nd_slice_grid_panel(summary_data, variables, optimal_mask, optimal_mask, {}, multiplier)
+            if len(variables) == 3
+            else []
+        )
 
-        nd_table_columns = [{"name": v, "id": v} for v in variables] + [{"name": "Status", "id": "status"}]
+        table_rows = _build_nd_acceptance_table_rows(
+            summary_data,
+            variables,
+            optimal_mask,
+            optimal_mask,
+            {},
+            multiplier,
+        )
+        nd_table_columns = _build_nd_acceptance_table_columns(variables)
 
         store_data = {
             "scenario": scenario,
@@ -1524,38 +2167,96 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                         dbc.CardBody(
                             [
                                 html.P(
-                                    "Click a row in Pin Mode to cycle: unpinned \u2192 accept \u2192 reject \u2192 unpinned",
+                                    editor_help_text,
                                     className="text-muted small",
                                 ),
-                                dash_table.DataTable(
-                                    id="nd-acceptance-table",
-                                    columns=nd_table_columns,
-                                    data=table_rows,
-                                    page_size=20,
-                                    filter_action="native",
-                                    sort_action="native",
-                                    row_selectable=False,
-                                    style_table={"overflowX": "auto", "maxHeight": "400px", "overflowY": "auto"},
-                                    style_cell={
-                                        "textAlign": "center",
-                                        "padding": "6px 10px",
-                                        "fontSize": "0.85rem",
-                                    },
-                                    style_header={
-                                        "backgroundColor": "#f8f9fa",
-                                        "fontWeight": "600",
-                                        "borderBottom": "2px solid #dee2e6",
-                                    },
-                                    style_data_conditional=[
-                                        {
-                                            "if": {"filter_query": '{status} = "Accept"'},
-                                            "backgroundColor": "rgba(46,204,113,0.12)",
-                                        },
-                                        {
-                                            "if": {"filter_query": '{status} = "Reject"'},
-                                            "backgroundColor": "rgba(231,76,60,0.12)",
-                                        },
+                                html.Div(
+                                    [
+                                        dbc.Badge("Accept", color="success", className="me-2"),
+                                        dbc.Badge("Reject", color="danger", className="me-2"),
+                                        dbc.Badge("Changed vs reference", color="warning", text_color="dark", className="me-2"),
+                                        dbc.Badge("Pinned Accept", color="success", className="me-2", style={"opacity": 0.8}),
+                                        dbc.Badge("Pinned Reject", color="danger", style={"opacity": 0.8}),
+                                        *([dbc.Badge("Click to toggle", color="primary")] if len(variables) == 3 else []),
                                     ],
+                                    className="mb-3 d-flex flex-wrap gap-2",
+                                ),
+                                html.Div(
+                                    id="nd-acceptance-grid-panel",
+                                    children=grid_children,
+                                    style={"display": "block" if len(variables) == 3 else "none"},
+                                ),
+                                html.Div(
+                                    dash_table.DataTable(
+                                        id="nd-acceptance-table",
+                                        columns=nd_table_columns,
+                                        data=table_rows,
+                                        page_size=min(16, max(grid.n_cells, 1)),
+                                        fixed_rows={"headers": True},
+                                        filter_action="native",
+                                        sort_action="native",
+                                        sort_mode="multi",
+                                        hidden_columns=["id"],
+                                        row_selectable=False,
+                                        style_table={
+                                            "overflowX": "auto",
+                                            "maxHeight": "460px",
+                                            "overflowY": "auto",
+                                            "border": "1px solid #dee2e6",
+                                            "borderRadius": "0.5rem",
+                                        },
+                                        style_cell={
+                                            "textAlign": "center",
+                                            "padding": "7px 10px",
+                                            "fontSize": "0.85rem",
+                                            "border": "none",
+                                        },
+                                        style_cell_conditional=[
+                                            {"if": {"column_id": variable}, "fontWeight": "600"} for variable in variables
+                                        ]
+                                        + [
+                                            {"if": {"column_id": "booked_prod"}, "textAlign": "right", "minWidth": "110px"},
+                                            {"if": {"column_id": "rep_prod"}, "textAlign": "right", "minWidth": "110px"},
+                                            {"if": {"column_id": "booked_risk_pct"}, "minWidth": "110px"},
+                                        ],
+                                        style_header={
+                                            "backgroundColor": "#f8f9fa",
+                                            "fontWeight": "600",
+                                            "borderBottom": "2px solid #dee2e6",
+                                        },
+                                        style_data_conditional=[
+                                            {
+                                                "if": {"filter_query": '{current_state} = "Accept"'},
+                                                "backgroundColor": "rgba(46,204,113,0.08)",
+                                            },
+                                            {
+                                                "if": {"filter_query": '{current_state} = "Reject"'},
+                                                "backgroundColor": "rgba(231,76,60,0.08)",
+                                            },
+                                            {
+                                                "if": {"filter_query": '{decision_delta} = "Changed"'},
+                                                "boxShadow": "inset 3px 0 0 #f1c40f",
+                                            },
+                                            {
+                                                "if": {"filter_query": '{pin_state} = "Pinned Accept"'},
+                                                "backgroundColor": "rgba(46,204,113,0.18)",
+                                                "borderLeft": "4px solid #2ecc71",
+                                                "fontWeight": "600",
+                                            },
+                                            {
+                                                "if": {"filter_query": '{pin_state} = "Pinned Reject"'},
+                                                "backgroundColor": "rgba(231,76,60,0.18)",
+                                                "borderLeft": "4px solid #e74c3c",
+                                                "fontWeight": "600",
+                                            },
+                                            {
+                                                "if": {"state": "active"},
+                                                "backgroundColor": "rgba(52,152,219,0.10)",
+                                                "border": "1px solid #3498db",
+                                            },
+                                        ],
+                                    ),
+                                    style={"display": "none" if len(variables) == 3 else "block"},
                                 ),
                             ]
                         ),
@@ -1566,7 +2267,10 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
             md=5,
         )
 
-        heatmap_header = "Cell Acceptance Map \u2014 green = accepted"
+        heatmap_header = (
+            f"Acceptance Matrix — rows = {', '.join(variables[:-1])}, columns = {variables[-1]} "
+            "(green = accepted)"
+        )
 
     # ------------------------------------------------------------------
     # Common layout (both paths share the same component IDs)
@@ -1577,6 +2281,57 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
             dcc.Store(id="cutoff-data-store", data=store_data),
             dcc.Store(id="pinned-cells-store", data={}),
             dcc.Store(id="current-mask-store", data=optimal_mask),
+            dcc.Store(id="pin-feedback-store", data={}),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        _build_cutoff_stat_card(
+                            "Explorer mode",
+                            explorer_mode_label,
+                            ", ".join(variables),
+                            COLOR_PRIMARY,
+                        ),
+                        md=6,
+                        xl=3,
+                        className="mb-3",
+                    ),
+                    dbc.Col(
+                        _build_cutoff_stat_card(
+                            "Acceptance rule",
+                            acceptance_rule_label,
+                            acceptance_rule_detail,
+                            COLOR_NEUTRAL,
+                        ),
+                        md=6,
+                        xl=3,
+                        className="mb-3",
+                    ),
+                    dbc.Col(
+                        _build_cutoff_stat_card(
+                            "Pareto frontier",
+                            frontier_label,
+                            frontier_detail,
+                            COLOR_PRODUCTION,
+                        ),
+                        md=6,
+                        xl=3,
+                        className="mb-3",
+                    ),
+                    dbc.Col(
+                        _build_cutoff_stat_card(
+                            "Cell uncertainty",
+                            uncertainty_label,
+                            uncertainty_detail,
+                            COLOR_RISK if has_ci else COLOR_NEUTRAL,
+                        ),
+                        md=6,
+                        xl=3,
+                        className="mb-3",
+                    ),
+                ],
+                className="g-3",
+            ),
+            dbc.Alert(guide_message, color="light", className="border mb-3"),
             # Risk Level Selector
             dbc.Card(
                 [
@@ -1636,11 +2391,11 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                     dbc.Col(
                         [
                             dbc.Card(
-                                [dbc.CardHeader("Impact Analysis"), dbc.CardBody(id="cutoff-results")], className="mb-3"
+                                [dbc.CardHeader("Configuration Summary"), dbc.CardBody(id="cutoff-results")], className="mb-3"
                             ),
                             dbc.Card(
                                 [
-                                    dbc.CardHeader("Risk vs Production"),
+                                    dbc.CardHeader("Pareto Frontier vs Current Configuration"),
                                     dbc.CardBody([dcc.Graph(id="cutoff-chart", style={"height": "300px"})]),
                                 ]
                             ),
@@ -1672,14 +2427,28 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                     ),
                     dbc.Col(
                         [
-                            dbc.Button(
-                                "Re-optimize with Pins",
-                                id="reoptimize-pin-btn",
-                                color="success",
-                                size="sm",
-                                className="mb-2",
+                            html.Div(
+                                [
+                                    dbc.Button(
+                                        "Re-optimize with Pins",
+                                        id="reoptimize-pin-btn",
+                                        color="success",
+                                        size="sm",
+                                        className="me-2 mb-2",
+                                    ),
+                                    dbc.Button(
+                                        "Clear Pins",
+                                        id="clear-pins-btn",
+                                        color="secondary",
+                                        outline=True,
+                                        size="sm",
+                                        className="mb-2",
+                                    ),
+                                ],
+                                className="d-flex flex-wrap align-items-center",
                             ),
-                            html.Span(id="pin-status", className="ms-2 small text-muted"),
+                            html.Div(id="pin-status", className="small text-muted mb-2"),
+                            html.Div(id="pin-feedback"),
                         ],
                         md=6,
                     ),
@@ -2219,109 +2988,163 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
         )
 
         # Results display
-        risk_delta = current_metrics["opt_risk"] - optimal_metrics["opt_risk"]
-        prod_delta = current_metrics["opt_prod_pct"] - optimal_metrics["opt_prod_pct"]
-        risk_color = COLOR_GOOD if risk_delta <= 0 else COLOR_BAD
-        prod_color = COLOR_GOOD if prod_delta >= 0 else COLOR_BAD
-
-        results = dbc.Row(
-            [
-                dbc.Col(
-                    [
-                        html.H6("Current Configuration", className="text-primary"),
-                        html.P(
-                            [
-                                html.Strong("Risk: "),
-                                f"{current_metrics['opt_risk']:.2f}%",
-                                html.Span(f" ({risk_delta:+.2f}pp)", style={"color": risk_color}, className="ms-1"),
-                            ]
-                        ),
-                        html.P(
-                            [
-                                html.Strong("Production: "),
-                                f"{current_metrics['opt_prod_pct']:.1%}",
-                                html.Span(f" ({prod_delta:+.1%})", style={"color": prod_color}, className="ms-1"),
-                            ]
-                        ),
-                    ],
-                    md=6,
-                ),
-                dbc.Col(
-                    [
-                        html.H6("Optimal Configuration", className="text-muted"),
-                        html.P([html.Strong("Risk: "), f"{optimal_metrics['opt_risk']:.2f}%"]),
-                        html.P([html.Strong("Production: "), f"{optimal_metrics['opt_prod_pct']:.1%}"]),
-                    ],
-                    md=6,
-                ),
-            ]
-        )
+        results = _build_cutoff_results_content(current_metrics, optimal_metrics, "Reference optimum")
 
         # Bar chart
-        fig_chart = go.Figure()
-        categories = ["Risk (%)", "Production (%)"]
-        fig_chart.add_trace(
-            go.Bar(
-                name="Current",
-                x=categories,
-                y=[current_metrics["opt_risk"], current_metrics["opt_prod_pct"] * 100],
-                marker_color=COLOR_PRIMARY,
-            )
+        fig_chart = _build_pareto_frontier_figure(
+            store_data.get("pareto_solutions", []), current_metrics, optimal_metrics, "Reference optimum"
         )
-        fig_chart.add_trace(
-            go.Bar(
-                name="Optimal",
-                x=categories,
-                y=[optimal_metrics["opt_risk"], optimal_metrics["opt_prod_pct"] * 100],
-                marker_color=COLOR_PRODUCTION,
-            )
-        )
-        fig_chart.update_layout(
-            barmode="group",
-            margin=dict(l=40, r=20, t=30, b=40),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            yaxis_title="Value (%)",
-        )
-        apply_plotly_style(fig_chart, height=280)
 
-        # Heatmap: go.Table showing cells with color-coded status
+        # Heatmap: acceptance matrix using the last variable as columns and the prefix combo as rows
         from src.optimization_utils import CellGrid
 
         grid = CellGrid.from_summary(summary_data, variables)
         mask_arr = np.asarray(current_mask, dtype=int)
+        optimal_mask_arr = np.asarray(optimal_mask, dtype=int) if optimal_mask else mask_arr
+        pins = pinned_cells or {}
 
-        header_vals = [*variables, "Status"]
-        cell_vals = [[] for _ in header_vals]
-        cell_colors = []
-        for combo, idx in grid.cell_index.items():
-            for d, v in enumerate(combo):
-                cell_vals[d].append(int(v))
-            status = "Accept" if mask_arr[idx] == 1 else "Reject"
-            cell_vals[-1].append(status)
-            cell_colors.append("rgba(46,204,113,0.15)" if mask_arr[idx] == 1 else "rgba(231,76,60,0.15)")
+        last_var = variables[-1]
+        prefix_vars = variables[:-1]
+        last_values = list(grid.values_per_var[last_var])
+        last_labels = [_format_bin_label(value) for value in last_values]
+        prefix_combos = sorted({combo[:-1] for combo in grid.cell_index})
+        prefix_labels = [_format_nd_prefix_label(prefix, prefix_vars) for prefix in prefix_combos]
 
-        # Add pin markers to status column
-        if pinned_cells:
-            for i, combo in enumerate(grid.cell_index.keys()):
-                cell_key = ",".join(str(int(v)) for v in combo)
-                pin_val = pinned_cells.get(cell_key)
-                if pin_val is not None:
-                    marker = "\u2605" if pin_val == 1 else "\u2717"
-                    cell_vals[-1][i] = f"{cell_vals[-1][i]} {marker}"
+        z_values = []
+        hover_customdata = []
+        changed_x, changed_y, changed_keys = [], [], []
+        pinned_accept_x, pinned_accept_y, pinned_accept_keys = [], [], []
+        pinned_reject_x, pinned_reject_y, pinned_reject_keys = [], [], []
+
+        for prefix_combo, prefix_label in zip(prefix_combos, prefix_labels, strict=False):
+            row_values = []
+            row_customdata = []
+            for last_value, last_label in zip(last_values, last_labels, strict=False):
+                combo = prefix_combo + (last_value,)
+                idx = grid.cell_index[combo]
+                cell_key = ",".join(str(int(value)) for value in combo)
+                cell_row = grid.cell_data.iloc[idx]
+                booked_prod = _coerce_float(cell_row.get("oa_amt_h0_boo"))
+                rep_prod = _coerce_float(cell_row.get("oa_amt_h0_rep"))
+                risk_num = _coerce_float(cell_row.get("todu_30ever_h6_boo"))
+                risk_den = _coerce_float(cell_row.get("todu_amt_pile_h6_boo"))
+                booked_risk_raw = calculate_b2_ever_h6(
+                    risk_num,
+                    risk_den,
+                    multiplier=multiplier,
+                    as_percentage=True,
+                    decimals=2,
+                )
+                current_state = "Accept" if mask_arr[idx] == 1 else "Reject"
+                reference_state = "Accept" if optimal_mask_arr[idx] == 1 else "Reject"
+                decision_delta = "Changed" if current_state != reference_state else "Reference"
+                pin_state = _format_pin_state(pins.get(cell_key))
+                combo_label = "<br>".join(
+                    f"{var}: {_format_bin_label(value)}" for var, value in zip(variables, combo, strict=False)
+                )
+
+                row_values.append(int(mask_arr[idx]))
+                row_customdata.append(
+                    [
+                        combo_label,
+                        current_state,
+                        reference_state,
+                        decision_delta,
+                        pin_state,
+                        booked_prod,
+                        rep_prod,
+                        _coerce_float(booked_risk_raw),
+                        cell_key,
+                    ]
+                )
+
+                if decision_delta == "Changed":
+                    changed_x.append(last_label)
+                    changed_y.append(prefix_label)
+                    changed_keys.append(cell_key)
+                if pin_state == "Pinned Accept":
+                    pinned_accept_x.append(last_label)
+                    pinned_accept_y.append(prefix_label)
+                    pinned_accept_keys.append(cell_key)
+                elif pin_state == "Pinned Reject":
+                    pinned_reject_x.append(last_label)
+                    pinned_reject_y.append(prefix_label)
+                    pinned_reject_keys.append(cell_key)
+
+            z_values.append(row_values)
+            hover_customdata.append(row_customdata)
 
         fig_heatmap = go.Figure(
-            data=go.Table(
-                header=dict(values=header_vals, fill_color="#f8f9fa", font=dict(size=12, color="black")),
-                cells=dict(
-                    values=cell_vals,
-                    fill_color=[["white"] * len(cell_colors)] * (len(variables)) + [cell_colors],
-                    font=dict(size=11),
-                    align="center",
+            data=go.Heatmap(
+                z=z_values,
+                x=last_labels,
+                y=prefix_labels,
+                zmin=0,
+                zmax=1,
+                colorscale=[[0, "#ffcccc"], [1, "#ccffcc"]],
+                showscale=False,
+                xgap=1,
+                ygap=1,
+                customdata=hover_customdata,
+                hovertemplate=(
+                    "%{customdata[0]}"
+                    "<br>Current: %{customdata[1]}"
+                    "<br>Reference: %{customdata[2]}"
+                    "<br>Delta: %{customdata[3]}"
+                    "<br>Pin: %{customdata[4]}"
+                    "<br>Booked production: €%{customdata[5]:,.0f}"
+                    "<br>Repesca production: €%{customdata[6]:,.0f}"
+                    "<br>Booked risk: %{customdata[7]:.2f}%<extra></extra>"
                 ),
             )
         )
-        fig_heatmap.update_layout(margin=dict(l=10, r=10, t=10, b=10))
-        apply_plotly_style(fig_heatmap, height=380)
+
+        if changed_x:
+            fig_heatmap.add_trace(
+                go.Scatter(
+                    x=changed_x,
+                    y=changed_y,
+                    mode="markers",
+                    name="Changed vs reference",
+                    customdata=changed_keys,
+                    marker=dict(symbol="diamond-open", size=10, color="#f1c40f", line=dict(width=2, color="#c8a500")),
+                    hovertemplate="Changed vs reference<extra></extra>",
+                )
+            )
+        if pinned_accept_x:
+            fig_heatmap.add_trace(
+                go.Scatter(
+                    x=pinned_accept_x,
+                    y=pinned_accept_y,
+                    mode="markers",
+                    name="Pinned accept",
+                    customdata=pinned_accept_keys,
+                    marker=dict(symbol="star", size=12, color="#0b7a30", line=dict(width=1, color="white")),
+                    hovertemplate="Pinned accept<extra></extra>",
+                )
+            )
+        if pinned_reject_x:
+            fig_heatmap.add_trace(
+                go.Scatter(
+                    x=pinned_reject_x,
+                    y=pinned_reject_y,
+                    mode="markers",
+                    name="Pinned reject",
+                    customdata=pinned_reject_keys,
+                    marker=dict(symbol="x", size=11, color="#8b0000", line=dict(width=2, color="#8b0000")),
+                    hovertemplate="Pinned reject<extra></extra>",
+                )
+            )
+
+        fig_heatmap.update_layout(
+            xaxis_title=last_var,
+            yaxis_title=" | ".join(prefix_vars) if prefix_vars else "Cell group",
+            yaxis=dict(autorange="reversed"),
+            margin=dict(l=80, r=20, t=30, b=60),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            clickmode="event+select",
+        )
+        apply_plotly_style(fig_heatmap, height=min(900, max(380, len(prefix_labels) * 28)))
 
         # Marginal impact: horizontal bar chart sorted by magnitude
         fig_marginal = go.Figure()
@@ -2382,73 +3205,12 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
 
     # Create results display
     # Risk values are already in percentage form (e.g. 1.5 = 1.5%)
-    risk_delta = current_metrics["opt_risk"] - optimal_metrics["opt_risk"]
-    prod_delta = current_metrics["opt_prod_pct"] - optimal_metrics["opt_prod_pct"]
-
-    risk_color = COLOR_GOOD if risk_delta <= 0 else COLOR_BAD
-    prod_color = COLOR_GOOD if prod_delta >= 0 else COLOR_BAD
-
-    results = dbc.Row(
-        [
-            dbc.Col(
-                [
-                    html.H6("Current Configuration", className="text-primary"),
-                    html.P(
-                        [
-                            html.Strong("Risk: "),
-                            f"{current_metrics['opt_risk']:.2f}%",
-                            html.Span(f" ({risk_delta:+.2f}pp)", style={"color": risk_color}, className="ms-1"),
-                        ]
-                    ),
-                    html.P(
-                        [
-                            html.Strong("Production: "),
-                            f"{current_metrics['opt_prod_pct']:.1%}",
-                            html.Span(f" ({prod_delta:+.1%})", style={"color": prod_color}, className="ms-1"),
-                        ]
-                    ),
-                ],
-                md=6,
-            ),
-            dbc.Col(
-                [
-                    html.H6("Optimal Configuration", className="text-muted"),
-                    html.P([html.Strong("Risk: "), f"{optimal_metrics['opt_risk']:.2f}%"]),
-                    html.P([html.Strong("Production: "), f"{optimal_metrics['opt_prod_pct']:.1%}"]),
-                ],
-                md=6,
-            ),
-        ]
-    )
+    results = _build_cutoff_results_content(current_metrics, optimal_metrics, "Reference optimum")
 
     # Create comparison chart — risk is already in %, production ratio needs *100
-    fig_chart = go.Figure()
-
-    categories = ["Risk (%)", "Production (%)"]
-    fig_chart.add_trace(
-        go.Bar(
-            name="Current",
-            x=categories,
-            y=[current_metrics["opt_risk"], current_metrics["opt_prod_pct"] * 100],
-            marker_color=COLOR_PRIMARY,
-        )
+    fig_chart = _build_pareto_frontier_figure(
+        store_data.get("pareto_solutions", []), current_metrics, optimal_metrics, "Reference optimum"
     )
-    fig_chart.add_trace(
-        go.Bar(
-            name="Optimal",
-            x=categories,
-            y=[optimal_metrics["opt_risk"], optimal_metrics["opt_prod_pct"] * 100],
-            marker_color=COLOR_PRODUCTION,
-        )
-    )
-
-    fig_chart.update_layout(
-        barmode="group",
-        margin=dict(l=40, r=20, t=30, b=40),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        yaxis_title="Value (%)",
-    )
-    apply_plotly_style(fig_chart, height=280)
 
     # Create heatmap showing which cells pass/fail
     df = summary_data.copy()
@@ -2466,6 +3228,37 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
     pivot = df.pivot_table(index=var1_col, columns=var0_col, values="passes", aggfunc="first")
     pivot = pivot.sort_index(ascending=True)
 
+    cell_lookup = {(float(row[var1_col]), float(row[var0_col])): row for _, row in df.iterrows()}
+    heatmap_customdata = []
+    for y_val in pivot.index:
+        row_customdata = []
+        for x_val in pivot.columns:
+            cell_row = cell_lookup.get((float(y_val), float(x_val)))
+            booked_prod = _coerce_float(cell_row.get("oa_amt_h0_boo")) if cell_row is not None else 0.0
+            rep_prod = _coerce_float(cell_row.get("oa_amt_h0_rep")) if cell_row is not None else 0.0
+            risk_num = _coerce_float(cell_row.get("todu_30ever_h6_boo")) if cell_row is not None else 0.0
+            risk_den = _coerce_float(cell_row.get("todu_amt_pile_h6_boo")) if cell_row is not None else 0.0
+            booked_risk = (risk_num / risk_den * multiplier) if risk_den > 0 else 0.0
+            pin_state = "Unpinned"
+            if pinned_cells:
+                pin_value = pinned_cells.get(f"{int(x_val)},{int(y_val)}")
+                if pin_value == 1:
+                    pin_state = "Pinned accept"
+                elif pin_value == 0:
+                    pin_state = "Pinned reject"
+            row_customdata.append(
+                [
+                    "Accepted" if pivot.loc[y_val, x_val] == 1 else "Rejected",
+                    _coerce_float(cuts_float.get(float(x_val)), np.nan),
+                    booked_prod,
+                    rep_prod,
+                    booked_risk,
+                    pin_state,
+                    f"{int(x_val)},{int(y_val)}",
+                ]
+            )
+        heatmap_customdata.append(row_customdata)
+
     fig_heatmap = go.Figure(
         data=go.Heatmap(
             z=pivot.values,
@@ -2473,8 +3266,18 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
             y=[str(int(r)) for r in pivot.index],
             colorscale=[[0, "#ffcccc"], [1, "#ccffcc"]],
             showscale=False,
-            hovertemplate=f"{var0_col}: %{{x}}<br>{var1_col}: %{{y}}<br>Status: %{{customdata}}<extra></extra>",
-            customdata=[["Pass" if v == 1 else "Reject" for v in row] for row in pivot.values],
+            xgap=1,
+            ygap=1,
+            hovertemplate=(
+                f"{var0_col}: %{{x}}<br>{var1_col}: %{{y}}"
+                "<br>Status: %{customdata[0]}"
+                "<br>Cutoff: %{customdata[1]:.0f}"
+                "<br>Booked production: €%{customdata[2]:,.0f}"
+                "<br>Repesca production: €%{customdata[3]:,.0f}"
+                "<br>Booked risk: %{customdata[4]:.2f}%"
+                "<br>%{customdata[5]}<extra></extra>"
+            ),
+            customdata=heatmap_customdata,
         )
     )
 
@@ -2608,6 +3411,207 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
     return results, fig_chart, fig_heatmap, fig_marginal
 
 
+@app.callback(
+    Output("nd-acceptance-table", "data"),
+    [Input("current-mask-store", "data"), Input("pinned-cells-store", "data"), Input("cutoff-data-store", "data")],
+    prevent_initial_call=False,
+)
+def update_nd_acceptance_table(current_mask, pinned_cells, store_data):
+    if not store_data or not store_data.get("is_nd", False):
+        return dash.no_update
+
+    scenario = store_data["scenario"]
+    segment = store_data.get("segment")
+    variables = store_data.get("variables", [])
+    multiplier = store_data.get("multiplier", 7.0)
+    optimal_mask = store_data.get("optimal_mask")
+    paths = get_scenario_paths(scenario, segment)
+    if not paths["summary_data"].exists():
+        return []
+
+    summary_data = pd.read_csv(paths["summary_data"])
+    active_mask = current_mask if current_mask is not None else optimal_mask
+    return _build_nd_acceptance_table_rows(
+        summary_data,
+        variables,
+        active_mask,
+        optimal_mask,
+        pinned_cells,
+        multiplier,
+    )
+
+
+@app.callback(
+    Output("nd-acceptance-grid-panel", "children"),
+    [Input("current-mask-store", "data"), Input("pinned-cells-store", "data"), Input("cutoff-data-store", "data")],
+    prevent_initial_call=False,
+)
+def render_nd_acceptance_grid_panel(current_mask, pinned_cells, store_data):
+    if not store_data or not store_data.get("is_nd", False):
+        return dash.no_update
+
+    variables = store_data.get("variables", [])
+    if len(variables) != 3:
+        return []
+
+    scenario = store_data["scenario"]
+    segment = store_data.get("segment")
+    multiplier = store_data.get("multiplier", 7.0)
+    optimal_mask = store_data.get("optimal_mask")
+    paths = get_scenario_paths(scenario, segment)
+    if not paths["summary_data"].exists():
+        return []
+
+    summary_data = pd.read_csv(paths["summary_data"])
+    active_mask = current_mask if current_mask is not None else optimal_mask
+    return _build_nd_slice_grid_panel(
+        summary_data,
+        variables,
+        active_mask,
+        optimal_mask,
+        pinned_cells,
+        multiplier,
+    )
+
+
+@app.callback(
+    [
+        Output("current-mask-store", "data", allow_duplicate=True),
+        Output("pinned-cells-store", "data", allow_duplicate=True),
+    ],
+    [Input({"type": "nd-slice-grid", "index": dash.ALL}, "clickData")],
+    [
+        State("cutoff-data-store", "data"),
+        State("current-mask-store", "data"),
+        State("pinned-cells-store", "data"),
+        State({"type": "nd-slice-grid", "index": dash.ALL}, "id"),
+    ],
+    prevent_initial_call=True,
+)
+def toggle_nd_slice_grid_cell(click_data_list, store_data, current_mask, pinned_cells, grid_ids):
+    if not store_data or not store_data.get("is_nd", False):
+        return dash.no_update, dash.no_update
+
+    variables = store_data.get("variables", [])
+    if len(variables) != 3:
+        return dash.no_update, dash.no_update
+
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update, dash.no_update
+
+    triggered_id = getattr(ctx, "triggered_id", None)
+    click_data = None
+    if isinstance(triggered_id, dict) and grid_ids and click_data_list:
+        for grid_id, candidate in zip(grid_ids, click_data_list, strict=False):
+            if grid_id == triggered_id:
+                click_data = candidate
+                break
+    if click_data is None and click_data_list:
+        click_data = next(
+            (
+                candidate
+                for candidate in reversed(click_data_list)
+                if isinstance(candidate, dict) and isinstance(candidate.get("points"), list) and candidate.get("points")
+            ),
+            None,
+        )
+    if not click_data or "points" not in click_data:
+        return dash.no_update, dash.no_update
+
+    point = click_data["points"][0]
+    customdata = point.get("customdata")
+    cell_key = None
+    if isinstance(customdata, str) and "," in customdata:
+        cell_key = customdata
+    elif isinstance(customdata, (list, tuple)):
+        for candidate in reversed(customdata):
+            if isinstance(candidate, str) and "," in candidate:
+                cell_key = candidate
+                break
+    if not cell_key:
+        return dash.no_update, dash.no_update
+
+    scenario = store_data["scenario"]
+    segment = store_data.get("segment")
+    paths = get_scenario_paths(scenario, segment)
+    if not paths["summary_data"].exists():
+        return dash.no_update, dash.no_update
+
+    from src.optimization_utils import CellGrid
+
+    summary_data = pd.read_csv(paths["summary_data"])
+    grid = CellGrid.from_summary(summary_data, variables)
+    base_mask = current_mask if current_mask is not None else store_data.get("optimal_mask")
+    if base_mask is None:
+        return dash.no_update, dash.no_update
+
+    mask_arr = np.asarray(base_mask, dtype=int).copy()
+    combo = tuple(int(part.strip()) for part in cell_key.split(","))
+    idx = grid.cell_index.get(combo)
+    if idx is None:
+        return dash.no_update, dash.no_update
+
+    new_value = 0 if mask_arr[idx] == 1 else 1
+    mask_arr[idx] = new_value
+    pinned_cells_updated = dict(pinned_cells or {})
+    pinned_cells_updated[cell_key] = int(new_value)
+    return mask_arr.tolist(), pinned_cells_updated
+
+
+@app.callback(
+    Output("pin-status", "children"),
+    [Input("pin-mode-toggle", "value"), Input("pinned-cells-store", "data")],
+    prevent_initial_call=False,
+)
+def render_pin_status(pin_mode, pinned_cells):
+    return _build_pin_status_children(bool(pin_mode), pinned_cells)
+
+
+@app.callback(Output("pin-feedback", "children"), [Input("pin-feedback-store", "data")], prevent_initial_call=False)
+def render_pin_feedback(feedback):
+    return _build_pin_feedback_alert(feedback)
+
+
+@app.callback(
+    [Output("reoptimize-pin-btn", "disabled"), Output("clear-pins-btn", "disabled")],
+    [Input("pinned-cells-store", "data")],
+    prevent_initial_call=False,
+)
+def update_pin_action_buttons(pinned_cells):
+    has_pins = bool(pinned_cells)
+    return not has_pins, not has_pins
+
+
+@app.callback(
+    [
+        Output("pinned-cells-store", "data", allow_duplicate=True),
+        Output("pin-feedback-store", "data", allow_duplicate=True),
+    ],
+    [Input("clear-pins-btn", "n_clicks"), Input("reset-cutoffs-btn", "n_clicks")],
+    [State("pinned-cells-store", "data")],
+    prevent_initial_call=True,
+)
+def clear_pins(clear_clicks, reset_clicks, pinned_cells):
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update, dash.no_update
+
+    trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    n_pins, _, _ = _pin_counts(pinned_cells)
+    if trigger_id == "clear-pins-btn":
+        if not n_pins:
+            return dash.no_update, {"tone": "info", "message": "No pins to clear."}
+        return {}, {"tone": "secondary", "message": f"Cleared {n_pins} pinned cells."}
+
+    if trigger_id == "reset-cutoffs-btn":
+        if n_pins:
+            return {}, {"tone": "secondary", "message": f"Reset to the reference optimum and cleared {n_pins} pinned cells."}
+        return {}, {"tone": "secondary", "message": "Reset to the reference optimum."}
+
+    return dash.no_update, dash.no_update
+
+
 # Reset button callback
 @app.callback(
     [
@@ -2731,13 +3735,18 @@ def update_risk_info(risk_value, store_data):
 
     actual_risk = closest_solution.get("b2_ever_h6", 0)
     production = closest_solution.get("oa_amt_h0", 0)
+    risk_gap = actual_risk - risk_value
 
     return html.Div(
         [
-            html.Span("Closest optimal solution: ", className="fw-bold"),
-            html.Span(f"Risk = {actual_risk:.2f}%, Production = €{production:,.0f}"),
-            html.Br(),
-            html.Span(f"({len(pareto_solutions)} Pareto-optimal solutions available)", className="text-muted"),
+            dbc.Badge(f"Target {risk_value:.2f}%", color="light", text_color="dark", className="me-2"),
+            dbc.Badge(
+                f"Closest Pareto {actual_risk:.2f}% ({risk_gap:+.2f}pp)",
+                color="primary",
+                className="me-2",
+            ),
+            dbc.Badge(f"Production {_format_currency(production, compact=True)}", color="secondary", className="me-2"),
+            html.Div(f"{len(pareto_solutions)} Pareto-optimal solutions available", className="text-muted mt-2"),
         ]
     )
 
@@ -2746,46 +3755,94 @@ def update_risk_info(risk_value, store_data):
 
 
 @app.callback(
-    [Output("pinned-cells-store", "data"), Output("pin-status", "children")],
+    [
+        Output("pinned-cells-store", "data"),
+        Output("current-mask-store", "data", allow_duplicate=True),
+    ],
     [Input("cutoff-heatmap", "clickData")],
-    [State("pin-mode-toggle", "value"), State("pinned-cells-store", "data"), State("cutoff-data-store", "data")],
+    [
+        State("pin-mode-toggle", "value"),
+        State("pinned-cells-store", "data"),
+        State("cutoff-data-store", "data"),
+        State("current-mask-store", "data"),
+    ],
     prevent_initial_call=True,
 )
-def handle_cell_pin(click_data, pin_mode, pinned_cells, store_data):
-    """On heatmap click when pin mode is on, cycle cell: unpinned → accept → reject → unpinned."""
-    if not pin_mode or not click_data or not store_data:
-        n_pins = len(pinned_cells) if pinned_cells else 0
-        status_text = f"{n_pins} cell(s) pinned" if n_pins > 0 else ""
-        return pinned_cells or {}, status_text
+def handle_cell_pin(click_data, pin_mode, pinned_cells, store_data, current_mask):
+    """On heatmap click: pin mode cycles pin state; otherwise toggle accept/reject for N>2."""
+    if not click_data or not store_data:
+        return dash.no_update, dash.no_update
 
-    if pinned_cells is None:
-        pinned_cells = {}
+    is_nd = store_data.get("is_nd", False)
 
     point = click_data["points"][0]
-    v0_str = str(point.get("x", ""))
-    v1_str = str(point.get("y", ""))
-    cell_key = f"{v0_str},{v1_str}"
+    customdata = point.get("customdata")
+    cell_key = None
+    if isinstance(customdata, str) and "," in customdata:
+        cell_key = customdata
+    elif isinstance(customdata, (list, tuple)):
+        for candidate in reversed(customdata):
+            if isinstance(candidate, str) and "," in candidate:
+                cell_key = candidate
+                break
 
-    current = pinned_cells.get(cell_key)
-    if current is None:
-        pinned_cells[cell_key] = 1  # pin as accept
-    elif current == 1:
-        pinned_cells[cell_key] = 0  # pin as reject
-    else:
-        del pinned_cells[cell_key]  # unpin
+    if not cell_key:
+        v0_str = str(point.get("x", ""))
+        v1_str = str(point.get("y", ""))
+        cell_key = f"{v0_str},{v1_str}"
 
-    n_pins = len(pinned_cells)
-    n_accept = sum(1 for v in pinned_cells.values() if v == 1)
-    n_reject = sum(1 for v in pinned_cells.values() if v == 0)
-    status_text = f"{n_pins} pinned ({n_accept} accept, {n_reject} reject)" if n_pins > 0 else ""
+    pinned_cells = dict(pinned_cells or {})
 
-    return pinned_cells, status_text
+    # Pin mode: cycle unpinned → accept → reject → unpinned
+    if pin_mode:
+        current = pinned_cells.get(cell_key)
+        if current is None:
+            pinned_cells[cell_key] = 1  # pin as accept
+        elif current == 1:
+            pinned_cells[cell_key] = 0  # pin as reject
+        else:
+            del pinned_cells[cell_key]  # unpin
+        return pinned_cells, dash.no_update
+
+    # Direct toggle for N>2 (without pin mode)
+    if is_nd:
+        variables = store_data.get("variables", [])
+        optimal_mask = store_data.get("optimal_mask")
+        base_mask = current_mask if current_mask is not None else optimal_mask
+        if not base_mask:
+            return dash.no_update, dash.no_update
+
+        from src.optimization_utils import CellGrid
+
+        scenario = store_data["scenario"]
+        segment = store_data.get("segment")
+        paths = get_scenario_paths(scenario, segment)
+        if not paths["summary_data"].exists():
+            return dash.no_update, dash.no_update
+
+        summary_data = pd.read_csv(paths["summary_data"])
+        grid = CellGrid.from_summary(summary_data, variables)
+
+        mask_arr = np.asarray(base_mask, dtype=int).copy()
+        combo = tuple(int(part.strip()) for part in cell_key.split(","))
+        idx = grid.cell_index.get(combo)
+        if idx is None:
+            return dash.no_update, dash.no_update
+
+        new_value = 0 if mask_arr[idx] == 1 else 1
+        mask_arr[idx] = new_value
+        pinned_cells[cell_key] = int(new_value)
+        return pinned_cells, mask_arr.tolist()
+
+    # 2-var case without pin mode: no action (controlled by sliders)
+    return dash.no_update, dash.no_update
 
 
 @app.callback(
     [
         Output({"type": "cutoff-slider", "index": dash.ALL}, "value", allow_duplicate=True),
         Output("current-mask-store", "data", allow_duplicate=True),
+        Output("pin-feedback-store", "data", allow_duplicate=True),
     ],
     [Input("reoptimize-pin-btn", "n_clicks")],
     [
@@ -2799,8 +3856,10 @@ def handle_cell_pin(click_data, pin_mode, pinned_cells, store_data):
 )
 def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current_values, current_mask):
     """Re-optimize MILP with pinned cell constraints and update sliders/mask."""
-    if not n_clicks or not store_data or not pinned_cells:
-        return current_values, dash.no_update
+    if not n_clicks or not store_data:
+        return current_values, dash.no_update, dash.no_update
+    if not pinned_cells:
+        return current_values, dash.no_update, {"tone": "info", "message": "Pin at least one cell before re-optimizing."}
 
     try:
         from src.optimization_utils import CellGrid, mask_to_cutoffs, solve_with_fixed_cells
@@ -2815,10 +3874,11 @@ def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current
         # Load summary data
         paths = get_scenario_paths(scenario, segment)
         if not paths["summary_data"].exists():
-            return current_values, dash.no_update
+            return current_values, dash.no_update, {"tone": "danger", "message": "Summary data not found for re-optimization."}
         summary_data = pd.read_csv(paths["summary_data"])
 
         grid = CellGrid.from_summary(summary_data, variables)
+        n_pins, n_accept, n_reject = _pin_counts(pinned_cells)
 
         # Build fixed_accepts and fixed_rejects from pinned cells (N-tuple keys)
         fixed_accepts = []
@@ -2845,18 +3905,32 @@ def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current
 
         if mask is None:
             logger.warning("Re-optimization with pins: infeasible")
-            return current_values, dash.no_update
+            return current_values, dash.no_update, {
+                "tone": "warning",
+                "message": (
+                    f"No feasible solution found for {n_pins} pins ({n_accept} accept, {n_reject} reject) "
+                    f"at target risk {target_risk:.2f}%. Try fewer accept pins or a higher risk target."
+                ),
+            }
+
+        success_message = (
+            f"Applied {n_pins} pins ({n_accept} accept, {n_reject} reject) at target {target_risk:.2f}% — "
+            f"solution risk {kpis.get('b2_ever_h6', 0):.2f}% and production {_format_currency(kpis.get('oa_amt_h0', 0), compact=True)}."
+        )
 
         # N>2: return mask directly
         if is_nd:
-            return current_values, mask.tolist()
+            return current_values, mask.tolist(), {"tone": "success", "message": success_message}
 
         # 2-var: convert mask → cutoffs → slider values
         var0_col = store_data["var0_col"]
         bins = store_data["bins"]
         cutoffs = mask_to_cutoffs(mask, grid, inv_vars)
         if var0_col not in cutoffs:
-            return current_values, dash.no_update
+            return current_values, dash.no_update, {
+                "tone": "warning",
+                "message": "Pinned solution was feasible, but cutoffs could not be reconstructed from the mask.",
+            }
 
         new_values = []
         for bin_val in bins:
@@ -2867,11 +3941,14 @@ def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current
                 idx = bins.index(bin_val)
                 new_values.append(current_values[idx] if idx < len(current_values) else -9)
 
-        return new_values, dash.no_update
+        return new_values, dash.no_update, {"tone": "success", "message": success_message}
 
     except Exception as e:
         logger.error(f"Re-optimize with pins failed: {e}")
-        return current_values, dash.no_update
+        return current_values, dash.no_update, {
+            "tone": "danger",
+            "message": "Re-optimization with pins failed. Check the logs and try a simpler set of pins.",
+        }
 
 
 # --- N>2 Cell Pin Callback ---
@@ -2880,45 +3957,72 @@ def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current
 @app.callback(
     [
         Output("pinned-cells-store", "data", allow_duplicate=True),
-        Output("pin-status", "children", allow_duplicate=True),
+        Output("current-mask-store", "data", allow_duplicate=True),
     ],
     [Input("nd-acceptance-table", "active_cell")],
     [
-        State("nd-acceptance-table", "data"),
+        State("nd-acceptance-table", "derived_viewport_data"),
         State("pin-mode-toggle", "value"),
         State("pinned-cells-store", "data"),
         State("cutoff-data-store", "data"),
+        State("current-mask-store", "data"),
     ],
     prevent_initial_call=True,
 )
-def handle_nd_cell_pin(active_cell, table_data, pin_mode, pinned_cells, store_data):
-    """On N>2 DataTable cell click when pin mode is on, cycle pin state."""
-    if not pin_mode or not active_cell or not store_data or not store_data.get("is_nd", False):
-        n_pins = len(pinned_cells) if pinned_cells else 0
-        status_text = f"{n_pins} cell(s) pinned" if n_pins > 0 else ""
-        return pinned_cells or {}, status_text
+def handle_nd_cell_pin(active_cell, table_rows, pin_mode, pinned_cells, store_data, current_mask):
+    """On N>2 DataTable cell click: pin mode cycles pin state; otherwise toggle accept/reject."""
+    if not active_cell or not store_data or not store_data.get("is_nd", False):
+        return dash.no_update, dash.no_update
 
-    if pinned_cells is None:
-        pinned_cells = {}
+    pinned_cells = dict(pinned_cells or {})
 
+    cell_key = active_cell.get("row_id")
+    if cell_key is None and table_rows is not None:
+        row_index = int(active_cell.get("row", -1))
+        if 0 <= row_index < len(table_rows):
+            cell_key = table_rows[row_index].get("id")
+    if not cell_key:
+        return dash.no_update, dash.no_update
+
+    # Pin mode: cycle unpinned → accept → reject → unpinned
+    if pin_mode:
+        current = pinned_cells.get(cell_key)
+        if current is None:
+            pinned_cells[cell_key] = 1  # pin as accept
+        elif current == 1:
+            pinned_cells[cell_key] = 0  # pin as reject
+        else:
+            del pinned_cells[cell_key]  # unpin
+        return pinned_cells, dash.no_update
+
+    # Direct toggle: flip accept ↔ reject in the mask
     variables = store_data.get("variables", [])
-    row = table_data[active_cell["row"]]
-    cell_key = ",".join(str(int(row[v])) for v in variables)
+    optimal_mask = store_data.get("optimal_mask")
+    base_mask = current_mask if current_mask is not None else optimal_mask
+    if not base_mask:
+        return dash.no_update, dash.no_update
 
-    current = pinned_cells.get(cell_key)
-    if current is None:
-        pinned_cells[cell_key] = 1  # pin as accept
-    elif current == 1:
-        pinned_cells[cell_key] = 0  # pin as reject
-    else:
-        del pinned_cells[cell_key]  # unpin
+    from src.optimization_utils import CellGrid
 
-    n_pins = len(pinned_cells)
-    n_accept = sum(1 for v in pinned_cells.values() if v == 1)
-    n_reject = sum(1 for v in pinned_cells.values() if v == 0)
-    status_text = f"{n_pins} pinned ({n_accept} accept, {n_reject} reject)" if n_pins > 0 else ""
+    scenario = store_data["scenario"]
+    segment = store_data.get("segment")
+    paths = get_scenario_paths(scenario, segment)
+    if not paths["summary_data"].exists():
+        return dash.no_update, dash.no_update
 
-    return pinned_cells, status_text
+    summary_data = pd.read_csv(paths["summary_data"])
+    grid = CellGrid.from_summary(summary_data, variables)
+
+    mask_arr = np.asarray(base_mask, dtype=int).copy()
+    combo = tuple(int(part.strip()) for part in cell_key.split(","))
+    idx = grid.cell_index.get(combo)
+    if idx is None:
+        return dash.no_update, dash.no_update
+
+    new_value = 0 if mask_arr[idx] == 1 else 1
+    mask_arr[idx] = new_value
+    pinned_cells[cell_key] = int(new_value)
+    return pinned_cells, mask_arr.tolist()
 
 
 # --- New Callbacks: Collapsible, Download, Audit Period ---
