@@ -21,7 +21,7 @@ from sklearn import tree as sktree
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.tree import DecisionTreeClassifier
 
-from .constants import DEFAULT_MIN_SAMPLES_LEAF, Columns, StatusName
+from .constants import DEFAULT_MIN_SAMPLES_LEAF, DEFAULT_RISK_MULTIPLIER, Columns, StatusName
 from .estimators import prepare_model_input
 from .utils import calculate_b2_ever_h6, calculate_todu_30ever_from_b2
 
@@ -295,7 +295,13 @@ def calculate_RV(df: pd.DataFrame, model_rv) -> pd.DataFrame:
 
 
 def calculate_risk_values(
-    df: pd.DataFrame, model_risk, model_rv, variables: list[str], stressor: float, var_reg: list[str]
+    df: pd.DataFrame,
+    model_risk,
+    model_rv,
+    variables: list[str],
+    stressor: float,
+    var_reg: list[str],
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
 ) -> pd.DataFrame:
     """
     Calculate all inferred risk values using trained models.
@@ -319,5 +325,5 @@ def calculate_risk_values(
     """
     df = calculate_RV(df, model_rv)
     df = calculate_B2(df, model_risk, variables, stressor, var_reg)
-    df["todu_30ever_h6"] = calculate_todu_30ever_from_b2(df["b2_ever_h6"], df["todu_amt_pile_h6"])
+    df["todu_30ever_h6"] = calculate_todu_30ever_from_b2(df["b2_ever_h6"], df["todu_amt_pile_h6"], multiplier=multiplier)
     return df

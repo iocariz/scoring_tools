@@ -344,6 +344,13 @@ def compute_outlier_stats(processed_data: pd.DataFrame, target_var: str) -> tupl
     return (float(target_median), target_mad)
 
 
+def _get_regression_weights(processed_data: pd.DataFrame) -> pd.Series | None:
+    for col in ("todu_amt_pile_h6", "oa_amt_h0", "n_observations"):
+        if col in processed_data.columns:
+            return processed_data[col]
+    return None
+
+
 def _create_feature_dataframe(mesh_df: pd.DataFrame, features: list[str], var0: str, var1: str) -> pd.DataFrame:
     """
     Create feature DataFrame for model predictions on a mesh grid.
@@ -598,8 +605,8 @@ def _select_feature_set_cv(
             X_val = prepare_model_input(val_agg, features, model_template)
             y_train, y_val = train_agg[target_var], val_agg[target_var]
 
-            w_train = train_agg["oa_amt_h0"] if "oa_amt_h0" in train_agg.columns else None
-            w_val = val_agg["oa_amt_h0"] if "oa_amt_h0" in val_agg.columns else None
+            w_train = _get_regression_weights(train_agg)
+            w_val = _get_regression_weights(val_agg)
 
             model_clone = clone(model_template)
             model_clone.fit(X_train, y_train, sample_weight=w_train)
@@ -731,7 +738,7 @@ def compute_cell_level_ci(
 
         X_train = prepare_model_input(train_agg, final_features, model_template)
         y_train = train_agg[target_var]
-        w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
+        w_train = _get_regression_weights(train_agg)
 
         model_clone = clone(model_template)
         model_clone.fit(X_train, y_train, sample_weight=w_train)
@@ -758,9 +765,10 @@ def compute_cell_level_ci(
         if n_folds >= 2:
             std = np.std(preds_list, ddof=1)
             se = std / np.sqrt(n_folds)
+            crit_val = stats.t.ppf(1 - alpha / 2, df=n_folds - 1) if n_folds < 30 else z_val
             row["pred_std"] = std
-            row["ci_lower"] = row["pred_mean"] - z_val * se
-            row["ci_upper"] = row["pred_mean"] + z_val * se
+            row["ci_lower"] = row["pred_mean"] - crit_val * se
+            row["ci_upper"] = row["pred_mean"] + crit_val * se
         else:
             row["pred_std"] = np.nan
             row["ci_lower"] = np.nan
@@ -1176,7 +1184,7 @@ def inference_pipeline(
     final_agg = process_dataset(
         all_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold=DEFAULT_Z_THRESHOLD
     )
-    weights_all = final_agg["oa_amt_h0"] if "oa_amt_h0" in final_agg.columns else None
+    weights_all = _get_regression_weights(final_agg)
     zero_prop = (np.abs(final_agg[target_var]) < 1e-10).mean()
 
     logger.info(f"Processed full data scope: {final_agg.shape[0]} groups")
@@ -1566,6 +1574,7 @@ def compute_pre_reject_inference_data(
     indicators: list[str],
     variables: list[str],
     annual_coef: float,
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
     model_variables: list[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Compute booked summary (_boo suffix) and repesca summary (post-risk-model, pre-reject-inference).
@@ -1604,7 +1613,7 @@ def compute_pre_reject_inference_data(
     from src.models import calculate_risk_values
 
     repesca_summary = calculate_risk_values(
-        repesca_summary, final_model, reg_todu_amt_pile, risk_vars, stressor, final_features
+        repesca_summary, final_model, reg_todu_amt_pile, risk_vars, stressor, final_features, multiplier=multiplier
     )[variables + indicators]
 
     return booked_summary, repesca_summary
@@ -1653,6 +1662,7 @@ def run_optimization_pipeline(
         indicators=INDICADORES,
         variables=VARIABLES,
         annual_coef=annual_coef,
+        multiplier=multiplier,
         model_variables=risk_inference.get("model_variables"),
     )
 

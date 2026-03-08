@@ -7,6 +7,7 @@ import optuna
 import pandas as pd
 from lightgbm import LGBMRegressor
 from loguru import logger
+from sklearn.base import clone as sklearn_clone
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, LogisticRegression, Ridge
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
@@ -17,6 +18,13 @@ from src.estimators import HurdleRegressor, TweedieGLM, prepare_model_input
 
 # Disable optuna's default trial-level logging to keep the console clean
 optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+
+def _get_regression_weights(processed_data: pd.DataFrame):
+    for col in ("todu_amt_pile_h6", "oa_amt_h0", "n_observations"):
+        if col in processed_data.columns:
+            return processed_data[col]
+    return None
 
 
 def _stratified_cv_splitter(
@@ -91,8 +99,6 @@ def tune_tree_models(
 
     fresh_seed = random_state + 1000
 
-    from sklearn.base import clone as sklearn_clone
-
     from src.inference_optimized import process_dataset
 
     def eval_model(model, raw_eval, cv_folds, random_state):
@@ -117,8 +123,8 @@ def tune_tree_models(
             X_train, y_train = train_agg[variables], train_agg[target_var]
             X_val, y_val = val_agg[variables], val_agg[target_var]
 
-            w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
-            w_val = val_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in val_agg.columns else None
+            w_train = _get_regression_weights(train_agg)
+            w_val = _get_regression_weights(val_agg)
 
             # Clone to avoid leaking fitted state across folds
             model_clone = sklearn_clone(model)
@@ -138,8 +144,8 @@ def tune_tree_models(
             return None
         X_train, y_train = train_agg[variables], train_agg[target_var]
         X_test, y_test = test_agg[variables], test_agg[target_var]
-        w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
-        w_test = test_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in test_agg.columns else None
+        w_train = _get_regression_weights(train_agg)
+        w_test = _get_regression_weights(test_agg)
         m = sklearn_clone(model)
         m.fit(X_train, y_train, sample_weight=w_train)
         pred = m.predict(X_test)
@@ -318,12 +324,13 @@ def tune_linear_models(
             X_val = prepare_model_input(val_agg, var_reg, model)
             y_train, y_val = train_agg[target_var], val_agg[target_var]
 
-            w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
-            w_val = val_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in val_agg.columns else None
+            w_train = _get_regression_weights(train_agg)
+            w_val = _get_regression_weights(val_agg)
 
             try:
-                model.fit(X_train, y_train, sample_weight=w_train)
-                pred = model.predict(X_val)
+                model_clone = sklearn_clone(model)
+                model_clone.fit(X_train, y_train, sample_weight=w_train)
+                pred = model_clone.predict(X_val)
                 if len(y_val) >= 2:
                     scores.append(np.sqrt(mean_squared_error(y_val, pred, sample_weight=w_val)))
             except (ValueError, np.linalg.LinAlgError, RuntimeError) as e:
@@ -346,8 +353,6 @@ def tune_linear_models(
         if holdout_data is None:
             return None
         try:
-            from sklearn.base import clone as sklearn_clone
-
             train_agg = process_dataset(tuning_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold)
             test_agg = process_dataset(holdout_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold)
             if len(test_agg) < 3 or len(train_agg) < 3:
@@ -356,8 +361,8 @@ def tune_linear_models(
             X_train = prepare_model_input(train_agg, var_reg, m)
             X_test = prepare_model_input(test_agg, var_reg, m)
             y_train, y_test = train_agg[target_var], test_agg[target_var]
-            w_train = train_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in train_agg.columns else None
-            w_test = test_agg["todu_amt_pile_h6"] if "todu_amt_pile_h6" in test_agg.columns else None
+            w_train = _get_regression_weights(train_agg)
+            w_test = _get_regression_weights(test_agg)
             m.fit(X_train, y_train, sample_weight=w_train)
             pred = m.predict(X_test)
             if len(y_test) < 2:

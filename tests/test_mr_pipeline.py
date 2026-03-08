@@ -551,11 +551,52 @@ class TestComputeHybridMRRisk:
         assert "b2_delta_h3" in comparison_df.columns
         assert "b2_delta_pct_h3" in comparison_df.columns
 
-    def test_h3_extrapolation_replaces_direct_mr(self, merge_keys):
-        """When H3 data exists and ratio is valid, bins use h3_extrapolated risk source."""
+    def test_h3_extrapolation_used_when_h6_is_unavailable(self, merge_keys):
+        """When H6 is unavailable but H3 data exists and ratio is valid, bins use h3_extrapolated risk source."""
         # Main-period data with H3 columns — need enough observations per bin (>= min_obs)
         rng_main = np.random.RandomState(99)
         n_main = 35  # > min_obs=30
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1] * n_main + [2] * n_main,
+                "bin_b": [1] * (2 * n_main),
+                "todu_30ever_h6": np.concatenate([rng_main.uniform(8, 12, n_main), rng_main.uniform(4, 6, n_main)]),
+                "todu_amt_pile_h6": np.concatenate([rng_main.uniform(90, 110, n_main), rng_main.uniform(190, 210, n_main)]),
+                "todu_30ever_h3": np.concatenate([rng_main.uniform(4, 6, n_main), rng_main.uniform(2, 4, n_main)]),
+                "todu_amt_pile_h3": np.concatenate([rng_main.uniform(80, 100, n_main), rng_main.uniform(170, 190, n_main)]),
+                "status_name": ["booked"] * (2 * n_main),
+            }
+        )
+
+        rng = np.random.RandomState(42)
+        n = 40
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * n + [2] * n,
+                "bin_b": [1] * (2 * n),
+                "todu_30ever_h6": [np.nan] * (2 * n),
+                "todu_amt_pile_h6": [np.nan] * (2 * n),
+                "todu_30ever_h3": rng.uniform(2, 8, 2 * n),
+                "todu_amt_pile_h3": rng.uniform(70, 110, 2 * n),
+                "oa_amt_h0": rng.uniform(500, 1500, 2 * n),
+                "status_name": ["booked"] * (2 * n),
+            }
+        )
+
+        _, comparison_df = _compute_hybrid_mr_risk(
+            data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4
+        )
+
+        assert (comparison_df["risk_source"] == "h3_extrapolated").all()
+
+        for _, row in comparison_df.iterrows():
+            expected = row["b2_mr_h3"] * (row["b2_main"] / row["b2_main_h3"])
+            assert np.isclose(row["b2_ever_h6_tmp"], expected), f"Expected {expected}, got {row['b2_ever_h6_tmp']}"
+
+    def test_h3_does_not_replace_direct_mr_when_h6_sufficient(self, merge_keys):
+        """When direct MR H6 is sufficiently observed, it remains the preferred source even if H3 exists."""
+        rng_main = np.random.RandomState(99)
+        n_main = 35
         data_booked = pd.DataFrame(
             {
                 "bin_a": [1] * n_main + [2] * n_main,
@@ -583,17 +624,13 @@ class TestComputeHybridMRRisk:
             }
         )
 
-        merge_df, comparison_df = _compute_hybrid_mr_risk(
+        _, comparison_df = _compute_hybrid_mr_risk(
             data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4
         )
 
-        # All bins should use h3_extrapolated (sufficient obs, valid ratio)
-        assert (comparison_df["risk_source"] == "h3_extrapolated").all()
-
-        # Verify the extrapolation formula: b2_mr_h3 * (b2_main / b2_main_h3)
+        assert (comparison_df["risk_source"] == "mr_observed").all()
         for _, row in comparison_df.iterrows():
-            expected = row["b2_mr_h3"] * (row["b2_main"] / row["b2_main_h3"])
-            assert np.isclose(row["b2_ever_h6_tmp"], expected), f"Expected {expected}, got {row['b2_ever_h6_tmp']}"
+            assert np.isclose(row["b2_ever_h6_tmp"], row["b2_mr"])
 
     def test_h3_fallback_to_mr_observed(self, merge_keys):
         """When b2_main_h3 ≈ 0 (ratio invalid), falls back to mr_observed."""
@@ -684,13 +721,12 @@ class TestComputeHybridMRRisk:
         _, comparison_df = _compute_hybrid_mr_risk(data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4)
 
         row = comparison_df.iloc[0]
-        # n_obs_mr_h3 should count only the 20 mature accounts, not all 40
         assert row["n_obs_mr_h3"] == n_mature
-        # With only 20 H3 obs < min_obs=30, can't extrapolate → falls back to mr_observed
-        assert row["risk_source"] == "mr_observed"
+        assert pd.isna(row["n_obs_mr"]) or row["n_obs_mr"] == 0
+        assert row["risk_source"] == "main_imputed"
 
     def test_h3_partial_maturity_all_immature_falls_back(self, merge_keys):
-        """When ALL MR accounts lack H3 (all from months 4-6), falls back to mr_observed."""
+        """When ALL MR accounts lack H3 and H6, falls back to the main-period estimate."""
         data_booked = pd.DataFrame(
             {
                 "bin_a": [1, 1],
@@ -721,8 +757,8 @@ class TestComputeHybridMRRisk:
         _, comparison_df = _compute_hybrid_mr_risk(data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4)
 
         row = comparison_df.iloc[0]
-        # No H3 data at all → b2_mr_h3 is NaN → can't extrapolate → mr_observed
-        assert row["risk_source"] == "mr_observed"
+        assert pd.isna(row["n_obs_mr"]) or row["n_obs_mr"] == 0
+        assert row["risk_source"] == "main_imputed"
         assert np.isnan(row["n_obs_mr_h3"]) or row["n_obs_mr_h3"] == 0
 
     def test_h6_h3_ratio_in_comparison_df(self, merge_keys):

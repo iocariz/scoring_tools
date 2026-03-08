@@ -145,7 +145,7 @@ class HurdleRegressor(BaseEstimator, RegressorMixin):
         # Combine: Expected value = P(non-zero) * E(Y | Y > 0)
         predictions = prob_nonzero * magnitude
 
-        return predictions
+        return np.clip(predictions, 0, None)
 
     def predict_binary(self, X):
         """Predict binary outcome (zero vs non-zero) only."""
@@ -293,7 +293,7 @@ class TweedieGLM(BaseEstimator, RegressorMixin):
             # Add log(exposure) as feature to approximate the offset term
             X_aug = self._add_log_exposure(X_features, exposure)
             # Fit on numerator; don't pass sample_weight (exposure is in the offset)
-            self.regressor_.fit(X_aug, y_numerator)
+            self.regressor_.fit(X_aug, y_numerator, sample_weight=sample_weight)
             self._fitted_with_exposure = True
             self._median_exposure = float(np.median(exposure))
         else:
@@ -322,9 +322,10 @@ class TweedieGLM(BaseEstimator, RegressorMixin):
 
         if self._fitted_with_exposure:
             if exposure is not None:
+                safe_exposure = np.maximum(exposure, 1e-10)
                 X_aug = self._add_log_exposure(X_features, exposure)
                 raw_pred = self.regressor_.predict(X_aug)
-                return self.multiplier * raw_pred / exposure
+                return self.multiplier * raw_pred / safe_exposure
             # Fallback: use median exposure from training for approximate rate
             X_aug = self._add_log_exposure(X_features, np.full(len(X_features), self._median_exposure))
             raw_pred = self.regressor_.predict(X_aug)

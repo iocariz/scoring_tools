@@ -659,6 +659,14 @@ class TestFitH3ExtrapolationCurve:
         assert curvature == 1.0
         assert "note" in diag
 
+    def test_ill_conditioned_design_returns_linear(self):
+        b2_h3 = np.array([1.0, 1.0 + 1e-12, 1.0 + 2e-12, 1.0 + 3e-12])
+        b2_h6 = np.array([2.0, 2.0 + 1e-12, 2.0 + 2e-12, 2.0 + 3e-12])
+        method, curvature, diag = fit_h3_extrapolation_curve(b2_h3, b2_h6)
+        assert method == "linear"
+        assert curvature == 1.0
+        assert diag["note"] == "ill_conditioned_design"
+
     def test_weights_influence_fit(self):
         """Heavier weight on convex bins shifts alpha up."""
         b2_h3 = np.array([1.0, 2.0, 4.0, 8.0, 16.0])

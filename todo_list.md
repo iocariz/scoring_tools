@@ -21,6 +21,19 @@
 - ~~`tasa_fin` validation~~ — `src/pipeline/preprocessing.py` now validates `tasa_fin > 0` (defaults to 1.0 if non-positive) and warns if >5.0
 - ~~MR pipeline / audit unchecked `.iloc[0]`~~ — `mr_pipeline.py:70` was already guarded; added missing guard in `src/audit.py:generate_audit_table` which had no empty-check before `.iloc[0]`
 - ~~Missing column existence checks in optimization~~ — added explicit `required_cols` validation in both `trace_pareto_frontier` and `_pareto_ga_fallback` in `src/optimization_utils.py`; returns empty result with descriptive error instead of `KeyError`
+- ~~Optuna linear/GLM fold leakage~~ — `src/optuna_tuning.py` now clones models per CV fold before fitting, preventing state leakage across validation folds
+- ~~Regression sample-weight mismatch across tuning / feature selection / final training~~ — `src/optuna_tuning.py` and `src/inference_optimized.py` now use the same weight precedence: `todu_amt_pile_h6` → `oa_amt_h0` → `n_observations`
+- ~~MR optimum row uses default multiplier + NaN→0 risk~~ — `src/mr_pipeline.py` now passes `multiplier` explicitly and preserves undefined risk as null instead of optimistic zero
+- ~~Hybrid MR risk prioritized H3 extrapolation over direct H6~~ — `src/mr_pipeline.py` now prefers direct MR H6 when sufficient; H3 extrapolation is used only when H6 is insufficient and H3 data is available
+- ~~Weighted H3→H6 fit diagnostics were unweighted~~ — `src/utils.py` now computes weighted residual, total-sum-of-squares, and slope SE diagnostics consistently
+- ~~TweedieGLM ignored `sample_weight` with exposure~~ — `src/estimators.py` now forwards `sample_weight` in exposure-aware fits
+- ~~TweedieGLM divide-by-zero on zero exposure~~ — `src/estimators.py` now clips exposure to a minimum positive value during prediction
+- ~~HurdleRegressor negative predictions~~ — `src/estimators.py` now clips outputs to non-negative values
+- ~~Degenerate Beta prior in reject inference smoothing~~ — `src/reject_inference.py` now floors `alpha` / `beta` at `0.5`
+- ~~`bins_tuple` ordering followed dict insertion order~~ — `src/pipeline/inference.py` now orders bin edges explicitly by `inference_variables`
+- ~~`classify_by_mask` assumed reset-index column named `index`~~ — `src/optimization_utils.py` now maps masks via variable tuples and preserves the original index
+- ~~Global optimizer MILP fallback used `argmax(rounded)`~~ — `src/global_optimizer.py` now decodes near-integral solutions via `argmax(seg_x)`
+- ~~MR `calculate_todu_30ever_from_b2` omitted configured multiplier~~ — `src/mr_pipeline.py` now passes `settings.multiplier` explicitly when reconstructing `todu_30ever_h6`
 
 ---
 
@@ -32,30 +45,30 @@ entries above but have residual issues.
 
 ### BUG — CRITICAL
 
-#### C1: Optuna `tune_linear_models` reuses unfitted model across folds
+#### ~~C1: Optuna `tune_linear_models` reuses unfitted model across folds~~
 - `src/optuna_tuning.py:324-328` — model object is not cloned between CV folds
 - Each fold trains on the already-fitted model from the prior fold, leaking information
 - Fix: `clone(model)` before each fold's `.fit()`
 
-#### C2: Inconsistent sample weights between `inference_optimized` and `optuna_tuning`
+#### ~~C2: Inconsistent sample weights between `inference_optimized` and `optuna_tuning`~~
 - `src/inference_optimized.py` passes `sample_weight` to model `.fit()` during CV
 - `src/optuna_tuning.py` may not propagate the same weighting scheme
 - Models selected via Optuna are evaluated under different conditions than final training
 
-#### C3: MR pipeline missing `multiplier` in Optimum row risk calculation
+#### ~~C3: MR pipeline missing `multiplier` in Optimum row risk calculation~~
 - `src/mr_pipeline.py:189` — `calculate_b2_ever_h6(opt_rn, opt_rd, as_percentage=True)` omits `multiplier=multiplier`
 - Optimum row always uses default multiplier (7) regardless of config
 - Causes incorrect risk display in MR comparison tables
 
 ### BUG — HIGH
 
-#### H1: H3 extrapolation prioritized over direct H6 observations in hybrid risk
+#### ~~H1: H3 extrapolation prioritized over direct H6 observations in hybrid risk~~
 - `src/mr_pipeline.py:362-368` — condition ordering: `[only_mr_sparse, can_extrapolate, use_mr]`
 - `can_extrapolate` (H3→H6 extrapolation) is checked before `use_mr` (direct H6 observations)
 - When both H3 and H6 data exist, the extrapolated value is used instead of the direct observation
 - Fix: swap order so `use_mr` is checked before `can_extrapolate`
 
-#### H2: Weighted R² and SE computation uses unweighted residuals
+#### ~~H2: Weighted R² and SE computation uses unweighted residuals~~
 - `src/utils.py:155-170` — `np.polyfit` does WLS but `ss_res = np.sum(residuals**2)` is unweighted
 - R² is inconsistent (weighted fit, unweighted goodness-of-fit)
 - SE of slope is wrong, affecting confidence in extrapolation parameters
@@ -71,23 +84,23 @@ entries above but have residual issues.
 - Ambiguous dates (e.g., "03/04/2025") parsed differently depending on code path
 - Fix: centralize date parsing with explicit format or consistent `dayfirst` setting
 
-#### H5: TweedieGLM drops `sample_weight` when exposure column is present
+#### ~~H5: TweedieGLM drops `sample_weight` when exposure column is present~~
 - `src/estimators.py:280-290` — when exposure is used, `sample_weight` passed to `.fit()` is ignored
 - Exposure handling replaces weighting rather than composing with it
 - Weighted training (e.g., for vintage imbalance) silently has no effect
 
-#### H7: TweedieGLM `predict` division by zero on zero exposure
+#### ~~H7: TweedieGLM `predict` division by zero on zero exposure~~
 - `src/estimators.py:310-320` — `predictions / exposure` when exposure contains zeros
 - No guard against zero exposure values
 - Fix: clip exposure to minimum positive value before division
 
-#### H8: HurdleRegressor can produce negative predictions
+#### ~~H8: HurdleRegressor can produce negative predictions~~
 - `src/estimators.py:180-200` — combines P(event) × E[amount|event]
 - Continuous sub-model can predict negative amounts; product can be negative
 - Credit risk predictions must be non-negative
 - Fix: `np.clip(predictions, 0, None)` at output
 
-#### H10: Degenerate Beta prior in reject inference Bayesian smoothing
+#### ~~H10: Degenerate Beta prior in reject inference Bayesian smoothing~~
 - `src/reject_inference.py:76-85` — Beta prior with `alpha = global_rate * prior_strength`, `beta = (1 - global_rate) * prior_strength`
 - When `global_rate` ≈ 0 or ≈ 1, one parameter approaches 0, creating a degenerate prior
 - Fix: add floor `max(alpha, 0.5)`, `max(beta, 0.5)` (Jeffreys-like minimum)
@@ -98,7 +111,7 @@ entries above but have residual issues.
 - A cell can satisfy all marginal monotonicity constraints while violating the partial-order constraint
 - Consider lattice-based isotonic regression for true N-D monotonicity
 
-#### H11: Global optimizer MILP fallback uses `argmax` on rounded values
+#### ~~H11: Global optimizer MILP fallback uses `argmax` on rounded values~~
 - `src/global_optimizer.py` — when MILP returns fractional solution, `argmax(rounded)` may select dominated point
 - Should use proper rounding heuristic that respects constraints
 
@@ -111,14 +124,14 @@ entries above but have residual issues.
 - Ratio statistics (risk = defaults/exposure) don't have additive standard errors
 - Should use delta method or bootstrap for aggregate CI
 
-#### H14: `bins_tuple` ordering follows dict insertion order
+#### ~~H14: `bins_tuple` ordering follows dict insertion order~~
 - `src/pipeline/inference.py:91-93` — `bins_tuple` constructed from dict keys
 - If dict order doesn't match `inference_vars` order, bin assignments misalign with model expectations
 - Fix: explicitly order by `inference_vars`
 
 ### BUG — MEDIUM
 
-#### M5: `classify_by_mask` assumes column named "index"
+#### ~~M5: `classify_by_mask` assumes column named "index"~~
 - `src/optimization_utils.py` — references hardcoded `"index"` column name
 - Fails if DataFrame index was not reset or has different name
 - Fix: use `.reset_index()` or parametrize column name
@@ -268,9 +281,9 @@ entries above but have residual issues.
 - `src/data_manager.py` has only `DataValidationError` tested via imports; no dedicated tests
 - Add tests for SAS file loading, column standardization, and H3 column handling
 
-### MR `calculate_todu_30ever_from_b2` ignores `multiplier_h3`
-- `src/mr_pipeline.py:664` calls with default `multiplier=7` even when input was extrapolated from H3 using `multiplier_h3=4`
-- Risk metric back-calculation uses wrong scaling factor for H3-extrapolated outcomes
+### ~~MR `calculate_todu_30ever_from_b2` ignored the configured multiplier~~
+- `src/mr_pipeline.py:708-711` now passes `settings.multiplier` explicitly instead of relying on the default `multiplier=7`
+- H6 risk back-calculation now uses the configured H6 scaling factor consistently
 
 ### GA fallback missing division-by-zero guard
 - `src/optimization_utils.py:751` computes risk coefficients but doesn't guard against all-zero `todu_amt`

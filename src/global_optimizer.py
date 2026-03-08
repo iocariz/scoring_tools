@@ -423,7 +423,7 @@ class GlobalAllocator:
                     f"MILP solution for {seg} has {rounded.sum()} selected points "
                     f"(expected 1). Using argmax as fallback."
                 )
-            chosen = int(np.argmax(rounded))
+            chosen = int(np.argmax(seg_x))
             row = df.iloc[chosen]
 
             allocations[seg] = int(row["sol_fac"])

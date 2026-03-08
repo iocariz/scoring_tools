@@ -186,7 +186,8 @@ def calculate_metrics_from_cuts(
         opt_prod = (actual_prod - so_prod) + si_prod
         opt_rn = (actual_rn - so_rn) + si_rn
         opt_rd = (actual_rd - so_rd) + si_rd
-        opt_risk = float(np.nan_to_num(calculate_b2_ever_h6(opt_rn, opt_rd, as_percentage=True)))
+        opt_risk_raw = calculate_b2_ever_h6(opt_rn, opt_rd, multiplier=multiplier, as_percentage=True)
+        opt_risk = float(opt_risk_raw) if pd.notna(opt_risk_raw) else None
 
         row_opt = {
             "Metric": "Optimum selected",
@@ -200,9 +201,8 @@ def calculate_metrics_from_cuts(
         if has_h3:
             opt_h3_rn = (actual_h3_rn - so_h3_rn) + si_h3_rn
             opt_h3_rd = (actual_h3_rd - so_h3_rd) + si_h3_rd
-            opt_h3_risk = float(
-                np.nan_to_num(calculate_b2_ever_h6(opt_h3_rn, opt_h3_rd, multiplier=multiplier_h3, as_percentage=True))
-            )
+            opt_h3_risk_raw = calculate_b2_ever_h6(opt_h3_rn, opt_h3_rd, multiplier=multiplier_h3, as_percentage=True)
+            opt_h3_risk = float(opt_h3_risk_raw) if pd.notna(opt_h3_risk_raw) else None
             row_opt["Risk H3 (%)"] = opt_h3_risk
             row_opt["todu_30ever_h3"] = opt_h3_rn
             row_opt["todu_amt_pile_h3"] = opt_h3_rd
@@ -254,21 +254,23 @@ def _compute_hybrid_mr_risk(
 
     # --- MR-period aggregation ---
     mr_booked = data_demand_mr[data_demand_mr["status_name"] == StatusName.BOOKED.value]
-    mr_agg = mr_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
+    mr_h6_valid = mr_booked[mr_booked["todu_30ever_h6"].notna() & mr_booked["todu_amt_pile_h6"].notna()]
+    mr_agg = mr_h6_valid.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
     mr_agg["b2_mr"] = calculate_b2_ever_h6(
         mr_agg["todu_30ever_h6"], mr_agg["todu_amt_pile_h6"], multiplier=multiplier
     ).fillna(0.0)
-    n_obs_mr = mr_booked.groupby(merge_keys).size().reset_index(name="n_obs_mr")
+    n_obs_mr = mr_h6_valid.groupby(merge_keys).size().reset_index(name="n_obs_mr")
     mr_agg = mr_agg.merge(n_obs_mr, on=merge_keys, how="left")
 
     # MR production per bin
     if "oa_amt_h0" in mr_booked.columns:
         mr_prod = mr_booked.groupby(merge_keys)["oa_amt_h0"].sum().reset_index()
         mr_prod = mr_prod.rename(columns={"oa_amt_h0": "mr_production"})
-        mr_agg = mr_agg.merge(mr_prod, on=merge_keys, how="left")
+        mr_agg = mr_agg.merge(mr_prod, on=merge_keys, how="outer")
     else:
         mr_agg["mr_production"] = 0.0
 
+    mr_agg["mr_production"] = mr_agg["mr_production"].fillna(0.0)
     mr_agg = mr_agg[merge_keys + ["b2_mr", "n_obs_mr", "mr_production"]]
 
     # --- Outer join ---
@@ -353,16 +355,16 @@ def _compute_hybrid_mr_risk(
 
         # H3 extrapolation: observed MR H3 × main-period ratio
         has_h3_obs = combined["b2_mr_h3"].notna() & (combined["n_obs_mr_h3"].fillna(0) >= min_obs)
-        can_extrapolate = use_mr & ratio_valid & has_h3_obs
+        can_extrapolate = ~use_mr & ratio_valid & has_h3_obs
         h6_from_h3 = extrapolate_h3_to_h6(
             combined["b2_mr_h3"], h6_h3_ratio,
             method=mr_extrapolation_method, curvature=mr_extrapolation_curvature,
         )
 
         # Priority: h3_extrapolated > mr_observed > main_imputed > model_fallback
-        conditions = [only_mr_sparse, can_extrapolate, use_mr]
-        risk_choices = [np.nan, h6_from_h3, combined["b2_mr"]]
-        source_choices = ["model_fallback", "h3_extrapolated", "mr_observed"]
+        conditions = [only_mr_sparse, use_mr, can_extrapolate]
+        risk_choices = [np.nan, combined["b2_mr"], h6_from_h3]
+        source_choices = ["model_fallback", "mr_observed", "h3_extrapolated"]
 
         combined["b2_ever_h6_tmp"] = np.select(conditions, risk_choices, default=combined["b2_main"])
         combined["risk_source"] = np.select(conditions, source_choices, default="main_imputed")
@@ -708,6 +710,7 @@ def process_mr_period(
             data_demand_mr.loc[calc_mask, "todu_30ever_h6"] = calculate_todu_30ever_from_b2(
                 data_demand_mr.loc[calc_mask, "b2_ever_h6_tmp"],
                 data_demand_mr.loc[calc_mask, "todu_amt_pile_h6"],
+                multiplier=settings.multiplier,
             )
 
         # Create data_booked_mr

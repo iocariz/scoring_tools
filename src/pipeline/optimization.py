@@ -769,6 +769,7 @@ def run_ri_optimizer_phase(
             indicators=settings.indicators,
             variables=settings.variables,
             annual_coef=annual_coef,
+            multiplier=settings.multiplier,
         )
 
         # Step 2: Compute acceptance rates
@@ -821,6 +822,7 @@ def run_ri_optimizer_phase(
                     indicators=settings.indicators,
                     variables=settings.variables,
                     annual_coef=annual_coef_mr,
+                    multiplier=settings.multiplier,
                 )
                 mr_acceptance_rates = compute_acceptance_rates(
                     data_demand_mr, settings.variables,

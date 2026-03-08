@@ -150,23 +150,24 @@ def fit_h3_extrapolation_curve(
     log_h3 = np.log(np.asarray(b2_h3)[valid])
     log_h6 = np.log(np.asarray(b2_h6)[valid])
     w = np.asarray(weights)[valid] if weights is not None else None
+    stats_weights = np.ones_like(log_h3) if w is None else w
+    x_mean = np.average(log_h3, weights=stats_weights)
+    ss_x = float(np.sum(stats_weights * (log_h3 - x_mean) ** 2))
 
-    # Weighted log-log regression: log(h6) = c + alpha * log(h3)
+    if not np.isfinite(ss_x) or ss_x <= 1e-10:
+        return ("linear", 1.0, {**fallback_diag, "note": "ill_conditioned_design"})
+
     coeffs = np.polyfit(log_h3, log_h6, 1, w=w)
     alpha = float(coeffs[0])
     intercept = float(coeffs[1])
 
-    # Residuals and standard error of slope
     predicted = alpha * log_h3 + intercept
     residuals = log_h6 - predicted
-    ss_res = float(np.sum(residuals**2))
-    ss_tot = float(np.sum((log_h6 - np.average(log_h6, weights=w)) ** 2))
+    ss_res = float(np.sum(stats_weights * residuals**2))
+    ss_tot = float(np.sum(stats_weights * (log_h6 - np.average(log_h6, weights=stats_weights)) ** 2))
     r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
-    # SE of slope: sqrt(MSE / sum((x - x_mean)^2))
     mse = ss_res / max(n_valid - 2, 1)
-    x_mean = np.average(log_h3, weights=w)
-    ss_x = float(np.sum((log_h3 - x_mean) ** 2))
     se = float(np.sqrt(mse / ss_x)) if ss_x > 0 else float("inf")
 
     diagnostics = {"alpha": alpha, "se": se, "r_squared": r_squared, "n_bins": n_valid}

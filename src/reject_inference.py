@@ -91,8 +91,8 @@ def compute_acceptance_rates(
     # Bayesian smoothing: Beta-Binomial posterior
     if bayesian_smoothing:
         global_rate = rates["n_booked"].sum() / max(total.sum(), 1)
-        alpha = bayesian_prior_strength * global_rate
-        beta = bayesian_prior_strength * (1 - global_rate)
+        alpha = max(bayesian_prior_strength * global_rate, 0.5)
+        beta = max(bayesian_prior_strength * (1 - global_rate), 0.5)
         rates["smoothed_acceptance_rate"] = (rates["n_booked"] + alpha) / (total + alpha + beta)
         logger.debug(
             f"Bayesian smoothing applied | prior_strength={bayesian_prior_strength} | "

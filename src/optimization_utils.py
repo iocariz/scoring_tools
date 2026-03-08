@@ -94,12 +94,13 @@ def classify_by_mask(data: pd.DataFrame, mask: np.ndarray, grid: CellGrid) -> pd
     lookup = grid.cell_data[grid.variables].copy()
     lookup["_mask"] = mask
 
-    # Merge data with the lookup on the grid variables
-    merged = data[grid.variables].reset_index().merge(lookup, on=grid.variables, how="left")
-    merged = merged.set_index("index")
-
-    # Records with no matching cell default to rejected (0)
-    return merged["_mask"].fillna(0).astype(bool).reindex(data.index, fill_value=False)
+    lookup_series = lookup.set_index(grid.variables)["_mask"]
+    if len(grid.variables) == 1:
+        record_index = data[grid.variables[0]]
+    else:
+        record_index = pd.MultiIndex.from_frame(data[grid.variables])
+    mask_values = lookup_series.reindex(record_index).fillna(0).to_numpy(dtype=bool)
+    return pd.Series(mask_values, index=data.index)
 
 
 # =============================================================================

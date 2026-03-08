@@ -233,9 +233,10 @@ Trains a polynomial surface model on the score grid (uses the first 2 variables 
 - **Feature sets tested**: simple (2 features), base (3: with interaction), polynomial (squared/cubic), full.
 - **Estimators evaluated**: `LinearRegression`, `Ridge`, `Lasso`, `ElasticNet`, `HurdleRegressor`, `TweedieGLM`, `XGBoost`, `LightGBM` (via Optuna hyperparameter tuning).
 - **Cross-Validation Strategy**:
-  - **Feature Selection & Tuning**: Uses 5-Fold Cross-Validation. *Crucially, validation folds are physically split on the raw unaggregated data first*. Aggregation and outlier Z-scoring are then performed independently on the train and validation sets to mathematically guarantee zero target leakage between folds.
-  - **Selection Rule**: Employs the **one-standard-error rule** -- among models within one SE of the best mean CV R², the simplest architecture is selected to guard against overfitting.
-  - **Fresh-fold re-evaluation**: After Optuna selects the best hyperparameters, the final CV R² is computed on a fresh set of folds (different random seed) to avoid optimistic search bias.
+  - **Feature Selection & Tuning**: Uses 5-Fold Cross-Validation. *Crucially, validation folds are physically split on the raw unaggregated data first*. Aggregation and outlier filtering are then performed independently on the train and validation sets to prevent target leakage.
+  - **Selection Metric**: Models and feature sets are ranked by weighted CV RMSE. The **one-standard-error rule** is applied relative to the lowest mean RMSE, selecting the simplest eligible candidate. CV R² is reported for diagnostics where available, but it is not the primary selector.
+  - **Outer Validation**: After Optuna selects hyperparameters, candidates are re-evaluated on fresh folds; when enough raw data is available, a nested holdout split is used for a less biased estimate.
+  - **Weighting**: Tuning, feature selection, cell-level CI fitting, and final training share the same sample-weight precedence: `todu_amt_pile_h6`, then `oa_amt_h0`, then `n_observations`.
 - **Continuous Impact Sanity Check**: Runs a secondary `_estimate_continuous_impact` analysis to verify the linear relationship between the continuous production volume and risk metrics. Because this runs on heavily compressed, post-aggregated groups (where `N` is tiny), it uses **Leave-One-Out (LOO) CV** paired with `cross_val_predict` to ensure an unbiased, mathematically stable global R² trend estimate.
 - **Monotonic constraints**: Tree models (XGBoost, LightGBM) use monotonic constraints derived from the configured `directions` dictionary, ensuring each variable's constraint matches its actual risk relationship (ascending or descending).
 - **TODU amount model**: Linear regression `oa_amt` -> `todu_amt_pile_h6`, saved separately.
@@ -273,7 +274,7 @@ Outputs are saved to `sensitivity_analysis.csv`, `sensitivity_cell_detail.csv`, 
 
 ### Phase 8: Trend Analysis
 
-Computes monthly aggregated metrics (approval rate, production, risk) and detects anomalies using Statistical Process Control (rolling mean +/- n-sigma bounds).
+Computes monthly aggregated metrics (approval rate, production, risk) and detects anomalies using robust Statistical Process Control: a one-period-lagged rolling median with MAD-based scale, plus a t-distribution adjustment for small windows.
 
 ---
 
@@ -553,14 +554,14 @@ In the main period, all booked applications have a full 6-month performance wind
 
 | Priority | Source | Condition | Method |
 |:---------|:-------|:----------|:-------|
-| 1 | `h3_extrapolated` | H3 configured, valid main-period H6/H3 ratio, and enough mature H3 observations in MR | MR-observed H3 scaled by the main-period ratio (see below) |
-| 2 | `mr_observed` | Enough MR observations but H3 extrapolation unavailable | Direct MR-period `b2_ever_h6` |
-| 3 | `main_imputed` | Insufficient MR observations | Main-period `b2_ever_h6` |
-| 4 | `model_fallback` | Bin exists only in MR with sparse data | Inferred via the trained risk model |
+| 1 | `mr_observed` | Enough **valid** MR H6 observations in the bin | Direct MR-period `b2_ever_h6` |
+| 2 | `h3_extrapolated` | H3 configured, direct MR H6 is unavailable or insufficient, valid main-period H6/H3 ratio, and enough mature H3 observations in MR | MR-observed H3 scaled by the main-period ratio (see below) |
+| 3 | `main_imputed` | Main-period bin exists but MR H6/H3 evidence is insufficient | Main-period `b2_ever_h6` |
+| 4 | `model_fallback` | Bin exists only in MR and lacks enough valid MR H6/H3 outcomes | Inferred via the trained risk model |
 
 #### H3-Based H6 Extrapolation
 
-The 3-month horizon indicator (`b2_ever_h3`) matures in half the time of H6. In a 6-month MR window, the first 3 monthly cohorts have reliable H3 outcomes while none have fully matured H6. The pipeline exploits this by using the **main-period H6/H3 ratio** as a scaling factor:
+The 3-month horizon indicator (`b2_ever_h3`) matures in half the time of H6. In a 6-month MR window, mature H3 is usually available for more cohorts than mature H6, so the pipeline can extrapolate from H3 when direct H6 evidence is too sparse. It does this by using the **main-period H6/H3 ratio** as a scaling factor:
 
 ```
 b2_h6_estimated = b2_mr_h3 × f(b2_main_h6 / b2_main_h3)
@@ -583,10 +584,11 @@ Where, for each score bin:
 **Auto-calibration** (`mr_extrapolation_method = "auto"`): Performs a weighted log-log regression `log(b2_h6) = c + α·log(b2_h3)` across main-period bins to determine the H3→H6 curvature. If α's 95% confidence interval includes 1.0, linear is selected; otherwise power with the fitted α (clipped to [0.3, 3.0]) is used. Weights are per-bin observation counts (`n_obs_main`), downweighting noisy thin bins. The resolved method, curvature, and diagnostics (α, SE, R², n_bins) are logged and saved as `fitted_method` / `fitted_curvature` columns in `mr_risk_comparison_*.csv`.
 
 **Safeguards:**
-- Bins where `b2_main_h3 ≈ 0` have an undefined ratio and fall back to `mr_observed`.
+- Direct MR H6 sufficiency (`n_obs_mr`) counts only rows with non-null `todu_30ever_h6` **and** `todu_amt_pile_h6`; sparse or all-null H6 bins do not qualify for `mr_observed`.
+- Bins where `b2_main_h3 ≈ 0` skip extrapolation and fall back to direct MR H6 if enough valid H6 observations exist, otherwise `main_imputed`.
 - The number of MR accounts with mature H3 (`n_obs_mr_h3`) must meet the `mr_min_obs_per_bin` threshold; otherwise the bin falls back to `mr_observed` or `main_imputed`.
 - The per-bin `h6_h3_ratio` and `n_obs_mr_h3` are included in the comparison CSV (`mr_risk_comparison_*.csv`) for auditing.
-- Auto-calibration requires at least 4 valid bins with positive H3 and H6; falls back to linear otherwise.
+- Auto-calibration requires at least 4 valid bins with positive H3 and H6 and a non-degenerate log-H3 design; otherwise it falls back to linear.
 
 This feature activates automatically when `use_mr_outcomes = true` and `multiplier_h3` is configured. No additional configuration is required beyond the optional `mr_extrapolation_method`.
 
@@ -689,6 +691,7 @@ During model training, K-fold cross-validation produces per-cell prediction inte
 
 1. For each fold, train on the train split, aggregate the validation split by grid bins, and predict the target variable per cell.
 2. Across folds, compute mean, standard deviation, and confidence interval bounds per cell.
+3. For small sample counts, interval half-widths use a Student-t critical value; otherwise a normal approximation is used.
 
 Cells observed in fewer than 2 folds receive NaN intervals. Results are saved to `cell_level_ci.csv` and optionally displayed as uncertainty annotations on the dashboard heatmap.
 
@@ -720,7 +723,7 @@ Both are added as inequality rows alongside the existing risk budget and monoton
 
 ### Trend Analysis
 
-Monthly aggregation of approval rate, production volume, mean production, and risk metrics. Anomalies are detected using Statistical Process Control: months where the metric falls outside rolling mean +/- 2 standard deviations are flagged.
+Monthly aggregation of approval rate, production volume, mean production, and risk metrics. Anomalies are detected using robust Statistical Process Control: a lagged rolling median is used as the center line, MAD is converted to a standard-deviation-equivalent scale, and short windows use a Student-t critical value instead of a fixed z-score.
 
 ---
 
@@ -951,6 +954,12 @@ uv run pytest tests/test_optimization_utils.py -v
 
 # Run with coverage report
 uv run pytest --cov=src tests/
+
+# Focused validation for the core modeling / MR / optimization stack
+uv run pytest tests/test_estimators.py tests/test_optuna_tuning.py tests/test_mr_pipeline.py tests/test_optimization_utils.py tests/test_global_optimizer.py tests/test_models.py tests/test_reject_inference.py tests/test_utils.py -q
+
+# Focused validation for H3→H6 extrapolation and MR fallback logic
+uv run pytest tests/test_utils.py tests/test_mr_pipeline.py -q
 ```
 
 ### Test Files
