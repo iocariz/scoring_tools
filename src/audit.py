@@ -49,7 +49,7 @@ def generate_audit_table(
         return pd.DataFrame()
 
     var0_col = variables[0]
-    var1_col = variables[1]
+    var1_col = variables[1] if len(variables) > 1 else None
 
     # Default audit columns - now includes reject_reason
     if audit_columns is None:
@@ -59,10 +59,11 @@ def generate_audit_table(
             "reject_reason",
             "risk_score_rf",
             "score_rf",
-            var1_col,
             var0_col,
             "oa_amt",
         ]
+        if var1_col is not None:
+            audit_columns.insert(-1, var1_col)
         # Include extra variables for N>2
         for v in variables[2:]:
             if v not in audit_columns:
@@ -83,6 +84,8 @@ def generate_audit_table(
         audit_df = data[available_columns].copy()
         audit_df["cut_limit"] = np.nan  # not applicable for N-d
     else:
+        if var1_col is None:
+            raise ValueError("2-var cut_map audit path requires at least 2 variables; use mask/grid for 1-var configs")
         # Extract cutoffs from optimal solution (first row)
         opt_sol_row = optimal_solution_df.iloc[0]
 

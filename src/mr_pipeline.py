@@ -52,7 +52,7 @@ def calculate_metrics_from_cuts(
     """
     try:
         var0_col = variables[0]
-        var1_col = variables[1]
+        var1_col = variables[1] if len(variables) > 1 else None
 
         # Verify we have the optimal solution
         if optimal_solution_df is None or optimal_solution_df.empty:
@@ -67,6 +67,8 @@ def calculate_metrics_from_cuts(
 
             df["passes_cut"] = classify_by_mask(df, mask, grid)
         else:
+            if var1_col is None:
+                raise ValueError("2-var cut_map path requires at least 2 variables; use mask/grid for 1-var configs")
             opt_sol_row = optimal_solution_df.iloc[0]
 
             # Get unique bins from data

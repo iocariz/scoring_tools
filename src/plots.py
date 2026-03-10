@@ -307,6 +307,27 @@ def plot_3d_graph(
         data_train = data_train.groupby(variables[:2])[[var_target]].mean().reset_index()
         variables = variables[:2]
 
+    if len(variables) == 1:
+        # 1D: line chart instead of 3D surface
+        var0 = variables[0]
+        pred_col = f"{var_target}_pred"
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=data_train[var0], y=data_train[var_target],
+            mode="markers", name=f"{var_target} (actual)",
+            marker=dict(size=8, color="blue", opacity=0.7),
+        ))
+        if pred_col in data_surf.columns:
+            surf_sorted = data_surf.sort_values(var0)
+            fig.add_trace(go.Scatter(
+                x=surf_sorted[var0], y=surf_sorted[pred_col],
+                mode="lines+markers", name="Regression",
+                line=dict(color="red", width=2),
+            ))
+        styles.apply_plotly_style(fig, title="Regression Plot (1D)", width=1000, height=600)
+        fig.update_layout(xaxis_title=var0, yaxis_title=var_target)
+        return fig
+
     data_surf_pivot = data_surf.pivot(index=variables[1], columns=variables[0], values=f"{var_target}_pred")
 
     # gráfico
@@ -423,6 +444,7 @@ class RiskProductionVisualizer:
         self.data_summary_disaggregated = data_summary_disaggregated
         self.data_summary_sample_no_opt = data_summary_sample_no_opt
         self.variables = variables
+        self._is_1d = len(self.variables) == 1
         self.optimum_risk = optimum_risk
         self.tasa_fin = tasa_fin
 
@@ -475,7 +497,26 @@ class RiskProductionVisualizer:
 
         # For N>2 variables: marginalize disaggregated data to first 2 variables for heatmap
         self._is_2d = len(self.variables) == 2
-        if not self._is_2d:
+        if self._is_1d:
+            # 1D mode: no heatmap, aggregate to var0 only
+            var0 = self.variables[0]
+            numeric_cols = [
+                c
+                for c in self.data_summary_disaggregated.columns
+                if c != var0 and pd.api.types.is_numeric_dtype(self.data_summary_disaggregated[c])
+            ]
+            agg_dict = dict.fromkeys(numeric_cols, "sum")
+            self._bar_data = self.data_summary_disaggregated.groupby([var0]).agg(agg_dict).reset_index()
+            self._bar_data["b2_ever_h6"] = calculate_b2_ever_h6(
+                self._bar_data["todu_30ever_h6"],
+                self._bar_data["todu_amt_pile_h6"],
+                multiplier=self.multiplier,
+                as_percentage=True,
+            )
+            self._heatmap_data = None
+            self.xx, self.yy = None, None
+            logger.info(f"1D mode: bar chart for {var0}")
+        elif not self._is_2d:
             var0, var1 = self.variables[0], self.variables[1]
             numeric_cols = [
                 c
@@ -498,27 +539,43 @@ class RiskProductionVisualizer:
                 f"N>2 variables ({len(self.variables)}): heatmap marginalized to "
                 f"{var0} x {var1} (extra dimensions summed)"
             )
+            # Create meshgrid for heatmap
+            self.xx, self.yy = np.meshgrid(self.values_var0, self.values_var1)
         else:
             self._heatmap_data = self.data_summary_disaggregated
-
-        # Create meshgrid for heatmap
-        self.xx, self.yy = np.meshgrid(self.values_var0, self.values_var1)
+            # Create meshgrid for heatmap
+            self.xx, self.yy = np.meshgrid(self.values_var0, self.values_var1)
 
     def create_figure(self):
         """Create the main figure with subplots"""
-        self.fig = go.Figure(
-            make_subplots(
-                rows=1,
-                cols=2,
-                subplot_titles=(
-                    "Optimal relationship between production and risk",
-                    "Production & B2 ever H6 Heatmap / Optimal Cut-Off",
-                ),
+        if self._is_1d:
+            self.fig = go.Figure(
+                make_subplots(
+                    rows=1,
+                    cols=2,
+                    subplot_titles=(
+                        "Optimal relationship between production and risk",
+                        f"Risk & Production by {self.variables[0]}",
+                    ),
+                )
             )
-        )
+        else:
+            self.fig = go.Figure(
+                make_subplots(
+                    rows=1,
+                    cols=2,
+                    subplot_titles=(
+                        "Optimal relationship between production and risk",
+                        "Production & B2 ever H6 Heatmap / Optimal Cut-Off",
+                    ),
+                )
+            )
 
         self._add_scatter_traces()
-        self._add_heatmap_traces()
+        if self._is_1d:
+            self._add_bar_traces()
+        else:
+            self._add_heatmap_traces()
         self._update_layout()
 
     def _add_scatter_traces(self):
@@ -576,6 +633,38 @@ class RiskProductionVisualizer:
         )
         self.fig.add_trace(self.optimum_trace, row=1, col=1)
 
+    def _add_bar_traces(self):
+        """Add bar chart traces for 1D mode (replaces heatmap)"""
+        bar_data = self._bar_data
+        var0 = self.variables[0]
+        bins = bar_data[var0].values
+
+        # Risk bars
+        self.fig.add_trace(
+            go.Bar(
+                x=bins,
+                y=bar_data["b2_ever_h6"],
+                name="B2 ever H6 (%)",
+                marker_color="rgba(157,13,20,0.7)",
+                text=[f"{v:.1f}%" for v in bar_data["b2_ever_h6"]],
+                textposition="outside",
+            ),
+            row=1,
+            col=2,
+        )
+
+        # Mask overlay bar — will be updated by _apply_static_update
+        self._bar_mask_colors = ["rgba(0,0,0,0)"] * len(bins)
+        self.mask_bar_trace = go.Bar(
+            x=bins,
+            y=bar_data["b2_ever_h6"],
+            marker_color=self._bar_mask_colors,
+            marker_pattern_shape="/",
+            showlegend=False,
+            hoverinfo="skip",
+        )
+        self.fig.add_trace(self.mask_bar_trace, row=1, col=2)
+
     def _add_heatmap_traces(self):
         """Add heatmap traces to the figure"""
         heatmap_data = self._heatmap_data
@@ -617,15 +706,17 @@ class RiskProductionVisualizer:
         var0_dir = self.directions.get(self.variables[0], 1)
         var0_label = f"{self.variables[0]} (Higher = {'Riskier' if var0_dir == 1 else 'Safer'})"
 
-        var1_label = self.variables[1]
-        if len(self.variables) > 1:
+        self.fig.update_xaxes(title_text="OA AMT (€)", range=[self.lim_inf_OA, self.lim_sup_OA], row=1, col=1)
+        self.fig.update_yaxes(title_text="B2 ever H6 (%€)", range=[self.lim_inf_B2, self.lim_sup_B2], row=1, col=1)
+
+        if self._is_1d:
+            self.fig.update_xaxes(title_text=var0_label, dtick=1, row=1, col=2)
+            self.fig.update_yaxes(title_text="B2 ever H6 (%)", row=1, col=2)
+        else:
             var1_dir = self.directions.get(self.variables[1], 1)
             var1_label = f"{self.variables[1]} (Higher = {'Riskier' if var1_dir == 1 else 'Safer'})"
-
-        self.fig.update_xaxes(title_text="OA AMT (€)", range=[self.lim_inf_OA, self.lim_sup_OA], row=1, col=1)
-        self.fig.update_xaxes(title_text=var0_label, dtick=1, row=1, col=2)
-        self.fig.update_yaxes(title_text="B2 ever H6 (%€)", range=[self.lim_inf_B2, self.lim_sup_B2], row=1, col=1)
-        self.fig.update_yaxes(title_text=var1_label, dtick=1, row=1, col=2)
+            self.fig.update_xaxes(title_text=var0_label, dtick=1, row=1, col=2)
+            self.fig.update_yaxes(title_text=var1_label, dtick=1, row=1, col=2)
 
         # Apply the update logic statically here
         self._apply_static_update()
@@ -668,7 +759,34 @@ class RiskProductionVisualizer:
         ].values[0, :]
         B2, OA, B2_CUT, OA_CUT, B2_REP, OA_REP = metrics
 
-        # Update cut-off mask
+        if self._is_1d:
+            # 1D mode: resolve mask per bin from pareto_masks or cutoff columns
+            var0 = self.variables[0]
+            mask_1d = np.zeros(len(self.values_var0))
+            if self._pareto_masks and self._nd_grid is not None:
+                sol_fac = int(data_filtered.iloc[0].get("sol_fac", 0))
+                if 0 <= sol_fac < len(self._pareto_masks):
+                    selected_mask = self._pareto_masks[sol_fac]
+                    cell_df = self._nd_grid.cell_data.copy()
+                    cell_df["_m"] = selected_mask
+                    for i, bv in enumerate(self.values_var0):
+                        row = cell_df[cell_df[var0] == bv]
+                        if not row.empty:
+                            mask_1d[i] = row["_m"].values[0]
+
+            # Update bar mask colors: rejected = semi-transparent dark red hatching
+            colors = []
+            for m in mask_1d:
+                if m == 1:
+                    colors.append("rgba(0,0,0,0)")  # accepted — transparent
+                else:
+                    colors.append("rgba(120,0,0,0.55)")  # rejected — dark overlay
+            # Trace indices: scatter adds 4 (0,1,2,3), bar adds 2 (4=risk bars, 5=mask bars)
+            self.fig.data[5].marker.color = colors
+            self.fig.data[3].update(x=[OA], y=[B2])
+            return
+
+        # Update cut-off mask (2D+ modes)
         if self._is_2d:
             CUT_OFF = data_filtered[self.values_var0].values[0]
             var1_inverted = self.directions.get(self.variables[1], 1) == -1

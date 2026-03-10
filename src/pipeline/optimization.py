@@ -116,8 +116,8 @@ def run_optimization_phase(
         # Get validation settings from config
         strict_validation = fixed_cutoffs.get("strict_validation", False)
 
-        if len(settings.variables) > 2:
-            # N>2 fixed cutoffs → mask-based path
+        if len(settings.variables) != 2:
+            # N!=2 fixed cutoffs → mask-based path
             grid, fixed_mask = create_fixed_cutoff_mask(
                 fixed_cutoffs=fixed_cutoffs,
                 variables=settings.variables,
@@ -206,9 +206,9 @@ def run_optimization_phase(
 
         if pareto_df.empty:
             # Fallback depending on number of variables
-            if len(settings.variables) > 2:
-                # N>2: try GA fallback instead of legacy enumeration
-                logger.warning(f"[{segment}] MILP produced no solutions for N>2, trying GA fallback")
+            if len(settings.variables) != 2:
+                # N!=2: try GA fallback instead of legacy enumeration
+                logger.warning(f"[{segment}] MILP produced no solutions for N!=2, trying GA fallback")
                 from src.optimization_utils import _ga_pareto_fallback
 
                 pareto_df, grid, pareto_masks = _ga_pareto_fallback(
@@ -366,7 +366,7 @@ def run_scenario_analysis(
     )
 
     inv_var1 = settings.variables[1] in settings.inv_vars if len(settings.variables) > 1 else False
-    is_nd = len(settings.variables) > 2
+    is_nd = len(settings.variables) != 2
 
     # Calculate main annual coef for production scaling
     date_ini_main = settings.get_date("date_ini_book_obs")
@@ -907,7 +907,7 @@ def _save_cutoff_summaries(
     )
 
     if not consolidated_cutoffs.empty:
-        if len(settings.variables) > 2:
+        if len(settings.variables) != 2:
             # N>2: cell-level summary, skip pivot (no cutoff_value column)
             consolidated_cutoffs.to_csv(output.cutoff_summary_wide_csv, index=False)
             logger.debug(f"[{segment}] Cell-level cutoff summaries saved to {output.cutoff_summary_wide_csv}")

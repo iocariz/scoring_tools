@@ -45,11 +45,12 @@ class TestPreprocessorSettings:
         assert "must be a non-empty list" in str(excinfo.value)
 
     def test_variables_wrong_length(self, valid_config_dict):
-        valid_config_dict["variables"] = ["v1"]
+        # Single variable is now allowed (1D mode); empty list should still fail
+        valid_config_dict["variables"] = []
         with pytest.raises(ValidationError) as excinfo:
             PreprocessingSettings(**valid_config_dict)
         assert "variables" in str(excinfo.value)
-        assert "must contain at least 2 elements" in str(excinfo.value)
+        assert "must contain at least 1 element" in str(excinfo.value)
 
     def test_bins_too_short(self, valid_config_dict):
         valid_config_dict["octroi_bins"] = [10.0]

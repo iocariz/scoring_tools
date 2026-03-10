@@ -408,8 +408,12 @@ def _build_acceptance_matrices(df: pd.DataFrame, variable_cols: list[str], scena
     if scen_df.empty:
         return None
 
-    if len(variable_cols) < 2:
+    if len(variable_cols) < 1:
         return None
+
+    # 1D: horizontal acceptance strip
+    if len(variable_cols) == 1:
+        return _build_acceptance_strip_1d(scen_df, variable_cols[0])
 
     col_var = variable_cols[0]  # columns of the pivot
     row_var = variable_cols[1]  # rows of the pivot
@@ -452,6 +456,128 @@ def _build_acceptance_matrices(df: pd.DataFrame, variable_cols: list[str], scena
         parts.append("</div>")
 
     return "\n".join(parts) if parts else None
+
+
+def _build_acceptance_strip_1d(df: pd.DataFrame, var_col: str) -> str:
+    """Render a horizontal acceptance strip for 1D optimization."""
+    parts: list[str] = []
+
+    for seg_name, seg_df in df.groupby("segment", sort=True):
+        parts.append(f"<h4>{seg_name}</h4>")
+
+        # Sort by bin value
+        seg_sorted = seg_df.sort_values(var_col)
+        bins = seg_sorted[var_col].values
+        accepted = seg_sorted["accepted"].values
+
+        n_accepted = int(accepted.sum())
+        n_total = len(accepted)
+
+        # Summary line
+        parts.append(
+            f'<div class="strip-summary">{n_accepted}/{n_total} bins accepted '
+            f'({100 * n_accepted / n_total:.0f}%)</div>'
+        )
+
+        # Horizontal strip
+        parts.append('<div class="acceptance-strip">')
+        parts.append(f'<div class="strip-label">{var_col}</div>')
+        parts.append('<div class="strip-cells">')
+        for bv, acc in zip(bins, accepted):
+            cls = "m-ok" if acc == 1 else "m-no"
+            label = int(bv) if isinstance(bv, float) and bv == int(bv) else bv
+            parts.append(f'<div class="strip-cell {cls}"><span class="strip-bin">{label}</span></div>')
+        parts.append("</div></div>")
+
+    return "\n".join(parts) if parts else None
+
+
+def _build_optimal_cutoff_1d(
+    csv_path: Path, var_name: str, settings: PreprocessingSettings
+) -> str | None:
+    """Render the optimal solution CSV for 1D as a table with decoded acceptance mask.
+
+    Instead of showing the raw comma-separated mask, displays a clean table with
+    the selected Pareto point metrics and a visual acceptance strip.
+    """
+    try:
+        df = pd.read_csv(csv_path)
+    except (pd.errors.ParserError, OSError, ValueError):
+        return None
+    if df.empty:
+        return None
+
+    # Get bin values from settings
+    bin_config = settings.bins.get(var_name)
+    if bin_config and bin_config.bin_edges:
+        n_bins = len(bin_config.bin_edges) - 1
+        bin_labels = list(range(1, n_bins + 1))
+    else:
+        # Infer from mask length
+        if "acceptance_mask" in df.columns:
+            first_mask = str(df["acceptance_mask"].iloc[0])
+            n_bins = len(first_mask.split(","))
+            bin_labels = list(range(1, n_bins + 1))
+        else:
+            return None
+
+    # Show the selected (last qualifying) row's KPIs in a summary table
+    kpi_cols = ["sol_fac", "b2_ever_h6", "oa_amt_h0", "b2_ever_h6_cut", "oa_amt_h0_cut"]
+    available_kpis = [c for c in kpi_cols if c in df.columns]
+
+    lines: list[str] = []
+
+    # KPI table for the selected solution
+    if available_kpis:
+        lines.append('<table class="report-table" border="0">')
+        lines.append("<thead><tr>")
+        kpi_labels = {
+            "sol_fac": "Solution",
+            "b2_ever_h6": "Risk (%)",
+            "oa_amt_h0": "Production",
+            "b2_ever_h6_cut": "Risk Cut (%)",
+            "oa_amt_h0_cut": "Production Cut",
+        }
+        for col in available_kpis:
+            lines.append(f'<th class="num">{kpi_labels.get(col, col)}</th>')
+        lines.append("<th>Acceptance Pattern</th></tr></thead>")
+        lines.append("<tbody>")
+
+        # Show up to 10 Pareto solutions
+        for _, row in df.head(10).iterrows():
+            lines.append("<tr>")
+            for col in available_kpis:
+                val = row.get(col, float("nan"))
+                if pd.notna(val):
+                    if col in ("b2_ever_h6", "b2_ever_h6_cut"):
+                        cls = "num risk-high" if val > 5 else "num risk-med" if val > 3 else "num risk-low"
+                        lines.append(f'<td class="{cls}">{val:,.2f}%</td>')
+                    elif col in ("oa_amt_h0", "oa_amt_h0_cut"):
+                        lines.append(f'<td class="num">{val:,.0f}</td>')
+                    else:
+                        lines.append(f'<td class="num">{val}</td>')
+                else:
+                    lines.append('<td class="num">&mdash;</td>')
+
+            # Inline acceptance strip
+            mask_str = str(row.get("acceptance_mask", ""))
+            if mask_str:
+                bits = mask_str.split(",")
+                strip = '<td><div class="strip-cells" style="display:inline-flex">'
+                for i, bit in enumerate(bits):
+                    cls = "m-ok" if bit.strip() == "1" else "m-no"
+                    bl = bin_labels[i] if i < len(bin_labels) else i + 1
+                    strip += f'<div class="strip-cell {cls}" style="min-width:24px;height:24px">'
+                    strip += f'<span class="strip-bin" style="font-size:0.6rem">{bl}</span></div>'
+                strip += "</div></td>"
+                lines.append(strip)
+            else:
+                lines.append("<td>&mdash;</td>")
+            lines.append("</tr>")
+
+        lines.append("</tbody></table>")
+
+    return "\n".join(lines) if lines else None
 
 
 def _render_acceptance_pivot(pivot: pd.DataFrame, col_label: str, row_label: str) -> str:
@@ -778,6 +904,7 @@ def build_segment_report(
         sections.append(inf_section)
 
     # --- Per-scenario sections ---
+    is_1d = len(settings.variables) == 1
     for scenario in scenarios:
         suffix = f"_{scenario}" if scenario else ""
         label = scenario or "base"
@@ -790,9 +917,16 @@ def build_segment_report(
         tbl = csv_to_html_table(output_paths.risk_production_summary_csv(suffix), exclude_cols=_exclude_todu)
         if tbl:
             sa_section.tables.append(tbl)
-        opt_tbl = csv_to_html_table(output_paths.optimal_solution_csv(suffix))
-        if opt_tbl:
-            sa_section.tables.append(f"<h4>Optimal Cutoffs</h4>{opt_tbl}")
+        # Optimal cutoffs: for 1D/N-d, decode acceptance_mask into a visual strip
+        opt_csv = Path(output_paths.optimal_solution_csv(suffix))
+        if is_1d and opt_csv.exists():
+            opt_html = _build_optimal_cutoff_1d(opt_csv, settings.variables[0], settings)
+            if opt_html:
+                sa_section.tables.append(f"<h4>Optimal Cutoffs</h4>{opt_html}")
+        else:
+            opt_tbl = csv_to_html_table(opt_csv)
+            if opt_tbl:
+                sa_section.tables.append(f"<h4>Optimal Cutoffs</h4>{opt_tbl}")
         # N>2: acceptance grid per income bin
         acc_div = extract_plotly_div(output_paths.acceptance_grid_html(suffix))
         if acc_div:

@@ -296,8 +296,8 @@ class PreprocessingSettings(BaseModel):
     @field_validator("variables")
     @classmethod
     def validate_variables_length(cls, v: list[str]) -> list[str]:
-        if len(v) < 2:
-            raise ValueError(f"'variables' must contain at least 2 elements, got {len(v)}")
+        if len(v) < 1:
+            raise ValueError(f"'variables' must contain at least 1 element, got {len(v)}")
         if len(v) != len(set(v)):
             duplicates = [x for x in v if v.count(x) > 1]
             raise ValueError(f"'variables' must contain unique elements, found duplicates: {set(duplicates)}")
@@ -378,22 +378,28 @@ class PreprocessingSettings(BaseModel):
     @model_validator(mode="after")
     def _auto_populate_bins(self) -> "PreprocessingSettings":
         """Auto-populate ``bins`` dict from legacy octroi_bins/efx_bins if not set."""
+        # Known legacy variable → bins/source_col mapping
+        _legacy_map = {
+            "sc_octroi_new_clus": (self.octroi_bins, "score_rf"),
+            "new_efx_clus": (self.efx_bins, "risk_score_rf"),
+        }
+
         # Merge legacy octroi_bins/efx_bins into bins dict for variables not already defined
-        if self.octroi_bins and self.efx_bins:
-            var0 = self.variables[0]
-            var1 = self.variables[1]
-            if var0 not in self.bins:
-                self.bins[var0] = BinConfig(
-                    source_col="score_rf",
-                    output_col=var0,
-                    bin_edges=self.octroi_bins,
-                )
-            if var1 not in self.bins:
-                self.bins[var1] = BinConfig(
-                    source_col="risk_score_rf",
-                    output_col=var1,
-                    bin_edges=self.efx_bins,
-                )
+        for var in self.variables:
+            if var in self.bins:
+                continue
+            # Try name-based match first
+            if var in _legacy_map:
+                edges, src = _legacy_map[var]
+                if edges:
+                    self.bins[var] = BinConfig(source_col=src, output_col=var, bin_edges=edges)
+                    continue
+            # Positional fallback: var0 → octroi_bins, var1 → efx_bins
+            idx = self.variables.index(var)
+            if idx == 0 and self.octroi_bins:
+                self.bins[var] = BinConfig(source_col="score_rf", output_col=var, bin_edges=self.octroi_bins)
+            elif idx == 1 and self.efx_bins:
+                self.bins[var] = BinConfig(source_col="risk_score_rf", output_col=var, bin_edges=self.efx_bins)
 
         if not self.bins:
             raise ValueError(
@@ -408,9 +414,9 @@ class PreprocessingSettings(BaseModel):
         """Default ``inference_variables`` to ``variables`` and validate."""
         if self.inference_variables is None:
             self.inference_variables = list(self.variables)
-        if len(self.inference_variables) < 2:
+        if len(self.inference_variables) < 1:
             raise ValueError(
-                f"'inference_variables' must contain at least 2 elements, got {len(self.inference_variables)}"
+                f"'inference_variables' must contain at least 1 element, got {len(self.inference_variables)}"
             )
         if not set(self.inference_variables).issubset(set(self.variables)):
             extra = set(self.inference_variables) - set(self.variables)

@@ -400,6 +400,8 @@ def _bootstrap_worker(
         passes = classify_by_mask(sample, mask, grid)
     else:
         var0 = variables[0]
+        if len(variables) < 2:
+            raise ValueError("2-var cut_map bootstrap path requires at least 2 variables")
         var1 = variables[1]
 
         # Map cuts to each row based on var0 bin
@@ -564,7 +566,7 @@ def generate_cutoff_summary(
         return pd.DataFrame()
 
     # N>2: produce cell-level summary from mask
-    if len(variables) > 2 and mask is not None and grid is not None:
+    if len(variables) != 2 and mask is not None and grid is not None:
         from src.optimization_utils import CellGrid
 
         if isinstance(grid, CellGrid):

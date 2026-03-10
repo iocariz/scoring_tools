@@ -351,7 +351,9 @@ def _get_regression_weights(processed_data: pd.DataFrame) -> pd.Series | None:
     return None
 
 
-def _create_feature_dataframe(mesh_df: pd.DataFrame, features: list[str], var0: str, var1: str) -> pd.DataFrame:
+def _create_feature_dataframe(
+    mesh_df: pd.DataFrame, features: list[str], var0: str, var1: str | None
+) -> pd.DataFrame:
     """
     Create feature DataFrame for model predictions on a mesh grid.
 
@@ -360,15 +362,16 @@ def _create_feature_dataframe(mesh_df: pd.DataFrame, features: list[str], var0: 
     training data regardless of which feature set was selected.
 
     Args:
-        mesh_df: DataFrame with mesh grid points (columns: var0, var1).
+        mesh_df: DataFrame with mesh grid points (columns: var0, and optionally var1).
         features: List of feature column names the model expects.
         var0: First variable name.
-        var1: Second variable name.
+        var1: Second variable name (None for 1D case).
 
     Returns:
         DataFrame containing only the requested feature columns, in order.
     """
-    transformed = transform_variables(mesh_df.copy(), [var0, var1])
+    variables = [var0] if var1 is None else [var0, var1]
+    transformed = transform_variables(mesh_df.copy(), variables)
     missing = [f for f in features if f not in transformed.columns]
     if missing:
         raise ValueError(
@@ -403,7 +406,45 @@ def plot_3d_surface(
         Plotly Figure object or None if error occurs
     """
     try:
-        var0, var1 = variables[0], variables[1]
+        var0 = variables[0]
+
+        # 1D case: 2D scatter + line plot instead of 3D surface
+        if len(variables) < 2:
+            logger.info(f"Creating 2D plot for {var0}, {target_var}")
+            x_min = min(train_data[var0].min(), test_data[var0].min())
+            x_max = max(train_data[var0].max(), test_data[var0].max())
+            x_range = np.linspace(x_min, x_max, n_points)
+            mesh_df = pd.DataFrame({var0: x_range})
+            feature_df = _create_feature_dataframe(mesh_df, features, var0, None)
+            y_pred = model.predict(feature_df)
+
+            fig = go.Figure()
+            fig.add_trace(
+                go.Scatter(
+                    x=train_data[var0], y=train_data[target_var], mode="markers",
+                    marker=dict(size=5, color=styles.COLOR_ACCENT, opacity=0.7), name="Training Data",
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=test_data[var0], y=test_data[target_var], mode="markers",
+                    marker=dict(size=5, color=styles.COLOR_RISK, opacity=0.7), name="Test Data",
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=x_range, y=y_pred, mode="lines",
+                    line=dict(color="rgba(0,0,0,0.8)", width=2), name="Model Predictions",
+                )
+            )
+            styles.apply_plotly_style(
+                fig, title=f"{target_var} vs {var0} with Model Predictions", width=1000, height=600
+            )
+            fig.update_xaxes(title_text=var0)
+            fig.update_yaxes(title_text=target_var)
+            return fig
+
+        var1 = variables[1]
         logger.info(f"Creating 3D plot for {var0}, {var1}, {target_var}")
 
         # Create mesh grid for predictions
