@@ -49,6 +49,7 @@ class OptimizerInputs:
     multiplier: float = 7.0
     parceling_method: str = "linear"
     calibration_gamma: float = 1.0
+    per_bin_tasa_fin: pd.DataFrame | None = None
 
 
 def _compute_calibration_error(
@@ -132,8 +133,15 @@ def evaluate_ri_params(
         errors="ignore",
     )
 
-    # Apply financing rate
-    repesca[inputs.indicators] *= inputs.tasa_fin
+    # Apply financing rate (per-bin or global)
+    if inputs.per_bin_tasa_fin is not None and not inputs.per_bin_tasa_fin.empty:
+        repesca = repesca.merge(inputs.per_bin_tasa_fin, on=inputs.variables, how="left")
+        repesca["tasa_fin"] = repesca["tasa_fin"].fillna(inputs.tasa_fin)
+        for ind in inputs.indicators:
+            repesca[ind] *= repesca["tasa_fin"]
+        repesca = repesca.drop(columns=["tasa_fin"])
+    else:
+        repesca[inputs.indicators] *= inputs.tasa_fin
 
     # Rename with _rep suffix
     repesca = repesca.rename(columns={i: i + "_rep" for i in inputs.indicators})

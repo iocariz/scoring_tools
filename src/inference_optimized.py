@@ -1576,6 +1576,7 @@ def compute_pre_reject_inference_data(
     annual_coef: float,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
     model_variables: list[str] | None = None,
+    per_bin_stress: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Compute booked summary (_boo suffix) and repesca summary (post-risk-model, pre-reject-inference).
 
@@ -1586,6 +1587,10 @@ def compute_pre_reject_inference_data(
         model_variables: Variables the risk model was trained on. When fewer
             than ``variables``, the model predicts using this subset while
             aggregation still groups by all ``variables``.
+        per_bin_stress: Optional per-bin stress factors DataFrame with
+            ``[*variables, "stress_factor"]``.  When provided, the scalar
+            *stressor* should be 1.0 and per-bin factors are applied after
+            the model prediction step.
 
     Returns:
         Tuple of (booked_summary with _boo suffix, repesca_summary post-risk-model).
@@ -1616,6 +1621,16 @@ def compute_pre_reject_inference_data(
         repesca_summary, final_model, reg_todu_amt_pile, risk_vars, stressor, final_features, multiplier=multiplier
     )[variables + indicators]
 
+    # Apply per-bin stress factors when provided (scalar stressor is 1.0 in this case)
+    if per_bin_stress is not None and not per_bin_stress.empty:
+        repesca_summary = repesca_summary.merge(per_bin_stress, on=variables, how="left")
+        global_fallback = per_bin_stress["stress_factor"].median()
+        repesca_summary["stress_factor"] = repesca_summary["stress_factor"].fillna(global_fallback)
+        repesca_summary["todu_30ever_h6"] *= repesca_summary["stress_factor"]
+        if "todu_30ever_h3" in repesca_summary.columns:
+            repesca_summary["todu_30ever_h3"] *= repesca_summary["stress_factor"]
+        repesca_summary = repesca_summary.drop(columns=["stress_factor"])
+
     return booked_summary, repesca_summary
 
 
@@ -1641,6 +1656,8 @@ def run_optimization_pipeline(
     reject_include_all_rejections: bool = False,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
     inv_vars: list[str] | None = None,
+    per_bin_stress: pd.DataFrame | None = None,
+    per_bin_tasa_fin: pd.DataFrame | None = None,
 ):
     """
     Runs the optimization pipeline: aggregates data, applies risk models, and generates visualizations.
@@ -1664,6 +1681,7 @@ def run_optimization_pipeline(
         annual_coef=annual_coef,
         multiplier=multiplier,
         model_variables=risk_inference.get("model_variables"),
+        per_bin_stress=per_bin_stress,
     )
 
     # Apply reject inference adjustment (after stressor, before tasa_fin)
@@ -1696,7 +1714,16 @@ def run_optimization_pipeline(
             errors="ignore",
         )
 
-    data_sumary_desagregado_repesca[INDICADORES] *= tasa_fin
+    if per_bin_tasa_fin is not None and not per_bin_tasa_fin.empty:
+        data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.merge(
+            per_bin_tasa_fin, on=VARIABLES, how="left"
+        )
+        data_sumary_desagregado_repesca["tasa_fin"] = data_sumary_desagregado_repesca["tasa_fin"].fillna(tasa_fin)
+        for ind in INDICADORES:
+            data_sumary_desagregado_repesca[ind] *= data_sumary_desagregado_repesca["tasa_fin"]
+        data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.drop(columns=["tasa_fin"])
+    else:
+        data_sumary_desagregado_repesca[INDICADORES] *= tasa_fin
     data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.rename(
         columns={i: i + "_rep" for i in INDICADORES}
     )

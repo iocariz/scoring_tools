@@ -42,6 +42,8 @@ def run_optimization_phase(
     settings: PreprocessingSettings,
     annual_coef: float,
     output: OutputPaths | None = None,
+    per_bin_stress: pd.DataFrame | None = None,
+    per_bin_tasa_fin: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, list], CellGrid | None, list]:
     """Run the optimization pipeline: generate summary, find optimal cutoffs.
 
@@ -55,6 +57,8 @@ def run_optimization_phase(
         settings: Configuration settings object
         annual_coef: Annual coefficient for the observation period
         output: Output paths configuration. Defaults to current directory.
+        per_bin_stress: Optional per-bin stress factors DataFrame.
+        per_bin_tasa_fin: Optional per-bin transformation rate DataFrame.
 
     Returns:
         Tuple of (data_summary_desagregado, data_summary, data_summary_sample_no_opt,
@@ -87,6 +91,8 @@ def run_optimization_phase(
         reject_include_all_rejections=settings.reject_include_all_rejections,
         multiplier=settings.multiplier,
         inv_vars=settings.inv_vars,
+        per_bin_stress=per_bin_stress,
+        per_bin_tasa_fin=per_bin_tasa_fin,
     )
 
     # Build values_per_var dict for all variables
@@ -297,6 +303,8 @@ def run_scenario_analysis(
     pareto_masks: list | None = None,
     output: OutputPaths | None = None,
     total_demand: float = 0.0,
+    per_bin_stress: pd.DataFrame | None = None,
+    per_bin_tasa_fin: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Run scenario analysis for a single risk threshold: visualization, MR processing, audit.
 
@@ -509,6 +517,8 @@ def run_scenario_analysis(
             output=output,
             mask=selected_mask,
             grid=grid,
+            per_bin_stress=per_bin_stress,
+            per_bin_tasa_fin=per_bin_tasa_fin,
         )
 
     # Scenario MR Processing
@@ -526,6 +536,8 @@ def run_scenario_analysis(
         output=output,
         mask=selected_mask,
         grid=grid,
+        per_bin_stress=per_bin_stress,
+        per_bin_tasa_fin=per_bin_tasa_fin,
     )
 
     # Generate audit tables for this scenario
@@ -717,6 +729,8 @@ def run_ri_optimizer_phase(
     data_booked_mr: pd.DataFrame | None = None,
     data_demand_mr: pd.DataFrame | None = None,
     annual_coef_mr: float | None = None,
+    per_bin_stress: pd.DataFrame | None = None,
+    per_bin_tasa_fin: pd.DataFrame | None = None,
 ) -> dict | None:
     """Run reject inference parameter optimization (non-blocking).
 
@@ -770,6 +784,7 @@ def run_ri_optimizer_phase(
             variables=settings.variables,
             annual_coef=annual_coef,
             multiplier=settings.multiplier,
+            per_bin_stress=per_bin_stress,
         )
 
         # Step 2: Compute acceptance rates
@@ -789,6 +804,7 @@ def run_ri_optimizer_phase(
             multiplier=settings.multiplier,
             parceling_method=settings.reject_parceling_method,
             calibration_gamma=settings.ri_calibration_gamma,
+            per_bin_tasa_fin=per_bin_tasa_fin,
         )
 
         # Step 4: Run optimization (grid or Optuna)
@@ -823,6 +839,7 @@ def run_ri_optimizer_phase(
                     variables=settings.variables,
                     annual_coef=annual_coef_mr,
                     multiplier=settings.multiplier,
+                    per_bin_stress=per_bin_stress,
                 )
                 mr_acceptance_rates = compute_acceptance_rates(
                     data_demand_mr, settings.variables,

@@ -106,12 +106,11 @@ class TestRunPreprocessingPhase:
             output=output,
         )
 
-        returned_clean, returned_booked, returned_demand, stress_factor, tasa_fin = result
-        assert returned_clean is data_clean
-        assert returned_booked is data_booked
-        assert returned_demand is data_demand
-        assert stress_factor == pytest.approx(1.25)
-        assert tasa_fin == pytest.approx(1.0)
+        assert result.data_clean is data_clean
+        assert result.data_booked is data_booked
+        assert result.data_demand is data_demand
+        assert result.stress_factor == pytest.approx(1.25)
+        assert result.tasa_fin == pytest.approx(1.0)
         assert risk_fig.paths == [output.risk_vs_production_html]
         assert rate_fig.paths == [output.transformation_rate_html]
         assert diagnostics == ["sc_octroi_new_clus", "new_efx_clus"]

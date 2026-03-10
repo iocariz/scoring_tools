@@ -1,13 +1,36 @@
 import time
+from dataclasses import dataclass
 
 import pandas as pd
 from loguru import logger
 
 from src.config import OutputPaths, PreprocessingSettings
 from src.data_quality import run_data_quality_checks
-from src.plots import calculate_and_plot_transformation_rate, plot_bin_threshold_diagnostic, plot_risk_vs_production
+from src.plots import (
+    calculate_and_plot_transformation_rate,
+    calculate_per_bin_transformation_rate,
+    plot_bin_threshold_diagnostic,
+    plot_risk_vs_production,
+)
 from src.preprocess_improved import complete_preprocessing_pipeline
-from src.utils import calculate_stress_factor
+from src.utils import calculate_per_bin_stress_factors, calculate_stress_factor
+
+
+@dataclass
+class PreprocessingResult:
+    """Result of the preprocessing phase.
+
+    Encapsulates all outputs so that adding new fields does not break
+    call sites that unpack by position.
+    """
+
+    data_clean: pd.DataFrame
+    data_booked: pd.DataFrame
+    data_demand: pd.DataFrame
+    stress_factor: float
+    tasa_fin: float
+    per_bin_stress: pd.DataFrame | None = None
+    per_bin_tasa_fin: pd.DataFrame | None = None
 
 
 def run_preprocessing_phase(
@@ -15,7 +38,7 @@ def run_preprocessing_phase(
     settings: PreprocessingSettings,
     skip_dq_checks: bool,
     output: OutputPaths | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, float, float] | None:
+) -> PreprocessingResult | None:
     """Run data quality checks, preprocessing pipeline, and compute derived metrics.
 
     Args:
@@ -25,8 +48,7 @@ def run_preprocessing_phase(
         output: Output paths configuration. Defaults to current directory.
 
     Returns:
-        Tuple of (data_clean, data_booked, data_demand, stress_factor, tasa_fin)
-        Returns None if data quality checks fail.
+        PreprocessingResult or None if data quality checks fail.
     """
     if output is None:
         output = OutputPaths()
@@ -71,8 +93,34 @@ def run_preprocessing_phase(
             except Exception as e:
                 logger.warning(f"[{segment}] Bin diagnostic for '{bc.output_col}' failed (non-blocking): {e}")
 
-    # Stress factor & transformation rate
-    stress_factor = calculate_stress_factor(data_booked)
+    # -------------------------------------------------------------------------
+    # Stress factor
+    # -------------------------------------------------------------------------
+    stress_mode = getattr(settings, "stress_mode", "global")
+    per_bin_stress: pd.DataFrame | None = None
+
+    if stress_mode == "disabled":
+        stress_factor = 1.0
+        logger.info(f"[{segment}] stress_mode=disabled — stress factor set to 1.0")
+    elif stress_mode == "per_bin":
+        stress_factor = 1.0  # scalar is neutral; per-bin DF carries the adjustment
+        per_bin_stress = calculate_per_bin_stress_factors(data_booked, settings.variables)
+        logger.info(
+            f"[{segment}] stress_mode=per_bin — "
+            f"{len(per_bin_stress)} bins, mean={per_bin_stress['stress_factor'].mean():.3f}"
+        )
+    else:
+        # "global" (default / backward-compatible)
+        stress_factor = calculate_stress_factor(data_booked)
+        if settings.reject_inference_method == "parceling":
+            logger.info(
+                f"[{segment}] stress_mode=global with parceling active — "
+                f"consider stress_mode='disabled' to avoid double-counting selection bias"
+            )
+
+    # -------------------------------------------------------------------------
+    # Transformation rate (tasa_fin)
+    # -------------------------------------------------------------------------
     result = calculate_and_plot_transformation_rate(
         data_clean, date_col="mis_date", amount_col="oa_amt", n_months=settings.n_months
     )
@@ -84,6 +132,21 @@ def run_preprocessing_phase(
     elif tasa_fin > 5.0:
         logger.warning(f"[{segment}] tasa_fin={tasa_fin:.4f} is unusually high (>5.0) — verify transformation rate")
 
+    per_bin_tasa_fin: pd.DataFrame | None = None
+    if getattr(settings, "per_bin_tasa_fin", False):
+        per_bin_tasa_fin = calculate_per_bin_transformation_rate(
+            data_clean,
+            settings.variables,
+            date_col="mis_date",
+            amount_col="oa_amt",
+            n_months=settings.n_months,
+            global_tasa_fin=tasa_fin,
+        )
+        logger.info(
+            f"[{segment}] per_bin_tasa_fin enabled — "
+            f"{len(per_bin_tasa_fin)} bins, mean={per_bin_tasa_fin['tasa_fin'].mean():.3f}"
+        )
+
     elapsed = time.perf_counter() - t0
     logger.info(
         f"[{segment}] Preprocessing done | "
@@ -91,4 +154,12 @@ def run_preprocessing_phase(
         f"stress={stress_factor:.4f} tasa_fin={tasa_fin:.2%} | {elapsed:.1f}s"
     )
 
-    return data_clean, data_booked, data_demand, stress_factor, tasa_fin
+    return PreprocessingResult(
+        data_clean=data_clean,
+        data_booked=data_booked,
+        data_demand=data_demand,
+        stress_factor=stress_factor,
+        tasa_fin=tasa_fin,
+        per_bin_stress=per_bin_stress,
+        per_bin_tasa_fin=per_bin_tasa_fin,
+    )

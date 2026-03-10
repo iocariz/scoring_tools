@@ -127,11 +127,11 @@ The sigmoid produces a smooth S-curve: gentle at the extremes (rates near 0% or 
 
 ### 2.3 Monotonicity Enforcement (Optional)
 
-When `reject_enforce_monotonicity = true`, the raw multipliers are post-processed using `sklearn.isotonic.IsotonicRegression(increasing=True)` to ensure they are non-decreasing along each variable axis (marginal monotonicity).
+When `reject_enforce_monotonicity = true`, the raw multipliers are post-processed using `sklearn.isotonic.IsotonicRegression` to ensure they are monotonic along each variable axis (marginal monotonicity). The direction of monotonicity respects each variable's risk ordering: variables in `inv_vars` (higher bin = safer) use `increasing=False`, while others use `increasing=True`.
 
-**Why enforce monotonicity:** Raw multipliers can be non-monotone when acceptance rates fluctuate across bins due to sampling noise or policy artifacts. A lower-risk bin receiving a higher multiplier than a higher-risk bin is economically incoherent and can distort the optimization. Isotonic regression resolves this by fitting the smallest non-decreasing function that minimizes squared error against the raw multipliers.
+**Why enforce monotonicity:** Raw multipliers can be non-monotone when acceptance rates fluctuate across bins due to sampling noise or policy artifacts. A lower-risk bin receiving a higher multiplier than a higher-risk bin is economically incoherent and can distort the optimization. Isotonic regression resolves this by fitting the smallest monotonic function that minimizes squared error against the raw multipliers.
 
-The enforcement operates per-variable axis: for each binning variable, the multipliers are averaged across the other axes, fit with isotonic regression along that variable's sorted bins, and the isotonic values are mapped back. After isotonic adjustment, multipliers are re-clipped to `[1.0, reject_max_risk_multiplier]`.
+The enforcement operates via **alternating projections**: for each binning variable, the multipliers are averaged across the other axes, fit with isotonic regression along that variable's sorted bins, and the isotonic values are mapped back. This process iterates over all variables repeatedly until convergence (max absolute change < 1e-6) or a maximum of 10 iterations. After isotonic adjustment, multipliers are re-clipped to `[1.0, reject_max_risk_multiplier]`.
 
 ### 2.4 Per-Bin Confidence Scores
 
@@ -169,20 +169,21 @@ The confidence score and bin count (`ri_confidence`, `ri_bin_count`) are include
 Reject inference is applied **after** the stress factor and **before** the financing rate (`tasa_fin`). The sequence within the optimization pipeline is:
 
 ```
-1. Aggregate booked summary  (per-bin todu + production)
+1. Aggregate booked summary  (per-bin todu + production, with _boo suffix)
 2. Aggregate repesca summary (per-bin todu + production)
-3. Apply risk model predictions to repesca
-4. Apply stress factor
-5. ► Apply reject inference (multiplier on todu_30ever_h6)    ◄
+3. Apply risk model predictions to repesca (stress factor is embedded
+   in the model prediction: b2_ever_h6 = stress × model.predict(X))
+4. ► Apply reject inference (multiplier on todu_30ever_h6)    ◄
      a. Compute acceptance rates (with optional Bayesian smoothing)
      b. Compute per-bin confidence scores
      c. Apply parceling adjustment (linear/power/sigmoid)
      d. Enforce monotonicity (if enabled)
-6. Drop diagnostic columns (acceptance_rate, smoothed_acceptance_rate,
+     e. Also apply multiplier to todu_30ever_h3 when present
+5. Drop diagnostic columns (acceptance_rate, smoothed_acceptance_rate,
    reject_risk_multiplier, ri_confidence, ri_bin_count)
-7. Apply financing rate (tasa_fin) to indicators
-8. Merge booked + repesca
-9. Build CellGrid → MILP → Pareto
+6. Apply financing rate (tasa_fin) to ALL repesca indicators
+7. Merge booked + repesca
+8. Build CellGrid → MILP → Pareto
 ```
 
 ---

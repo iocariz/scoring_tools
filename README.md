@@ -228,8 +228,8 @@ Loads SAS data (`.sas7bdat`), standardizes column names (lowercase, underscores)
 1. **Data Quality Checks** -- Schema validation, missing values, outlier detection (Z-score), date range validation, categorical consistency.
 2. **Filtering** -- By segment (regex), date range, and application status (booked / score-rejected / other).
 3. **Feature Engineering** -- Bins continuous scores into cluster variables using configured bin edges. When edges are learned automatically (`max_bins` without `bin_edges`), two methods are available: `"quantile"` (equal-count splits, default) and `"optimization"` (production-weighted risk split via `DecisionTreeRegressor`).
-4. **Stress Factor** -- Calculated from the worst 5% of booked applications as a risk correction.
-5. **Transformation Rate** -- Monthly financing rate over a rolling window (`n_months`).
+4. **Stress Factor** -- Risk correction for the rejected population. Three modes: `"global"` (single scalar from the worst 5% of booked, default), `"per_bin"` (separate factor per grid cell), or `"disabled"` (no stress adjustment, recommended when parceling is active).
+5. **Transformation Rate** -- Monthly financing rate over a rolling window (`n_months`). When `per_bin_tasa_fin = true`, computed per grid cell instead of as a global scalar.
 
 ### Phase 4: Inference (Model Training)
 
@@ -287,110 +287,254 @@ Computes monthly aggregated metrics (approval rate, production, risk) and detect
 
 ### `config.toml` -- Base Settings
 
-Global pipeline parameters. Per-segment overrides go in `segments.toml`.
+Global pipeline parameters. Per-segment overrides go in `segments.toml`. All settings live under the `[preprocessing]` section.
+
+#### Complete Parameter Reference
+
+##### Core (Required)
+
+| Key | Type | Default | Description |
+|:----|:-----|:--------|:------------|
+| `keep_vars` | list[str] | *(required)* | Columns to retain from source data |
+| `indicators` | list[str] | *(required)* | Target and amount indicator columns |
+| `variables` | list[str] | *(required, >= 2, unique)* | Grid variables for optimization |
+| `date_ini_book_obs` | str | *(required)* | Main observation period start date (YYYY-MM-DD) |
+| `date_fin_book_obs` | str | *(required)* | Main observation period end date (YYYY-MM-DD) |
+
+##### Data and Segment
+
+| Key | Type | Default | Description |
+|:----|:-----|:--------|:------------|
+| `data_path` | str | `"data/demanda_direct_out.sas7bdat"` | Path to SAS source data file |
+| `segment_filter` | str | `"unknown"` | Segment regex filter (usually overridden per-segment) |
+| `inference_variables` | list[str] | `= variables` | Subset of `variables` used for model training (>= 2, must be subset of `variables`) |
+| `score_measures` | list[str] | `None` | Score columns for discriminance analysis (`run_score_metrics.py`) |
+| `log_level` | str | `"INFO"` | Logging level |
+
+##### Binning
+
+Legacy 2-variable binning:
+
+| Key | Type | Default | Description |
+|:----|:-----|:--------|:------------|
+| `octroi_bins` | list[float] | `[]` | Bin edges for var0 (>= 2 values, supports `-inf`/`inf`) |
+| `efx_bins` | list[float] | `[]` | Bin edges for var1 (>= 2 values, supports `-inf`/`inf`) |
+
+N-variable binning (under `[preprocessing.bins.VAR_NAME]`):
+
+| Key | Type | Default | Description |
+|:----|:-----|:--------|:------------|
+| `source_col` | str | *(required)* | Raw column name in the data |
+| `output_col` | str | *(required)* | Name of the binned column to create |
+| `bin_edges` | list[float] | `[]` | Fixed bin edges (>= 2 values). When empty, edges are learned via `max_bins` |
+| `max_bins` | int | `None` | Max bins for supervised edge learning. Required if `bin_edges` is empty |
+| `method` | str | `"quantile"` | `"quantile"` (equal-count) or `"optimization"` (production-weighted risk split via DecisionTreeRegressor) |
+
+Monotonicity directions (under `[preprocessing.directions]`):
+
+| Key | Type | Default | Description |
+|:----|:-----|:--------|:------------|
+| `<variable_name>` | int | *(auto-inferred)* | `1` = ascending risk (higher bin = riskier), `-1` = descending risk (higher bin = safer). Auto-inferred from data if not set |
+
+##### Economic Parameters
+
+| Key | Type | Default | Range | Description |
+|:----|:-----|:--------|:------|:------------|
+| `multiplier` | float | `7.0` | > 0 | Risk formula multiplier for H6 metric |
+| `multiplier_h3` | float | `4.0` | > 0 | Risk formula multiplier for H3 metric |
+| `optimum_risk` | float | `1.1` | | Target risk appetite in % |
+| `risk_step` | float | `0.1` | | Scenario step: creates pessimistic (`optimum_risk - risk_step`) and optimistic (`optimum_risk + risk_step`) |
+| `n_months` | int | `12` | | Rolling window (months) for transformation rate computation |
+| `z_threshold` | float | `3.0` | > 0 | Outlier detection Z-score threshold |
+
+Comfort zone yearly limits (under `[preprocessing.cz_config]`):
 
 ```toml
-[preprocessing]
-# --- Required ---
-
-# Columns to retain from source data
-keep_vars = ["authorization_id", "mis_date", "status_name", "risk_score_rf",
-             "se_decision_id", "reject_reason", "score_rf", "segment_cut_off", "early_bad"]
-
-# Indicator columns (targets and amounts)
-indicators = ["acct_booked_h0", "oa_amt", "todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"]
-
-# Grid variables (2 or more; extra dimensions use bins config below)
-variables = ["sc_octroi_new_clus", "new_efx_clus"]
-
-# Bin edges for clustering (supports -inf / inf)
-octroi_bins = [-inf, 364.0, 370.0, 379.0, 382.0, 389.0, 397.0, 404.0, 416.0, 431.0, inf]
-efx_bins = [-inf, 2.0, 7.0, 11.0, 16.0, 22.0, 27.0, 33.0, 38.0, 43.0, 47.0, 51.0,
-            56.0, 62.0, 68.0, 73.0, 78.0, 83.0, 89.0, 94.0, inf]
-
-# Main observation period
-date_ini_book_obs = "2024-07-01"
-date_fin_book_obs = "2025-06-01"
-
-# --- Optional ---
-
-# Recent Monitoring period (both required if either is set)
-date_ini_book_obs_mr = "2025-07-01"
-date_fin_book_obs_mr = "2025-12-01"
-
-# Data source
-data_path = "data/demanda_direct_out.sas7bdat"   # default
-
-# Segment filter (usually overridden per-segment in segments.toml)
-segment_filter = "unknown"                         # default
-
-# Score measures for discriminance analysis
-score_measures = ["m_ct_direct_sc_nov23", "m_ct_direct_sc_jan23", ...]
-
-# Economic parameters
-multiplier = 7.0          # Risk formula multiplier (default: 7.0)
-z_threshold = 3.0         # Outlier detection Z-score threshold (default: 3.0)
-optimum_risk = 1.1        # Target risk appetite in % (default: 1.1)
-risk_step = 0.1           # Scenario step: optimum_risk +/- risk_step (default: 0.1)
-n_months = 24             # Rolling window for transformation rate (default: 12)
-inv_var1 = false          # Invert var1 comparison: >= instead of <= (default: false)
-run_sensitivity = false   # Run sensitivity analysis after optimization (default: false)
-
-# H3→H6 extrapolation curve (used with use_mr_outcomes = true)
-mr_extrapolation_method = "linear"  # "linear", "power", "logistic", or "auto" (default: "linear")
-mr_extrapolation_curvature = 1.0    # Power exponent; ignored when method = "auto" (default: 1.0)
-
-# Logging
-log_level = "INFO"        # default: "INFO"
-
-# Comfort zone yearly limits
 [preprocessing.cz_config]
 2022 = 4.5
 2023 = 4.2
 2024 = 3.8
-2025 = 3.5
 ```
 
-#### Reject Inference (Optional)
+##### MR (Recent Monitoring) Period
 
-Adjusts predicted risk for score-rejected bins to correct selection bias. Only the risk indicator (`todu_30ever_h6`) is adjusted; revenue (`oa_amt`) is observable for all records.
+| Key | Type | Default | Range | Description |
+|:----|:-----|:--------|:------|:------------|
+| `date_ini_book_obs_mr` | str | `None` | | MR period start date. Both MR dates required if either is set |
+| `date_fin_book_obs_mr` | str | `None` | | MR period end date |
+| `use_mr_outcomes` | bool | `false` | | Enable hybrid MR risk inference (use observed MR risk where sufficient) |
+| `mr_min_obs_per_bin` | int | `30` | >= 1 | Min observations for an MR bin to qualify as `mr_observed` |
+| `mr_extrapolation_method` | str | `"linear"` | | H3→H6 extrapolation: `"linear"`, `"power"`, `"logistic"`, or `"auto"` (fits curvature from data) |
+| `mr_extrapolation_curvature` | float | `1.0` | 0-5 | Power exponent for `"power"` method. Ignored when `"auto"` |
 
-```toml
-reject_inference_method = "none"       # "none" (default) or "parceling"
-reject_parceling_method = "linear"     # "linear" (default), "power", or "sigmoid"
-reject_uplift_factor = 1.5            # Scaling coefficient (0.0-10.0, default: 1.5)
-reject_max_risk_multiplier = 3.0      # Upper cap for per-bin multiplier (1.0-10.0, default: 3.0)
-reject_bayesian_smoothing = false     # Beta-Binomial smoothing of acceptance rates (default: false)
-reject_bayesian_prior_strength = 10.0 # Bayesian prior strength (>0, <=1000, default: 10.0)
-reject_enforce_monotonicity = false   # Isotonic regression on multipliers (default: false)
-```
+##### Stress Factor
 
-**Parceling methods** (per bin):
+| Key | Type | Default | Description |
+|:----|:-----|:--------|:------------|
+| `stress_mode` | str | `"global"` | `"global"` (single scalar from worst 5% of booked), `"per_bin"` (per grid cell, fallback to global for bins < 20 obs), or `"disabled"` (`stress_factor = 1.0`) |
+
+When `stress_mode = "global"` and parceling is active, a log warning suggests `"disabled"` to avoid double-counting selection bias.
+
+##### Transformation Rate
+
+| Key | Type | Default | Description |
+|:----|:-----|:--------|:------------|
+| `per_bin_tasa_fin` | bool | `false` | Compute `tasa_fin` per grid cell instead of a single global scalar. Bins with < 10 eligible records or invalid rates fall back to global |
+
+##### Reject Inference
+
+| Key | Type | Default | Range | Description |
+|:----|:-----|:--------|:------|:------------|
+| `reject_inference_method` | str | `"none"` | | `"none"` or `"parceling"` |
+| `reject_parceling_method` | str | `"linear"` | | `"linear"`, `"power"`, or `"sigmoid"` |
+| `reject_uplift_factor` | float | `1.5` | 0-10 | Scaling coefficient for parceling |
+| `reject_max_risk_multiplier` | float | `3.0` | 1-10 | Upper cap for per-bin risk multiplier |
+| `reject_bayesian_smoothing` | bool | `false` | | Beta-Binomial smoothing of acceptance rates |
+| `reject_bayesian_prior_strength` | float | `10.0` | 0-1000 | Bayesian prior strength (higher = more shrinkage toward global rate) |
+| `reject_enforce_monotonicity` | bool | `false` | | Isotonic regression on multipliers per variable axis |
+| `reject_include_all_rejections` | bool | `false` | | Include policy rejections (`08-other`) in acceptance rate denominator |
+
+**Parceling formulas** (per bin):
 
 - **Linear** (default): `multiplier = 1 + uplift_factor * (1 - rate)`
-- **Power**: `multiplier = (1 / rate) ^ uplift_factor` — non-linear, grows faster at low acceptance rates
-- **Sigmoid**: `multiplier = 1 + uplift_factor / (1 + exp(10 * (rate - 0.5)))` — smooth S-curve with steep transition around 50% acceptance
+- **Power**: `multiplier = (1 / rate) ^ uplift_factor` — grows faster at low acceptance rates
+- **Sigmoid**: `multiplier = 1 + uplift_factor / (1 + exp(10 * (rate - 0.5)))` — smooth S-curve, steep transition around 50% acceptance
 
-**Bayesian smoothing**: When enabled, raw per-bin acceptance rates are smoothed using a Beta-Binomial posterior with the global acceptance rate as prior. The `prior_strength` parameter controls the degree of shrinkage toward the global rate.
+All multipliers are floored at 1.0 and capped at `reject_max_risk_multiplier`.
 
-**Monotonicity enforcement**: When enabled, applies isotonic regression (`sklearn.isotonic.IsotonicRegression`) per variable axis to ensure risk multipliers are non-decreasing with bin index — lower-risk bins cannot receive higher multipliers than higher-risk bins.
+##### Reject Inference Optimizer
 
-**Per-bin confidence scores** (`1 - exp(-n_total / 50)`) quantify the reliability of each bin's reject inference adjustment based on sample size. Included in diagnostic output.
+| Key | Type | Default | Range | Description |
+|:----|:-----|:--------|:------|:------------|
+| `run_ri_optimizer` | bool | `false` | | Enable automated RI parameter search |
+| `ri_optimizer_method` | str | `"grid"` | | `"grid"` (exhaustive) or `"optuna"` (TPE, seed=42) |
+| `ri_calibration_gamma` | float | `1.0` | 0-1 | Selection-bias exponent. Target = `booked_risk / acceptance_rate^gamma`. Lower = less aggressive |
+| `ri_uplift_range` | list[float] | `[0.0, 5.0]` | | Search range [min, max] for `reject_uplift_factor` |
+| `ri_max_mult_range` | list[float] | `[1.0, 5.0]` | | Search range [min, max] for `reject_max_risk_multiplier` |
+| `ri_uplift_steps` | int | `11` | | Grid divisions for uplift (grid method) |
+| `ri_max_mult_steps` | int | `9` | | Grid divisions for max multiplier (grid method) |
+| `ri_optuna_n_trials` | int | `100` | 10-10000 | Number of Optuna trials |
 
-#### Reject Inference Optimizer (Optional)
+Selection rule: minimum calibration error among feasible solutions, with ties within 5% broken by maximizing production. When MR data is available, reports `degradation_ratio = mr_error / main_error` for temporal stability validation.
 
-Searches over RI parameters to find the pair that minimizes **calibration error** against the selection-bias model.
+##### MILP and Pareto Tuning
 
-The calibration target for each cell is `booked_risk / acceptance_rate^gamma`, based on the standard selection-bias model: if a bin accepts the least-risky fraction *a* of applicants, the true population risk is approximately `observed / a^gamma`. The `gamma` parameter (default 1.0) controls target aggressiveness — lower values reduce the assumed separation between booked and rejected risk.
+| Key | Type | Default | Range | Description |
+|:----|:-----|:--------|:------|:------------|
+| `milp_time_limit` | float | `30.0` | > 0 | MILP solver timeout in seconds |
+| `pareto_n_points` | int | `50` | 5-500 | Number of risk targets in Pareto sweep |
+| `n_bootstraps` | int | `1000` | 100-50000 | Bootstrap replicates for confidence intervals |
+| `cv_folds` | int | `4` | 2-10 | Cross-validation folds for model training |
 
-Two optimization methods are available:
+##### Swap-In Constraints
 
-- **Grid search** (`ri_optimizer_method = "grid"`): Exhaustive evaluation over a regular grid of parameter combinations. Deterministic and transparent.
-- **Optuna TPE** (`ri_optimizer_method = "optuna"`): Tree-structured Parzen Estimator with `seed=42` for reproducibility. More sample-efficient for large search spaces.
+| Key | Type | Default | Range | Description |
+|:----|:-----|:--------|:------|:------------|
+| `max_swapin_production_pct` | float | `None` | 0-100 | Max % of total accepted production from swap-in. `None` = no limit |
+| `max_swapin_risk` | float | `None` | 0-100 | Max `b2_ever_h6` (%) for swap-in population only. `None` = no limit |
 
-Both methods use the same selection rule: minimum calibration error among feasible solutions, with ties within 5% of the minimum broken by maximizing production.
+##### Sensitivity Analysis
 
-**Out-of-time MR validation**: When MR-period data is available, the optimizer automatically applies the best parameters to the MR period and reports `degradation_ratio = mr_error / main_error`. This validates temporal stability of the calibration — a ratio near 1.0 indicates the RI correction generalizes well to the holdout period.
+| Key | Type | Default | Description |
+|:----|:-----|:--------|:------------|
+| `run_sensitivity` | bool | `false` | Run sensitivity analysis after optimization |
+| `sensitivity_levels` | list[float] | `[-20, -10, -5, 5, 10, 20]` | Perturbation percentages to evaluate |
+
+##### Fixed Cutoffs
+
+Skip MILP optimization and apply predefined cutoffs. Set under `[preprocessing.fixed_cutoffs]`.
+
+**2-variable** (paired bins/cutoffs — lists must have equal length):
+
+```toml
+[preprocessing.fixed_cutoffs]
+sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0]  # var0 bin values
+new_efx_clus = [3, 4, 5, 6]                 # var1 max cutoff per var0 bin
+strict_validation = false                     # Raise errors instead of warnings (default: false)
+run_all_scenarios = false                     # Generate all 3 scenarios (default: false, base only)
+```
+
+**N>2 variables** (per-variable accepted bin lists):
+
+```toml
+[preprocessing.fixed_cutoffs]
+sc_octroi_new_clus = [1.0, 2.0, 3.0]
+new_efx_clus = [1.0, 2.0, 3.0, 4.0]
+income_bin = [1.0, 2.0]
+strict_validation = false
+run_all_scenarios = false
+```
+
+---
+
+### `segments.toml` -- Per-Segment Overrides
+
+Defines segments for batch processing. Each segment can override **any** `config.toml` parameter — the segment config is recursively merged on top of the base config.
+
+#### Supersegment Definition
+
+```toml
+[supersegments.NAME]
+segment_filters = ["segment_a", "segment_b"]  # Segment filters to combine for shared model training
+```
+
+#### Segment Definition
+
+```toml
+[segments.NAME]
+segment_filter = "segment_a"   # (required) Segment regex filter
+```
+
+##### Common Per-Segment Overrides
+
+| Key | Type | Default | Description |
+|:----|:-----|:--------|:------------|
+| `segment_filter` | str | *(required)* | Segment regex filter value |
+| `optimum_risk` | float | *(from config.toml)* | Per-segment risk appetite |
+| `risk_step` | float | *(from config.toml)* | Per-segment scenario step |
+| `supersegment` | str | `None` | Name of shared model supersegment |
+| `variables` | list[str] | *(from config.toml)* | Override grid variables |
+| `inference_variables` | list[str] | *(from config.toml)* | Override model training variables |
+
+##### Allocation Constraints (used by `run_allocation.py`)
+
+| Key | Type | Default | Description |
+|:----|:-----|:--------|:------------|
+| `min_risk` | float | `None` | Minimum risk bound for global allocation |
+| `max_risk` | float | `None` | Maximum risk bound for global allocation |
+| `min_production` | float | `None` | Production floor for global allocation |
+| `locked_sol_fac` | float | `None` | Lock segment to a specific frontier point (`sol_fac` value) |
+
+##### Per-Segment Pipeline Overrides
+
+Any `config.toml` field can be overridden per segment. Common examples:
+
+```toml
+[segments.conservative_segment]
+segment_filter = "conservative"
+optimum_risk = 0.8
+risk_step = 0.05
+reject_inference_method = "parceling"
+reject_parceling_method = "power"
+stress_mode = "disabled"
+per_bin_tasa_fin = true
+n_months = 12
+max_swapin_production_pct = 10.0
+
+[segments.conservative_segment.directions]
+sc_octroi_new_clus = -1
+new_efx_clus = -1
+
+[segments.conservative_segment.bins.income_bin]
+source_col = "income_t1t2_m"
+output_col = "income_bin"
+max_bins = 3
+method = "optimization"
+
+[segments.conservative_segment.fixed_cutoffs]
+sc_octroi_new_clus = [1.0, 2.0, 3.0]
+new_efx_clus = [5, 6, 8]
+```
 
 ### Global Portfolio Allocation
 
@@ -708,7 +852,7 @@ Monthly aggregation of approval rate, production volume, mean production, and ri
 | Module | Purpose |
 |:-------|:--------|
 | `config_loader.py` | Config loading, validation, and annual coefficient computation |
-| `preprocessing.py` | Orchestrates DQ checks, filtering, binning, stress factor |
+| `preprocessing.py` | Orchestrates DQ checks, filtering, binning, stress factor (global/per-bin/disabled), transformation rate (global/per-bin) |
 | `inference.py` | Orchestrates model training or loading |
 | `optimization.py` | Orchestrates optimization, scenario analysis, MR, stability |
 

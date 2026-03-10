@@ -83,10 +83,16 @@ def main(
             raise DataLoadError(f"[{segment}] Unexpected data loading error") from e
 
         # Step 3: Preprocessing (DQ checks, binning, stress factor, transformation rate)
-        result = run_preprocessing_phase(data, settings, skip_dq_checks, output=output)
-        if result is None:
+        prep = run_preprocessing_phase(data, settings, skip_dq_checks, output=output)
+        if prep is None:
             return None
-        data_clean, data_booked, data_demand, stress_factor, tasa_fin = result
+        data_clean = prep.data_clean
+        data_booked = prep.data_booked
+        data_demand = prep.data_demand
+        stress_factor = prep.stress_factor
+        tasa_fin = prep.tasa_fin
+        per_bin_stress = prep.per_bin_stress
+        per_bin_tasa_fin = prep.per_bin_tasa_fin
 
         # Step 4: Risk inference (model training or loading)
         try:
@@ -121,6 +127,8 @@ def main(
             settings,
             annual_coef,
             output=output,
+            per_bin_stress=per_bin_stress,
+            per_bin_tasa_fin=per_bin_tasa_fin,
         )
 
         # Compute total demand (booked + rejected, excluding canceled)
@@ -155,6 +163,8 @@ def main(
                 pareto_masks=pareto_masks,
                 output=output,
                 total_demand=total_demand,
+                per_bin_stress=per_bin_stress,
+                per_bin_tasa_fin=per_bin_tasa_fin,
             )
             cutoff_summaries.append(summary)
 
@@ -181,6 +191,8 @@ def main(
             settings=settings,
             annual_coef=annual_coef,
             output=output,
+            per_bin_stress=per_bin_stress,
+            per_bin_tasa_fin=per_bin_tasa_fin,
         )
 
         # Step 6d: Re-run optimization with tuned RI params if they changed
@@ -216,6 +228,8 @@ def main(
                     settings,
                     annual_coef,
                     output=output,
+                    per_bin_stress=per_bin_stress,
+                    per_bin_tasa_fin=per_bin_tasa_fin,
                 )
 
                 cutoff_summaries = []

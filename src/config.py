@@ -276,6 +276,16 @@ class PreprocessingSettings(BaseModel):
     ri_optimizer_method: Literal["grid", "optuna"] = "grid"
     ri_optuna_n_trials: int = Field(default=100, ge=10, le=10000)
 
+    # Stress factor mode: "global" (legacy single scalar), "disabled" (always 1.0),
+    # "per_bin" (per-bin computation). When parceling is active, "disabled" avoids
+    # double-counting selection bias with the RI multiplier.
+    stress_mode: Literal["global", "disabled", "per_bin"] = "global"
+
+    # Per-bin transformation rate: when True, compute tasa_fin per bin combination
+    # instead of a single global scalar.  Bins with insufficient data fall back to
+    # the global rate.
+    per_bin_tasa_fin: bool = False
+
     @field_validator("keep_vars", "indicators")
     @classmethod
     def validate_non_empty_list(cls, v: list[str], info: Any) -> list[str]:

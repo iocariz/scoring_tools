@@ -433,6 +433,8 @@ def process_mr_period(
     output: OutputPaths | None = None,
     mask: np.ndarray | None = None,
     grid: object | None = None,
+    per_bin_stress: pd.DataFrame | None = None,
+    per_bin_tasa_fin: pd.DataFrame | None = None,
 ) -> None:
     """
     Process the MR period data: filtering, inference, aggregation, visualization, and summary table.
@@ -737,6 +739,8 @@ def process_mr_period(
             reject_bayesian_prior_strength=settings.reject_bayesian_prior_strength,
             reject_enforce_monotonicity=settings.reject_enforce_monotonicity,
             reject_include_all_rejections=settings.reject_include_all_rejections,
+            per_bin_stress=per_bin_stress,
+            per_bin_tasa_fin=per_bin_tasa_fin,
         )
 
         # Save MR summary

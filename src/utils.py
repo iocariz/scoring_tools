@@ -290,6 +290,82 @@ def calculate_stress_factor(
     return float(stress_factor)
 
 
+def calculate_per_bin_stress_factors(
+    df: pd.DataFrame,
+    variables: list[str],
+    status_col: str = "status_name",
+    score_col: str = "risk_score_rf",
+    num_col: str = "todu_30ever_h6",
+    den_col: str = "todu_amt_pile_h6",
+    frac: float = 0.05,
+    target_status: str = "booked",
+    higher_is_worse: bool = False,
+    min_obs_per_bin: int = 20,
+) -> pd.DataFrame:
+    """Compute per-bin stress factors.
+
+    For each bin combination, the stress factor is the ratio of the risk rate
+    in the worst ``frac`` fraction (by score) to the overall risk rate within
+    that bin.  Bins with fewer than ``min_obs_per_bin`` records use the global
+    stress factor as a fallback.
+
+    Returns
+    -------
+    DataFrame with ``[*variables, "stress_factor"]``.
+    """
+    df_target = df[df[status_col] == target_status].copy()
+    if df_target.empty:
+        logger.warning("No target records for per-bin stress; returning empty DataFrame")
+        return pd.DataFrame(columns=variables + ["stress_factor"])
+
+    global_stress = calculate_stress_factor(
+        df, status_col=status_col, score_col=score_col,
+        num_col=num_col, den_col=den_col, frac=frac,
+        target_status=target_status, higher_is_worse=higher_is_worse,
+    )
+
+    rows: list[dict] = []
+    for bin_vals, group in df_target.groupby(variables, observed=True):
+        if not isinstance(bin_vals, tuple):
+            bin_vals = (bin_vals,)
+        row = dict(zip(variables, bin_vals))
+
+        if len(group) < min_obs_per_bin:
+            row["stress_factor"] = global_stress
+            rows.append(row)
+            continue
+
+        total_den = group[den_col].sum()
+        if total_den == 0:
+            row["stress_factor"] = global_stress
+            rows.append(row)
+            continue
+
+        overall_rate = DEFAULT_RISK_MULTIPLIER * group[num_col].sum() / total_den
+
+        if higher_is_worse:
+            cutoff = group[score_col].quantile(1.0 - frac)
+            worst = group[group[score_col] >= cutoff]
+        else:
+            cutoff = group[score_col].quantile(frac)
+            worst = group[group[score_col] <= cutoff]
+
+        worst_den = worst[den_col].sum()
+        worst_rate = (DEFAULT_RISK_MULTIPLIER * worst[num_col].sum() / worst_den) if worst_den > 0 else 0.0
+
+        row["stress_factor"] = worst_rate / overall_rate if overall_rate > 0 else global_stress
+        rows.append(row)
+
+    result = pd.DataFrame(rows)
+    logger.debug(
+        f"Per-bin stress factors: {len(result)} bins | "
+        f"mean={result['stress_factor'].mean():.3f} | "
+        f"min={result['stress_factor'].min():.3f} | "
+        f"max={result['stress_factor'].max():.3f}"
+    )
+    return result
+
+
 def calculate_annual_coef(date_ini_book_obs: pd.Timestamp, date_fin_book_obs: pd.Timestamp) -> float:
     """
     Calculate annual coefficient based on the time range.

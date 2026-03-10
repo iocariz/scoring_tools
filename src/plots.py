@@ -1317,6 +1317,54 @@ def calculate_and_plot_transformation_rate(
     }
 
 
+def calculate_per_bin_transformation_rate(
+    data: pd.DataFrame,
+    variables: list[str],
+    date_col: str = "mis_date",
+    amount_col: str = "oa_amt",
+    n_months: int | None = None,
+    global_tasa_fin: float = 1.0,
+    min_eligible_per_bin: int = 10,
+) -> pd.DataFrame:
+    """Compute per-bin transformation rates.
+
+    For each bin combination, ``tasa_fin = booked_amount / eligible_amount``.
+    Bins with fewer than *min_eligible_per_bin* eligible records fall back to
+    *global_tasa_fin*.
+
+    Returns
+    -------
+    DataFrame with ``[*variables, "tasa_fin"]``.
+    """
+    df_eligible = _prepare_transformation_data(data, date_col, n_months)
+
+    rows: list[dict] = []
+    for bin_vals, group in df_eligible.groupby(variables, observed=True):
+        if not isinstance(bin_vals, tuple):
+            bin_vals = (bin_vals,)
+        row = dict(zip(variables, bin_vals))
+
+        if len(group) < min_eligible_per_bin:
+            row["tasa_fin"] = global_tasa_fin
+        else:
+            eligible_amt = group[amount_col].sum()
+            booked_amt = group.loc[group["is_booked"], amount_col].sum()
+            rate = booked_amt / eligible_amt if eligible_amt > 0 else global_tasa_fin
+            row["tasa_fin"] = rate if 0 < rate <= 5.0 else global_tasa_fin
+
+        rows.append(row)
+
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        logger.debug(
+            f"Per-bin tasa_fin: {len(result)} bins | "
+            f"mean={result['tasa_fin'].mean():.3f} | "
+            f"min={result['tasa_fin'].min():.3f} | "
+            f"max={result['tasa_fin'].max():.3f}"
+        )
+    return result
+
+
 # =============================================================================
 # Income bin diagnostics
 # =============================================================================
