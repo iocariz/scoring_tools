@@ -146,7 +146,7 @@ class GlobalAllocator:
         # Prune dominated points: keep only strictly increasing production
         prod = sorted_df["oa_amt_h0"]
         cummax = prod.cummax()
-        pareto_mask = cummax != cummax.shift(1)
+        pareto_mask = (cummax - cummax.shift(1).fillna(-np.inf)).abs() > 1e-4
         pareto_mask.iloc[0] = True
         n_before = len(sorted_df)
         sorted_df = sorted_df.loc[pareto_mask].reset_index(drop=True)

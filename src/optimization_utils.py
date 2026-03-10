@@ -797,19 +797,49 @@ def _ga_pareto_fallback(
 
     df = pd.DataFrame(solutions)
 
+    # Sort by risk ascending
     sort_idx = df["b2_ever_h6"].argsort().values
     df = df.iloc[sort_idx].reset_index(drop=True)
     all_masks = [all_masks[i] for i in sort_idx]
 
-    cummax = df["oa_amt_h0"].cummax()
-    pareto_mask = df["oa_amt_h0"] >= cummax
-    pareto_indices = pareto_mask[pareto_mask].index.tolist()
+    # Stage 1: cumulative-max filter (fast)
+    prev_max = float("-inf")
+    pareto_keep = []
+    for i, prod in enumerate(df["oa_amt_h0"].values):
+        if prod > prev_max:
+            pareto_keep.append(i)
+            prev_max = prod
 
-    df = df[pareto_mask].reset_index(drop=True)
-    pareto_masks = [all_masks[i] for i in pareto_indices]
+    if len(pareto_keep) < len(df):
+        df = df.iloc[pareto_keep].reset_index(drop=True)
+        all_masks = [all_masks[i] for i in pareto_keep]
+
+    # Stage 2: full pairwise dominance check
+    if len(df) > 1:
+        prod = df["oa_amt_h0"].values
+        risk = df["b2_ever_h6"].values
+        non_dominated = np.ones(len(df), dtype=bool)
+        for i in range(len(df)):
+            if not non_dominated[i]:
+                continue
+            for j in range(i + 1, len(df)):
+                if not non_dominated[j]:
+                    continue
+                # j dominates i
+                if risk[j] <= risk[i] and prod[j] >= prod[i] and (risk[j] < risk[i] or prod[j] > prod[i]):
+                    non_dominated[i] = False
+                    break
+                # i dominates j
+                if risk[i] <= risk[j] and prod[i] >= prod[j] and (risk[i] < risk[j] or prod[i] > prod[j]):
+                    non_dominated[j] = False
+        if not non_dominated.all():
+            n_dom = (~non_dominated).sum()
+            df = df[non_dominated].reset_index(drop=True)
+            all_masks = [m for m, keep in zip(all_masks, non_dominated) if keep]
+            logger.debug(f"GA dominance filter removed {n_dom} dominated solution(s)")
 
     logger.info(f"GA Pareto frontier: {len(df)} solutions")
-    return df, grid, pareto_masks
+    return df, grid, all_masks
 
 
 # =============================================================================
@@ -1425,7 +1455,9 @@ def get_optimal_solutions(df_v: pd.DataFrame, data_sumary: pd.DataFrame, chunk_s
     logger.info("--Getting optimal solutions")
 
     data_sumary = data_sumary.sort_values(by=["b2_ever_h6", "oa_amt_h0"])
-    data_sumary = data_sumary.drop_duplicates(subset=["b2_ever_h6"], keep="last")
+    data_sumary["_b2_rounded"] = data_sumary["b2_ever_h6"].round(4)
+    data_sumary = data_sumary.drop_duplicates(subset=["_b2_rounded"], keep="last")
+    data_sumary = data_sumary.drop(columns=["_b2_rounded"])
 
     cummax = data_sumary["oa_amt_h0"].cummax()
     pareto_mask = data_sumary["oa_amt_h0"] >= cummax

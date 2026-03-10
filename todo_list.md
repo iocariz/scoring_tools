@@ -38,6 +38,119 @@
 
 ---
 
+## Code Audit Findings (2026-03-10)
+
+New findings from comprehensive 4-way audit (statistics, MILP/optimization, data pipeline, architecture).
+Deduplicated against existing items. Items already tracked above are not repeated.
+
+### BUG — CRITICAL
+
+#### ~~C1-new: Float equality in Pareto deduplication~~ ✓ FIXED
+- `optimization_utils.py:1428` — round `b2_ever_h6` to 4dp before `drop_duplicates`
+- `global_optimizer.py:149` — tolerance-based cummax comparison (1e-4 threshold)
+
+#### C2-new: Sparse grid zero-fill creates phantom cells in CellGrid
+- `optimization_utils.py:59` — `CellGrid.from_summary()` fills missing bin combos with 0 production/risk
+- MILP treats phantom cells as "free" rejections (0 cost, 0 risk contribution)
+- In 3D grids with many empty cells, frontier includes solutions accepting impossible bin combos
+- Fix: add `observed_in_data` flag; optionally exclude or penalize unobserved cells
+
+#### ~~C3-new: GA fallback Pareto filtering incomplete~~ ✓ FIXED
+- `optimization_utils.py:_ga_pareto_fallback` — added cummax stage-1 + full pairwise dominance stage-2 (mirrors `trace_pareto_frontier` logic)
+
+### BUG — HIGH
+
+#### H1-new: H3 reject-inference propagation locks in historical ratio
+- `reject_inference.py:356-359` — multiplier applied identically to H6 and H3 numerators
+- Preserves observed H6/H3 ratio exactly; if biased, bias propagates to H3→H6 extrapolation
+- Fix: add flag to optionally apply multiplier only to H6 (keep H3 original)
+
+#### H2-new: Outer merge in MR pipeline risks Cartesian product
+- `mr_pipeline.py:271` — `mr_agg` (H6-valid subset) merged with `mr_prod` (all booked) via `how="outer"`
+- Different row counts can produce duplicates if merge keys aren't unique
+- Fix: add row-count assertion after merge
+
+#### H3-new: No enumeration limit for legacy 2-var combinatorics
+- `optimization_utils.py:1288-1320` — `combinations_with_replacement` unbounded
+- 15 bins × 30 cutoffs → 3.5M solutions → potential memory exhaustion
+- Fix: add hard limit (e.g., 500K) with automatic fallback to MILP sweep
+
+#### H4-new: 2D vs N-D feature paths produce different feature sets
+- `models.py:126-147` — 2-var hardcoded polynomial vs N-D `PolynomialFeatures(degree=3)`
+- Switching between 2 and 3 variables changes model features unpredictably
+- Fix: unify on `PolynomialFeatures` for all dimensions
+
+#### H5-new: H6/H3 ratio clipped to [0.5, 5.0] without logging
+- `mr_pipeline.py:354-356` — clips silently, masking high-growth bins
+- Fix: log count of clipped bins; consider percentile-based clip
+
+### BUG — MEDIUM
+
+#### M1-new: BinConfig doesn't validate edge monotonicity
+- `config.py:185-189` — duplicate or non-increasing edges (e.g., `[0, 0.5, 0.5, 1.0]`) pass validation
+- Fix: add strict monotonicity check in `__post_init__`
+
+#### M2-new: PSI/CSI epsilon application inconsistent
+- `stability.py:196-197` uses `.where()`, `stability.py:508-509` uses `.clip()` for same purpose
+- No functional impact, but inconsistent style
+
+#### M3-new: b2_ever_h6 calculated in 4 different places
+- `utils.py`, `consolidation.py`, `inference_optimized.py`, `mr_pipeline.py`
+- `consolidation.py` doesn't use `DEFAULT_RISK_MULTIPLIER` constant
+- Fix: consolidate all to use `calculate_b2_ever_h6()` from utils.py
+
+#### M4-new: Column names as magic strings despite Columns enum
+- `Columns` enum exists in `constants.py` but many modules hardcode `"oa_amt_h0"` etc.
+- Fix: audit and migrate to enum references
+
+#### M5-new: Bare exception handlers swallow traceback context
+- `inference_optimized.py:1058`, `run_batch.py:94-96`, `global_optimizer.py` (~300)
+- Fix: use specific exception types; add `logger.exception()` for unexpected errors
+
+#### M6-new: DQ checks don't validate pipeline invariants
+- `data_quality.py:430-477` — no checks for merge key uniqueness, post-binning bin counts, cross-column consistency
+- Fix: add merge-key and post-binning validation rules
+
+#### M7-new: Segment names unsanitized in filesystem paths
+- `run_batch.py:239` — `../../malicious` in segments.toml could escape output directory
+- Fix: validate segment names against `^[a-zA-Z0-9_-]+$`
+
+#### M8-new: Settings object mutated in-place during pipeline **(partially fixed)**
+- `preprocess_improved.py:873-904, 1066-1076` — learned bin edges and directions written back to settings
+- data_manager.py uses `model_copy()` (correct), but MR-period processing may inherit first-run mutations
+- Fix: deep-copy settings before each pipeline phase, or return new settings from each phase
+
+### TESTING GAPS (new)
+
+#### T1-new: 1D mode not tested end-to-end
+- No test runs `variables=['single_var']` through config → MILP → visualization → report
+- Fix: add integration test with 1D config
+
+#### T2-new: N>2 optimization integration untested
+- No test for 3-variable CellGrid → MILP → Pareto → cutoff summary
+- Fix: add 3D integration test
+
+#### T3-new: Edge cases untested
+- All-rejected data, empty frontier, single-row input, all-NaN risk columns
+- Fix: add edge-case test suite
+
+### ARCHITECTURAL
+
+#### A1-new: inference_optimized.py is too monolithic (1811 lines)
+- Mixes model training, optimization orchestration, SHAP, and visualization
+- Fix: split into inference.py, optimization.py, visualization.py, explainability.py
+
+#### A2-new: Global state via os.chdir in ProcessPoolExecutor
+- `run_batch.py:430-441` — `os.chdir()` is process-global
+- Safe with ProcessPoolExecutor but breaks with ThreadPoolExecutor
+- Fix: pass explicit paths instead of changing cwd
+
+#### A3-new: Global bin learning doesn't validate coverage
+- `run_batch.py:99-154` — learned edges may not span all segments' score ranges
+- Fix: validate per-segment min/max falls within learned edges
+
+---
+
 ## Code Audit Findings (2026-03-06)
 
 Items below are new findings from a comprehensive codebase audit. Duplicates against existing
