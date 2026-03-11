@@ -250,7 +250,7 @@ Trains a polynomial surface model on the score grid (uses the first 2 variables 
 
 ### Phase 5: Optimization
 
-1. **Feasible Solutions**: Generates all cutoff combinations on the 2D grid enforcing monotonicity (better scores permit more lenient cutoffs). Processed in chunks for memory efficiency.
+1. **MILP Solve**: For each risk target, solves a binary integer program maximizing production subject to a risk budget and monotonicity constraints (see [Methodology > MILP Optimization](#milp-optimization)).
 2. **KPI Calculation**: For each solution computes production (`oa_amt_h0`), risk (`b2_ever_h6`), swap-in, and swap-out metrics.
 3. **Reject Inference** (optional): Adjusts predicted risk for score-rejected bins based on per-bin acceptance rates, with configurable parceling method (linear/power/sigmoid), optional Bayesian smoothing, and monotonicity enforcement.
 4. **Pareto Frontier**: Identifies non-dominated solutions (maximum production for each risk level).
@@ -283,6 +283,644 @@ Computes monthly aggregated metrics (approval rate, production, risk) and detect
 
 ---
 
+## Methodology
+
+### Data Populations
+
+The system distinguishes three application populations based on their origination outcome:
+
+| Population | Definition | Role |
+|---|---|---|
+| **Booked** | Applications that were approved and disbursed | Observed outcomes (risk + production) |
+| **Score-rejected (repesca)** | Applications rejected by the credit score cutoff (`reject_reason = "09-score"`) | Candidates for cutoff optimization; outcomes unobserved, must be inferred |
+| **Policy-rejected** | Applications rejected for non-score reasons (fraud, documentation, policy rules; `reject_reason = "08-other"`) | Excluded from optimization — rejection is unrelated to creditworthiness |
+
+Only score-rejected applications are considered for potential acceptance under new cutoffs. Policy rejections are excluded because they would be rejected regardless of cutoff changes.
+
+### Risk Metric
+
+The primary risk metric is **b2_ever_h6** (6-month vintage delinquency rate):
+
+```
+b2_ever_h6 = multiplier × todu_30ever_h6 / todu_amt_pile_h6
+```
+
+where:
+- `todu_30ever_h6`: Count of applications with 30+ day delinquency within a 6-month observation horizon
+- `todu_amt_pile_h6`: Total cumulative exposure amount within the same horizon
+- `multiplier`: Annualization constant (default: 7)
+
+A complementary 3-month metric (**b2_ever_h3**) uses `multiplier_h3 = 4` and the corresponding H3 columns. This is used for early-warning validation when the out-of-time period lacks a full 6-month maturation window (see [MR Validation](#out-of-time-validation-mr-period)).
+
+Risk is always non-negative (clipped at 0). Division by zero exposure yields NaN, indicating cells with no volume.
+
+### N-Dimensional Binning
+
+Each scoring variable is discretized into ordered bins. Two methods are available:
+
+| Method | Description | When to use |
+|---|---|---|
+| **Quantile** | Equal-count bins from the empirical distribution | Basic 2D models where you want statistical stability in every cell |
+| **Optimization** | Production-weighted risk splits via `DecisionTreeRegressor`, finding cut points that maximize separation of the risk metric | Critical for N>2 variables (e.g., adding income) — finds the bin boundaries where risk/production diverges most |
+
+Bin configuration is specified per variable via `BinConfig`, which includes `source_col`, `output_col`, `bin_edges` or `max_bins`, and `method`.
+
+Each variable has an associated **direction** that encodes the risk ordering of its bins:
+
+- **Inverted** (direction = -1, variable in `inv_vars`): Higher bin index = **safer**. Common for credit scores (higher score = better creditworthiness).
+- **Default** (direction = 1, variable not in `inv_vars`): Higher bin index = **riskier**.
+
+Directions control the monotonicity constraints in the MILP.
+
+### Annualization
+
+All indicator columns (`todu_30ever_h6`, `todu_amt_pile_h6`, `oa_amt_h0`) are scaled by an **annual coefficient** before aggregation:
+
+```
+annual_coef = 12 / n_months_in_observation_period
+```
+
+This normalizes risk and production to a 12-month equivalent, making results comparable across observation periods of different lengths.
+
+### Risk Adjustment Pipeline
+
+The repesca population has no observed outcomes. Their risk and production must be estimated through a sequential correction pipeline.
+
+#### Risk Model Prediction
+
+A regression model is trained on booked applications to predict `b2_ever_h6` as a function of the score variables (see Phase 4). For repesca records, the trained model predicts `b2_ever_h6`, from which `todu_30ever_h6` is back-calculated:
+
+```
+todu_30ever_h6 = b2_ever_h6 × todu_amt_pile_h6 / multiplier
+```
+
+#### Stress Factor
+
+The stress factor adjusts repesca risk predictions upward based on the observed risk concentration in the riskiest tail of the booked population.
+
+**Global mode** (default): A single scalar computed from the entire booked population:
+
+```
+stress_factor = worst_bad_rate / overall_bad_rate
+```
+
+where `worst_bad_rate` is the risk rate of the bottom 5% of booked applications (by score), and `overall_bad_rate` is the risk rate of all booked applications. Applied multiplicatively:
+
+```
+b2_ever_h6_repesca = stress_factor × model.predict(X)
+```
+
+**Per-bin mode** (`stress_mode = "per_bin"`): Computes a separate stress factor for each unique combination of binning variables:
+
+```
+stress_factor_bin = worst_bad_rate_bin / overall_bad_rate_bin
+```
+
+This captures the fact that tail risk concentration varies across the score grid. Bins with fewer than 20 booked records fall back to the global stress factor. Recommended when score variables span very different risk profiles.
+
+**Disabled mode** (`stress_mode = "disabled"`): Sets `stress_factor = 1.0`. Appropriate when reject inference parceling is active (to avoid double-counting selection bias) or when the model is trained on through-the-door data.
+
+#### Reject Inference (Parceling)
+
+After stress adjustment, an optional reject inference correction further uplifts repesca risk based on per-bin acceptance rates.
+
+**Acceptance Rate Computation.** For each unique combination of binning variables:
+
+```
+acceptance_rate = n_booked / (n_booked + n_score_rejected)
+```
+
+Only score rejections (`09-score`) count in the denominator. Policy rejections (`08-other`) are excluded because their rejection is unrelated to the credit score cutoff. When `reject_include_all_rejections = true`, all rejections are included instead.
+
+**Bayesian Smoothing** (optional, `reject_bayesian_smoothing = true`): Stabilizes noisy rates using a Beta-Binomial posterior:
+
+```
+global_rate = total_booked / total_demand
+alpha = prior_strength × global_rate
+beta  = prior_strength × (1 - global_rate)
+smoothed_rate = (n_booked + alpha) / (n_total + alpha + beta)
+```
+
+The `reject_bayesian_prior_strength` parameter (default 10.0) controls shrinkage: low (1-5) gives minimal shrinkage, medium (10-50) stabilizes bins with < 50 observations, high (100+) pulls all bins strongly toward the global rate.
+
+**Parceling Methods.** A risk multiplier is applied to `todu_30ever_h6` only — production amounts (`oa_amt_h0`) are not adjusted since production is fully observable. Three functional forms are available:
+
+**Linear** (default): `multiplier = 1 + uplift_factor × (1 - acceptance_rate)`
+
+| Acceptance rate | Factor = 1.5 | Interpretation |
+|---|---|---|
+| 1.0 (all accepted) | 1.0× | No uplift needed |
+| 0.7 | 1.45× | Moderate uplift |
+| 0.3 | 2.05× | Substantial uplift |
+| 0.0 (all rejected) | 2.50× | Maximum linear uplift |
+
+Steady, interpretable penalty. Best for general use.
+
+**Power**: `multiplier = (1 / clip(acceptance_rate, 0.01, 1.0)) ^ uplift_factor`
+
+| Acceptance rate | Factor = 1.0 | Factor = 1.5 |
+|---|---|---|
+| 1.0 | 1.0× | 1.0× |
+| 0.5 | 2.0× | 2.83× |
+| 0.2 | 5.0× | 11.2× |
+| 0.1 | 10.0× | 31.6× (capped) |
+
+Grows super-linearly at low acceptance rates. Best for heavy-tail risk when risk concentrates in the rejection tail.
+
+**Sigmoid**: `multiplier = 1 + uplift_factor / (1 + exp(10 × (acceptance_rate - 0.5)))`
+
+| Acceptance rate | Factor = 1.5 |
+|---|---|
+| 1.0 | ~1.00× |
+| 0.7 | ~1.04× |
+| 0.5 | 1.75× |
+| 0.3 | ~2.46× |
+| 0.0 | ~2.50× |
+
+Smooth S-curve: gentle at the extremes, steep transition around 50%. Best when the risk-selectivity relationship saturates — very selective bins are not infinitely riskier, and fully accepting bins still have some baseline uncertainty.
+
+All multipliers are floored at 1.0 and capped at `reject_max_risk_multiplier` (default 3.0).
+
+**Monotonicity Enforcement** (optional, `reject_enforce_monotonicity = true`): Post-processes multipliers using `sklearn.isotonic.IsotonicRegression` to ensure they are non-decreasing along each variable axis (marginal monotonicity). The direction of monotonicity respects each variable's risk ordering. Enforcement operates via alternating projections: for each variable, multipliers are averaged across the other axes, fit with isotonic regression along that variable's sorted bins, and mapped back. Iterates until convergence (max change < 1e-6) or 10 iterations.
+
+**Per-Bin Confidence Scores**: Each bin receives a confidence score: `confidence = 1 - exp(-n_total / 50)`.
+
+| Total observations | Confidence |
+|---|---|
+| 10 | 0.18 |
+| 25 | 0.39 |
+| 50 | 0.63 |
+| 100 | 0.86 |
+| 200 | 0.98 |
+
+Low-confidence bins (< 0.5, corresponding to < 35 observations) have sparse data. Confidence scores are diagnostic only and dropped before the MILP.
+
+**Guardrails:**
+
+| Guardrail | Mechanism |
+|---|---|
+| **Unseen bins** | Repesca bins with no matching demand data receive the median observed acceptance rate (or 0.5 if unavailable). When Bayesian smoothing is active, the smoothed median is used. |
+| **Floor** | Multiplier is floored at 1.0 — risk is never adjusted downward. |
+| **Cap** | Multiplier is capped at `reject_max_risk_multiplier` (default 3.0). |
+| **Monotonicity** | When enabled, isotonic regression enforces non-decreasing multipliers along each variable axis. |
+
+#### Transformation Rate (tasa_fin)
+
+The transformation rate converts demand-level indicators to expected booked-equivalent values:
+
+```
+tasa_fin = total_booked_amount / total_eligible_amount
+```
+
+Applied to repesca only after reject inference — all repesca indicator columns are scaled by `tasa_fin`:
+
+```
+repesca_indicators *= tasa_fin
+```
+
+This adjusts for the fact that not all accepted applications will ultimately be disbursed.
+
+**Per-bin** (`per_bin_tasa_fin = true`): Computes a separate rate per grid cell. Bins with fewer than 10 eligible records or with invalid rates (non-positive or > 5.0) fall back to the global rate. Recommended when segments have markedly different conversion patterns.
+
+#### Integration Sequence
+
+The full adjustment sequence for repesca, applied to the per-bin aggregated summary:
+
+```
+1. Aggregate repesca by N-dimensional grid (sum indicators × annual_coef)
+2. Predict risk via trained model → b2_ever_h6 → todu_30ever_h6
+   (stress factor is embedded in the prediction step — global or per-bin)
+3. Apply reject inference parceling multiplier to todu_30ever_h6
+4. Scale ALL indicators by tasa_fin (global or per-bin)
+5. Merge with booked summary → combined grid for MILP
+```
+
+For booked data, no model prediction or adjustment is needed — observed values are used directly (aggregated and annualized).
+
+### MILP Optimization
+
+The core optimization finds the acceptance policy that maximizes production subject to a risk budget, enforcing monotonicity across the score grid.
+
+#### Problem Formulation
+
+The `CellGrid` class normalizes the aggregated data into a problem space where each unique combination of bins is a "cell" with a binary decision variable.
+
+**Decision variables:**
+```
+x[i] ∈ {0, 1}  for each cell i in the N-dimensional grid
+```
+
+where `x[i] = 1` means all applications in cell `i` are accepted. Each cell contains aggregated Production (`oa_amt_h0`), Risk Numerator (`todu_30ever_h6`), and Risk Denominator (`todu_amt_pile_h6`).
+
+**Objective** (maximize production):
+```
+maximize  Σ oa_amt_h0[i] × x[i]
+```
+
+**Risk constraint** (linearized): The true constraint is a ratio `multiplier × Σ(todu_30ever × x) / Σ(todu_amt_pile × x) ≤ target/100`, which is non-linear. Since the multiplier is a constant scalar, it can be rearranged into linear form:
+
+```
+Σ (multiplier × todu_30ever_h6[i] - (target_risk / 100) × todu_amt_pile_h6[i]) × x[i] ≤ 0
+```
+
+Each cell contributes a coefficient that is positive when the cell's risk exceeds the target and negative when below.
+
+#### Monotonicity Constraints
+
+For each pair of adjacent cells along each dimension:
+```
+x[riskier_cell] - x[safer_cell] ≤ 0
+```
+
+This ensures: if a safer cell is rejected, all riskier cells along that dimension must also be rejected. The result is a "staircase" acceptance pattern. Monotonicity is enforced **marginally** (per dimension independently), not jointly.
+
+#### Swap-In Constraints
+
+Two optional constraints limit the contribution of repesca to the optimized portfolio:
+
+1. **Production fraction cap** (`max_swapin_production_pct`):
+   ```
+   Σ (oa_amt_h0_rep[i] - (pct/100) × oa_amt_h0[i]) × x[i] ≤ 0
+   ```
+
+2. **Swap-in risk cap** (`max_swapin_risk`):
+   ```
+   Σ (multiplier × todu_30ever_h6_rep[i] - (max_risk/100) × todu_amt_pile_h6_rep[i]) × x[i] ≤ 0
+   ```
+
+Both are added as inequality rows alongside risk and monotonicity constraints. When `None`, the MILP behaves as before. If too tight, the solver returns infeasible.
+
+#### Solver and Fallbacks
+
+The MILP is solved using `scipy.optimize.milp` with a configurable time limit (default 30 seconds). If infeasible, the system falls back to:
+- **Genetic algorithm** (N > 2 variables) via `pymoo` — near-optimal Pareto frontiers
+- **Legacy enumeration** (2 variables) — brute-force evaluation of all monotonic combinations
+
+**Output Translation**: `mask_to_cutoffs()` translates the binary vector `x` back into actionable business rules. For 2D grids, it determines the maximum accepted external score bin per internal score bin. For N>2 grids, it returns: `_cells` (lossless cell-level dict preserving the full mask), `_marginal_{var}` (per-dimension acceptance), and conditional cutoffs for the last dimension.
+
+### Pareto Frontier Construction
+
+#### Risk Sweep
+
+1. Compute `max_risk` = `b2_ever_h6` when all cells are accepted.
+2. Create `n_points` (default 50) evenly spaced risk targets from 0.01% to `max_risk × 1.1`.
+3. Solve the MILP at each target. Deduplicate solutions by acceptance mask.
+4. Evaluate KPIs for each unique solution.
+
+#### Pareto Filtering
+
+Solutions are sorted by ascending risk and filtered for Pareto optimality:
+
+1. **Monotone production filter**: Keep solution `i` only if its production exceeds all solutions with lower risk.
+2. **Full dominance filter**: Remove any solution dominated by another (lower or equal risk AND higher or equal production, with at least one strict inequality).
+
+The resulting frontier has strictly increasing production as risk increases.
+
+#### Scenario Selection
+
+Three operating points are selected from the Pareto frontier:
+
+| Scenario | Risk target |
+|---|---|
+| Pessimistic | `optimum_risk - risk_step` |
+| Base | `optimum_risk` |
+| Optimistic | `optimum_risk + risk_step` |
+
+For each scenario, the system generates cutoff summaries, bootstrap confidence intervals, MR validation, and stability metrics.
+
+### Out-of-Time Validation (MR Period)
+
+When a separate validation period is configured, the system validates the selected cutoffs on data not used during optimization.
+
+#### Risk Source Priority
+
+For each bin, the pipeline selects a risk estimate following a strict priority:
+
+| Priority | Source | Condition | Method |
+|:---------|:-------|:----------|:-------|
+| 1 | `h3_extrapolated` | H3 data exists, `n_obs_mr_h3 ≥ min_obs`, and `b2_main_h3` is non-zero | MR-observed H3 scaled by main-period H6/H3 ratio |
+| 2 | `mr_observed` | `n_obs_mr ≥ min_obs` and H3 extrapolation was not triggered | Direct MR-period `b2_ever_h6` |
+| 3 | `main_imputed` | Main-period bin exists but MR evidence is insufficient | Main-period `b2_ever_h6` |
+| 4 | `model_fallback` | Bin absent from main period and `n_obs_mr < min_obs` | Inferred via the trained risk model |
+
+Each bin's selected source is logged in the `risk_source` column for auditability.
+
+#### H3 → H6 Extrapolation
+
+The 3-month horizon indicator (`b2_ever_h3`) matures in half the time of H6. In a 6-month MR window, mature H3 is usually available for more cohorts, so the pipeline can extrapolate:
+
+```
+h6_h3_ratio = b2_main / b2_main_h3
+b2_ever_h6 = extrapolate_h3_to_h6(b2_mr_h3, h6_h3_ratio, method, curvature)
+```
+
+| Method | Formula | When to use |
+|---|---|---|
+| `linear` (default) | `b2_mr_h3 × ratio` | Proportional H6/H3 relationship |
+| `power` | `b2_mr_h3 × ratio^curvature` | Convex (curvature > 1) or concave (< 1) relationship |
+| `logistic` | `b2_mr_h3 × (1 + 2·tanh(k·(ratio-1)/2)/k)` | Caps extreme ratios smoothly |
+| `auto` | Fits curvature from main-period data | Recommended — no manual tuning needed |
+
+**Auto-calibration** (`method = "auto"`): Performs a weighted log-log regression on main-period bins:
+
+```
+log(b2_h6) = c + α × log(b2_h3)
+```
+
+If α's 95% CI includes 1.0, selects `linear`; otherwise selects `power` with fitted α (clipped to [0.3, 3.0]). Requires ≥ 4 valid bins; falls back to linear if insufficient. The fitted curvature indicates the risk maturation pattern:
+
+- `α ≈ 1.0`: Linear maturation
+- `α > 1.0`: Convex (risk accelerates with time)
+- `α < 1.0`: Concave (risk saturates)
+
+**Safeguards:** Bins where `b2_main_h3 ≈ 0` skip extrapolation. The number of MR accounts with mature H3 must meet `mr_min_obs_per_bin`. Auto-calibration requires non-degenerate log-H3 design.
+
+#### Worked Example
+
+Consider bin (octroi=2, efx=5):
+
+**Main period (fully mature):**
+- `todu_30ever_h6` = 100, `todu_amt_pile_h6` = 1000 → `b2_main` = 7 × 100/1000 = 70%
+- `todu_30ever_h3` = 45, `todu_amt_pile_h3` = 900 → `b2_main_h3` = 4 × 45/900 = 20%
+- **H6/H3 ratio:** 70% / 20% = 3.5
+
+**MR period (H3 mature, H6 immature):**
+- `todu_30ever_h3` = 8, `todu_amt_pile_h3` = 160 → `b2_mr_h3` = 4 × 8/160 = 20%
+- **Extrapolated H6 risk (linear):** 20% × 3.5 = **70%**
+- **Extrapolated H6 risk (power, α=1.3):** 20% × 3.5^1.3 = **98.8%**
+
+With `mr_extrapolation_method = "auto"`, the curvature α is fitted from data — if the H6/H3 relationship is convex (α > 1), the estimate adjusts accordingly.
+
+#### Revenue Prediction
+
+For the MR period, `todu_amt_pile_h6` (exposure) is predicted using a regression model trained on the main period:
+
+```
+todu_amt_pile_h6_bin = reg_todu_amt_pile.predict(oa_amt_bin)
+```
+
+This is then pro-rated back to account level:
+
+```
+todu_amt_pile_h6_account = (todu_amt_pile_h6_bin / oa_amt_bin) × oa_amt_account
+```
+
+The risk numerator is derived via inverse formula:
+
+```
+todu_30ever_h6 = b2_ever_h6 × todu_amt_pile_h6 / multiplier_h6
+```
+
+#### Risk Production Summary
+
+The function `calculate_metrics_from_cuts` applies the optimal cutoff solution to MR data and produces:
+
+| Row | Risk | Production | Interpretation |
+|---|---|---|---|
+| **Actual** (booked) | Observed booked risk | Observed booked production | Current policy baseline |
+| **Swap-in** (repesca accepted) | Repesca risk passing cutoff | Repesca production passing cutoff | Upside from opening cutoffs |
+| **Swap-out** (booked rejected) | Booked risk failing cutoff | Booked production failing cutoff | Downside from tightening cutoffs |
+| **Optimum** | Net after applying cutoff changes | Net production | Expected outcome |
+
+#### Comparison Diagnostics
+
+For every bin, drift metrics are computed and saved as `mr_risk_comparison{suffix}.csv`:
+
+```
+b2_delta     = b2_mr − b2_main
+b2_delta_pct = (b2_delta / b2_main) × 100
+```
+
+Output columns include: `b2_main`, `b2_mr`, `n_obs_main`, `n_obs_mr`, `b2_ever_h6_tmp`, `risk_source`, `b2_delta`, `b2_delta_pct`, `mr_production`, `fitted_method`, `fitted_curvature`, and optional H3 columns (`b2_delta_h3`, `b2_delta_pct_h3`, `h6_h3_ratio`).
+
+### Reject Inference Parameter Optimization
+
+When `run_ri_optimizer = true`, the system automatically finds optimal `reject_uplift_factor` and `reject_max_risk_multiplier` values.
+
+#### Calibration Target
+
+Under the standard selection-bias model, if a bin accepted fraction `a` of its applicants, the true full-population risk is:
+
+```
+target_risk = booked_risk / a^γ
+```
+
+where:
+- `booked_risk = multiplier × todu_30ever_h6_boo / todu_amt_pile_h6_boo`
+- `a` = `acceptance_rate`, soft-clipped to a minimum of 0.05
+- `γ` = `ri_calibration_gamma` (default 1.0)
+
+| γ value | Behavior |
+|---|---|
+| 1.0 | Standard 1/a model: full correction for selection bias |
+| 0.7 | Moderate correction, assumes partial sorting within bins |
+| 0.5 | Conservative correction, appropriate when bins are coarse |
+| → 0 | Minimal correction, target approaches booked risk |
+
+Lower γ when bins are coarse, acceptance decisions involve factors beyond the binning variables, or the standard model produces implausibly high targets.
+
+#### Evaluation Metric
+
+Exposure-weighted mean squared relative error:
+
+```
+Error = Σ(wᵢ × ((predicted_riskᵢ - target_riskᵢ) / target_riskᵢ)²) / Σ(wᵢ)
+```
+
+where `wᵢ = todu_amt_pile_h6` (exposure weight). Cells with undefined or zero target risk are excluded.
+
+**Invariant pre-computation**: Steps that do not depend on RI parameters (aggregated booked and repesca summaries) are computed once. The inner loop only re-runs: parceling → `tasa_fin` → merge → CellGrid → MILP → evaluate.
+
+#### Selection Criteria
+
+1. **Feasibility** — the parameter pair must produce a valid MILP solution at `optimum_risk`.
+2. **Minimum calibration error** — among feasible solutions, select the lowest error.
+3. **Tie-breaking** — if multiple pairs have error within 5% of the minimum, break ties by maximizing production. This favors parameters that are equally well-calibrated but less restrictive.
+
+#### Optimization Methods
+
+| Method | Description |
+|---|---|
+| **Grid search** (default) | Exhaustive evaluation over a regular grid. Ranges: `ri_uplift_range` [0.0, 5.0], `ri_max_mult_range` [1.0, 5.0]. Steps: `ri_uplift_steps` (11) × `ri_max_mult_steps` (9) = 99 combinations. Deterministic and transparent. |
+| **Optuna TPE** | Tree-structured Parzen Estimator using `seed=42`. Continuous parameter ranges with `ri_optuna_n_trials` (default 100). More sample-efficient for large search spaces. |
+
+#### Out-of-Time Validation
+
+When MR-period data is available, the optimizer validates the best parameters on the holdout period and reports the **degradation ratio**:
+
+```
+degradation_ratio = mr_calibration_error / main_calibration_error
+```
+
+| Degradation ratio | Interpretation |
+|---|---|
+| ~1.0 | Stable: RI correction generalizes well |
+| 1.0 – 2.0 | Moderate degradation: some temporal drift |
+| > 2.0 | Significant: RI parameters may be overfit — consider lowering γ or using coarser bins |
+
+### Stability Analysis (PSI/CSI)
+
+Measures distribution drift between main and MR periods:
+
+```
+PSI = Σ (Actual% - Expected%) × ln(Actual% / Expected%)
+```
+
+A unified epsilon constant (`PSI_EPSILON = 0.0001`) is applied to zero-percentage bins to prevent `log(0)`.
+
+| PSI range | Interpretation |
+|---|---|
+| < 0.1 | Stable — no significant change |
+| 0.1 – 0.25 | Moderate — investigation recommended |
+| ≥ 0.25 | Unstable — action required |
+
+PSI is computed per binned variable. CSI (Characteristic Stability Index) uses the same formula applied to categorical distributions.
+
+### Sensitivity Analysis
+
+When enabled, the system perturbs cutoffs at configurable levels (default: ±5%, ±10%, ±20%) and re-evaluates production and risk at each perturbation. Outputs include aggregate summaries (cell flips, transitions) and per-cell flip thresholds.
+
+### Marginal Impact
+
+For each cell, analytically computes the effect of flipping its status (accept ↔ reject) on portfolio production and risk. Uses baseline sums computed once, then adjusts per cell — O(N) total. Output: `delta_production`, `delta_risk_pct`, `cell_production`, `cell_risk`.
+
+### Trend Analysis and Monitoring
+
+Monthly metrics are tracked over time with **Statistical Process Control (SPC)** anomaly detection: a lagged rolling median as center line, MAD-based scale, and t-distribution adjustment for small windows.
+
+### Data Flow Diagram
+
+```
+Raw SAS Data
+    │
+    ├── Data quality checks
+    ├── Fraud/out-of-norm filtering
+    └── N-variable binning
+    │
+    ▼
+┌──────────────────────┐    ┌──────────────────────┐
+│   Booked Population  │    │   Demand Population  │
+│  (observed outcomes) │    │ (booked + rejected)  │
+└──────────┬───────────┘    └──────────┬───────────┘
+           │                           │
+   ┌───────┴───────┐          ┌───────┴───────┐
+   │ Risk model    │          │ Extract score │
+   │ training (CV, │          │ rejections    │
+   │ 1SE rule)     │          │ (repesca)     │
+   └───────┬───────┘          └───────┬───────┘
+           │                          │
+           │               ┌──────────┴──────────┐
+           │               │ Predict repesca risk │
+           │               │ (model + stress)     │
+           │               └──────────┬──────────┘
+           │                          │
+           │               ┌──────────┴──────────┐
+           │               │ Reject inference     │
+           │               │ (parceling uplift)   │
+           │               └──────────┬──────────┘
+           │                          │
+           │               ┌──────────┴──────────┐
+           │               │ Transformation rate  │
+           │               │ (tasa_fin scaling)   │
+           │               └──────────┬──────────┘
+           │                          │
+   ┌───────┴───────┐                  │
+   │ Aggregate by  │                  │
+   │ grid (_boo)   │                  │
+   └───────┬───────┘                  │
+           │                          │
+           └──────────┬───────────────┘
+                      │
+              ┌───────┴───────┐
+              │  Merge into   │
+              │  CellGrid     │
+              │  (boo + rep)  │
+              └───────┬───────┘
+                      │
+              ┌───────┴───────┐
+              │ MILP solve ×  │
+              │ 50 risk       │
+              │ targets       │
+              └───────┬───────┘
+                      │
+              ┌───────┴───────┐
+              │ Pareto filter │
+              │ (dominance)   │
+              └───────┬───────┘
+                      │
+              ┌───────┴───────┐
+              │ Scenario      │
+              │ selection     │
+              │ (3 points)    │
+              └───────┬───────┘
+                      │
+              ┌───────┴───────┐
+              │ Validation    │
+              │ (MR, PSI,     │
+              │  bootstrap)   │
+              └───────────────┘
+```
+
+### Assumptions and Limitations
+
+1. **Selection bias correction is approximate**: Reject inference assumes the acceptance rate within each bin is a sufficient statistic for the degree of selection bias. In reality, within-bin heterogeneity means the correction is an approximation.
+
+2. **Marginal monotonicity**: The MILP enforces monotonicity per dimension independently, not jointly across dimensions. This is computationally efficient but can theoretically allow acceptance patterns that are not jointly monotone (though grid connectivity tends to prevent this in practice).
+
+3. **Linearized risk constraint**: The risk budget constraint is linearized by treating the multiplier as a constant. This is exact when the multiplier is truly constant across all cells, which holds by construction.
+
+4. **Stress factor assumes tail representativeness**: The stress factor extrapolates from the riskiest 5% of booked applications to the rejected population. In `per_bin` mode, the assumption is localized per grid cell. When parceling is active, consider `stress_mode = "disabled"` to avoid double-counting.
+
+5. **Transformation rate uniformity**: By default, `tasa_fin` is a single rate applied uniformly. When `per_bin_tasa_fin = true`, per-cell rates are used instead, though bins with sparse data fall back to the global rate.
+
+6. **Model predictions for rejected population**: The risk model is trained on booked applications and applied to rejected applications (extrapolation). The model assumes the risk-score relationship is stable across both populations (up to the stress and RI corrections).
+
+---
+
+## Additional Features
+
+### Audit Tables
+
+Record-level classification for each application:
+
+| Classification | Description |
+|:---------------|:------------|
+| `keep` | Booked and passes the proposed cutoff |
+| `swap_out` | Booked but fails the proposed cutoff |
+| `swap_in` | Score-rejected (`09-score`) but passes the proposed cutoff |
+| `rejected` | Score-rejected and still fails |
+| `rejected_other` | Non-score rejections (`08-other`) -- not candidates for cutoff changes |
+
+### Bootstrap Confidence Intervals
+
+For the selected optimal solution, the pipeline runs 1,000 bootstrap resamples of the booked population, recalculating production and risk for each sample. The 2.5th and 97.5th percentiles provide 95% confidence intervals.
+
+### Cell-Level Confidence Intervals
+
+During model training, K-fold cross-validation produces per-cell prediction intervals:
+
+1. For each fold, train on the train split, aggregate the validation split by grid bins, and predict the target variable per cell.
+2. Across folds, compute mean, standard deviation, and confidence interval bounds per cell.
+3. For small sample counts, interval half-widths use a Student-t critical value; otherwise a normal approximation is used.
+
+Cells observed in fewer than 2 folds receive NaN intervals. Results are saved to `cell_level_ci.csv` and optionally displayed as uncertainty annotations on the dashboard heatmap.
+
+### Fixed-Cell Constraints
+
+Individual cells can be pinned as forced-accept or forced-reject before re-optimization. The MILP solver enforces these by setting `lb = ub = value` for pinned cells, while monotonicity and risk constraints remain active. If the constraints are contradictory, the solver returns `None`.
+
+Available through:
+- **`solve_with_fixed_cells()`** in `src/optimization_utils.py` for programmatic use.
+- **Pin Mode** in the dashboard Cutoff Explorer: click cells to cycle through unpinned → accept → reject → unpinned, then re-optimize.
+
+### Supersegments
+
+When multiple segments share similar populations, a **supersegment** trains a single inference model on their combined data. Each segment then loads the shared model and runs optimization independently with its own `optimum_risk`. This produces more stable models for sparse segments.
+
+When using supersegments, the risk surface tends to be flatter since the segment represents a narrow slice of the combined population. Pair `supersegment` with `run_ri_optimizer = false` and aggressive manual reject inference factors (`reject_uplift_factor = 3.0+`) to capture the specific rejection bias.
+
+---
+
 ## Configuration
 
 ### `config.toml` -- Base Settings
@@ -297,7 +935,7 @@ Global pipeline parameters. Per-segment overrides go in `segments.toml`. All set
 |:----|:-----|:--------|:------------|
 | `keep_vars` | list[str] | *(required)* | Columns to retain from source data |
 | `indicators` | list[str] | *(required)* | Target and amount indicator columns |
-| `variables` | list[str] | *(required, >= 2, unique)* | Grid variables for optimization |
+| `variables` | list[str] | *(required, >= 2, unique)* | Grid variables for optimization. Start with 2 core scores; if adding a 3rd (e.g., income), use `"optimization"` binning |
 | `date_ini_book_obs` | str | *(required)* | Main observation period start date (YYYY-MM-DD) |
 | `date_fin_book_obs` | str | *(required)* | Main observation period end date (YYYY-MM-DD) |
 
@@ -336,14 +974,16 @@ Monotonicity directions (under `[preprocessing.directions]`):
 |:----|:-----|:--------|:------------|
 | `<variable_name>` | int | *(auto-inferred)* | `1` = ascending risk (higher bin = riskier), `-1` = descending risk (higher bin = safer). Auto-inferred from data if not set |
 
+**Practical guidance**: Use explicit `bin_edges` when you have established legacy tiers. Use `"quantile"` for basic 2D models where you want equal-count distributions. Use `"optimization"` when adding N>2 variables — it trains decision trees to split boundaries where risk/production diverges most.
+
 ##### Economic Parameters
 
 | Key | Type | Default | Range | Description |
 |:----|:-----|:--------|:------|:------------|
 | `multiplier` | float | `7.0` | > 0 | Risk formula multiplier for H6 metric |
 | `multiplier_h3` | float | `4.0` | > 0 | Risk formula multiplier for H3 metric |
-| `optimum_risk` | float | `1.1` | | Target risk appetite in % |
-| `risk_step` | float | `0.1` | | Scenario step: creates pessimistic (`optimum_risk - risk_step`) and optimistic (`optimum_risk + risk_step`) |
+| `optimum_risk` | float | `1.1` | | Target risk appetite in %. Tune per segment according to business risk limits |
+| `risk_step` | float | `0.1` | | Scenario step: creates pessimistic (`optimum_risk - risk_step`) and optimistic (`optimum_risk + risk_step`). Use `0.05` for sharp frontiers, `0.2+` for starkly different strategies |
 | `n_months` | int | `12` | | Rolling window (months) for transformation rate computation |
 | `z_threshold` | float | `3.0` | > 0 | Outlier detection Z-score threshold |
 
@@ -362,37 +1002,37 @@ Comfort zone yearly limits (under `[preprocessing.cz_config]`):
 |:----|:-----|:--------|:------|:------------|
 | `date_ini_book_obs_mr` | str | `None` | | MR period start date. Both MR dates required if either is set |
 | `date_fin_book_obs_mr` | str | `None` | | MR period end date |
-| `use_mr_outcomes` | bool | `false` | | Enable hybrid MR risk inference (use observed MR risk where sufficient) |
-| `mr_min_obs_per_bin` | int | `30` | >= 1 | Min observations for an MR bin to qualify as `mr_observed` |
-| `mr_extrapolation_method` | str | `"linear"` | | H3→H6 extrapolation: `"linear"`, `"power"`, `"logistic"`, or `"auto"` (fits curvature from data) |
+| `use_mr_outcomes` | bool | `false` | | Enable hybrid MR risk inference. Recommended `true` to use real H3 metrics instead of pure model imputation |
+| `mr_min_obs_per_bin` | int | `30` | >= 1 | Min observations for an MR bin to qualify. Push to `50` for high volume, drop to `10` for tiny segments |
+| `mr_extrapolation_method` | str | `"linear"` | | H3→H6 extrapolation: `"linear"`, `"power"`, `"logistic"`, or `"auto"`. Recommended: `"auto"` (fits curvature from data) |
 | `mr_extrapolation_curvature` | float | `1.0` | 0-5 | Power exponent for `"power"` method. Ignored when `"auto"` |
+| `mr_extrapolation_risk_multiplier` | float | `3.0` | > 0, ≤ 10 | Safety cap on extrapolated bin risk relative to main-period risk |
+| `mr_extrapolation_hard_cap` | float | `15.0` | > 0, ≤ 100 | Hard percentage cap on extrapolated risk |
 
 ##### Stress Factor
 
 | Key | Type | Default | Description |
 |:----|:-----|:--------|:------------|
-| `stress_mode` | str | `"global"` | `"global"` (single scalar from worst 5% of booked), `"per_bin"` (per grid cell, fallback to global for bins < 20 obs), or `"disabled"` (`stress_factor = 1.0`) |
-
-When `stress_mode = "global"` and parceling is active, a log warning suggests `"disabled"` to avoid double-counting selection bias.
+| `stress_mode` | str | `"global"` | `"global"` (single scalar from worst 5% of booked), `"per_bin"` (per grid cell, fallback to global for bins < 20 obs), or `"disabled"` (`stress_factor = 1.0`). When parceling is active, use `"disabled"` to avoid double-counting |
 
 ##### Transformation Rate
 
 | Key | Type | Default | Description |
 |:----|:-----|:--------|:------------|
-| `per_bin_tasa_fin` | bool | `false` | Compute `tasa_fin` per grid cell instead of a single global scalar. Bins with < 10 eligible records or invalid rates fall back to global |
+| `per_bin_tasa_fin` | bool | `false` | Compute `tasa_fin` per grid cell instead of a single global scalar. Use when segments have markedly different conversion rates. Bins with < 10 eligible records or invalid rates fall back to global |
 
 ##### Reject Inference
 
 | Key | Type | Default | Range | Description |
 |:----|:-----|:--------|:------|:------------|
-| `reject_inference_method` | str | `"none"` | | `"none"` or `"parceling"` |
-| `reject_parceling_method` | str | `"linear"` | | `"linear"`, `"power"`, or `"sigmoid"` |
-| `reject_uplift_factor` | float | `1.5` | 0-10 | Scaling coefficient for parceling |
-| `reject_max_risk_multiplier` | float | `3.0` | 1-10 | Upper cap for per-bin risk multiplier |
-| `reject_bayesian_smoothing` | bool | `false` | | Beta-Binomial smoothing of acceptance rates |
-| `reject_bayesian_prior_strength` | float | `10.0` | 0-1000 | Bayesian prior strength (higher = more shrinkage toward global rate) |
-| `reject_enforce_monotonicity` | bool | `false` | | Isotonic regression on multipliers per variable axis |
-| `reject_include_all_rejections` | bool | `false` | | Include policy rejections (`08-other`) in acceptance rate denominator |
+| `reject_inference_method` | str | `"none"` | | `"none"` or `"parceling"`. Always use `"parceling"` to correct selection bias; `"none"` only for experimental baselines |
+| `reject_parceling_method` | str | `"linear"` | | `"linear"` (steady, interpretable), `"power"` (aggressive at low acceptance), or `"sigmoid"` (smooth S-curve) |
+| `reject_uplift_factor` | float | `1.5` | 0-10 | Scaling coefficient. `1.0–1.5` for data-rich segments, `2.0–4.0` for sparse segments on supersegments |
+| `reject_max_risk_multiplier` | float | `3.0` | 1-10 | Upper cap for per-bin risk multiplier. Standard range `3.0–5.0` |
+| `reject_bayesian_smoothing` | bool | `false` | | Beta-Binomial smoothing of acceptance rates. Enable for sparse segments with < 30 observations per bin |
+| `reject_bayesian_prior_strength` | float | `10.0` | 0-1000 | Bayesian prior strength (higher = more shrinkage toward global rate). Increase to `50+` for extremely noisy data |
+| `reject_enforce_monotonicity` | bool | `false` | | Isotonic regression on multipliers per variable axis. Enable for noisy segments with non-monotone raw rates |
+| `reject_include_all_rejections` | bool | `false` | | Include policy rejections (`08-other`) in acceptance rate denominator. Usually `false` — only penalize score-based rejections |
 
 **Parceling formulas** (per bin):
 
@@ -406,9 +1046,9 @@ All multipliers are floored at 1.0 and capped at `reject_max_risk_multiplier`.
 
 | Key | Type | Default | Range | Description |
 |:----|:-----|:--------|:------|:------------|
-| `run_ri_optimizer` | bool | `false` | | Enable automated RI parameter search |
-| `ri_optimizer_method` | str | `"grid"` | | `"grid"` (exhaustive) or `"optuna"` (TPE, seed=42) |
-| `ri_calibration_gamma` | float | `1.0` | 0-1 | Selection-bias exponent. Target = `booked_risk / acceptance_rate^gamma`. Lower = less aggressive |
+| `run_ri_optimizer` | bool | `false` | | Enable automated RI parameter search. Enable for mature segments with enough data |
+| `ri_optimizer_method` | str | `"grid"` | | `"grid"` (exhaustive, deterministic) or `"optuna"` (TPE, seed=42, more sample-efficient) |
+| `ri_calibration_gamma` | float | `1.0` | 0-1 | Selection-bias exponent. Target = `booked_risk / acceptance_rate^gamma`. Lower = less aggressive correction |
 | `ri_uplift_range` | list[float] | `[0.0, 5.0]` | | Search range [min, max] for `reject_uplift_factor` |
 | `ri_max_mult_range` | list[float] | `[1.0, 5.0]` | | Search range [min, max] for `reject_max_risk_multiplier` |
 | `ri_uplift_steps` | int | `11` | | Grid divisions for uplift (grid method) |
@@ -416,6 +1056,8 @@ All multipliers are floored at 1.0 and capped at `reject_max_risk_multiplier`.
 | `ri_optuna_n_trials` | int | `100` | 10-10000 | Number of Optuna trials |
 
 Selection rule: minimum calibration error among feasible solutions, with ties within 5% broken by maximizing production. When MR data is available, reports `degradation_ratio = mr_error / main_error` for temporal stability validation.
+
+**Practical guidance**: If a segment uses a supersegment (flat risk surface), keep `run_ri_optimizer = false` and set manual values. Start with `γ = 1.0` and reduce if the optimizer selects very aggressive parameters or MR validation shows degradation > 2.0.
 
 ##### MILP and Pareto Tuning
 
@@ -430,14 +1072,14 @@ Selection rule: minimum calibration error among feasible solutions, with ties wi
 
 | Key | Type | Default | Range | Description |
 |:----|:-----|:--------|:------|:------------|
-| `max_swapin_production_pct` | float | `None` | 0-100 | Max % of total accepted production from swap-in. `None` = no limit |
-| `max_swapin_risk` | float | `None` | 0-100 | Max `b2_ever_h6` (%) for swap-in population only. `None` = no limit |
+| `max_swapin_production_pct` | float | `None` | 0-100 | Max % of total accepted production from swap-in. Use when risk committee limits portfolio growth from untested loans |
+| `max_swapin_risk` | float | `None` | 0-100 | Max `b2_ever_h6` (%) for swap-in population only. Use as a hard stop when RI metrics might be flawed |
 
 ##### Sensitivity Analysis
 
 | Key | Type | Default | Description |
 |:----|:-----|:--------|:------------|
-| `run_sensitivity` | bool | `false` | Run sensitivity analysis after optimization |
+| `run_sensitivity` | bool | `false` | Run sensitivity analysis after optimization. Enable before major strategy deployments |
 | `sensitivity_levels` | list[float] | `[-20, -10, -5, 5, 10, 20]` | Perturbation percentages to evaluate |
 
 ##### Fixed Cutoffs
@@ -463,6 +1105,32 @@ new_efx_clus = [1.0, 2.0, 3.0, 4.0]
 income_bin = [1.0, 2.0]
 strict_validation = false
 run_all_scenarios = false
+```
+
+Use fixed cutoffs when evaluating legacy business configurations or running backtests. Set `strict_validation = true` to crash on non-contiguous boundaries. `run_all_scenarios` only applies when fixed cutoffs are set.
+
+##### Example Reject Inference Configuration
+
+```toml
+reject_inference_method = "parceling"
+reject_parceling_method = "sigmoid"
+reject_uplift_factor = 1.5
+reject_max_risk_multiplier = 3.0
+
+# Bayesian smoothing for small bins
+reject_bayesian_smoothing = true
+reject_bayesian_prior_strength = 20.0
+
+# Enforce monotone multipliers
+reject_enforce_monotonicity = true
+
+# Auto-tune parameters with Optuna
+run_ri_optimizer = true
+ri_optimizer_method = "optuna"
+ri_optuna_n_trials = 200
+ri_calibration_gamma = 0.8
+ri_uplift_range = [0.0, 5.0]
+ri_max_mult_range = [1.0, 5.0]
 ```
 
 ---
@@ -536,299 +1204,6 @@ sc_octroi_new_clus = [1.0, 2.0, 3.0]
 new_efx_clus = [5, 6, 8]
 ```
 
-### Global Portfolio Allocation
-
-After running all segments, `run_allocation.py` solves a portfolio-level optimization: select one point from each segment's efficient frontier to maximize total production subject to a weighted-average global risk constraint. The MILP formulation uses binary decision variables and linear constraints. Per-segment bounds (`min_risk`, `max_risk`, `min_production` in `segments.toml`) are respected, and an optional portfolio-wide production floor can be enforced via `--production-floor`.
-
-### Score Discriminance
-
-`run_score_metrics.py` evaluates all score variables defined in `score_measures`:
-
-- Gini coefficient and KS statistic per score
-- Lift tables (decile-based)
-- Precision-recall and ROC curves
-- DeLong test for pairwise statistical comparison between models
-- Per-segment and per-supersegment analysis
-- Main period and MR period comparison
-
-### Sensitivity Analysis
-
-Measures how stable the optimized cutoffs are under model risk uncertainty. The pipeline perturbs the risk indicator (`todu_30ever_h6_rep`) by configurable percentages, re-solves the MILP at each level, and compares the resulting masks:
-
-- **Aggregate summary**: Number of cells that flip, accept-to-reject vs reject-to-accept transitions, new production and risk at each perturbation level.
-- **Per-cell detail**: Minimum perturbation percentage at which each cell changes status, with flip direction.
-
-### Marginal Impact
-
-For each cell in the grid, analytically computes the effect of flipping its status (accept → reject or vice versa) on portfolio production and risk. Uses baseline sums computed once, then adjusts numerator/denominator per cell — O(N) total, not O(N²).
-
-Output columns: `delta_production` (EUR change), `delta_risk_pct` (percentage point change in `b2_ever_h6`), `cell_production`, `cell_risk`.
-
-### Cell-Level Confidence Intervals
-
-During model training, K-fold cross-validation produces per-cell prediction intervals:
-
-1. For each fold, train on the train split, aggregate the validation split by grid bins, and predict the target variable per cell.
-2. Across folds, compute mean, standard deviation, and confidence interval bounds per cell.
-3. For small sample counts, interval half-widths use a Student-t critical value; otherwise a normal approximation is used.
-
-Cells observed in fewer than 2 folds receive NaN intervals. Results are saved to `cell_level_ci.csv` and optionally displayed as uncertainty annotations on the dashboard heatmap.
-
-### Fixed-Cell Constraints
-
-Individual cells can be pinned as forced-accept or forced-reject before re-optimization. The MILP solver enforces these by setting `lb = ub = value` for pinned cells, while monotonicity and risk constraints remain active. If the constraints are contradictory (same cell pinned as both accept and reject, or pins make the risk target infeasible), the solver returns `None`.
-
-Available through:
-- **`solve_with_fixed_cells()`** in `src/optimization_utils.py` for programmatic use.
-- **Pin Mode** in the dashboard Cutoff Explorer: click cells to cycle through unpinned → accept → reject → unpinned, then re-optimize.
-
-### Swap-In Constraints
-
-The MILP solver accepts two optional constraints that limit the swap-in (repesca) population — score-rejected applicants that would be accepted under the new optimized cutoffs:
-
-1. **Production share cap** (`max_swapin_production_pct`): Ensures the fraction of total accepted production coming from swap-in does not exceed a given percentage. Linearized as:
-
-   ```
-   sum((oa_amt_h0_rep[i] - pct/100 * oa_amt_h0[i]) * x[i]) <= 0
-   ```
-
-2. **Risk cap** (`max_swapin_risk`): Ensures the `b2_ever_h6` of the swap-in sub-population stays below a given percentage. Linearized as:
-
-   ```
-   sum((multiplier * todu_30ever_h6_rep[i] - max_risk/100 * todu_amt_pile_h6_rep[i]) * x[i]) <= 0
-   ```
-
-Both are added as inequality rows alongside the existing risk budget and monotonicity constraints. When `None` (default), the MILP behaves exactly as before. If the constraints are too tight, the solver returns `None` (infeasible).
-
-### Trend Analysis
-
-Monthly aggregation of approval rate, production volume, mean production, and risk metrics. Anomalies are detected using robust Statistical Process Control: a lagged rolling median is used as the center line, MAD is converted to a standard-deviation-equivalent scale, and short windows use a Student-t critical value instead of a fixed z-score.
-
----
-
-## Features
-
-### Risk Metric: `b2_ever_h6`
-
-The primary risk indicator, calculated as:
-
-```
-b2_ever_h6 = multiplier * todu_30ever_h6 / todu_amt_pile_h6
-```
-
-Where `multiplier` defaults to 7, `todu_30ever_h6` is the sum of 30+ day delinquency events over a 6-month horizon, and `todu_amt_pile_h6` is the total outstanding amount over the same horizon.
-
-### Feasible Solutions and Monotonicity
-
-The optimizer generates all valid cutoff combinations on the 2D grid (`var0` bins x `var1` cutoff levels). A **monotonicity constraint** is enforced: for each solution, bins with better scores (lower risk) must have cutoffs that are at least as lenient as bins with worse scores. This ensures the strategy is economically coherent.
-
-### Pareto Frontier
-
-From all feasible solutions, the pipeline identifies non-dominated solutions: those where no other solution offers both higher production and lower risk. The result is the **efficient frontier**, saved as `pareto_optimal_solutions.csv`.
-
-### Scenario Analysis
-
-Three scenarios are generated per segment based on `optimum_risk` and `risk_step`:
-
-| Scenario | Risk Threshold |
-|:---------|:---------------|
-| Pessimistic | `optimum_risk - risk_step` |
-| Base | `optimum_risk` |
-| Optimistic | `optimum_risk + risk_step` |
-
-Each scenario selects the Pareto-optimal solution with maximum production at or below its risk threshold, then produces a full set of outputs.
-
-### Supersegments
-
-When multiple segments share similar populations, a **supersegment** trains a single model on their combined data:
-
-1. `run_batch.py` detects segments referencing the same `supersegment` name.
-2. Trains the model once on the union of all segment populations.
-3. Each segment loads the shared model and runs optimization independently with its own `optimum_risk`.
-
-This produces more stable models and avoids redundant training.
-
-### MR Period (Recent Monitoring)
-
-When `date_ini_book_obs_mr` and `date_fin_book_obs_mr` are configured, the pipeline applies the selected cutoffs to a recent holdout period (typically the most recent 6 months). This validates that the proposed strategy performs as expected on data not used during optimization. The MR results include risk, production, swap-in/swap-out metrics, and stability analysis.
-
-#### Hybrid Risk Estimation
-
-In the main period, all booked applications have a full 6-month performance window, so `b2_ever_h6` is directly observable. In the MR period this is not the case: only the earliest cohorts have matured enough for reliable outcome data. The pipeline uses a **hybrid per-bin risk estimation** controlled by `use_mr_outcomes` and `mr_min_obs_per_bin`:
-
-| Priority | Source | Condition | Method |
-|:---------|:-------|:----------|:-------|
-| 1 | `mr_observed` | Enough **valid** MR H6 observations in the bin | Direct MR-period `b2_ever_h6` |
-| 2 | `h3_extrapolated` | H3 configured, direct MR H6 is unavailable or insufficient, valid main-period H6/H3 ratio, and enough mature H3 observations in MR | MR-observed H3 scaled by the main-period ratio (see below) |
-| 3 | `main_imputed` | Main-period bin exists but MR H6/H3 evidence is insufficient | Main-period `b2_ever_h6` |
-| 4 | `model_fallback` | Bin exists only in MR and lacks enough valid MR H6/H3 outcomes | Inferred via the trained risk model |
-
-#### H3-Based H6 Extrapolation
-
-The 3-month horizon indicator (`b2_ever_h3`) matures in half the time of H6. In a 6-month MR window, mature H3 is usually available for more cohorts than mature H6, so the pipeline can extrapolate from H3 when direct H6 evidence is too sparse. It does this by using the **main-period H6/H3 ratio** as a scaling factor:
-
-```
-b2_h6_estimated = b2_mr_h3 × f(b2_main_h6 / b2_main_h3)
-```
-
-Where, for each score bin:
-- `b2_main_h6` and `b2_main_h3` are computed from the main period (all applications fully matured)
-- `b2_mr_h3` is computed from **only** the MR accounts with mature H3 data (accounts from months with at least 3 months of performance history; immature accounts with NaN H3 are excluded from the aggregation)
-- `f(ratio)` is the extrapolation curve controlled by `mr_extrapolation_method`
-
-**Extrapolation methods** (`mr_extrapolation_method`):
-
-| Method | Formula | Use case |
-|:-------|:--------|:---------|
-| `linear` (default) | `b2_mr_h3 × ratio` | Proportional H6/H3 relationship |
-| `power` | `b2_mr_h3 × ratio^curvature` | Convex/concave H6/H3 relationship |
-| `logistic` | `b2_mr_h3 × (1 + 2·tanh(k·(ratio-1)/2)/k)` | Caps extreme ratios |
-| `auto` | Fits curvature from main-period data | No domain expertise needed |
-
-**Auto-calibration** (`mr_extrapolation_method = "auto"`): Performs a weighted log-log regression `log(b2_h6) = c + α·log(b2_h3)` across main-period bins to determine the H3→H6 curvature. If α's 95% confidence interval includes 1.0, linear is selected; otherwise power with the fitted α (clipped to [0.3, 3.0]) is used. Weights are per-bin observation counts (`n_obs_main`), downweighting noisy thin bins. The resolved method, curvature, and diagnostics (α, SE, R², n_bins) are logged and saved as `fitted_method` / `fitted_curvature` columns in `mr_risk_comparison_*.csv`.
-
-**Safeguards:**
-- Direct MR H6 sufficiency (`n_obs_mr`) counts only rows with non-null `todu_30ever_h6` **and** `todu_amt_pile_h6`; sparse or all-null H6 bins do not qualify for `mr_observed`.
-- Bins where `b2_main_h3 ≈ 0` skip extrapolation and fall back to direct MR H6 if enough valid H6 observations exist, otherwise `main_imputed`.
-- The number of MR accounts with mature H3 (`n_obs_mr_h3`) must meet the `mr_min_obs_per_bin` threshold; otherwise the bin falls back to `mr_observed` or `main_imputed`.
-- The per-bin `h6_h3_ratio` and `n_obs_mr_h3` are included in the comparison CSV (`mr_risk_comparison_*.csv`) for auditing.
-- Auto-calibration requires at least 4 valid bins with positive H3 and H6 and a non-degenerate log-H3 design; otherwise it falls back to linear.
-
-This feature activates automatically when `use_mr_outcomes = true` and `multiplier_h3` is configured. No additional configuration is required beyond the optional `mr_extrapolation_method`.
-
-### Stability Analysis (PSI/CSI)
-
-Compares distributions between the main and MR periods using the Population Stability Index. A unified epsilon constant (`PSI_EPSILON = 0.0001`) is applied consistently to zero-percentage bins/categories in both the difference and `log(p/q)` terms used by PSI/CSI, preventing `log(0)` and avoiding asymmetric smoothing artifacts.
-
-```
-PSI = sum( (Actual% - Expected%) * ln(Actual% / Expected%) )
-```
-
-| PSI Range | Interpretation |
-|:----------|:---------------|
-| < 0.10 | Stable |
-| 0.10 -- 0.25 | Moderate drift |
-| > 0.25 | Significant drift |
-
-Generates per-variable PSI values, overall score PSI, and color-coded HTML reports.
-
-### Audit Tables
-
-Record-level classification for each application:
-
-| Classification | Description |
-|:---------------|:------------|
-| `keep` | Booked and passes the proposed cutoff |
-| `swap_out` | Booked but fails the proposed cutoff |
-| `swap_in` | Score-rejected (`09-score`) but passes the proposed cutoff |
-| `rejected` | Score-rejected and still fails |
-| `rejected_other` | Non-score rejections (`08-other`) -- not candidates for cutoff changes |
-
-### Bootstrap Confidence Intervals
-
-For the selected optimal solution, the pipeline runs 1,000 bootstrap resamples of the booked population, recalculating production and risk for each sample. The 2.5th and 97.5th percentiles provide 95% confidence intervals.
-
-### Reject Inference (Parceling)
-
-The model trains exclusively on booked (approved) applications, creating selection bias. The parceling method corrects this by computing the acceptance rate per (var0, var1) bin and applying a risk multiplier to score-rejected records. Bins with lower acceptance rates receive larger uplifts, capped at `reject_max_risk_multiplier`.
-
-Three functional forms are available:
-
-| Method | Formula | Best For |
-|:-------|:--------|:---------|
-| `linear` | `1 + factor * (1 - rate)` | General use, interpretable |
-| `power` | `(1 / rate) ^ factor` | Heavy tail risk, aggressive at low acceptance |
-| `sigmoid` | `1 + factor / (1 + exp(10 * (rate - 0.5)))` | Smooth S-curve, gentle at extremes |
-
-**Bayesian smoothing** stabilizes noisy acceptance rates in small bins using a Beta-Binomial posterior with the global acceptance rate as prior. The `prior_strength` parameter controls the degree of shrinkage toward the global rate.
-
-**Monotonicity enforcement** uses isotonic regression to ensure multipliers are non-decreasing along each variable axis (marginal monotonicity), preventing lower-risk bins from receiving higher adjustments than higher-risk bins.
-
-**Per-bin confidence scores** (`1 - exp(-n_total / 50)`) quantify the reliability of each bin's reject inference adjustment based on sample size. Included in diagnostic output.
-
-#### RI Parameter Optimizer
-
-When `run_ri_optimizer = true`, the pipeline searches over `(reject_uplift_factor, reject_max_risk_multiplier)` to find parameters that minimize **calibration error** against the selection-bias model.
-
-The calibration target for each cell is `booked_risk / acceptance_rate^gamma`, based on the standard selection-bias model: if a bin accepts the least-risky fraction *a* of applicants, the true population risk is approximately `observed / a^gamma`. The `gamma` parameter (default 1.0) controls target aggressiveness — lower values reduce the assumed separation between booked and rejected risk.
-
-Two optimization methods are available:
-
-- **Grid search** (`ri_optimizer_method = "grid"`): Exhaustive evaluation over a regular grid of parameter combinations. Deterministic and transparent.
-- **Optuna TPE** (`ri_optimizer_method = "optuna"`): Tree-structured Parzen Estimator with `seed=42` for reproducibility. More sample-efficient for large search spaces.
-
-Both methods use the same selection rule: minimum calibration error among feasible solutions, with ties within 5% of the minimum broken by maximizing production.
-
-**Out-of-time MR validation**: When MR-period data is available, the optimizer automatically applies the best parameters to the MR period and reports `degradation_ratio = mr_error / main_error`. This validates temporal stability of the calibration — a ratio near 1.0 indicates the RI correction generalizes well to the holdout period.
-
-### Global Portfolio Allocation
-
-After running all segments, `run_allocation.py` solves a portfolio-level optimization: select one point from each segment's efficient frontier to maximize total production subject to a weighted-average global risk constraint. The MILP formulation uses binary decision variables and linear constraints. Per-segment bounds (`min_risk`, `max_risk`, `min_production` in `segments.toml`) are respected, and an optional portfolio-wide production floor can be enforced via `--production-floor`.
-
-### Score Discriminance
-
-`run_score_metrics.py` evaluates all score variables defined in `score_measures`:
-
-- Gini coefficient and KS statistic per score
-- Lift tables (decile-based)
-- Precision-recall and ROC curves
-- DeLong test for pairwise statistical comparison between models
-- Per-segment and per-supersegment analysis
-- Main period and MR period comparison
-
-### Sensitivity Analysis
-
-Measures how stable the optimized cutoffs are under model risk uncertainty. The pipeline perturbs the risk indicator (`todu_30ever_h6_rep`) by configurable percentages, re-solves the MILP at each level, and compares the resulting masks:
-
-- **Aggregate summary**: Number of cells that flip, accept-to-reject vs reject-to-accept transitions, new production and risk at each perturbation level.
-- **Per-cell detail**: Minimum perturbation percentage at which each cell changes status, with flip direction.
-
-### Marginal Impact
-
-For each cell in the grid, analytically computes the effect of flipping its status (accept → reject or vice versa) on portfolio production and risk. Uses baseline sums computed once, then adjusts numerator/denominator per cell — O(N) total, not O(N²).
-
-Output columns: `delta_production` (EUR change), `delta_risk_pct` (percentage point change in `b2_ever_h6`), `cell_production`, `cell_risk`.
-
-### Cell-Level Confidence Intervals
-
-During model training, K-fold cross-validation produces per-cell prediction intervals:
-
-1. For each fold, train on the train split, aggregate the validation split by grid bins, and predict the target variable per cell.
-2. Across folds, compute mean, standard deviation, and confidence interval bounds per cell.
-3. For small sample counts, interval half-widths use a Student-t critical value; otherwise a normal approximation is used.
-
-Cells observed in fewer than 2 folds receive NaN intervals. Results are saved to `cell_level_ci.csv` and optionally displayed as uncertainty annotations on the dashboard heatmap.
-
-### Fixed-Cell Constraints
-
-Individual cells can be pinned as forced-accept or forced-reject before re-optimization. The MILP solver enforces these by setting `lb = ub = value` for pinned cells, while monotonicity and risk constraints remain active. If the constraints are contradictory (same cell pinned as both accept and reject, or pins make the risk target infeasible), the solver returns `None`.
-
-Available through:
-- **`solve_with_fixed_cells()`** in `src/optimization_utils.py` for programmatic use.
-- **Pin Mode** in the dashboard Cutoff Explorer: click cells to cycle through unpinned → accept → reject → unpinned, then re-optimize.
-
-### Swap-In Constraints
-
-The MILP solver accepts two optional constraints that limit the swap-in (repesca) population — score-rejected applicants that would be accepted under the new optimized cutoffs:
-
-1. **Production share cap** (`max_swapin_production_pct`): Ensures the fraction of total accepted production coming from swap-in does not exceed a given percentage. Linearized as:
-
-   ```
-   sum((oa_amt_h0_rep[i] - pct/100 * oa_amt_h0[i]) * x[i]) <= 0
-   ```
-
-2. **Risk cap** (`max_swapin_risk`): Ensures the `b2_ever_h6` of the swap-in sub-population stays below a given percentage. Linearized as:
-
-   ```
-   sum((multiplier * todu_30ever_h6_rep[i] - max_risk/100 * todu_amt_pile_h6_rep[i]) * x[i]) <= 0
-   ```
-
-Both are added as inequality rows alongside the existing risk budget and monotonicity constraints. When `None` (default), the MILP behaves exactly as before. If the constraints are too tight, the solver returns `None` (infeasible).
-
-### Trend Analysis
-
-Monthly aggregation of approval rate, production volume, mean production, and risk metrics. Anomalies are detected using robust Statistical Process Control: a lagged rolling median is used as the center line, MAD is converted to a standard-deviation-equivalent scale, and short windows use a Student-t critical value instead of a fixed z-score.
-
 ---
 
 ## Architecture
@@ -869,7 +1244,7 @@ Monthly aggregation of approval rate, production volume, mean production, and ri
 | `estimators.py` | Custom estimators: `HurdleRegressor`, `TweedieGLM` |
 | `optuna_tuning.py` | Optuna hyperparameter tuning for tree and linear models |
 | `persistence.py` | Model serialization with metadata (save/load) |
-| `optimization_utils.py` | Feasible solution generation, KPI calculation, Pareto filtering, fixed-cell MILP |
+| `optimization_utils.py` | `CellGrid`, MILP solver, Pareto filtering, `mask_to_cutoffs`, fixed-cell constraints |
 | `sensitivity.py` | Sensitivity analysis, risk perturbation, cell flip thresholds, marginal impact |
 | `reject_inference.py` | Acceptance rate computation, parceling (linear/power/sigmoid), Bayesian smoothing, monotonicity enforcement, per-bin confidence |
 | `reject_inference_optimizer.py` | Grid search and Optuna TPE optimization over RI parameters, power-corrected calibration, MR out-of-time validation |
@@ -906,6 +1281,7 @@ Monthly aggregation of approval rate, production volume, mean production, and ri
 | `cutoff_summary_wide.csv` | Cutoff summary (wide format, all scenarios) |
 | `risk_production_summary_mr_{scenario}.csv` | MR period metrics |
 | `data_summary_desagregado_mr_{scenario}.csv` | MR period bin-level data |
+| `mr_risk_comparison_{scenario}.csv` | Per-bin MR risk comparison with drift metrics and risk source |
 | `stability_psi_{scenario}.csv` | Per-variable PSI values |
 | `drift_alerts_{scenario}.json` | Drift alert details |
 | `sensitivity_analysis.csv` | Sensitivity analysis results (if `run_sensitivity = true`) |
