@@ -13,7 +13,7 @@ These parameters define the primary business targets and data constraints for th
 * **`risk_step`**: The increment used to generate alternative scenarios (e.g., `0.1`). If `optimum_risk = 1.5`, the pipeline outputs "base" (1.5%), "optimistic" (1.6%), and "pessimistic" (1.4%).
   * **When to use smaller steps (`0.05`)**: When the segment's efficient frontier is very sharp and you want to evaluate highly granular cutoff changes.
   * **When to use larger steps (`0.2+`)**: When you want to present starkly different business strategies (conservative vs aggressive) to stakeholders.
-* **[multiplier](file:///Users/inigo_ocariz/src/scoring_tools/src/reject_inference.py#179-237) / `multiplier_h3`**: The constants used in the risk formula (`multiplier * todu_30ever / todu_amt_pile`). Default is `7.0` for H6 and `4.0` for H3.
+* **[multiplier](file:///Users/inigo_ocariz/src/scoring_tools/src/reject_inference.py#179-237) / `multiplier_h3`**: The constants used in the risk formula (`multiplier * todu_30ever_h6 / todu_amt_pile_h6`). Default is `7.0` for H6 and `4.0` for H3.
 
 ### Grid Variables & Features
 * **[variables](file:///Users/inigo_ocariz/src/scoring_tools/src/models.py#126-148)**: The list of grid variables (e.g., internal/external score bins) used for cutoff optimization. Must be >= 2 variables.
@@ -43,13 +43,15 @@ Score-rejected applications inherently lack performance outcomes. The model must
   * **Recommendation**: Usually `false`. You only want to penalize based on people who were strictly rejected *by the score*, not by hard policy knockouts.
 
 ### Manual vs Automated Reject Tuning
-* **[run_ri_optimizer](file:///Users/inigo_ocariz/src/scoring_tools/src/pipeline/optimization.py#719-892)**: When `true` (default), the pipeline uses Optuna to sweep and find the mathematically optimal `reject_uplift_factor` and `reject_max_risk_multiplier`.
-  * **When to use (`true`)**: As the default for mature segments where the optimizer can safely find a stable calibration point based on the data.
-* **Important Override**: If a segment's risk surface is too flat (e.g., due to supersegments pooling data), set `run_ri_optimizer = false` in [segments.toml](file:///Users/inigo_ocariz/src/scoring_tools/segments.toml) to force manual values.
+* **[run_ri_optimizer](file:///Users/inigo_ocariz/src/scoring_tools/src/pipeline/optimization.py#719-892)**: When `true`, the pipeline sweeps over `(reject_uplift_factor, reject_max_risk_multiplier)` pairs to find the combination that maximizes production at the target risk. Default is **`false`**.
+  * **`ri_optimizer_method`**: `"grid"` (default) or `"optuna"`. Grid uses fixed ranges (`ri_uplift_range=[0.0, 5.0]`, `ri_max_mult_range=[1.0, 5.0]`) with configurable step counts (`ri_uplift_steps=11`, `ri_max_mult_steps=9`). Optuna uses Bayesian optimization with `ri_optuna_n_trials` trials.
+  * **`ri_calibration_gamma`**: Power exponent (default `1.0`, range `(0, 1]`) controlling how harshly the optimizer corrects for selection bias: `target_risk = booked_risk / (acceptance_rate ^ gamma)`. Lower values (e.g., `0.8`) soften the correction for segments where the inverse-rate assumption is too aggressive.
+  * **When to enable (`true`)**: For mature segments with enough data where the optimizer can safely find a stable calibration point.
+* **Important Override**: If a segment's risk surface is too flat (e.g., due to supersegments pooling data), keep `run_ri_optimizer = false` and use manual values instead.
 * **`reject_uplift_factor` (Manual)**: Scale of the penalty (e.g., `1.5` to `4.0`). Higher means steeper risk penalization for low acceptance bins.
   * **Recommendation**: `1.0 - 1.5` for gentle extrapolation on data-rich, stable segments. `2.0 - 4.0` for aggressive extrapolation on sparse segments relying on shared [supersegments](file:///Users/inigo_ocariz/src/scoring_tools/run_batch.py#171-176).
 * **`reject_max_risk_multiplier` (Manual)**: Hard cap on how many times the base predicted risk can be multiplied.
-  * **Recommendation**: Standard range is `3.0 - 5.0` to prevent risk predictions from exploding to chemically unreasonable levels (like assigning a 50% default rate randomly for a single bin).
+  * **Recommendation**: Standard range is `3.0 - 5.0` to prevent risk predictions from exploding to statistically unreasonable levels (like assigning a 50% default rate randomly for a single bin).
 
 ---
 
@@ -71,7 +73,7 @@ The "Most Recent" (MR) period handles recently booked loans that haven't reached
 
 ## 4. Supersegments & Shared Models
 
-* **[supersegment](file:///Users/inigo_ocariz/src/scoring_tools/run_batch.py#171-176)**: Tells the pipeline to skip training a bespoke model for sparse segment data and borrow a robust master model. 
+* **[supersegment](file:///Users/inigo_ocariz/src/scoring_tools/run_batch.py#171-176)**: Tells the pipeline to train the inference model on the combined population of multiple segments rather than on this segment's data alone. Each segment still runs its own optimization independently.
   * Defined under `[segments.my_segment]` block.
   * **When to use**: Set to `"total"` for highly sparse/immature sectors (e.g., a brand new product or pilot program) where there are simply too few booked loans to train a stable mathematical surface.
   * **When NOT to use**: Do not use it for mature, high-volume segments. Let them natively train their own perfectly tailored risk curves.
@@ -90,13 +92,13 @@ Caps the impact of newly accepted (previously rejected) applicants purely inside
 
 ### Sensitivity Analysis
 Evaluates the robustness of the optimized cutoffs.
-* **[run_sensitivity](file:///Users/inigo_ocariz/src/scoring_tools/src/pipeline/optimization.py#641-717)**: Prints flip-threshold analysis to gauge if the model hinges on highly unstable grid boundaries.
+* **[run_sensitivity](file:///Users/inigo_ocariz/src/scoring_tools/src/pipeline/optimization.py#641-717)**: Prints flip-threshold analysis to gauge if the model hinges on highly unstable grid boundaries. Default is `false`.
   * **When to use**: Before major strategy deployments. It runs a flip-threshold analysis measuring how many risk-basis-points a grid cell must shift before the optimizer would have rejected it. High sensitivity means your strategy is unstable.
 * **`sensitivity_levels`**: Array of perturbation shocks applied (e.g., `[-20, -10, -5, 5, 10, 20]`).
 
 ### Stress Factor & Transformation Rate
-* **`stress_mode`**: How to penalize rejected applicants' underlying performance. Options: `"global"` (top 5% worst), `"per_bin"` (granular), or `"disabled"`.
-  * **Recommendation**: If using powerful Reject Inference Parceling, it is generally recommended to use `"disabled"` to avoid double-penalizing the swap-in population. Use `"global"` only if parceling is off.
+* **`stress_mode`**: How to penalize rejected applicants' underlying performance. Options: `"global"` (top 5% worst, **default**), `"per_bin"` (granular), or `"disabled"`.
+  * **Recommendation**: If using Reject Inference Parceling, set to `"disabled"` to avoid double-penalizing the swap-in population. The default `"global"` is appropriate when parceling is off.
 * **`per_bin_tasa_fin`**: If `true`, Computes the monthly financing rate fraction uniquely for every grid cell instead of a scalar assumption.
   * **When to use**: Set to `true` if you know that different credit segments finance at wildly different transformation rates (e.g., your tier 1 internal customers accept offers immediately, but bottom-tier customers drag it out). Otherwise `false` (scalar assumption).
 
@@ -118,4 +120,4 @@ Sometimes business rules dictate static rules explicitly bypassing algorithmic o
   * **When to use**: When evaluating legacy business configurations, or running backtests on the exact cutoff lines in production yesterday.
 * **`strict_validation`**: Errors out rather than warning if constraints aren't physically contiguous.
   * **Recommendation**: Set `true` to force a hard crash if someone specifies a physically impossible or non-contiguous step boundary in the TOML file.
-* **`run_all_scenarios`**: normally fixed rules only emit a "base" line. Toggle `true` to force pessimistic/optimistic generation around the fixed points.
+* **`run_all_scenarios`**: Normally fixed cutoffs only emit a "base" line. Toggle `true` to force pessimistic/optimistic scenario generation around the fixed points. Only applies when `fixed_cutoffs` is set.
