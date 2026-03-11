@@ -8,12 +8,19 @@
 # When segments share a supersegment, the model is trained on combined data
 # and then optimization runs individually for each sub-segment.
 
-[supersegments.no_premium]
+[supersegments.total]
 # List of segment_filter values to combine for model training
 segment_filters = [
     "no_premium_ab",
     "no_premium_cd",
-    "no_premium_ef"
+    "no_premium_ef",
+    "premium",
+    "precon",
+    "new_fintonic",
+    "new_no_fintonic",
+    "open_banking",
+    "conso_no_premium",
+    "conso_premium"
 ]
 
 # =============================================================================
@@ -22,23 +29,68 @@ segment_filters = [
 
 [segments.no_premium_ab]
 segment_filter = "no_premium_ab"
-optimum_risk = 1.1
+optimum_risk = 1.0
 risk_step = 0.1
-supersegment = "no_premium"  # Use shared model from supersegment
+supersegment = "total"  # Use shared model from supersegment
 min_risk = 0.8  # Optional: minimum risk for global allocation
 max_risk = 1.4  # Optional: maximum risk for global allocation
 
 [segments.no_premium_cd]
 segment_filter = "no_premium_cd"
-optimum_risk = 1.3
+optimum_risk = 1.28
 risk_step = 0.1
-supersegment = "no_premium"  # Use shared model from supersegment
+supersegment = "total"  # Use shared model from supersegment
 
 [segments.no_premium_ef]
 segment_filter = "no_premium_ef"
-optimum_risk = 1.2
+optimum_risk = 1.09
 risk_step = 0.1
-supersegment = "no_premium"  # Use shared model from supersegment
+supersegment = "total"  # Use shared model from supersegment
+
+[segments.premium]
+segment_filter = "premium"
+optimum_risk = 1.47
+risk_step = 0.1
+supersegment = "total"  # Use shared model from supersegment
+
+[segments.precon]
+segment_filter = "precon"
+optimum_risk = 1.07
+risk_step = 0.1
+supersegment = "total"  # Use shared model from supersegment
+
+[segments.new_fintonic]
+segment_filter = "new_fintonic"
+optimum_risk = 1.02
+risk_step = 0.1
+supersegment = "total"  # Use shared model from supersegment
+
+[segments.new_no_fintonic]
+segment_filter = "new_no_fintonic"
+optimum_risk = 1.52
+risk_step = 0.1
+supersegment = "total"  # Use shared model from supersegment
+reject_uplift_factor = 1.5
+reject_max_risk_multiplier = 3.0
+run_ri_optimizer = false
+
+[segments.open_banking]
+segment_filter = "open_banking"
+optimum_risk = 1.20
+risk_step = 0.1
+supersegment = "total"  # Use shared model from supersegment
+
+[segments.conso_no_premium]
+segment_filter = "conso_no_premium"
+optimum_risk = 1.30
+risk_step = 0.1
+supersegment = "total"  # Use shared model from supersegment
+
+[segments.conso_premium]
+segment_filter = "conso_premium"
+optimum_risk = 0.44
+risk_step = 0.1
+supersegment = "total"  # Use shared model from supersegment
 
 # Add more segments as needed:
 # [segments.another_segment]

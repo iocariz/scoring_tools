@@ -1155,13 +1155,11 @@ def load_cutoff_data(
             # Look up bin output columns from preprocessing.bins config or match directly.
             variables = [v for v in config_variables if v in summary_data.columns]
 
-        # Fallback: pattern-match cluster columns (legacy 2-var detection)
+        # Fallback: pattern-match cluster columns (legacy detection, any N)
         if not variables:
             for col in summary_data.columns:
                 if "clus" in col.lower() or col in ["sc_octroi_new_clus", "new_efx_clus"]:
                     variables.append(col)
-                    if len(variables) == 2:
-                        break
 
     # Load optimal solution
     if paths["cutoffs"].exists():
@@ -1186,10 +1184,10 @@ def load_cutoff_data(
             except Exception as e:
                 logger.warning(f"Could not load cell CI from {ci_path}: {e}")
 
-    # Decode optimal acceptance mask for N>2
+    # Decode optimal acceptance mask for 1D and N>2 (both use mask-based logic)
     optimal_mask: list[int] | None = None
     if (
-        len(variables) > 2
+        len(variables) != 2
         and optimal_solution is not None
         and not optimal_solution.empty
         and "acceptance_mask" in optimal_solution.columns
@@ -1577,24 +1575,27 @@ def _format_nd_prefix_label(prefix_values: tuple[Any, ...], prefix_vars: list[st
 def _build_nd_slice_grid_figure(
     summary_data: pd.DataFrame,
     variables: list[str],
-    slice_value: Any,
+    fixed_vars: dict[str, Any],
+    grid_x_var: str,
+    grid_y_var: str,
     current_mask: list[int] | np.ndarray | None,
     optimal_mask: list[int] | np.ndarray | None,
     pinned_cells: dict[str, int] | None,
     multiplier: float,
 ) -> go.Figure:
+    """Build a 2D heatmap slice for any N>=3, fixing *fixed_vars* and using
+    *grid_x_var* / *grid_y_var* as the two displayed axes."""
     from src.optimization_utils import CellGrid
 
-    if len(variables) != 3:
+    if len(variables) < 3:
         return go.Figure()
 
     grid = CellGrid.from_summary(summary_data, variables)
-    x_var, y_var, slice_var = variables[0], variables[1], variables[2]
-    x_values = list(grid.values_per_var[x_var])
-    y_values = list(grid.values_per_var[y_var])
-    x_labels = [_format_bin_label(value) for value in x_values]
-    y_labels = [_format_bin_label(value) for value in y_values]
-    slice_label = _format_bin_label(slice_value)
+    x_values = list(grid.values_per_var[grid_x_var])
+    y_values = list(grid.values_per_var[grid_y_var])
+    x_labels = [_format_bin_label(v) for v in x_values]
+    y_labels = [_format_bin_label(v) for v in y_values]
+    fixed_label = " | ".join(f"{k}={_format_bin_label(v)}" for k, v in fixed_vars.items())
     pins = pinned_cells or {}
     fallback_mask = np.zeros(grid.n_cells, dtype=int)
     if optimal_mask is not None:
@@ -1618,8 +1619,16 @@ def _build_nd_slice_grid_figure(
         row_values: list[int] = []
         row_customdata: list[list[Any]] = []
         for x_value, x_label in zip(x_values, x_labels, strict=False):
-            combo = (x_value, y_value, slice_value)
-            idx = grid.cell_index[combo]
+            # Build full combo tuple in variable order
+            combo = tuple(
+                x_value if v == grid_x_var else y_value if v == grid_y_var else fixed_vars[v]
+                for v in variables
+            )
+            idx = grid.cell_index.get(combo)
+            if idx is None:
+                row_values.append(0)
+                row_customdata.append(["?", "N/A", "N/A", "N/A", "N/A", 0, 0, 0])
+                continue
             cell_key = ",".join(str(int(value)) for value in combo)
             cell_row = grid.cell_data.iloc[idx]
             booked_prod = _coerce_float(cell_row.get("oa_amt_h0_boo"))
@@ -1668,6 +1677,7 @@ def _build_nd_slice_grid_figure(
         z_values.append(row_values)
         customdata.append(row_customdata)
 
+    hover_fixed = f"<br>{fixed_label}" if fixed_label else ""
     fig = go.Figure(
         data=go.Heatmap(
             z=z_values,
@@ -1681,13 +1691,13 @@ def _build_nd_slice_grid_figure(
             ygap=1,
             customdata=customdata,
             hovertemplate=(
-                f"{x_var}: %{{x}}<br>{y_var}: %{{y}}<br>{slice_var}: {slice_label}"
+                f"{grid_x_var}: %{{x}}<br>{grid_y_var}: %{{y}}{hover_fixed}"
                 "<br>Current: %{customdata[1]}"
                 "<br>Reference: %{customdata[2]}"
                 "<br>Delta: %{customdata[3]}"
                 "<br>Pin: %{customdata[4]}"
-                "<br>Booked production: €%{customdata[5]:,.0f}"
-                "<br>Repesca production: €%{customdata[6]:,.0f}"
+                "<br>Booked production: \u20ac%{customdata[5]:,.0f}"
+                "<br>Repesca production: \u20ac%{customdata[6]:,.0f}"
                 "<br>Booked risk: %{customdata[7]:.2f}%<extra></extra>"
             ),
         )
@@ -1731,8 +1741,8 @@ def _build_nd_slice_grid_figure(
         )
 
     fig.update_layout(
-        xaxis_title=x_var,
-        yaxis_title=y_var,
+        xaxis_title=grid_x_var,
+        yaxis_title=grid_y_var,
         margin=dict(l=45, r=10, t=10, b=40),
         clickmode="event+select",
         showlegend=False,
@@ -1749,32 +1759,57 @@ def _build_nd_slice_grid_panel(
     pinned_cells: dict[str, int] | None,
     multiplier: float,
 ) -> list[Any]:
+    """Build slice grid cards for N>=3.  Uses variables[0:2] as the displayed
+    grid axes and iterates over all unique combinations of variables[2:]."""
+    from itertools import product as iterproduct
+
     from src.optimization_utils import CellGrid
 
-    if len(variables) != 3:
+    if len(variables) < 3:
         return []
 
     grid = CellGrid.from_summary(summary_data, variables)
-    slice_var = variables[2]
-    slice_values = list(grid.values_per_var[slice_var])
+    grid_x_var, grid_y_var = variables[0], variables[1]
+    slice_vars = variables[2:]
+
     fallback_mask = np.zeros(grid.n_cells, dtype=int)
     if optimal_mask is not None:
         fallback_mask = np.asarray(optimal_mask, dtype=int)
     current_mask_arr = np.asarray(current_mask, dtype=int) if current_mask is not None else fallback_mask
 
+    # Build all slice combos; cap at 12 to avoid UI overload
+    slice_val_lists = [list(grid.values_per_var[sv]) for sv in slice_vars]
+    slice_combos = list(iterproduct(*slice_val_lists))
+    max_slices = 12
+    truncated = len(slice_combos) > max_slices
+    slice_combos = slice_combos[:max_slices]
+
     columns: list[dbc.Col] = []
-    for slice_value in slice_values:
-        slice_indices = [idx for combo, idx in grid.cell_index.items() if combo[2] == slice_value]
+    for s_combo in slice_combos:
+        fixed_vars = dict(zip(slice_vars, s_combo, strict=False))
+        # Count accepted cells for this slice
+        var_positions = {v: variables.index(v) for v in slice_vars}
+        slice_indices = [
+            idx for combo, idx in grid.cell_index.items()
+            if all(combo[var_positions[sv]] == fv for sv, fv in fixed_vars.items())
+        ]
         accepted_count = int(current_mask_arr[slice_indices].sum()) if slice_indices else 0
         total_cells = len(slice_indices)
-        slice_label = _format_bin_label(slice_value)
+
+        if len(slice_vars) == 1:
+            header_text = f"{slice_vars[0]} = {_format_bin_label(s_combo[0])}"
+        else:
+            header_text = " | ".join(f"{sv}={_format_bin_label(v)}" for sv, v in fixed_vars.items())
+        # Use a serializable string index for the graph id
+        slice_key = ",".join(_format_bin_label(v) for v in s_combo)
+
         columns.append(
             dbc.Col(
                 dbc.Card(
                     [
                         dbc.CardHeader(
                             [
-                                html.Span(f"{slice_var} = {slice_label}", className="fw-bold"),
+                                html.Span(header_text, className="fw-bold"),
                                 dbc.Badge(
                                     f"{accepted_count}/{total_cells} accepted",
                                     color="light",
@@ -1785,11 +1820,13 @@ def _build_nd_slice_grid_panel(
                         ),
                         dbc.CardBody(
                             dcc.Graph(
-                                id={"type": "nd-slice-grid", "index": slice_label},
+                                id={"type": "nd-slice-grid", "index": slice_key},
                                 figure=_build_nd_slice_grid_figure(
                                     summary_data,
                                     variables,
-                                    slice_value,
+                                    fixed_vars,
+                                    grid_x_var,
+                                    grid_y_var,
                                     current_mask,
                                     optimal_mask,
                                     pinned_cells,
@@ -1808,7 +1845,17 @@ def _build_nd_slice_grid_panel(
             )
         )
 
-    return [dbc.Row(columns, className="g-3")]
+    children: list[Any] = [dbc.Row(columns, className="g-3")]
+    if truncated:
+        children.append(
+            dbc.Alert(
+                f"Showing first {max_slices} of {len(list(iterproduct(*slice_val_lists)))} slice combinations. "
+                "Use the DataTable below to inspect all cells.",
+                color="info",
+                className="mt-2",
+            )
+        )
+    return children
 
 
 def calculate_metrics_from_custom_cuts(
@@ -1933,7 +1980,7 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
         load_cutoff_data(scenario, segment)
     )
 
-    if summary_data is None or len(variables) < 2:
+    if summary_data is None or len(variables) < 1:
         return dbc.Alert(
             [
                 html.H4("Cutoff Explorer Not Available", className="alert-heading"),
@@ -1942,6 +1989,7 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
             color="warning",
         )
 
+    is_1d = len(variables) == 1
     is_nd = len(variables) > 2
 
     # Get risk range from Pareto solutions
@@ -1962,27 +2010,48 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
 
     scenario_display = scenario.capitalize()
     segment_display = f" - {segment}" if segment else ""
-    explorer_mode_label = "2D cutoff map" if not is_nd else f"{len(variables)}D cell mask"
-    if not is_nd:
-        acceptance_rule_label = f"{variables[1]} {'≥' if variables[1] in inv_vars else '≤'} cutoff"
-        acceptance_rule_detail = f"{len(summary_data[variables[0]].unique())} {variables[0]} bins"
+    if is_1d:
+        explorer_mode_label = "1D bin mask"
+    elif is_nd:
+        explorer_mode_label = f"{len(variables)}D cell mask"
     else:
+        explorer_mode_label = "2D cutoff map"
+
+    if is_1d:
+        n_bins = len(summary_data[variables[0]].unique())
+        acceptance_rule_label = f"Per-bin accept / reject ({variables[0]})"
+        acceptance_rule_detail = f"{n_bins} bins, {sum(optimal_mask) if optimal_mask else 0} accepted"
+    elif is_nd:
         acceptance_rule_label = "Cell-level accept / reject mask"
         acceptance_rule_detail = f"{len(variables)} variables, {len(optimal_mask) if optimal_mask else 0} cells"
+    else:
+        acceptance_rule_label = f"{variables[1]} {'≥' if variables[1] in inv_vars else '≤'} cutoff"
+        acceptance_rule_detail = f"{len(summary_data[variables[0]].unique())} {variables[0]} bins"
     frontier_label = f"{len(pareto_data)} points" if pareto_data else "Not loaded"
     frontier_detail = f"{risk_min:.2f}% to {risk_max:.2f}% risk"
     uncertainty_label = "Available" if has_ci else "Not loaded"
     uncertainty_detail = "Toggle uncertainty overlay to inspect cell CI width" if has_ci else "No cell_level_ci.csv found"
-    guide_message = (
-        "Use the risk selector to jump to the closest Pareto solution. Drag individual cutoffs to run what-if analysis."
-        if not is_nd
-        else (
-            "Use the risk selector to jump to a frontier solution, then click the current acceptance grids to toggle cells. "
-            "Pin Mode on the overview heatmap still lets you lock cells before re-optimizing."
-            if len(variables) == 3
-            else "Use the risk selector to jump to a frontier solution, then enable Pin Mode to lock cells before re-optimizing."
+    if is_1d:
+        guide_message = (
+            "Use the risk selector to jump to the closest Pareto solution. "
+            "Toggle individual bins in the acceptance table to run what-if analysis."
         )
-    )
+    elif is_nd:
+        if len(variables) == 3:
+            guide_message = (
+                "Use the risk selector to jump to a frontier solution, then click the acceptance "
+                "grids to toggle cells. Pin Mode lets you lock cells before re-optimizing."
+            )
+        else:
+            guide_message = (
+                "Use the risk selector to jump to a frontier solution, then enable Pin Mode "
+                "to lock cells before re-optimizing."
+            )
+    else:
+        guide_message = (
+            "Use the risk selector to jump to the closest Pareto solution. "
+            "Drag individual cutoffs to run what-if analysis."
+        )
 
     # Create risk slider marks
     risk_marks = _build_risk_marks(risk_min, risk_max)
@@ -1990,7 +2059,7 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
     # ------------------------------------------------------------------
     # 2-var path: sliders + per-bin cutoffs (unchanged)
     # ------------------------------------------------------------------
-    if not is_nd:
+    if not is_nd and not is_1d:
         var0_col, var1_col = variables[0], variables[1]
 
         bins = sorted(summary_data[var0_col].unique())
@@ -2105,21 +2174,28 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
         )
 
     # ------------------------------------------------------------------
-    # N>2 path: acceptance DataTable + mask store
+    # 1D and N>2 path: acceptance DataTable + mask store
     # ------------------------------------------------------------------
     else:
         from src.optimization_utils import CellGrid
 
         grid = CellGrid.from_summary(summary_data, variables)
 
-        editor_help_text = (
-            f"Click a cell to toggle Accept \u2192 Reject. One grid is shown per {variables[2]} value."
-            if len(variables) == 3
-            else "Click a row in Pin Mode to cycle: unpinned \u2192 accept \u2192 reject \u2192 unpinned"
-        )
+        if is_1d:
+            editor_help_text = (
+                "Toggle bins in the table below to accept or reject them. "
+                "The acceptance strip and KPIs update automatically."
+            )
+        elif len(variables) == 3:
+            editor_help_text = (
+                f"Click a cell to toggle Accept \u2192 Reject. One grid is shown per {variables[2]} value."
+            )
+        else:
+            editor_help_text = "Click a row in Pin Mode to cycle: unpinned \u2192 accept \u2192 reject \u2192 unpinned"
+
         grid_children = (
             _build_nd_slice_grid_panel(summary_data, variables, optimal_mask, optimal_mask, {}, multiplier)
-            if len(variables) == 3
+            if len(variables) >= 3
             else []
         )
 
@@ -2136,7 +2212,8 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
         store_data = {
             "scenario": scenario,
             "segment": segment,
-            "is_nd": True,
+            "is_1d": is_1d,
+            "is_nd": is_nd or is_1d,  # 1D also uses mask-based logic
             "variables": variables,
             "optimal_mask": optimal_mask,
             "inv_vars": inv_vars,
@@ -2152,7 +2229,8 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                         dbc.CardHeader(
                             [
                                 html.Span(
-                                    f"Cell Acceptance ({len(variables)} variables, {grid.n_cells} cells)",
+                                    f"Bin Acceptance ({grid.n_cells} bins)" if is_1d
+                                    else f"Cell Acceptance ({len(variables)} variables, {grid.n_cells} cells)",
                                     className="fw-bold",
                                 ),
                                 dbc.Button(
@@ -2177,14 +2255,14 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                                         dbc.Badge("Changed vs reference", color="warning", text_color="dark", className="me-2"),
                                         dbc.Badge("Pinned Accept", color="success", className="me-2", style={"opacity": 0.8}),
                                         dbc.Badge("Pinned Reject", color="danger", style={"opacity": 0.8}),
-                                        *([dbc.Badge("Click to toggle", color="primary")] if len(variables) == 3 else []),
+                                        *([dbc.Badge("Click to toggle", color="primary")] if len(variables) >= 3 else []),
                                     ],
                                     className="mb-3 d-flex flex-wrap gap-2",
                                 ),
                                 html.Div(
                                     id="nd-acceptance-grid-panel",
                                     children=grid_children,
-                                    style={"display": "block" if len(variables) == 3 else "none"},
+                                    style={"display": "block" if len(variables) >= 3 else "none"},
                                 ),
                                 html.Div(
                                     dash_table.DataTable(
@@ -2256,7 +2334,7 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                                             },
                                         ],
                                     ),
-                                    style={"display": "none" if len(variables) == 3 else "block"},
+                                    style={"display": "block"},
                                 ),
                             ]
                         ),
@@ -2267,10 +2345,13 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
             md=5,
         )
 
-        heatmap_header = (
-            f"Acceptance Matrix — rows = {', '.join(variables[:-1])}, columns = {variables[-1]} "
-            "(green = accepted)"
-        )
+        if is_1d:
+            heatmap_header = f"Acceptance Strip \u2014 {variables[0]} bins (green = accepted)"
+        else:
+            heatmap_header = (
+                f"Acceptance Matrix \u2014 rows = {', '.join(variables[:-1])}, columns = {variables[-1]} "
+                "(green = accepted)"
+            )
 
     # ------------------------------------------------------------------
     # Common layout (both paths share the same component IDs)
@@ -2489,6 +2570,26 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                     )
                 ],
                 className="mt-3",
+            ),
+            # Per-variable marginal impact summary (N>2 only)
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            dbc.Card(
+                                [
+                                    dbc.CardHeader(
+                                        "Per-Variable Marginal Impact \u2014 avg production change per bin value"
+                                    ),
+                                    dbc.CardBody([dcc.Graph(id="variable-marginal-impact", style={"height": "400px"})]),
+                                ]
+                            )
+                        ]
+                    )
+                ],
+                className="mt-3",
+                style={"display": "block" if (is_nd and not is_1d) else "none"},
+                id="variable-marginal-row",
             ),
         ]
     )
@@ -2925,6 +3026,7 @@ def render_content(active_tab: str, scenario: str | None, segment: str | None) -
         Output("cutoff-chart", "figure"),
         Output("cutoff-heatmap", "figure"),
         Output("marginal-impact-heatmap", "figure"),
+        Output("variable-marginal-impact", "figure"),
     ],
     [
         Input({"type": "cutoff-slider", "index": dash.ALL}, "value"),
@@ -2937,18 +3039,18 @@ def render_content(active_tab: str, scenario: str | None, segment: str | None) -
 )
 def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_cells, current_mask_data):
     """Update cutoff analysis when sliders or mask change."""
+    empty_fig = go.Figure()
+    empty_fig.update_layout(annotations=[dict(text="No data available", x=0.5, y=0.5, showarrow=False)])
+    empty_5 = (html.Div("No data available"), empty_fig, empty_fig, empty_fig, empty_fig)
+
     if not store_data:
-        empty_fig = go.Figure()
-        empty_fig.update_layout(annotations=[dict(text="No data available", x=0.5, y=0.5, showarrow=False)])
-        return html.Div("No data available"), empty_fig, empty_fig, empty_fig
+        return empty_5
 
     is_nd = store_data.get("is_nd", False)
 
-    # For 2-var, require sliders; for N>2, require mask
+    # For 2-var, require sliders; for 1D/N>2, require mask
     if not is_nd and not slider_values:
-        empty_fig = go.Figure()
-        empty_fig.update_layout(annotations=[dict(text="No data available", x=0.5, y=0.5, showarrow=False)])
-        return html.Div("No data available"), empty_fig, empty_fig, empty_fig
+        return empty_5
 
     scenario = store_data["scenario"]
     segment = store_data.get("segment")
@@ -2965,19 +3067,17 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
         except Exception as e:
             logger.warning(f"Failed to load summary data from {paths['summary_data']}: {e}")
     if summary_data is None:
-        empty_fig = go.Figure()
-        return html.Div("Data not available"), empty_fig, empty_fig, empty_fig
+        return empty_5
 
     # ==================================================================
-    # N>2 path
+    # 1D and N>2 path (mask-based)
     # ==================================================================
     if is_nd:
         optimal_mask = store_data.get("optimal_mask")
         current_mask = current_mask_data if current_mask_data else optimal_mask
 
         if not current_mask:
-            empty_fig = go.Figure()
-            return html.Div("No mask data available"), empty_fig, empty_fig, empty_fig
+            return empty_5
 
         # Compute metrics
         current_metrics = calculate_metrics_from_mask(summary_data, current_mask, variables, multiplier)
@@ -2995,14 +3095,90 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
             store_data.get("pareto_solutions", []), current_metrics, optimal_metrics, "Reference optimum"
         )
 
-        # Heatmap: acceptance matrix using the last variable as columns and the prefix combo as rows
+        # Heatmap / acceptance strip
         from src.optimization_utils import CellGrid
 
         grid = CellGrid.from_summary(summary_data, variables)
         mask_arr = np.asarray(current_mask, dtype=int)
         optimal_mask_arr = np.asarray(optimal_mask, dtype=int) if optimal_mask else mask_arr
         pins = pinned_cells or {}
+        is_1d = store_data.get("is_1d", False)
 
+        # ------ 1D: horizontal bar chart with accept/reject coloring ------
+        if is_1d:
+            var0 = variables[0]
+            bin_values = list(grid.values_per_var[var0])
+            bin_labels = [_format_bin_label(v) for v in bin_values]
+            cell_prod = []
+            cell_risk = []
+            bar_colors = []
+            for bv in bin_values:
+                idx = grid.cell_index[(bv,)]
+                row = grid.cell_data.iloc[idx]
+                prod = _coerce_float(row.get("oa_amt_h0_boo"))
+                rn = _coerce_float(row.get("todu_30ever_h6_boo"))
+                rd = _coerce_float(row.get("todu_amt_pile_h6_boo"))
+                risk = float(calculate_b2_ever_h6(rn, rd, multiplier=multiplier, as_percentage=True, decimals=2))
+                cell_prod.append(prod)
+                cell_risk.append(risk)
+                bar_colors.append("#2ECC71" if mask_arr[idx] == 1 else "#E74C3C")
+
+            fig_heatmap = go.Figure()
+            fig_heatmap.add_trace(
+                go.Bar(
+                    x=bin_labels,
+                    y=cell_prod,
+                    marker_color=bar_colors,
+                    hovertemplate=(
+                        f"{var0}: %{{x}}<br>Production: \u20ac%{{y:,.0f}}"
+                        "<br>Risk: %{customdata:.2f}%<extra></extra>"
+                    ),
+                    customdata=cell_risk,
+                )
+            )
+            fig_heatmap.update_layout(
+                xaxis_title=var0,
+                yaxis_title="Booked Production (\u20ac)",
+                margin=dict(l=60, r=20, t=30, b=60),
+                bargap=0.15,
+            )
+            apply_plotly_style(fig_heatmap, height=350)
+
+            # Marginal impact: simple bar chart per bin
+            fig_marginal = go.Figure()
+            try:
+                from src.sensitivity import compute_cell_marginal_impact
+
+                marginal_df = compute_cell_marginal_impact(
+                    grid, mask_arr, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], multiplier
+                )
+                marginal_df = marginal_df.sort_values(var0)
+                m_labels = [_format_bin_label(v) for v in marginal_df[var0].values]
+                m_colors = [COLOR_PRODUCTION if v >= 0 else COLOR_RISK for v in marginal_df["delta_production"]]
+                fig_marginal = go.Figure(
+                    go.Bar(
+                        x=m_labels,
+                        y=marginal_df["delta_production"].values,
+                        marker_color=m_colors,
+                        hovertemplate=f"{var0}: %{{x}}<br>Delta Production: \u20ac%{{y:,.0f}}<extra></extra>",
+                    )
+                )
+                fig_marginal.update_layout(
+                    xaxis_title=var0,
+                    yaxis_title="Delta Production (\u20ac)",
+                    margin=dict(l=60, r=20, t=30, b=60),
+                    bargap=0.15,
+                )
+                apply_plotly_style(fig_marginal, height=350)
+            except Exception as e:
+                logger.warning(f"1D marginal impact failed: {e}")
+                fig_marginal.update_layout(
+                    annotations=[dict(text="Marginal impact not available", x=0.5, y=0.5, showarrow=False)]
+                )
+
+            return results, fig_chart, fig_heatmap, fig_marginal, go.Figure()
+
+        # ------ N>2: acceptance matrix (prefix vars x last var) ------
         last_var = variables[-1]
         prefix_vars = variables[:-1]
         last_values = list(grid.values_per_var[last_var])
@@ -3181,7 +3357,50 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
                 annotations=[dict(text="Marginal impact not available", x=0.5, y=0.5, showarrow=False)]
             )
 
-        return results, fig_chart, fig_heatmap, fig_marginal
+        # Per-variable marginal impact summary (N>2 only)
+        fig_var_marginal = go.Figure()
+        try:
+            from plotly.subplots import make_subplots
+
+            from src.sensitivity import compute_cell_marginal_impact as _compute_marginal
+
+            marginal_df = _compute_marginal(
+                grid, mask_arr, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], multiplier
+            )
+            n_vars = len(variables)
+            fig_var_marginal = make_subplots(
+                rows=1,
+                cols=n_vars,
+                subplot_titles=[f"{v}" for v in variables],
+                shared_yaxes=False,
+                horizontal_spacing=0.06,
+            )
+            for vi, var in enumerate(variables, 1):
+                grouped = marginal_df.groupby(var)["delta_production"].mean().sort_index()
+                var_labels = [_format_bin_label(v) for v in grouped.index]
+                var_colors = [COLOR_PRODUCTION if v >= 0 else COLOR_RISK for v in grouped.values]
+                fig_var_marginal.add_trace(
+                    go.Bar(
+                        x=var_labels,
+                        y=grouped.values,
+                        marker_color=var_colors,
+                        hovertemplate=f"{var}: %{{x}}<br>Avg \u0394 Prod: \u20ac%{{y:,.0f}}<extra></extra>",
+                        showlegend=False,
+                    ),
+                    row=1,
+                    col=vi,
+                )
+                fig_var_marginal.update_xaxes(title_text=var, row=1, col=vi)
+            fig_var_marginal.update_yaxes(title_text="\u0394 Production (\u20ac)", row=1, col=1)
+            fig_var_marginal.update_layout(margin=dict(l=60, r=20, t=40, b=60))
+            apply_plotly_style(fig_var_marginal, height=350)
+        except Exception as e:
+            logger.warning(f"Per-variable marginal impact failed: {e}")
+            fig_var_marginal.update_layout(
+                annotations=[dict(text="Per-variable marginal not available", x=0.5, y=0.5, showarrow=False)]
+            )
+
+        return results, fig_chart, fig_heatmap, fig_marginal, fig_var_marginal
 
     # ==================================================================
     # 2-var path (unchanged)
@@ -3408,7 +3627,7 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
             annotations=[dict(text="Marginal impact not available", x=0.5, y=0.5, showarrow=False)]
         )
 
-    return results, fig_chart, fig_heatmap, fig_marginal
+    return results, fig_chart, fig_heatmap, fig_marginal, go.Figure()
 
 
 @app.callback(
@@ -3451,7 +3670,7 @@ def render_nd_acceptance_grid_panel(current_mask, pinned_cells, store_data):
         return dash.no_update
 
     variables = store_data.get("variables", [])
-    if len(variables) != 3:
+    if len(variables) < 3:
         return []
 
     scenario = store_data["scenario"]
@@ -3493,7 +3712,7 @@ def toggle_nd_slice_grid_cell(click_data_list, store_data, current_mask, pinned_
         return dash.no_update, dash.no_update
 
     variables = store_data.get("variables", [])
-    if len(variables) != 3:
+    if len(variables) < 3:
         return dash.no_update, dash.no_update
 
     ctx = callback_context

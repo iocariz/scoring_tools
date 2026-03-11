@@ -251,6 +251,8 @@ class PreprocessingSettings(BaseModel):
     mr_min_obs_per_bin: int = Field(default=30, ge=1)
     mr_extrapolation_method: Literal["linear", "power", "logistic", "auto"] = "linear"
     mr_extrapolation_curvature: float = Field(default=1.0, gt=0, le=5.0)
+    mr_extrapolation_risk_multiplier: float = Field(default=3.0, gt=0, le=10.0)
+    mr_extrapolation_hard_cap: float = Field(default=15.0, gt=0, le=100.0)
 
     # Swap-in (repesca) constraints for MILP optimization
     max_swapin_production_pct: float | None = Field(default=None, ge=0, le=100)

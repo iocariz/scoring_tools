@@ -376,8 +376,6 @@ def load_cutoff_data(scenario: str, segment: str | None):
             for col in summary_data.columns:
                 if "clus" in col.lower():
                     variables.append(col)
-                    if len(variables) == 2:
-                        break
 
     pareto_solutions = None
     pareto_path = data_dir / "pareto_optimal_solutions.csv"
@@ -387,7 +385,7 @@ def load_cutoff_data(scenario: str, segment: str | None):
     optimal_mask = None
     if paths["cutoffs"].exists():
         opt_sol = pd.read_csv(paths["cutoffs"])
-        if len(variables) > 2 and not opt_sol.empty and "acceptance_mask" in opt_sol.columns:
+        if len(variables) != 2 and not opt_sol.empty and "acceptance_mask" in opt_sol.columns:
             from src.optimization_utils import decode_mask
 
             optimal_mask = decode_mask(str(opt_sol["acceptance_mask"].iloc[0])).tolist()
@@ -397,15 +395,40 @@ def load_cutoff_data(scenario: str, segment: str | None):
 
 def build_cutoff_heatmap(summary_data, variables, mask_or_cuts, inv_vars, multiplier, is_nd):
     """Build heatmap figure and KPI markdown from cutoff state."""
-    if summary_data is None or len(variables) < 2:
+    if summary_data is None or len(variables) < 1:
         return go.Figure(), "No cutoff data."
 
-    if is_nd:
+    is_1d = len(variables) == 1
+
+    if is_nd or is_1d:
         metrics = _calculate_metrics_from_mask(summary_data, mask_or_cuts, variables, multiplier)
     else:
         metrics = _calculate_metrics_from_custom_cuts(
             summary_data, mask_or_cuts, variables[0], variables[1], inv_vars, multiplier
         )
+
+    # 1D: bar chart with accept/reject coloring
+    if is_1d:
+        from src.optimization_utils import CellGrid
+
+        var0 = variables[0]
+        grid = CellGrid.from_summary(summary_data, variables)
+        mask_arr = np.asarray(mask_or_cuts, dtype=int)
+        bin_values = list(grid.values_per_var[var0])
+        bar_prod = [float(grid.cell_data.iloc[grid.cell_index[(bv,)]]["oa_amt_h0"]) for bv in bin_values]
+        bar_colors = ["#2ECC71" if mask_arr[grid.cell_index[(bv,)]] == 1 else "#E74C3C" for bv in bin_values]
+        fig = go.Figure(go.Bar(x=[str(v) for v in bin_values], y=bar_prod, marker_color=bar_colors))
+        apply_plotly_style(fig, title=f"Acceptance Strip: {var0}", height=400)
+        fig.update_xaxes(title=var0)
+        fig.update_yaxes(title="Production (\u20ac)")
+
+        cards = [
+            kpi_card("Optimum Risk", f"{metrics['opt_risk']:.2f}%", border_color=COLOR_RISK),
+            kpi_card("Optimum Prod", f"{metrics['opt_prod_pct']:.1%}", border_color=COLOR_PRODUCTION),
+            kpi_card("Swap-in Prod", f"{metrics['swap_in_prod']:,.0f}", border_color=COLOR_GOOD),
+            kpi_card("Swap-out Prod", f"{metrics['swap_out_prod']:,.0f}", border_color=COLOR_BAD),
+        ]
+        return fig, kpi_row(cards)
 
     # Build heatmap (2D projection on first two variables)
     var0, var1 = variables[0], variables[1]
@@ -855,14 +878,34 @@ def create_app() -> gr.Blocks:
                         empty = go.Figure().update_layout(title=f"Error: {e}")
                         return "", empty, f"Error loading cutoff data: {e}", None
 
-                    if summary_data is None or len(variables) < 2:
+                    if summary_data is None or len(variables) < 1:
                         empty = go.Figure().update_layout(title="No cutoff data")
                         return "", empty, "Summary data not found. Run the pipeline first.", None
 
+                    is_1d = len(variables) == 1
                     is_nd = len(variables) > 2
 
                     # Determine initial cuts/mask
-                    if is_nd and optimal_mask is not None:
+                    if is_1d and optimal_mask is not None:
+                        fig, kpi = build_cutoff_heatmap(
+                            summary_data, variables, optimal_mask, inv_vars, multiplier, False
+                        )
+                        state = {
+                            "summary_data_json": summary_data.to_json(),
+                            "variables": variables,
+                            "inv_vars": inv_vars,
+                            "multiplier": multiplier,
+                            "is_1d": True,
+                            "is_nd": False,
+                            "mask": optimal_mask,
+                        }
+                        n_acc = sum(optimal_mask)
+                        info = (
+                            f"**1D mode** ({variables[0]}): {n_acc}/{len(optimal_mask)} bins accepted."
+                        )
+                        return kpi, fig, info, state
+
+                    elif is_nd and optimal_mask is not None:
                         fig, kpi = build_cutoff_heatmap(
                             summary_data, variables, optimal_mask, inv_vars, multiplier, True
                         )

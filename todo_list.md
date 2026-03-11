@@ -134,6 +134,34 @@ Deduplicated against existing items. Items already tracked above are not repeate
 - All-rejected data, empty frontier, single-row input, all-NaN risk columns
 - Fix: add edge-case test suite
 
+### DASHBOARD IMPROVEMENTS (2026-03-10) ✓ IMPLEMENTED
+
+#### Phase 1: `load_cutoff_data()` fix for all dimensions
+- Removed `len(variables) == 2` cap in fallback pattern matching (dashboard.py + gradio_dashboard.py)
+- Mask decode now fires for 1D (`len(variables) != 2` instead of `> 2`)
+
+#### Phase 5: `is_1d` flag and store data
+- Added `is_1d` flag to `cutoff-data-store`; 1D routes through mask-based path (`is_nd=True`)
+- Updated layout: 1D-specific labels, guide text, acceptance strip header
+- DataTable always visible (was hidden for N==3); slice grids shown for N>=3
+
+#### Phase 3: Generalize slice grids beyond N==3
+- `_build_nd_slice_grid_figure()` now accepts `fixed_vars` dict + `grid_x_var`/`grid_y_var` — works for any N>=3
+- `_build_nd_slice_grid_panel()` iterates all unique combos of variables[2:] as slices (capped at 12)
+- All `len(variables) != 3` guards relaxed to `< 3`
+
+#### Phase 4: Per-variable marginal impact summary
+- New `variable-marginal-impact` chart (small multiples, one subplot per variable)
+- Shows avg production delta per bin value, grouped by variable
+- Visible only for N>2; hidden for 1D and 2D
+
+#### 1D visualization in callback
+- Bar chart with green/red bins (production + accept/reject coloring) in heatmap slot
+- Per-bin marginal impact bar chart
+- Gradio: 1D bar chart with accept/reject colors
+
+---
+
 ### ARCHITECTURAL
 
 #### A1-new: inference_optimized.py is too monolithic (1811 lines)

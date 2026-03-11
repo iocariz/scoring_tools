@@ -580,16 +580,22 @@ def process_mr_period(
                         missing_bins_df, final_model, model_vars, stress_factor, final_features
                     )
 
-                    # Clip inferred risk to the observed training range to prevent extrapolation
+                    # Clip inferred risk to prevent unbounded extrapolation
                     observed_risk = agg_data["b2_ever_h6_tmp"].dropna()
                     if len(observed_risk) > 0:
                         risk_floor = float(observed_risk.min())
-                        risk_ceil = float(observed_risk.max())
+                        risk_ceil_base = float(observed_risk.max())
+                        
+                        risk_ceil_scaled = risk_ceil_base * settings.mr_extrapolation_risk_multiplier
+                        risk_ceil = min(risk_ceil_scaled, settings.mr_extrapolation_hard_cap)
+
                         missing_bins_df["b2_ever_h6"] = missing_bins_df["b2_ever_h6"].clip(
                             lower=risk_floor, upper=risk_ceil
                         )
                         logger.info(
-                            f"  Clipped model-imputed risk to observed range [{risk_floor:.4f}, {risk_ceil:.4f}]"
+                            f"  Clipped model-imputed risk to [{risk_floor:.4f}, {risk_ceil:.4f}] "
+                            f"(base max={risk_ceil_base:.4f}, mult={settings.mr_extrapolation_risk_multiplier}, "
+                            f"cap={settings.mr_extrapolation_hard_cap})"
                         )
 
                     # Merge clipped inferred values into data_demand_mr

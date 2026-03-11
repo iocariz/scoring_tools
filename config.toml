@@ -12,10 +12,10 @@ indicators = [
 octroi_bins = [-inf, 364.0, 370.0, 379.0, 382.0, 389.0, 397.0, 404.0, 416.0, 431.0, inf]
 efx_bins = [-inf, 2.0, 7.0, 11.0, 16.0, 22.0, 27.0, 33.0, 38.0, 43.0, 47.0, 51.0, 56.0, 62.0, 68.0, 73.0, 78.0, 83.0, 89.0, 94.0, inf]
 
-date_ini_book_obs = "2024-07-01"
-date_fin_book_obs = "2025-06-01"
-date_ini_book_obs_mr = "2025-07-01"
-date_fin_book_obs_mr = "2025-12-01"
+date_ini_book_obs = "2024-08-01"
+date_fin_book_obs = "2025-07-01"
+date_ini_book_obs_mr = "2025-08-01"
+date_fin_book_obs_mr = "2026-01-01"
 
 score_measures = [
     "m_ct_direct_sc_nov23",
@@ -35,7 +35,6 @@ multiplier_h3 = 4
 z_threshold = 3.0
 cv_folds = 3
 run_sensitivity = true
-run_ri_optimizer = true
 sensitivity_levels = [-30, -20, -10, -5, 5, 10, 20, 30]
 
 
@@ -51,6 +50,23 @@ reject_parceling_method = "sigmoid"     # "linear" (default), "power", or "sigmo
 reject_uplift_factor = 1.5            # scaling coefficient for reject ratio (0.0-10.0)
 reject_max_risk_multiplier = 3.0      # upper cap for per-bin multiplier (1.0-10.0)
 
+#Bayesian smoothing for small bins
+reject_bayesian_smoothing = true
+reject_bayesian_prior_strength = 20.0
+
+#Enforce monotone multipliers
+reject_enforce_monotonicity = true
+
+#Auto-tune reject inference parameters
+run_ri_optimizer = true
+ri_optimizer_methods = "optuna"
+ri_optuna_n_trials = 200
+ri_calibration_gamma = 0.8
+ri_uplift_range = [0.8, 5.0]
+ri_max_mult_range = [1.0, 5.0]
+
+reject_include_all_rejections = true
+
 # Stress factor mode: "global" (default), "per_bin", or "disabled"
 # With parceling active, "disabled" avoids double-counting selection bias.
 stress_mode = "disabled"
@@ -63,8 +79,9 @@ per_bin_tasa_fin = true
 # falling back to main-period imputation for sparse bins. Helps detect model degradation.
 use_mr_outcomes = true
 mr_extrapolation_method = "auto"  # "linear", "power", "logistic", or "auto" (fits curvature from data)
-# mr_min_obs_per_bin = 30
-
+mr_min_obs_per_bin = 30
+mr_extrapolation_risk_multiplier = 3.0  # Relative ceiling: cap risk at this multiple of the segment's maximum observed risk
+mr_extrapolation_hard_cap = 15.0        # Absolute ceiling: ensure risk never goes above this percentage
 # Fixed cutoffs (optional) - uncomment to skip optimization and use predefined cutoffs
 # When set, the optimization step is skipped and these cutoffs are applied directly.
 # Supports both 2-variable (paired bins/cutoffs) and N>2 (per-variable accepted bin lists).
