@@ -399,6 +399,79 @@ def _compute_hybrid_mr_risk(
         mr_extrapolation_curvature = 1.0
         logger.warning("Auto-calibration requires H3 data (multiplier_h3). Falling back to linear.")
 
+    # --- Diagnostic: monthly H6/H3 ratio trend in main period ---
+    if has_h3 and "mis_date" in data_booked.columns:
+        h3_cols_trend = ["todu_30ever_h3", "todu_amt_pile_h3"]
+        h6_cols_trend = ["todu_30ever_h6", "todu_amt_pile_h6"]
+        if all(c in data_booked.columns for c in h3_cols_trend + h6_cols_trend):
+            booked_main = data_booked.copy()
+            booked_main["_month"] = booked_main["mis_date"].dt.to_period("M")
+            monthly = booked_main.groupby("_month")[h6_cols_trend + h3_cols_trend].sum()
+            # Compute unrounded ratios to avoid losing precision on small monthly values
+            safe_pile_h6 = monthly["todu_amt_pile_h6"].replace(0, np.nan)
+            safe_pile_h3 = monthly["todu_amt_pile_h3"].replace(0, np.nan)
+            monthly["b2_h6"] = multiplier * monthly["todu_30ever_h6"] / safe_pile_h6
+            monthly["b2_h3"] = multiplier_h3 * monthly["todu_30ever_h3"] / safe_pile_h3
+            monthly["h6_h3_ratio"] = np.where(
+                monthly["b2_h3"].notna() & (monthly["b2_h3"].abs() > 1e-6),
+                monthly["b2_h6"] / monthly["b2_h3"],
+                np.nan,
+            )
+            valid_months = monthly["h6_h3_ratio"].dropna()
+
+            logger.info(
+                f"H6/H3 ratio trend: {len(monthly)} months in main period, "
+                f"{len(valid_months)} with valid ratio"
+            )
+            if len(valid_months) >= 3:
+                logger.info("H6/H3 RATIO TREND (main period, monthly):")
+                for period, row in monthly.iterrows():
+                    ratio_str = f"{row['h6_h3_ratio']:.2f}" if pd.notna(row["h6_h3_ratio"]) else "—"
+                    logger.info(
+                        f"  {period}:  H6={row['b2_h6'] * 100:.2f}%  "
+                        f"H3={row['b2_h3'] * 100:.2f}%  ratio={ratio_str}"
+                    )
+
+                # Overall ratio from totals (same population, not mean-of-ratios)
+                total_h6 = monthly["b2_h6"].dropna()
+                total_h3 = monthly["b2_h3"].dropna()
+                ratios_arr = valid_months.values
+                if len(total_h6) > 0 and total_h3.sum() > 0:
+                    overall_ratio = total_h6.sum() / total_h3.sum()
+                    logger.info(
+                        f"  Overall ratio (Σh6/Σh3): {overall_ratio:.2f}  |  "
+                        f"Mean of monthly ratios: {np.mean(ratios_arr):.2f}  |  "
+                        f"Median of monthly ratios: {np.median(ratios_arr):.2f}"
+                    )
+
+                # Simple linear trend
+                x = np.arange(len(valid_months), dtype=float)
+                y = valid_months.values
+                if len(x) >= 3:
+                    slope, intercept = np.polyfit(x, y, 1)
+                    pct_change = slope * len(x) / np.mean(y) * 100 if np.mean(y) > 0 else 0.0
+                    logger.info(
+                        f"  Trend: slope={slope:.4f}/month, total change={pct_change:+.1f}% "
+                        f"over {len(x)} months (mean monthly ratio={np.mean(y):.2f})"
+                    )
+                    if abs(pct_change) > 20:
+                        logger.warning(
+                            f"  H6/H3 ratio shows significant trend ({pct_change:+.1f}%). "
+                            f"Static ratio extrapolation may be inaccurate for the MR period."
+                        )
+            else:
+                logger.warning(
+                    f"H6/H3 ratio trend: only {len(valid_months)} valid months "
+                    f"(need ≥3). Skipping trend analysis."
+                )
+        else:
+            missing = [c for c in h3_cols_trend + h6_cols_trend if c not in data_booked.columns]
+            logger.info(f"H6/H3 ratio trend: skipped — missing columns in data_booked: {missing}")
+    elif has_h3:
+        logger.info("H6/H3 ratio trend: skipped — mis_date not in data_booked")
+    else:
+        logger.debug("H6/H3 ratio trend: skipped — no H3 data configured")
+
     # --- Choose risk source per bin ---
     # Mature H6 observed data (may be empty if MR window < mr_maturity_months)
     use_mr = combined["n_obs_mr"].fillna(0) >= min_obs
@@ -417,6 +490,40 @@ def _compute_hybrid_mr_risk(
         # Compute a global (median) ratio for bins with unreliable per-bin estimates
         valid_ratios = h6_h3_ratio_raw[np.isfinite(h6_h3_ratio_raw)]
         global_h6_h3_ratio = float(np.median(valid_ratios)) if len(valid_ratios) > 0 else np.nan
+
+        # --- Reconciliation: compare per-bin vs global ratio computations ---
+        if len(valid_ratios) > 0:
+            # Per-bin ratios (what we use for extrapolation)
+            per_bin_mean = float(np.mean(valid_ratios))
+            per_bin_median = float(np.median(valid_ratios))
+
+            # Global ratio from totals (Σ across all bins)
+            total_b2_main = combined.loc[ratio_valid, "b2_main"].sum()
+            total_b2_main_h3 = combined.loc[ratio_valid, "b2_main_h3"].sum()
+            ratio_of_sums = total_b2_main / total_b2_main_h3 if total_b2_main_h3 > 0 else np.nan
+
+            # Weighted ratio (by n_obs)
+            weights = combined.loc[ratio_valid, "n_obs_main"].values
+            wt_ratio = float(np.average(valid_ratios, weights=weights)) if weights.sum() > 0 else np.nan
+
+            logger.info("H6/H3 RATIO RECONCILIATION (main period):")
+            logger.info("  Per-bin (used for extrapolation):")
+            logger.info(f"    median={per_bin_median:.3f}  mean={per_bin_mean:.3f}  n_bins={len(valid_ratios)}")
+            logger.info(f"    obs-weighted mean={wt_ratio:.3f}")
+            logger.info("  Per-bin individual ratios:")
+            for i, (_idx, row) in enumerate(combined[ratio_valid].iterrows()):
+                keys_str = ", ".join(f"{k}={row[k]}" for k in merge_keys)
+                logger.info(
+                    f"    {keys_str}: b2_main={row['b2_main'] * 100:.2f}%  "
+                    f"b2_main_h3={row['b2_main_h3'] * 100:.2f}%  "
+                    f"ratio={h6_h3_ratio_raw[i]:.3f}  n_obs={int(row['n_obs_main'])}"
+                )
+            logger.info(f"  Global (Σb2_main / Σb2_main_h3): {ratio_of_sums:.3f}")
+            logger.info(
+                f"  NOTE: extrapolation uses per-bin median ({per_bin_median:.3f}). "
+                f"Monthly trend mean ({np.mean(valid_ratios):.3f}) differs due to "
+                f"aggregation axis (bins vs months) and statistic (median vs mean)."
+            )
 
         # Use per-bin ratio where reliable, fall back to global median
         h6_h3_ratio = np.where(np.isfinite(h6_h3_ratio_raw), h6_h3_ratio_raw, global_h6_h3_ratio)
