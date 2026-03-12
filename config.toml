@@ -80,6 +80,7 @@ per_bin_tasa_fin = true
 use_mr_outcomes = true
 mr_extrapolation_method = "auto"  # "linear", "power", "logistic", or "auto" (fits curvature from data)
 mr_min_obs_per_bin = 30
+mr_maturity_months = 6                  # Min months since booking for H6 maturity (0 to disable)
 mr_extrapolation_risk_multiplier = 3.0  # Relative ceiling: cap risk at this multiple of the segment's maximum observed risk
 mr_extrapolation_hard_cap = 15.0        # Absolute ceiling: ensure risk never goes above this percentage
 # Fixed cutoffs (optional) - uncomment to skip optimization and use predefined cutoffs

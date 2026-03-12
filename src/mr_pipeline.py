@@ -233,8 +233,18 @@ def _compute_hybrid_mr_risk(
     multiplier_h3: float | None = None,
     mr_extrapolation_method: str = "linear",
     mr_extrapolation_curvature: float = 1.0,
+    mr_maturity_months: int = 6,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Compute per-bin ``b2_ever_h6_tmp`` using MR outcomes when sufficient, else main-period.
+
+    Parameters
+    ----------
+    mr_maturity_months : int
+        Minimum number of months since booking for an account to be
+        considered mature for H6 outcomes.  Accounts booked too recently
+        are excluded from the ``n_obs_mr`` count and the ``b2_mr``
+        calculation to avoid diluting risk with immature zeros.  Set to 0
+        to disable maturity filtering (original behavior).
 
     Returns
     -------
@@ -257,6 +267,32 @@ def _compute_hybrid_mr_risk(
     # --- MR-period aggregation ---
     mr_booked = data_demand_mr[data_demand_mr["status_name"] == StatusName.BOOKED.value]
     mr_h6_valid = mr_booked[mr_booked["todu_30ever_h6"].notna() & mr_booked["todu_amt_pile_h6"].notna()]
+
+    # Filter for mature H6 observations: maturity = max(mis_date) - mis_date.
+    # Only accounts with at least mr_maturity_months of seasoning are included
+    # in b2_mr to avoid diluting risk with immature zeros.
+    if mr_maturity_months > 0 and "mis_date" in mr_h6_valid.columns:
+        max_date = mr_h6_valid["mis_date"].max()
+        maturity = (max_date.year - mr_h6_valid["mis_date"].dt.year) * 12 + (
+            max_date.month - mr_h6_valid["mis_date"].dt.month
+        )
+        mature_mask = maturity >= mr_maturity_months
+        n_total = len(mr_h6_valid)
+        n_mature = mature_mask.sum()
+        if n_mature > 0:
+            cutoff_date = max_date - pd.DateOffset(months=mr_maturity_months)
+            logger.info(
+                f"H6 maturity filter: {n_mature:,}/{n_total:,} accounts with >={mr_maturity_months}mo "
+                f"maturity (booked on or before {cutoff_date.date()}, max_date={max_date.date()})"
+            )
+            mr_h6_valid = mr_h6_valid[mature_mask]
+        else:
+            logger.warning(
+                f"No accounts with >={mr_maturity_months}mo H6 maturity (max_date={max_date.date()}). "
+                f"Falling back to main-period or H3 extrapolation for all bins."
+            )
+            mr_h6_valid = mr_h6_valid.iloc[:0]  # empty DataFrame, forces fallback
+
     mr_agg = mr_h6_valid.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
     mr_agg["b2_mr"] = calculate_b2_ever_h6(
         mr_agg["todu_30ever_h6"], mr_agg["todu_amt_pile_h6"], multiplier=multiplier
@@ -294,17 +330,42 @@ def _compute_hybrid_mr_risk(
         else:
             combined["b2_main_h3"] = np.nan
 
-        # MR-period H3 — only accounts with mature H3 (first 3 mis_dates in 6-month MR window)
+        # MR-period H3 — only accounts with mature H3 (maturity >= 3 months)
         if all(c in mr_booked_h3.columns for c in h3_cols):
             mr_h3_valid = mr_booked_h3[
                 mr_booked_h3["todu_30ever_h3"].notna() & mr_booked_h3["todu_amt_pile_h3"].notna()
             ]
+            # Filter for H3 maturity: maturity = max(mis_date) - mis_date >= 3 months
+            h3_maturity_months = 3
+            if "mis_date" in mr_h3_valid.columns and len(mr_h3_valid) > 0:
+                max_date_h3 = mr_h3_valid["mis_date"].max()
+                h3_maturity = (max_date_h3.year - mr_h3_valid["mis_date"].dt.year) * 12 + (
+                    max_date_h3.month - mr_h3_valid["mis_date"].dt.month
+                )
+                h3_mature_mask = h3_maturity >= h3_maturity_months
+                n_h3_total = len(mr_h3_valid)
+                n_h3_mature = h3_mature_mask.sum()
+                if n_h3_mature > 0:
+                    logger.info(
+                        f"H3 maturity filter: {n_h3_mature:,}/{n_h3_total:,} accounts with "
+                        f">={h3_maturity_months}mo maturity (max_date={max_date_h3.date()})"
+                    )
+                    mr_h3_valid = mr_h3_valid[h3_mature_mask]
+                else:
+                    logger.warning(
+                        f"No accounts with >={h3_maturity_months}mo H3 maturity. "
+                        f"H3 extrapolation will not be available."
+                    )
+                    mr_h3_valid = mr_h3_valid.iloc[:0]
             mr_h3_agg = mr_h3_valid.groupby(merge_keys)[h3_cols].sum().reset_index()
             n_obs_mr_h3 = mr_h3_valid.groupby(merge_keys).size().reset_index(name="n_obs_mr_h3")
             mr_h3_agg = mr_h3_agg.merge(n_obs_mr_h3, on=merge_keys, how="left")
             mr_h3_agg["b2_mr_h3"] = calculate_b2_ever_h6(
                 mr_h3_agg["todu_30ever_h3"], mr_h3_agg["todu_amt_pile_h3"], multiplier=multiplier_h3
-            ).fillna(0.0)
+            )
+            # Do NOT fillna(0.0) — NaN means "no usable H3 data" and should
+            # trigger fallback to main-period.  A genuine 0.0 (zero todu_30ever_h3)
+            # is preserved and handled below via the can_extrapolate guard.
             combined = combined.merge(mr_h3_agg[merge_keys + ["b2_mr_h3", "n_obs_mr_h3"]], on=merge_keys, how="left")
         else:
             combined["b2_mr_h3"] = np.nan
@@ -338,32 +399,50 @@ def _compute_hybrid_mr_risk(
         mr_extrapolation_curvature = 1.0
         logger.warning("Auto-calibration requires H3 data (multiplier_h3). Falling back to linear.")
 
-    # --- Choose source per bin ---
+    # --- Choose risk source per bin ---
+    # Mature H6 observed data (may be empty if MR window < mr_maturity_months)
     use_mr = combined["n_obs_mr"].fillna(0) >= min_obs
 
     # Bins only in MR (no main data) and below threshold: leave NaN for model fallback
     only_mr_sparse = combined["b2_main"].isna() & ~use_mr
 
     if has_h3:
-        # H3 ratio: main-period H6/H3 scaling factor
-        # Require meaningful denominator (>1% risk) and sufficient observations
+        # H3→H6 ratio from main-period (fully mature) data
         ratio_valid = (
             (combined["b2_main_h3"].fillna(0).abs() > 0.01)
             & (combined["n_obs_main"].fillna(0) >= min_obs)
         )
         h6_h3_ratio_raw = np.where(ratio_valid, combined["b2_main"] / combined["b2_main_h3"], np.nan)
-        # Clip extreme ratios to guard against noisy small-sample bins
-        h6_h3_ratio = np.clip(h6_h3_ratio_raw, 0.5, 5.0)
 
-        # H3 extrapolation: observed MR H3 × main-period ratio
-        has_h3_obs = combined["b2_mr_h3"].notna() & (combined["n_obs_mr_h3"].fillna(0) >= min_obs)
-        can_extrapolate = ~use_mr & ratio_valid & has_h3_obs
+        # Compute a global (median) ratio for bins with unreliable per-bin estimates
+        valid_ratios = h6_h3_ratio_raw[np.isfinite(h6_h3_ratio_raw)]
+        global_h6_h3_ratio = float(np.median(valid_ratios)) if len(valid_ratios) > 0 else np.nan
+
+        # Use per-bin ratio where reliable, fall back to global median
+        h6_h3_ratio = np.where(np.isfinite(h6_h3_ratio_raw), h6_h3_ratio_raw, global_h6_h3_ratio)
+        h6_h3_ratio = np.clip(h6_h3_ratio, 0.5, 5.0)
+
+        # H3 extrapolation: MR H3 risk × calibrated H6/H3 scaling
+        # Use a lower threshold for H3 obs — we only have ~half the MR window
+        # with mature H3, so requiring the full min_obs is too strict
+        h3_min_obs = max(min_obs // 2, 10)
+        has_h3_obs = (
+            combined["b2_mr_h3"].notna()
+            & (combined["b2_mr_h3"] > 0)  # zero H3 risk → no signal to extrapolate from
+            & (combined["n_obs_mr_h3"].fillna(0) >= h3_min_obs)
+        )
+
+        can_extrapolate = has_h3_obs & np.isfinite(h6_h3_ratio)
         h6_from_h3 = extrapolate_h3_to_h6(
             combined["b2_mr_h3"], h6_h3_ratio,
             method=mr_extrapolation_method, curvature=mr_extrapolation_curvature,
         )
 
-        # Priority: h3_extrapolated > mr_observed > main_imputed > model_fallback
+        # Priority (highest to lowest):
+        #   1. MR H6 observed — direct MR risk when maturity and sample size are sufficient
+        #   2. H3 extrapolation — MR H3 scaled by main-period H6/H3 ratio
+        #   3. Main-period imputation — fallback when no MR signal available
+        #   4. Model fallback — bins that only exist in MR with no main data
         conditions = [only_mr_sparse, use_mr, can_extrapolate]
         risk_choices = [np.nan, combined["b2_mr"], h6_from_h3]
         source_choices = ["model_fallback", "mr_observed", "h3_extrapolated"]
@@ -372,14 +451,103 @@ def _compute_hybrid_mr_risk(
         combined["risk_source"] = np.select(conditions, source_choices, default="main_imputed")
 
         combined["h6_h3_ratio"] = h6_h3_ratio
+
+        n_extrapolated = (combined["risk_source"] == "h3_extrapolated").sum()
+        n_main = (combined["risk_source"] == "main_imputed").sum()
+        n_mr_obs = (combined["risk_source"] == "mr_observed").sum()
+        logger.info(
+            f"Risk sources: h3_extrapolated={n_extrapolated}, mr_observed={n_mr_obs}, "
+            f"main_imputed={n_main}, model_fallback={(combined['risk_source'] == 'model_fallback').sum()} "
+            f"(global H6/H3 ratio={global_h6_h3_ratio:.3f}, h3_min_obs={h3_min_obs})"
+        )
     else:
-        # Original logic (no H3 columns)
+        # No H3 columns — use H6 observed or main-period only
         conditions = [only_mr_sparse, use_mr]
         risk_choices = [np.nan, combined["b2_mr"]]
         source_choices = ["model_fallback", "mr_observed"]
 
         combined["b2_ever_h6_tmp"] = np.select(conditions, risk_choices, default=combined["b2_main"])
         combined["risk_source"] = np.select(conditions, source_choices, default="main_imputed")
+
+    # --- Per-bin diagnostic: risk source, contribution, and weighted average ---
+    prod_col = "mr_production"
+    total_prod = combined[prod_col].sum() if prod_col in combined.columns else 0.0
+
+    # All b2_* values are decimals (e.g. 0.0092 = 0.92%). Convert to % for display.
+    def _pct(v):
+        return f"{v * 100:.2f}%" if pd.notna(v) else "—"
+
+    logger.info("=" * 110)
+    logger.info("PER-BIN MR RISK DIAGNOSTIC  (all risk values shown as percentages)")
+    logger.info("-" * 110)
+    header_keys = "  ".join(f"{k:>12}" for k in merge_keys)
+    has_ratio_col = "h6_h3_ratio" in combined.columns
+    logger.info(
+        f"{header_keys}  {'source':>16}  {'b2_h6_tmp':>10}  {'b2_mr':>10}  "
+        f"{'b2_mr_h3':>10}  {'h6/h3':>7}  {'b2_main':>10}  {'prod':>12}  {'wt_contrib':>10}"
+    )
+    logger.info("-" * 110)
+
+    for _, row in combined.sort_values(merge_keys).iterrows():
+        keys_str = "  ".join(f"{row[k]:>12.1f}" if isinstance(row[k], float) else f"{row[k]:>12}" for k in merge_keys)
+        prod = row.get(prod_col, 0.0) or 0.0
+        risk_tmp = row["b2_ever_h6_tmp"]
+        wt_contrib = risk_tmp * 100 * prod / total_prod if total_prod > 0 and pd.notna(risk_tmp) else 0.0
+        ratio_val = f"{row['h6_h3_ratio']:.2f}" if has_ratio_col and pd.notna(row.get("h6_h3_ratio")) else "—"
+        logger.info(
+            f"{keys_str}  {row['risk_source']:>16}  {_pct(risk_tmp):>10}  {_pct(row.get('b2_mr')):>10}  "
+            f"{_pct(row.get('b2_mr_h3')):>10}  {ratio_val:>7}  {_pct(row.get('b2_main')):>10}  "
+            f"{prod:>12,.0f}  {wt_contrib:>9.4f}%"
+        )
+    logger.info("-" * 110)
+
+    # Weighted average risk per source and overall
+    if total_prod > 0:
+        for src in ["mr_observed", "h3_extrapolated", "main_imputed", "model_fallback"]:
+            src_mask = combined["risk_source"] == src
+            if src_mask.any():
+                src_prod = combined.loc[src_mask, prod_col].sum()
+                src_risk_avg = (
+                    (combined.loc[src_mask, "b2_ever_h6_tmp"] * combined.loc[src_mask, prod_col]).sum()
+                    / src_prod
+                    * 100
+                    if src_prod > 0
+                    else 0.0
+                )
+                logger.info(
+                    f"  {src:>16}: weighted_risk={src_risk_avg:.2f}%  "
+                    f"production={src_prod:,.0f} ({src_prod / total_prod * 100:.1f}%)  "
+                    f"bins={src_mask.sum()}"
+                )
+
+        overall_risk_prod = (
+            (combined["b2_ever_h6_tmp"].fillna(0) * combined[prod_col]).sum() / total_prod * 100
+        )
+        logger.info(
+            f"  {'OVERALL':>16}: weighted_risk={overall_risk_prod:.2f}% (production-weighted)  "
+            f"production={total_prod:,.0f}"
+        )
+        logger.info("")
+        logger.info(
+            "  NOTE: The summary table uses multiplier × Σ(todu_30ever_h6) / Σ(todu_amt_pile_h6), "
+            "which is exposure-weighted — it will differ from the production-weighted average above."
+        )
+    logger.info("=" * 110)
+
+    # --- Diagnostic: warn if MR-observed risk is suspiciously low ---
+    mr_source_summary = combined["risk_source"].value_counts()
+    n_mr_observed = int(mr_source_summary.get("mr_observed", 0))
+    n_total_bins = len(combined)
+    if n_mr_observed > 0:
+        avg_b2_mr = combined.loc[combined["risk_source"] == "mr_observed", "b2_mr"].mean()
+        avg_b2_main = combined.loc[combined["risk_source"] == "mr_observed", "b2_main"].mean()
+        if avg_b2_main > 0 and avg_b2_mr / avg_b2_main < 0.1:
+            logger.warning(
+                f"LOW MR RISK: {n_mr_observed}/{n_total_bins} bins use MR-observed H6 risk, "
+                f"but avg MR risk ({avg_b2_mr:.4f}) is <10% of main-period ({avg_b2_main:.4f}). "
+                f"This may indicate immature loans diluting H6 outcomes. "
+                f"Consider increasing mr_maturity_months or mr_min_obs_per_bin."
+            )
 
     # --- Comparison diagnostics ---
     combined["b2_delta"] = combined["b2_mr"] - combined["b2_main"]
@@ -489,6 +657,7 @@ def process_mr_period(
                 multiplier_h3=settings.multiplier_h3,
                 mr_extrapolation_method=settings.mr_extrapolation_method,
                 mr_extrapolation_curvature=settings.mr_extrapolation_curvature,
+                mr_maturity_months=settings.mr_maturity_months,
             )
 
             # Save comparison CSV
@@ -585,7 +754,7 @@ def process_mr_period(
                     if len(observed_risk) > 0:
                         risk_floor = float(observed_risk.min())
                         risk_ceil_base = float(observed_risk.max())
-                        
+
                         risk_ceil_scaled = risk_ceil_base * settings.mr_extrapolation_risk_multiplier
                         risk_ceil = min(risk_ceil_scaled, settings.mr_extrapolation_hard_cap)
 
@@ -775,7 +944,34 @@ def process_mr_period(
                 as_percentage=True,
             )
 
-        if len(VARIABLES) == 2:
+        if len(VARIABLES) == 1:
+            logger.info("Generating b2_ever_h6 bar chart for MR dataset (1-variable)...")
+            var0 = VARIABLES[0]
+            data_bar = data_surf_mr.sort_values(var0)
+
+            fig_mr = go.Figure()
+            fig_mr.add_trace(
+                go.Bar(
+                    x=data_bar[var0].astype(str),
+                    y=data_bar["b2_ever_h6"],
+                    marker_color="indianred",
+                    text=data_bar["b2_ever_h6"].round(2),
+                    textposition="outside",
+                )
+            )
+            styles.apply_plotly_style(
+                fig_mr,
+                title=f"B2 Ever H6 by {var0} (MR Period){file_suffix}",
+                width=900,
+                height=500,
+            )
+            fig_mr.update_layout(xaxis_title=var0, yaxis_title="b2_ever_h6 (%)")
+
+            output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
+            fig_mr.write_html(output_plot_path_mr)
+            logger.info(f"MR 1D visualization saved to {output_plot_path_mr}")
+
+        elif len(VARIABLES) == 2:
             logger.info("Generating b2_ever_h6 visualization for MR dataset...")
 
             fig_mr = go.Figure()

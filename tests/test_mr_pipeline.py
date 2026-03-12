@@ -593,8 +593,11 @@ class TestComputeHybridMRRisk:
             expected = row["b2_mr_h3"] * (row["b2_main"] / row["b2_main_h3"])
             assert np.isclose(row["b2_ever_h6_tmp"], expected), f"Expected {expected}, got {row['b2_ever_h6_tmp']}"
 
-    def test_h3_does_not_replace_direct_mr_when_h6_sufficient(self, merge_keys):
-        """When direct MR H6 is sufficiently observed, it remains the preferred source even if H3 exists."""
+    def test_mr_h6_preferred_over_h3_when_both_available(self, merge_keys):
+        """When both MR H6 and H3 data are sufficient, MR H6 takes priority.
+
+        Priority order: MR H6 > H3 extrapolation > main-period > model fallback.
+        """
         rng_main = np.random.RandomState(99)
         n_main = 35
         data_booked = pd.DataFrame(
@@ -628,6 +631,7 @@ class TestComputeHybridMRRisk:
             data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4
         )
 
+        # MR H6 observed takes priority when sufficient observations exist
         assert (comparison_df["risk_source"] == "mr_observed").all()
         for _, row in comparison_df.iterrows():
             assert np.isclose(row["b2_ever_h6_tmp"], row["b2_mr"])
@@ -670,6 +674,47 @@ class TestComputeHybridMRRisk:
         assert (comparison_df["risk_source"] == "mr_observed").all()
         for _, row in comparison_df.iterrows():
             assert np.isclose(row["b2_ever_h6_tmp"], row["b2_mr"])
+
+    def test_zero_mr_h3_falls_back_to_main(self, merge_keys):
+        """When MR H3 delinquency is zero, should fall back to main-period, not extrapolate to 0."""
+        rng_main = np.random.RandomState(99)
+        n_main = 35
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1] * n_main + [2] * n_main,
+                "bin_b": [1] * (2 * n_main),
+                "todu_30ever_h6": np.concatenate([rng_main.uniform(8, 12, n_main), rng_main.uniform(4, 6, n_main)]),
+                "todu_amt_pile_h6": np.concatenate([rng_main.uniform(90, 110, n_main), rng_main.uniform(190, 210, n_main)]),
+                "todu_30ever_h3": np.concatenate([rng_main.uniform(4, 6, n_main), rng_main.uniform(2, 4, n_main)]),
+                "todu_amt_pile_h3": np.concatenate([rng_main.uniform(80, 100, n_main), rng_main.uniform(170, 190, n_main)]),
+                "status_name": ["booked"] * (2 * n_main),
+            }
+        )
+
+        # MR data: H6 is NaN (immature), H3 delinquency is ZERO (no defaults in 3 months)
+        n = 40
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * n + [2] * n,
+                "bin_b": [1] * (2 * n),
+                "todu_30ever_h6": [np.nan] * (2 * n),
+                "todu_amt_pile_h6": [np.nan] * (2 * n),
+                "todu_30ever_h3": [0.0] * (2 * n),  # zero delinquency
+                "todu_amt_pile_h3": np.random.RandomState(42).uniform(70, 110, 2 * n),
+                "oa_amt_h0": np.random.RandomState(42).uniform(500, 1500, 2 * n),
+                "status_name": ["booked"] * (2 * n),
+            }
+        )
+
+        _, comparison_df = _compute_hybrid_mr_risk(
+            data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4
+        )
+
+        # Zero H3 risk gives no signal → must fall back to main_imputed, NOT extrapolate to 0
+        assert (comparison_df["risk_source"] == "main_imputed").all()
+        for _, row in comparison_df.iterrows():
+            assert np.isclose(row["b2_ever_h6_tmp"], row["b2_main"])
+            assert row["b2_ever_h6_tmp"] > 0  # main-period risk should be non-zero
 
     def test_no_h3_columns_original_logic(self, data_booked_main, data_demand_mr_sufficient, merge_keys):
         """Without H3 columns, original mr_observed / main_imputed logic is preserved."""

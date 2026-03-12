@@ -253,6 +253,16 @@ class PreprocessingSettings(BaseModel):
     mr_extrapolation_curvature: float = Field(default=1.0, gt=0, le=5.0)
     mr_extrapolation_risk_multiplier: float = Field(default=3.0, gt=0, le=10.0)
     mr_extrapolation_hard_cap: float = Field(default=15.0, gt=0, le=100.0)
+    mr_maturity_months: int = Field(
+        default=6,
+        ge=0,
+        le=24,
+        description=(
+            "Minimum months since booking for an MR account to count as mature H6. "
+            "Accounts booked more recently are excluded from b2_mr to avoid diluting "
+            "risk with immature zeros. Set to 0 to disable maturity filtering."
+        ),
+    )
 
     # Swap-in (repesca) constraints for MILP optimization
     max_swapin_production_pct: float | None = Field(default=None, ge=0, le=100)
