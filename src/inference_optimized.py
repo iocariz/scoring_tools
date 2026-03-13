@@ -1509,7 +1509,7 @@ def todu_average_inference(
     X = df_train[[feature_col]]
     y = df_train[target_col]
 
-    model = LinearRegression(fit_intercept=True)  # Updated: Mathematical risk requires floating intercept bias
+    model = LinearRegression(fit_intercept=False)  # Zero loan amount → zero exposure (prevents negative predictions)
     model.fit(X, y)
 
     r_sq = model.score(X, y)
@@ -1520,7 +1520,7 @@ def todu_average_inference(
         from sklearn.metrics import r2_score
         from sklearn.model_selection import LeaveOneOut, cross_val_predict
 
-        loo_preds = cross_val_predict(LinearRegression(fit_intercept=True), X, y, cv=LeaveOneOut())
+        loo_preds = cross_val_predict(LinearRegression(fit_intercept=False), X, y, cv=LeaveOneOut())
         loo_r2 = float(r2_score(y, loo_preds))
         logger.info(f"Model Coefficient: {coef:.4f}")
         logger.info(f"Model R² (in-sample): {r_sq:.4f} | LOO-CV R²: {loo_r2:.4f}")

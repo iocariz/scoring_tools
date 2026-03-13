@@ -773,10 +773,46 @@ def run_ri_optimizer_phase(
             validate_ri_with_mr,
         )
 
-        # Step 1: Compute invariant pre-reject-inference data
+        # Step 1: Temporal train/validation split of main-period data
+        # Both splits have fully mature H6 outcomes (unlike MR period).
+        split_ratio = settings.ri_validation_split
+        train_booked, train_demand = data_booked, data_demand
+        val_booked, val_demand = None, None
+
+        if split_ratio < 1.0 and "mis_date" in data_booked.columns and "mis_date" in data_demand.columns:
+            months_booked = sorted(data_booked["mis_date"].dt.to_period("M").unique())
+            n_train = max(1, int(len(months_booked) * split_ratio))
+            train_months = set(months_booked[:n_train])
+            val_months = set(months_booked[n_train:])
+
+            if len(val_months) >= 1:
+                train_mask_b = data_booked["mis_date"].dt.to_period("M").isin(train_months)
+                train_booked = data_booked[train_mask_b].copy()
+                val_booked = data_booked[~train_mask_b].copy()
+
+                train_mask_d = data_demand["mis_date"].dt.to_period("M").isin(train_months)
+                train_demand = data_demand[train_mask_d].copy()
+                val_demand = data_demand[~train_mask_d].copy()
+
+                train_range = f"{min(train_months)}–{max(train_months)}"
+                val_range = f"{min(val_months)}–{max(val_months)}"
+                logger.info(
+                    f"[{segment}] RI temporal split: train={len(train_months)} months ({train_range}, "
+                    f"{len(train_booked):,} booked), val={len(val_months)} months ({val_range}, "
+                    f"{len(val_booked):,} booked)"
+                )
+            else:
+                logger.warning(
+                    f"[{segment}] RI temporal split: only {len(months_booked)} months, "
+                    f"cannot split at {split_ratio:.0%}. Using all data for training."
+                )
+        elif split_ratio < 1.0:
+            logger.warning(f"[{segment}] RI temporal split: mis_date not available. Using all data for training.")
+
+        # Step 2: Compute invariant pre-reject-inference data (on training split)
         booked_summary, repesca_pre_ri = compute_pre_reject_inference_data(
-            data_booked=data_booked,
-            data_demand=data_demand,
+            data_booked=train_booked,
+            data_demand=train_demand,
             risk_inference=risk_inference,
             reg_todu_amt_pile=reg_todu_amt_pile,
             stressor=stress_factor,
@@ -787,12 +823,12 @@ def run_ri_optimizer_phase(
             per_bin_stress=per_bin_stress,
         )
 
-        # Step 2: Compute acceptance rates
+        # Step 3: Compute acceptance rates (on training split)
         acceptance_rates = compute_acceptance_rates(
-            data_demand, settings.variables, include_all_rejections=settings.reject_include_all_rejections
+            train_demand, settings.variables, include_all_rejections=settings.reject_include_all_rejections
         )
 
-        # Step 3: Build optimizer inputs
+        # Step 4: Build optimizer inputs
         optimizer_inputs = OptimizerInputs(
             booked_summary=booked_summary,
             repesca_pre_ri=repesca_pre_ri,
@@ -807,7 +843,7 @@ def run_ri_optimizer_phase(
             per_bin_tasa_fin=per_bin_tasa_fin,
         )
 
-        # Step 4: Run optimization (grid or Optuna)
+        # Step 5: Run optimization (grid or Optuna)
         if settings.ri_optimizer_method == "optuna":
             results_df, best_params = run_reject_inference_optimization_optuna(
                 optimizer_inputs,
@@ -826,29 +862,29 @@ def run_ri_optimizer_phase(
                 max_mult_steps=settings.ri_max_mult_steps,
             )
 
-        # Step 5: MR out-of-time validation (if MR data available)
-        if best_params and data_booked_mr is not None and data_demand_mr is not None and annual_coef_mr is not None:
+        # Step 6: Out-of-time validation on held-out main-period months
+        if best_params and val_booked is not None and val_demand is not None:
             try:
-                mr_booked_summary, mr_repesca_pre_ri = compute_pre_reject_inference_data(
-                    data_booked=data_booked_mr,
-                    data_demand=data_demand_mr,
+                val_booked_summary, val_repesca_pre_ri = compute_pre_reject_inference_data(
+                    data_booked=val_booked,
+                    data_demand=val_demand,
                     risk_inference=risk_inference,
                     reg_todu_amt_pile=reg_todu_amt_pile,
                     stressor=stress_factor,
                     indicators=settings.indicators,
                     variables=settings.variables,
-                    annual_coef=annual_coef_mr,
+                    annual_coef=annual_coef,
                     multiplier=settings.multiplier,
                     per_bin_stress=per_bin_stress,
                 )
-                mr_acceptance_rates = compute_acceptance_rates(
-                    data_demand_mr, settings.variables,
+                val_acceptance_rates = compute_acceptance_rates(
+                    val_demand, settings.variables,
                     include_all_rejections=settings.reject_include_all_rejections,
                 )
-                mr_optimizer_inputs = OptimizerInputs(
-                    booked_summary=mr_booked_summary,
-                    repesca_pre_ri=mr_repesca_pre_ri,
-                    acceptance_rates=mr_acceptance_rates,
+                val_optimizer_inputs = OptimizerInputs(
+                    booked_summary=val_booked_summary,
+                    repesca_pre_ri=val_repesca_pre_ri,
+                    acceptance_rates=val_acceptance_rates,
                     tasa_fin=tasa_fin,
                     variables=settings.variables,
                     indicators=settings.indicators,
@@ -858,19 +894,25 @@ def run_ri_optimizer_phase(
                     calibration_gamma=settings.ri_calibration_gamma,
                 )
 
-                mr_validation = validate_ri_with_mr(
-                    optimizer_inputs, mr_optimizer_inputs, best_params, settings.optimum_risk
+                validation = validate_ri_with_mr(
+                    optimizer_inputs, val_optimizer_inputs, best_params, settings.optimum_risk
                 )
-                best_params.update(mr_validation)
-                logger.info(f"[{segment}] RI MR validation: degradation={mr_validation['degradation_ratio']:.2f}x")
+                best_params.update({f"val_{k}": v for k, v in validation.items()})
+                logger.info(
+                    f"[{segment}] RI temporal validation: "
+                    f"train_error={validation['main_calibration_error']:.6f}, "
+                    f"val_error={validation['mr_calibration_error']:.6f}, "
+                    f"degradation={validation['degradation_ratio']:.2f}x"
+                )
 
-                # Append MR validation results to results CSV
-                for key, val in mr_validation.items():
-                    results_df[key] = None
-                    results_df.loc[results_df["is_best"], key] = val
+                # Append validation results to results CSV
+                for key, val in validation.items():
+                    col = f"val_{key}"
+                    results_df[col] = None
+                    results_df.loc[results_df["is_best"], col] = val
 
             except Exception as e:
-                logger.warning(f"[{segment}] RI MR validation failed (non-blocking): {e}")
+                logger.warning(f"[{segment}] RI temporal validation failed (non-blocking): {e}")
 
         # Step 6: Save results
         csv_path = output.ri_optimizer_csv()

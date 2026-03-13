@@ -59,6 +59,7 @@ reject_enforce_monotonicity = true
 
 #Auto-tune reject inference parameters
 run_ri_optimizer = true
+ri_validation_split = 0.7
 ri_optimizer_methods = "optuna"
 ri_optuna_n_trials = 200
 ri_calibration_gamma = 0.8

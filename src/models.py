@@ -290,7 +290,16 @@ def calculate_RV(df: pd.DataFrame, model_rv) -> pd.DataFrame:
     Returns:
         DataFrame with 'todu_amt_pile_h6' predictions added.
     """
-    df["todu_amt_pile_h6"] = model_rv.predict(df[["oa_amt"]])
+    preds = model_rv.predict(df[["oa_amt"]])
+    n_neg = (preds < 0).sum()
+    if n_neg > 0:
+        from loguru import logger
+
+        logger.warning(
+            f"calculate_RV: {n_neg}/{len(preds)} negative todu_amt_pile_h6 predictions "
+            f"(min={preds.min():.2f}). Clipping to 0."
+        )
+    df["todu_amt_pile_h6"] = np.clip(preds, 0, None)
     return df
 
 

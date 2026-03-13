@@ -124,6 +124,21 @@ def calculate_metrics_from_cuts(
         # Actual (All Booked)
         actual_prod, actual_risk, actual_rn, actual_rd, actual_h3, actual_h3_rn, actual_h3_rd = calc_metrics(df, "_boo")
 
+        logger.info(
+            f"MR summary diagnostics: n_bins={len(df)}, passes_cut={df['passes_cut'].sum()}/{len(df)}, "
+            f"actual: todu_30ever_h6_boo={actual_rn:.4f}, todu_amt_pile_h6_boo={actual_rd:.4f}, "
+            f"risk={actual_risk}%"
+        )
+        if actual_risk == 0.0 or actual_risk is None:
+            # Log per-bin _boo values to diagnose zero-risk
+            for _, row in df.iterrows():
+                keys_str = ", ".join(f"{k}={row[k]}" for k in variables)
+                logger.warning(
+                    f"  {keys_str}: todu_30ever_h6_boo={row.get('todu_30ever_h6_boo', 'MISSING')}, "
+                    f"todu_amt_pile_h6_boo={row.get('todu_amt_pile_h6_boo', 'MISSING')}, "
+                    f"passes_cut={row.get('passes_cut', 'MISSING')}"
+                )
+
         # Total demand (through the door) = booked + all rejected + canceled
         if total_demand > 0:
             _total_demand = total_demand
@@ -961,8 +976,15 @@ def process_mr_period(
                 # 1. Sum oa_amt per bin
                 bin_sums = data_demand_mr.loc[booked_mask].groupby(merge_keys)["oa_amt"].sum().reset_index()
 
-                # 2. Predict on bin sums
-                bin_sums["todu_amt_pile_h6_bin"] = reg_todu_amt_pile.predict(bin_sums[["oa_amt"]])
+                # 2. Predict on bin sums (clip to >= 0: exposure cannot be negative)
+                raw_preds = reg_todu_amt_pile.predict(bin_sums[["oa_amt"]])
+                n_negative = (raw_preds < 0).sum()
+                if n_negative > 0:
+                    logger.warning(
+                        f"reg_todu_amt_pile predicted {n_negative}/{len(raw_preds)} negative "
+                        f"todu_amt_pile_h6 values (min={raw_preds.min():.2f}). Clipping to 0."
+                    )
+                bin_sums["todu_amt_pile_h6_bin"] = np.clip(raw_preds, 0, None)
 
                 # 3. Map back to data_demand_mr, pro-rated by oa_amt
                 bin_sums_idx = bin_sums.set_index(merge_keys)

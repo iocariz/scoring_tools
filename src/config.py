@@ -287,6 +287,17 @@ class PreprocessingSettings(BaseModel):
     ri_calibration_gamma: float = Field(default=1.0, gt=0, le=1)
     ri_optimizer_method: Literal["grid", "optuna"] = "grid"
     ri_optuna_n_trials: int = Field(default=100, ge=10, le=10000)
+    ri_validation_split: float = Field(
+        default=0.7,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Fraction of main-period months used for RI optimizer training. "
+            "The remaining months are held out for out-of-time validation. "
+            "Both splits have fully mature H6 outcomes. Set to 1.0 to disable "
+            "(uses all data for training, no validation)."
+        ),
+    )
 
     # Stress factor mode: "global" (legacy single scalar), "disabled" (always 1.0),
     # "per_bin" (per-bin computation). When parceling is active, "disabled" avoids
