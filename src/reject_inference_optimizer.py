@@ -50,6 +50,7 @@ class OptimizerInputs:
     parceling_method: str = "linear"
     calibration_gamma: float = 1.0
     per_bin_tasa_fin: pd.DataFrame | None = None
+    enforce_monotonicity: bool = False
 
 
 def _compute_calibration_error(
@@ -69,8 +70,10 @@ def _compute_calibration_error(
 
     Returns the exposure-weighted mean of (relative_error ** 2).
     """
-    df = merged.merge(acceptance_rates[variables + ["acceptance_rate"]], on=variables, how="left")
-    acc = df["acceptance_rate"].clip(lower=0.05)
+    rate_col = "smoothed_acceptance_rate" if "smoothed_acceptance_rate" in acceptance_rates.columns else "acceptance_rate"
+    merge_cols = variables + [rate_col] if rate_col != "acceptance_rate" else variables + ["acceptance_rate"]
+    df = merged.merge(acceptance_rates[merge_cols], on=variables, how="left")
+    acc = df[rate_col].clip(lower=0.05)
 
     denom_boo = df["todu_amt_pile_h6_boo"].replace(0, np.nan)
     booked_risk = multiplier * df["todu_30ever_h6_boo"] / denom_boo
@@ -118,6 +121,7 @@ def evaluate_ri_params(
         reject_uplift_factor=uplift_factor,
         max_risk_multiplier=max_risk_multiplier,
         method=inputs.parceling_method,
+        enforce_monotonicity=inputs.enforce_monotonicity,
         inv_vars=inputs.inv_vars,
     )
 

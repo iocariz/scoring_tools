@@ -784,6 +784,14 @@ def _ga_pareto_fallback(
 
         if res.X is not None:
             mask = np.round(res.X).astype(int)
+            # Post-hoc feasibility check: verify monotonicity constraints
+            mono_violation = A_mono @ mask
+            if np.any(mono_violation > 0):
+                continue  # skip infeasible GA solutions
+            # Verify risk constraint
+            risk_check = mask @ risk_coeffs
+            if risk_check > 1e-6:
+                continue  # skip solutions exceeding risk target
             mask_key = tuple(mask.tolist())
             if mask_key not in seen_masks:
                 seen_masks.add(mask_key)

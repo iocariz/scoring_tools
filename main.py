@@ -253,6 +253,8 @@ def main(
                         pareto_masks=pareto_masks,
                         output=output,
                         total_demand=total_demand,
+                        per_bin_stress=per_bin_stress,
+                        per_bin_tasa_fin=per_bin_tasa_fin,
                     )
                     cutoff_summaries.append(summary)
 

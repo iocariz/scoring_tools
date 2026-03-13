@@ -273,8 +273,9 @@ def _compute_hybrid_mr_risk(
     # --- Main-period aggregation (existing logic) ---
     main_agg = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
     main_agg["b2_main"] = calculate_b2_ever_h6(
-        main_agg["todu_30ever_h6"], main_agg["todu_amt_pile_h6"], multiplier=multiplier
-    ).fillna(0.0)
+        main_agg["todu_30ever_h6"], main_agg["todu_amt_pile_h6"], multiplier=multiplier, decimals=6
+    )
+    # NaN means "no usable H6 data" (zero exposure) — preserve to distinguish from zero risk
     n_obs_main = data_booked.groupby(merge_keys).size().reset_index(name="n_obs_main")
     main_agg = main_agg.merge(n_obs_main, on=merge_keys, how="left")
     main_agg = main_agg[merge_keys + ["b2_main", "n_obs_main"]]
@@ -310,8 +311,9 @@ def _compute_hybrid_mr_risk(
 
     mr_agg = mr_h6_valid.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
     mr_agg["b2_mr"] = calculate_b2_ever_h6(
-        mr_agg["todu_30ever_h6"], mr_agg["todu_amt_pile_h6"], multiplier=multiplier
-    ).fillna(0.0)
+        mr_agg["todu_30ever_h6"], mr_agg["todu_amt_pile_h6"], multiplier=multiplier, decimals=6
+    )
+    # NaN means "no usable H6 data" — preserve to distinguish from zero risk
     n_obs_mr = mr_h6_valid.groupby(merge_keys).size().reset_index(name="n_obs_mr")
     mr_agg = mr_agg.merge(n_obs_mr, on=merge_keys, how="left")
 
@@ -339,8 +341,9 @@ def _compute_hybrid_mr_risk(
         if all(c in data_booked.columns for c in h3_cols):
             main_h3_agg = data_booked.groupby(merge_keys)[h3_cols].sum().reset_index()
             main_h3_agg["b2_main_h3"] = calculate_b2_ever_h6(
-                main_h3_agg["todu_30ever_h3"], main_h3_agg["todu_amt_pile_h3"], multiplier=multiplier_h3
-            ).fillna(0.0)
+                main_h3_agg["todu_30ever_h3"], main_h3_agg["todu_amt_pile_h3"], multiplier=multiplier_h3, decimals=6
+            )
+            # NaN means "no usable H3 data" — preserve for ratio computation
             combined = combined.merge(main_h3_agg[merge_keys + ["b2_main_h3"]], on=merge_keys, how="left")
         else:
             combined["b2_main_h3"] = np.nan
@@ -376,7 +379,7 @@ def _compute_hybrid_mr_risk(
             n_obs_mr_h3 = mr_h3_valid.groupby(merge_keys).size().reset_index(name="n_obs_mr_h3")
             mr_h3_agg = mr_h3_agg.merge(n_obs_mr_h3, on=merge_keys, how="left")
             mr_h3_agg["b2_mr_h3"] = calculate_b2_ever_h6(
-                mr_h3_agg["todu_30ever_h3"], mr_h3_agg["todu_amt_pile_h3"], multiplier=multiplier_h3
+                mr_h3_agg["todu_30ever_h3"], mr_h3_agg["todu_amt_pile_h3"], multiplier=multiplier_h3, decimals=6
             )
             # Do NOT fillna(0.0) — NaN means "no usable H3 data" and should
             # trigger fallback to main-period.  A genuine 0.0 (zero todu_30ever_h3)
@@ -447,12 +450,17 @@ def _compute_hybrid_mr_risk(
                         f"H3={row['b2_h3'] * 100:.2f}%  ratio={ratio_str}"
                     )
 
-                # Overall ratio from totals (same population, not mean-of-ratios)
-                total_h6 = monthly["b2_h6"].dropna()
-                total_h3 = monthly["b2_h3"].dropna()
+                # Overall ratio from raw numerators/denominators (not sum of rates)
+                valid_months_mask = monthly["h6_h3_ratio"].notna()
+                raw_h6 = multiplier * monthly.loc[valid_months_mask, "todu_30ever_h6"].sum()
+                raw_h3_den = monthly.loc[valid_months_mask, "todu_amt_pile_h6"].sum()
+                raw_h3_num = multiplier_h3 * monthly.loc[valid_months_mask, "todu_30ever_h3"].sum()
+                raw_h3_den_h3 = monthly.loc[valid_months_mask, "todu_amt_pile_h3"].sum()
+                overall_b2_h6 = raw_h6 / raw_h3_den if raw_h3_den > 0 else np.nan
+                overall_b2_h3 = raw_h3_num / raw_h3_den_h3 if raw_h3_den_h3 > 0 else np.nan
                 ratios_arr = valid_months.values
-                if len(total_h6) > 0 and total_h3.sum() > 0:
-                    overall_ratio = total_h6.sum() / total_h3.sum()
+                if pd.notna(overall_b2_h6) and pd.notna(overall_b2_h3) and overall_b2_h3 > 0:
+                    overall_ratio = overall_b2_h6 / overall_b2_h3
                     logger.info(
                         f"  Overall ratio (Σh6/Σh3): {overall_ratio:.2f}  |  "
                         f"Mean of monthly ratios: {np.mean(ratios_arr):.2f}  |  "
@@ -491,13 +499,14 @@ def _compute_hybrid_mr_risk(
     # Mature H6 observed data (may be empty if MR window < mr_maturity_months)
     use_mr = combined["n_obs_mr"].fillna(0) >= min_obs
 
-    # Bins only in MR (no main data) and below threshold: leave NaN for model fallback
-    only_mr_sparse = combined["b2_main"].isna() & ~use_mr
-
     if has_h3:
         # H3→H6 ratio from main-period (fully mature) data
+        # Guard: both b2_main and b2_main_h3 must be valid and > 0 for a meaningful ratio
         ratio_valid = (
-            (combined["b2_main_h3"].fillna(0).abs() > 0.01)
+            combined["b2_main"].notna()
+            & (combined["b2_main"] > 0)
+            & combined["b2_main_h3"].notna()
+            & (combined["b2_main_h3"].abs() > 0.01)
             & (combined["n_obs_main"].fillna(0) >= min_obs)
         )
         h6_h3_ratio_raw = np.where(ratio_valid, combined["b2_main"] / combined["b2_main_h3"], np.nan)
@@ -512,10 +521,33 @@ def _compute_hybrid_mr_risk(
             per_bin_mean = float(np.mean(valid_ratios))
             per_bin_median = float(np.median(valid_ratios))
 
-            # Global ratio from totals (Σ across all bins)
-            total_b2_main = combined.loc[ratio_valid, "b2_main"].sum()
-            total_b2_main_h3 = combined.loc[ratio_valid, "b2_main_h3"].sum()
-            ratio_of_sums = total_b2_main / total_b2_main_h3 if total_b2_main_h3 > 0 else np.nan
+            # Global ratio from raw numerators/denominators (not sum of rates)
+            # Recompute from data_booked directly (main_agg may have dropped raw columns)
+            valid_mask = ratio_valid
+            valid_keys = combined.loc[valid_mask, merge_keys]
+            if len(valid_keys) > 0:
+                booked_valid = data_booked.merge(valid_keys, on=merge_keys, how="inner")
+                h6_cols_raw = ["todu_30ever_h6", "todu_amt_pile_h6"]
+                h3_cols_raw = ["todu_30ever_h3", "todu_amt_pile_h3"]
+                if all(c in booked_valid.columns for c in h6_cols_raw):
+                    global_h6_rate = calculate_b2_ever_h6(
+                        booked_valid["todu_30ever_h6"].sum(),
+                        booked_valid["todu_amt_pile_h6"].sum(),
+                        multiplier=multiplier, decimals=6,
+                    )
+                else:
+                    global_h6_rate = np.nan
+                if all(c in booked_valid.columns for c in h3_cols_raw):
+                    global_h3_rate = calculate_b2_ever_h6(
+                        booked_valid["todu_30ever_h3"].sum(),
+                        booked_valid["todu_amt_pile_h3"].sum(),
+                        multiplier=multiplier_h3, decimals=6,
+                    )
+                else:
+                    global_h3_rate = np.nan
+                ratio_of_sums = float(global_h6_rate / global_h3_rate) if pd.notna(global_h6_rate) and pd.notna(global_h3_rate) and global_h3_rate > 0 else np.nan
+            else:
+                ratio_of_sums = np.nan
 
             # Weighted ratio (by n_obs)
             weights = combined.loc[ratio_valid, "n_obs_main"].values
@@ -526,12 +558,14 @@ def _compute_hybrid_mr_risk(
             logger.info(f"    median={per_bin_median:.3f}  mean={per_bin_mean:.3f}  n_bins={len(valid_ratios)}")
             logger.info(f"    obs-weighted mean={wt_ratio:.3f}")
             logger.info("  Per-bin individual ratios:")
+            valid_positions = np.where(ratio_valid)[0]
             for i, (_idx, row) in enumerate(combined[ratio_valid].iterrows()):
                 keys_str = ", ".join(f"{k}={row[k]}" for k in merge_keys)
+                pos = valid_positions[i]  # position in the full DataFrame
                 logger.info(
                     f"    {keys_str}: b2_main={row['b2_main'] * 100:.2f}%  "
                     f"b2_main_h3={row['b2_main_h3'] * 100:.2f}%  "
-                    f"ratio={h6_h3_ratio_raw[i]:.3f}  n_obs={int(row['n_obs_main'])}"
+                    f"ratio={h6_h3_ratio_raw[pos]:.3f}  n_obs={int(row['n_obs_main'])}"
                 )
             logger.info(f"  Global (Σb2_main / Σb2_main_h3): {ratio_of_sums:.3f}")
             logger.info(
@@ -550,7 +584,10 @@ def _compute_hybrid_mr_risk(
         h3_min_obs = max(min_obs // 2, 10)
         has_h3_obs = (
             combined["b2_mr_h3"].notna()
-            & (combined["b2_mr_h3"] > 0)  # zero H3 risk → no signal to extrapolate from
+            # Zero H3 risk with enough observations IS valid — it means genuinely low risk.
+            # Only NaN (no data) should trigger fallback. We keep b2_mr_h3 >= 0 to exclude
+            # negative artifacts while accepting genuine zeros.
+            & (combined["b2_mr_h3"] >= 0)
             & (combined["n_obs_mr_h3"].fillna(0) >= h3_min_obs)
         )
 
@@ -558,13 +595,19 @@ def _compute_hybrid_mr_risk(
         h6_from_h3 = extrapolate_h3_to_h6(
             combined["b2_mr_h3"], h6_h3_ratio,
             method=mr_extrapolation_method, curvature=mr_extrapolation_curvature,
+            b2_h3_main=combined.get("b2_main_h3"),
         )
+
+        # Bins only in MR (no main data) with insufficient H6 AND no H3 extrapolation:
+        # leave NaN for model fallback.  Must be computed AFTER can_extrapolate to avoid
+        # blocking valid H3 extrapolation for MR-only bins.
+        only_mr_sparse = combined["b2_main"].isna() & ~use_mr & ~can_extrapolate
 
         # Priority (highest to lowest):
         #   1. MR H6 observed — direct MR risk when maturity and sample size are sufficient
         #   2. H3 extrapolation — MR H3 scaled by main-period H6/H3 ratio
         #   3. Main-period imputation — fallback when no MR signal available
-        #   4. Model fallback — bins that only exist in MR with no main data
+        #   4. Model fallback — bins that only exist in MR with no main data and no H3
         conditions = [only_mr_sparse, use_mr, can_extrapolate]
         risk_choices = [np.nan, combined["b2_mr"], h6_from_h3]
         source_choices = ["model_fallback", "mr_observed", "h3_extrapolated"]
@@ -584,6 +627,7 @@ def _compute_hybrid_mr_risk(
         )
     else:
         # No H3 columns — use H6 observed or main-period only
+        only_mr_sparse = combined["b2_main"].isna() & ~use_mr
         conditions = [only_mr_sparse, use_mr]
         risk_choices = [np.nan, combined["b2_mr"]]
         source_choices = ["model_fallback", "mr_observed"]
@@ -642,8 +686,13 @@ def _compute_hybrid_mr_risk(
                     f"bins={src_mask.sum()}"
                 )
 
+        # Exclude model_fallback bins (NaN risk) from weighted average
+        has_risk = combined["b2_ever_h6_tmp"].notna()
+        prod_with_risk = combined.loc[has_risk, prod_col].sum()
         overall_risk_prod = (
-            (combined["b2_ever_h6_tmp"].fillna(0) * combined[prod_col]).sum() / total_prod * 100
+            (combined.loc[has_risk, "b2_ever_h6_tmp"] * combined.loc[has_risk, prod_col]).sum()
+            / prod_with_risk * 100
+            if prod_with_risk > 0 else 0.0
         )
         logger.info(
             f"  {'OVERALL':>16}: weighted_risk={overall_risk_prod:.2f}% (production-weighted)  "

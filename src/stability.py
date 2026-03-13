@@ -196,9 +196,9 @@ def calculate_psi(
     baseline_safe = baseline_pct.where(baseline_pct > 0, min_pct)
     comparison_safe = comparison_pct.where(comparison_pct > 0, min_pct)
 
-    # Calculate PSI components (use original percentages for the difference,
-    # epsilon-protected values only inside the log)
-    psi_components = (comparison_safe - baseline_safe) * np.log(comparison_safe / baseline_safe)
+    # Calculate PSI components: use original percentages for the difference term,
+    # epsilon-protected values only inside the log to avoid log(0).
+    psi_components = (comparison_pct - baseline_pct) * np.log(comparison_safe / baseline_safe)
     psi_value = psi_components.sum()
 
     # Create breakdown DataFrame
@@ -505,11 +505,12 @@ def calculate_csi_for_categorical(
 
     # Apply epsilon only in the log term to avoid log(0) without distorting
     # the actual distributions (re-normalizing would change divergence scale).
-    baseline_safe = baseline_pct.clip(lower=min_pct)
-    comparison_safe = comparison_pct.clip(lower=min_pct)
+    baseline_safe = baseline_pct.where(baseline_pct > 0, min_pct)
+    comparison_safe = comparison_pct.where(comparison_pct > 0, min_pct)
 
-    # Calculate CSI (same formula as PSI)
-    csi_components = (comparison_safe - baseline_safe) * np.log(comparison_safe / baseline_safe)
+    # Calculate CSI (same formula as PSI): original proportions for difference,
+    # epsilon-protected values only inside the log.
+    csi_components = (comparison_pct - baseline_pct) * np.log(comparison_safe / baseline_safe)
     csi_value = csi_components.sum()
 
     breakdown = pd.DataFrame(

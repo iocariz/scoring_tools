@@ -185,6 +185,13 @@ class BinConfig:
     def __post_init__(self) -> None:
         if self.bin_edges and len(self.bin_edges) < 2:
             raise ValueError(f"bin_edges for '{self.output_col}' must have at least 2 values")
+        if self.bin_edges and len(self.bin_edges) >= 2:
+            for i in range(1, len(self.bin_edges)):
+                if self.bin_edges[i] <= self.bin_edges[i - 1]:
+                    raise ValueError(
+                        f"bin_edges for '{self.output_col}' must be in strictly ascending order, "
+                        f"but found {self.bin_edges[i - 1]} >= {self.bin_edges[i]} at position {i - 1}-{i}"
+                    )
         if not self.bin_edges and self.max_bins is None:
             raise ValueError(f"BinConfig for '{self.output_col}': either bin_edges or max_bins must be provided")
 
@@ -211,6 +218,17 @@ class PreprocessingSettings(BaseModel):
     # -1 indicates descending risk (higher bin index = lower risk)
     directions: dict[str, int] = Field(default_factory=dict)
 
+    @field_validator("directions")
+    @classmethod
+    def validate_directions_values(cls, v: dict[str, int]) -> dict[str, int]:
+        for var, direction in v.items():
+            if direction not in (1, -1):
+                raise ValueError(
+                    f"directions['{var}'] must be 1 or -1, got {direction}. "
+                    f"1 = ascending risk, -1 = descending risk."
+                )
+        return v
+
     # Inversion flags populated during preprocessing based on directions
     inv_vars: list[str] = Field(default_factory=list)
 
@@ -229,8 +247,8 @@ class PreprocessingSettings(BaseModel):
     multiplier_h3: float = Field(default=4.0, gt=0)
     z_threshold: float = Field(default=3.0, gt=0)
     cv_folds: int = Field(default=4, ge=2, le=10)
-    optimum_risk: float = 1.1
-    risk_step: float = 0.1
+    optimum_risk: float = Field(default=1.1, gt=0, le=100)
+    risk_step: float = Field(default=0.1, gt=0, le=50)
     cz_config: dict[int, Any] = Field(default_factory=dict)
     log_level: str = "INFO"
     fixed_cutoffs: dict[str, Any] | None = None
@@ -290,7 +308,7 @@ class PreprocessingSettings(BaseModel):
     ri_validation_split: float = Field(
         default=0.7,
         gt=0.0,
-        lt=1.0,
+        le=1.0,
         description=(
             "Fraction of main-period months used for RI optimizer training. "
             "The remaining months are held out for out-of-time validation. "
@@ -331,6 +349,14 @@ class PreprocessingSettings(BaseModel):
     def validate_bins_length(cls, v: list[float], info: Any) -> list[float]:
         if v and len(v) < 2:
             raise ValueError(f"'{info.field_name}' must have at least 2 values")
+        if v and len(v) >= 2:
+            # Validate ascending sort order (allowing -inf at start and inf at end)
+            for i in range(1, len(v)):
+                if v[i] <= v[i - 1]:
+                    raise ValueError(
+                        f"'{info.field_name}' must be in strictly ascending order, "
+                        f"but found {v[i - 1]} >= {v[i]} at position {i - 1}-{i}"
+                    )
         return v
 
     @field_validator("ri_uplift_range", "ri_max_mult_range")
@@ -391,6 +417,16 @@ class PreprocessingSettings(BaseModel):
                 raise ValueError(
                     f"Invalid MR period: start date ({start_mr.date()}) is after end date ({end_mr.date()})"
                 )
+            # Warn if main and MR periods overlap (data leakage risk)
+            if start_mr < end:
+                import warnings
+
+                warnings.warn(
+                    f"Main period ({start.date()} to {end.date()}) overlaps with MR period "
+                    f"({start_mr.date()} to {end_mr.date()}). This may introduce data leakage.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         return self
 
@@ -428,6 +464,14 @@ class PreprocessingSettings(BaseModel):
             raise ValueError(
                 "No binning configuration provided. Set either 'bins' dict or "
                 "both 'octroi_bins' and 'efx_bins' in your configuration."
+            )
+
+        # Every variable must have a corresponding bins entry
+        missing_bins = [v for v in self.variables if v not in self.bins]
+        if missing_bins:
+            raise ValueError(
+                f"Variables {missing_bins} have no binning configuration. "
+                f"Provide bin edges via 'bins' dict or legacy 'octroi_bins'/'efx_bins'."
             )
 
         return self

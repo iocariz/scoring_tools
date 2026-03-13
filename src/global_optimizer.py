@@ -520,13 +520,36 @@ class GlobalAllocator:
                     df = self.frontiers[seg]
                     valid_idx = df[df["oa_amt_h0"] >= sc.min_production].index
                     if not valid_idx.empty:
-                        # Take the max of current index and first valid production index
-                        current_indices[seg] = max(current_indices[seg], valid_idx[0])
+                        candidate = max(current_indices[seg], valid_idx[0])
+                        # Check that min_production doesn't force a max_risk violation
+                        if sc.max_risk is not None:
+                            candidate_risk = df.loc[candidate, "b2_ever_h6"]
+                            if candidate_risk > sc.max_risk:
+                                logger.warning(
+                                    f"Segment {seg}: min_production={sc.min_production} "
+                                    f"forces risk={candidate_risk:.2f}% > max_risk={sc.max_risk:.2f}%. "
+                                    f"Keeping lower index to respect max_risk."
+                                )
+                            else:
+                                current_indices[seg] = candidate
+                        else:
+                            current_indices[seg] = candidate
                     else:
                         logger.warning(
                             f"Segment {seg} cannot meet min_production {sc.min_production}. Using max available."
                         )
-                        current_indices[seg] = df.index[-1]
+                        # Respect max_risk even in fallback
+                        if sc.max_risk is not None:
+                            valid_risk = df[df["b2_ever_h6"] <= sc.max_risk]
+                            if not valid_risk.empty:
+                                current_indices[seg] = valid_risk.index[-1]
+                            else:
+                                logger.warning(
+                                    f"Segment {seg}: no frontier point meets max_risk={sc.max_risk}. Using safest point."
+                                )
+                                current_indices[seg] = df.index[0]
+                        else:
+                            current_indices[seg] = df.index[-1]
 
         # 2. Greedy Hill Climbing
         iteration = 0

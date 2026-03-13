@@ -36,6 +36,46 @@
 - ~~Inconsistent `dayfirst` parsing in `filter_by_date()`~~ — `src/preprocess_improved.py` now parses source values and filter bounds with explicit `dayfirst=False`; ambiguous-date regression added in `tests/test_preprocessing.py`
 - ~~Greedy global production floor enforcement~~ — `src/global_optimizer.py` now prioritizes production growth until `global_production_floor` is met and raises if infeasible; regression coverage added in `tests/test_global_optimizer.py`
 
+### Recently Fixed (deep review audit, 2026-03-13)
+
+**Critical (round 1):**
+- ~~PSI/CSI difference term used epsilon-adjusted values~~ — now uses original proportions for the difference `(Actual% - Expected%)`, epsilon only inside `log()`; both PSI and CSI consistent
+- ~~Isotonic monotonicity collapsed N-D to 1-D means~~ — `_enforce_multiplier_monotonicity` rewritten with per-slice isotonic regression and alternating-pass convergence
+- ~~`only_mr_sparse` evaluated before `can_extrapolate`~~ — reordered so H3 extrapolation is not blocked for MR-only bins that have H3 data
+
+**Medium (round 1):**
+- ~~Power extrapolation formula didn't match fitted model~~ — `extrapolate_h3_to_h6` power method now uses deviation `b2_h3/b2_h3_main` with the fitted alpha, matching the log-log regression model
+- ~~`fit_h3_extrapolation_curve` SE inconsistent with polyfit~~ — SE now uses `eff_w = w**2` to match `np.polyfit`'s weighting convention
+- ~~`calculate_annual_coef` missing date validation~~ — validates `date_fin >= date_ini`
+- ~~Bin edges sort validation~~ — both `validate_bins_length` and `BinConfig.__post_init__` now enforce sorted, monotonically increasing edges
+- ~~SPC n_sigma too permissive~~ — default changed from 2.0 to 3.0 (standard 3-sigma rule)
+- ~~Production CI aggregation used sum-of-bounds~~ — now uses variance addition (independence assumption) for statistically correct interval widths
+- ~~GA fallback missing post-hoc feasibility check~~ — now verifies monotonicity + risk constraints after GA optimization
+- ~~Outlier detection used non-robust z-score~~ — `inference_optimized.py` now uses MAD-based detection instead of `scipy.stats.zscore`
+- ~~MR b2 values filled NaN with 0.0~~ — removed `.fillna(0.0)` on `b2_main`, `b2_mr`, `b2_main_h3`; NaN now correctly triggers fallback logic
+- ~~RI optimizer missing `enforce_monotonicity`~~ — `OptimizerInputs` dataclass now includes `enforce_monotonicity` field, passed through to `apply_parceling_adjustment`
+- ~~RI optimizer missing `per_bin_tasa_fin`~~ — `OptimizerInputs` dataclass now includes `per_bin_tasa_fin`, applied in `evaluate_ri_params`
+- ~~Greedy allocator `min_production` override could violate `max_risk`~~ — now checks `max_risk` before accepting production floor override
+- ~~`LinearRegression` intercept caused bias in `reg_todu_amt_pile`~~ — set `fit_intercept=False` since zero production should predict zero exposure
+- ~~Bayesian smoothing/prior_strength not propagated to `compute_acceptance_rates`~~ — optimization pipeline now passes both parameters through
+
+**High (round 2):**
+- ~~Power extrapolation NaN for MR-only bins~~ — `extrapolate_h3_to_h6` now falls back to linear per-element when `b2_h3_main` is NaN/0 instead of producing NaN
+- ~~NaN in bootstrap breaks `np.percentile`~~ — changed to `np.nanpercentile` so CIs are computed correctly even with NaN replicates
+- ~~Rounding to 2dp in intermediate b2 calculations~~ — `calculate_b2_ever_h6` calls for `b2_main`, `b2_mr`, `b2_main_h3`, `b2_mr_h3` now use `decimals=6` to preserve precision for ratio computations
+- ~~main.py re-run after RI optimizer missing per_bin_stress/per_bin_tasa_fin~~ — second `run_scenario_analysis` loop now passes both kwargs
+
+**Medium (round 2):**
+- ~~Dead code: ratio_of_sums reconciliation~~ — `main_agg` dropped raw columns before reconciliation check; rewritten to recompute from `data_booked` directly
+- ~~Empty DataFrame crash in `_enforce_multiplier_monotonicity`~~ — added early return guard for empty DataFrames
+- ~~Calibration error used raw acceptance rate while RI used smoothed~~ — `_compute_calibration_error` now uses `smoothed_acceptance_rate` when available, consistent with `apply_parceling_adjustment`
+- ~~Greedy allocator fallback ignores `max_risk`~~ — when `min_production` is unachievable, fallback now respects `max_risk` constraint
+- ~~CV with single fold produces NaN~~ — `np.std(ddof=1)` guarded with `len > 1` check
+
+**Low (round 2):**
+- ~~PSI/CSI epsilon application inconsistent~~ — CSI changed from `.clip()` to `.where()` matching PSI's approach
+- ~~Variables without bins pass validation~~ — `_auto_populate_bins` now validates every variable has a corresponding `bins` entry after auto-population
+
 ---
 
 ## Code Audit Findings (2026-03-10)
@@ -86,13 +126,12 @@ Deduplicated against existing items. Items already tracked above are not repeate
 
 ### BUG — MEDIUM
 
-#### M1-new: BinConfig doesn't validate edge monotonicity
-- `config.py:185-189` — duplicate or non-increasing edges (e.g., `[0, 0.5, 0.5, 1.0]`) pass validation
-- Fix: add strict monotonicity check in `__post_init__`
+#### ~~M1-new: BinConfig doesn't validate edge monotonicity~~ ✓ FIXED
+- `config.py:185-189` — both `validate_bins_length` and `BinConfig.__post_init__` now enforce sorted, monotonically increasing edges
+- Also added validation that every variable has a corresponding bins entry after auto-population
 
-#### M2-new: PSI/CSI epsilon application inconsistent
-- `stability.py:196-197` uses `.where()`, `stability.py:508-509` uses `.clip()` for same purpose
-- No functional impact, but inconsistent style
+#### ~~M2-new: PSI/CSI epsilon application inconsistent~~ ✓ FIXED
+- CSI changed from `.clip()` to `.where()` matching PSI's approach — both now use `.where(pct > 0, min_pct)`
 
 #### M3-new: b2_ever_h6 calculated in 4 different places
 - `utils.py`, `consolidation.py`, `inference_optimized.py`, `mr_pipeline.py`
@@ -323,9 +362,9 @@ entries above but have residual issues.
 - Can match unintended column names that share a prefix
 - Fix: use `str.fullmatch()` or anchor with `$`
 
-#### ~~M17: Consolidation production CI uses midpoints instead of bounds~~
-- `src/consolidation.py` — aggregate production confidence intervals now sum segment lower/upper bounds directly
-- No longer reconstructs aggregate intervals from midpoint estimates
+#### ~~M17: Consolidation production CI uses midpoints instead of bounds~~ ✓ FIXED (then improved)
+- `src/consolidation.py` — aggregate production CIs now use variance addition (independence assumption) for statistically correct interval widths
+- Supersedes the initial sum-of-bounds fix with proper SE aggregation: `combined_SE = sqrt(Σ SE_i²)`
 
 #### ~~M18: Scenario auto-detection stops at first segment~~
 - `src/consolidation.py` — scenario detection now scans all segment folders instead of stopping after the first populated one
@@ -371,10 +410,9 @@ entries above but have residual issues.
 
 ### NUMERICAL — MEDIUM
 
-#### N1: `nan_to_num` silently converts NaN risk to 0 in MR pipeline
-- `src/mr_pipeline.py:189` — `np.nan_to_num(...)` converts NaN to 0.0
-- NaN risk (from empty bins or missing data) becomes zero-risk, an optimistic assumption
-- Should flag NaN bins and exclude from comparison rather than treating as zero
+#### ~~N1: `nan_to_num` silently converts NaN risk to 0 in MR pipeline~~ ✓ FIXED
+- `src/mr_pipeline.py` — `np.nan_to_num` and `.fillna(0.0)` removed from b2 computations
+- NaN risk now correctly triggers fallback logic (main_imputed or model_fallback) rather than being treated as zero
 
 ---
 
@@ -393,10 +431,11 @@ entries above but have residual issues.
 - ~~Hardcoded thresholds in plotting code~~ — fixed: `stability.py` now uses `PSI_STABLE_THRESHOLD`/`PSI_UNSTABLE_THRESHOLD` constants
 - Should also be configurable via `config.toml` for domain-specific calibration
 
-### `_auto_populate_bins` silently promotes legacy config
+### `_auto_populate_bins` silently promotes legacy config **(partially fixed)**
 - `src/config.py:368-393` auto-generates `BinConfig` from legacy `octroi_bins`/`efx_bins` fields
 - No deprecation warning is emitted — users don't know they're using the legacy path
 - Add `logger.warning` when auto-promotion occurs
+- **(Fixed)** Validation now ensures every variable has a corresponding `bins` entry after auto-population
 
 ### Optuna timeout not configurable
 - `src/optuna_tuning.py` uses a hardcoded study timeout

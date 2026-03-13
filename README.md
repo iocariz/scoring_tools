@@ -617,7 +617,7 @@ b2_ever_h6 = extrapolate_h3_to_h6(b2_mr_h3, h6_h3_ratio, method, curvature)
 | Method | Formula | When to use |
 |---|---|---|
 | `linear` (default) | `b2_mr_h3 × ratio` | Proportional H6/H3 relationship |
-| `power` | `b2_mr_h3 × ratio^curvature` | Convex (curvature > 1) or concave (< 1) relationship |
+| `power` | `b2_mr_h3 × ratio × (b2_mr_h3/b2_main_h3)^(α-1)` | Convex (α > 1) or concave (< 1); falls back to linear per bin when `b2_main_h3` unavailable |
 | `logistic` | `b2_mr_h3 × (1 + 2·tanh(k·(ratio-1)/2)/k)` | Caps extreme ratios smoothly |
 | `auto` | Fits curvature from main-period data | Recommended — no manual tuning needed |
 
@@ -633,7 +633,7 @@ If α's 95% CI includes 1.0, selects `linear`; otherwise selects `power` with fi
 - `α > 1.0`: Convex (risk accelerates with time)
 - `α < 1.0`: Concave (risk saturates)
 
-**Safeguards:** Bins where `b2_main_h3 ≈ 0` skip extrapolation. The number of MR accounts with mature H3 must meet `mr_min_obs_per_bin`. Auto-calibration requires non-degenerate log-H3 design.
+**Safeguards:** Bins where `b2_main_h3 ≈ 0` skip extrapolation. For the `power` method, bins where `b2_main_h3` is NaN (e.g., MR-only bins with no main-period data) automatically fall back to `linear` extrapolation for those specific bins rather than producing NaN. The number of MR accounts with mature H3 must meet `mr_min_obs_per_bin`. Auto-calibration requires non-degenerate log-H3 design.
 
 #### Worked Example
 
@@ -766,7 +766,7 @@ Measures distribution drift between main and MR periods:
 PSI = Σ (Actual% - Expected%) × ln(Actual% / Expected%)
 ```
 
-A unified epsilon constant (`PSI_EPSILON = 0.0001`) is applied to zero-percentage bins to prevent `log(0)`.
+A unified epsilon constant (`PSI_EPSILON = 0.0001`) is applied only inside the `log()` term for zero-percentage bins, while the difference term `(Actual% - Expected%)` uses the original (unmodified) proportions. This preserves the standard PSI scale and ensures non-negativity. Both PSI and CSI use the same epsilon application method (`.where()`).
 
 | PSI range | Interpretation |
 |---|---|
@@ -893,7 +893,7 @@ Record-level classification for each application:
 
 ### Bootstrap Confidence Intervals
 
-For the selected optimal solution, the pipeline runs 1,000 bootstrap resamples of the booked population, recalculating production and risk for each sample. The 2.5th and 97.5th percentiles provide 95% confidence intervals.
+For the selected optimal solution, the pipeline runs 1,000 bootstrap resamples of the booked population, recalculating production and risk for each sample. The 2.5th and 97.5th percentiles (via `np.nanpercentile`) provide 95% confidence intervals. NaN-valued replicates (from empty-denominator bins) are excluded from percentile computation rather than corrupting the CI.
 
 ### Cell-Level Confidence Intervals
 

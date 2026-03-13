@@ -197,13 +197,15 @@ class TestCalculatePsi:
         psi, _ = calculate_psi(baseline, comparison, bins=10)
         assert psi >= 0
 
-    def test_psi_uses_epsilon_adjusted_difference_term(self):
+    def test_psi_uses_original_difference_with_epsilon_log(self):
         baseline = pd.Series([0] * 100)
         comparison = pd.Series([1] * 100)
 
         psi, _ = calculate_psi(baseline, comparison, bins=[-0.5, 0.5, 1.5], min_pct=0.2)
 
-        assert psi == pytest.approx(1.6 * np.log(5.0))
+        # Standard PSI: difference uses original proportions (0, 1),
+        # epsilon only protects the log term: (0-1)*log(0.2/1) + (1-0)*log(1/0.2) = 2*log(5)
+        assert psi == pytest.approx(2.0 * np.log(5.0))
 
     def test_breakdown_columns(self):
         np.random.seed(42)
@@ -313,13 +315,15 @@ class TestCalculateCsiForCategorical:
         assert isinstance(csi, float)
         assert len(breakdown) == 3  # A, B, C
 
-    def test_csi_uses_epsilon_adjusted_difference_term(self):
+    def test_csi_uses_original_difference_with_epsilon_log(self):
         baseline = pd.Series(["A"] * 100)
         comparison = pd.Series(["B"] * 100)
 
         csi, _ = calculate_csi_for_categorical(baseline, comparison, min_pct=0.2)
 
-        assert csi == pytest.approx(1.6 * np.log(5.0))
+        # Standard CSI: difference uses original proportions,
+        # epsilon only protects the log term
+        assert csi == pytest.approx(2.0 * np.log(5.0))
 
     def test_breakdown_columns(self):
         baseline = pd.Series(["A", "B", "C"])

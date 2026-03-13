@@ -710,11 +710,11 @@ class TestComputeHybridMRRisk:
             data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4
         )
 
-        # Zero H3 risk gives no signal → must fall back to main_imputed, NOT extrapolate to 0
-        assert (comparison_df["risk_source"] == "main_imputed").all()
+        # Zero H3 risk with sufficient observations IS a valid signal:
+        # it means genuinely low risk. The extrapolation produces 0% risk.
+        assert (comparison_df["risk_source"] == "h3_extrapolated").all()
         for _, row in comparison_df.iterrows():
-            assert np.isclose(row["b2_ever_h6_tmp"], row["b2_main"])
-            assert row["b2_ever_h6_tmp"] > 0  # main-period risk should be non-zero
+            assert row["b2_ever_h6_tmp"] == 0.0  # zero H3 delinquency → zero extrapolated risk
 
     def test_no_h3_columns_original_logic(self, data_booked_main, data_demand_mr_sufficient, merge_keys):
         """Without H3 columns, original mr_observed / main_imputed logic is preserved."""
@@ -866,15 +866,19 @@ class TestAutoCalibration:
         """Constant H6/H3 ratio across bins → auto resolves to linear."""
         rng = np.random.RandomState(42)
         n_main = 35
-        # Create data where H6 = 2 * H3 consistently → alpha ≈ 1
+        # Create data where H6 = exactly 2 * H3 → alpha ≈ 1
+        # Use shared pile and proportional numerators to ensure truly constant ratio
+        h3_nums = np.concatenate([rng.uniform(4.5, 5.5, n_main) for _ in range(4)])
+        h6_nums = h3_nums * 2  # exact 2× relationship
+        pile = np.concatenate([rng.uniform(90, 110, n_main) for _ in range(4)])
         data_booked = pd.DataFrame(
             {
                 "bin_a": [1] * n_main + [2] * n_main + [3] * n_main + [4] * n_main,
                 "bin_b": [1] * (4 * n_main),
-                "todu_30ever_h6": np.concatenate([rng.uniform(9, 11, n_main) for _ in range(4)]),
-                "todu_amt_pile_h6": np.concatenate([rng.uniform(90, 110, n_main) for _ in range(4)]),
-                "todu_30ever_h3": np.concatenate([rng.uniform(4.5, 5.5, n_main) for _ in range(4)]),
-                "todu_amt_pile_h3": np.concatenate([rng.uniform(90, 110, n_main) for _ in range(4)]),
+                "todu_30ever_h6": h6_nums,
+                "todu_amt_pile_h6": pile,
+                "todu_30ever_h3": h3_nums,
+                "todu_amt_pile_h3": pile,
                 "status_name": ["booked"] * (4 * n_main),
             }
         )

@@ -182,7 +182,7 @@ def detect_trend_changes(
     monthly_df: pd.DataFrame,
     metric: str,
     window: int = 6,
-    n_sigma: float = 2.0,
+    n_sigma: float = 3.0,
 ) -> pd.DataFrame:
     """
     Detect trend changes using statistical process control (SPC).

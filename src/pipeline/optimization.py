@@ -824,8 +824,12 @@ def run_ri_optimizer_phase(
         )
 
         # Step 3: Compute acceptance rates (on training split)
+        # Propagate Bayesian smoothing settings so optimizer uses the same rates as main pipeline
         acceptance_rates = compute_acceptance_rates(
-            train_demand, settings.variables, include_all_rejections=settings.reject_include_all_rejections
+            train_demand, settings.variables,
+            bayesian_smoothing=settings.reject_bayesian_smoothing,
+            bayesian_prior_strength=settings.reject_bayesian_prior_strength,
+            include_all_rejections=settings.reject_include_all_rejections,
         )
 
         # Step 4: Build optimizer inputs
@@ -841,6 +845,7 @@ def run_ri_optimizer_phase(
             parceling_method=settings.reject_parceling_method,
             calibration_gamma=settings.ri_calibration_gamma,
             per_bin_tasa_fin=per_bin_tasa_fin,
+            enforce_monotonicity=settings.reject_enforce_monotonicity,
         )
 
         # Step 5: Run optimization (grid or Optuna)
@@ -879,6 +884,8 @@ def run_ri_optimizer_phase(
                 )
                 val_acceptance_rates = compute_acceptance_rates(
                     val_demand, settings.variables,
+                    bayesian_smoothing=settings.reject_bayesian_smoothing,
+                    bayesian_prior_strength=settings.reject_bayesian_prior_strength,
                     include_all_rejections=settings.reject_include_all_rejections,
                 )
                 val_optimizer_inputs = OptimizerInputs(
@@ -892,6 +899,8 @@ def run_ri_optimizer_phase(
                     multiplier=settings.multiplier,
                     parceling_method=settings.reject_parceling_method,
                     calibration_gamma=settings.ri_calibration_gamma,
+                    per_bin_tasa_fin=per_bin_tasa_fin,
+                    enforce_monotonicity=settings.reject_enforce_monotonicity,
                 )
 
                 validation = validate_ri_with_mr(

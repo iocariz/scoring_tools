@@ -676,8 +676,17 @@ def aggregate_metrics(
             aggregated[key].setdefault("risk_ci_upper", 0)
             continue
 
-        aggregated[key]["production_ci_lower"] = sum(s["prod_lower"] for s in segments)
-        aggregated[key]["production_ci_upper"] = sum(s["prod_upper"] for s in segments)
+        # Combine production CIs using variance addition (assumes independence)
+        # for consistency with risk CI aggregation.
+        agg_prod_point = aggregated[key].get("production", 0)
+        prod_var = 0.0
+        for s in segments:
+            prod_width = max(s["prod_upper"] - s["prod_lower"], 0.0)
+            prod_se = prod_width / (2 * z_95) if prod_width else 0.0
+            prod_var += prod_se ** 2
+        combined_prod_se = float(np.sqrt(prod_var))
+        aggregated[key]["production_ci_lower"] = max(agg_prod_point - z_95 * combined_prod_se, 0.0)
+        aggregated[key]["production_ci_upper"] = agg_prod_point + z_95 * combined_prod_se
 
         agg_num = aggregated[key].get("todu_30ever_h6", 0)
         agg_den = aggregated[key].get("todu_amt_pile_h6", 0)

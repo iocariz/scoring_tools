@@ -18,7 +18,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from loguru import logger
-from scipy.stats import zscore
 
 # Scikit-learn imports
 from sklearn.linear_model import LinearRegression
@@ -665,7 +664,7 @@ def _select_feature_set_cv(
             continue
 
         cv_mean = np.mean(cv_scores)
-        cv_std = np.std(cv_scores, ddof=1) / np.sqrt(len(cv_scores))
+        cv_std = (np.std(cv_scores, ddof=1) / np.sqrt(len(cv_scores))) if len(cv_scores) > 1 else 0.0
         cv_r2_mean = np.mean(cv_r2_scores) if cv_r2_scores else 0.0
         cv_r2_std = (np.std(cv_r2_scores, ddof=1) / np.sqrt(len(cv_r2_scores))) if len(cv_r2_scores) > 1 else 0.0
 
@@ -1490,9 +1489,14 @@ def todu_average_inference(
 
     # 3. Outlier Removal
     # ---------------------------------------------------------
-    # Calculate Z-scores on the target variable
-    # We use a mask to avoid SettingWithCopy warnings and ensure alignment
-    z_scores = np.abs(zscore(df_grouped[target_col]))
+    # Use robust MAD-based z-score (consistent with process_dataset)
+    # Standard zscore is sensitive to the very outliers it's trying to detect
+    median_val = df_grouped[target_col].median()
+    mad = np.median(np.abs(df_grouped[target_col] - median_val))
+    if mad > 0:
+        z_scores = 0.6745 * np.abs(df_grouped[target_col] - median_val) / mad
+    else:
+        z_scores = np.abs(df_grouped[target_col] - median_val)
     df_train = df_grouped[z_scores < z_threshold].copy()
 
     n_dropped = len(df_grouped) - len(df_train)

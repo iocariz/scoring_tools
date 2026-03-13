@@ -89,15 +89,19 @@ def extrapolate_h3_to_h6(
     h6_h3_ratio: pd.Series | np.ndarray | float,
     method: str = "linear",
     curvature: float = 1.0,
+    b2_h3_main: pd.Series | np.ndarray | float | None = None,
 ) -> pd.Series | np.ndarray | float:
     """Extrapolate H6 risk from observed H3 risk using a configurable curve.
 
     Args:
-        b2_h3: Observed H3 risk metric values.
+        b2_h3: Observed H3 risk metric values (MR period).
         h6_h3_ratio: Main-period H6/H3 ratio used as base scaling factor.
         method: Extrapolation curve — ``"linear"``, ``"power"``, or ``"logistic"``.
         curvature: Tuning parameter. For **power**: exponent alpha (1.0 = linear).
             For **logistic**: steepness *k*. Ignored for linear.
+        b2_h3_main: Main-period H3 risk per bin (required for ``"power"``).
+            Used as the reference point so that the power law is applied to
+            the deviation ``b2_h3 / b2_h3_main`` rather than to the ratio.
 
     Returns:
         Extrapolated H6 risk values, same type/shape as *b2_h3*.
@@ -105,6 +109,19 @@ def extrapolate_h3_to_h6(
     if method == "linear":
         return b2_h3 * h6_h3_ratio
     elif method == "power":
+        # Power law: b2_h6 = exp(c) * b2_h3^alpha  fitted via log-log regression.
+        # Using h6_h3_ratio = b2_h6_main / b2_h3_main and the fitted alpha:
+        #   b2_h6_mr = b2_h3_mr * ratio * (b2_h3_mr / b2_h3_main)^(alpha - 1)
+        # This matches the fitted model and degrades to linear when alpha=1.
+        if b2_h3_main is not None:
+            main_arr = np.asarray(b2_h3_main, dtype=float)
+            safe_main = np.where(main_arr > 0, main_arr, np.nan)
+            deviation = np.asarray(b2_h3, dtype=float) / safe_main
+            power_result = b2_h3 * h6_h3_ratio * np.power(np.clip(deviation, 0.01, 100.0), curvature - 1.0)
+            # Fall back to linear for elements where b2_h3_main is NaN/0 (e.g. MR-only bins)
+            linear_result = b2_h3 * h6_h3_ratio
+            return np.where(np.isfinite(power_result), power_result, linear_result)
+        # Fallback when b2_h3_main not available: apply curvature to ratio (legacy)
         return b2_h3 * np.power(h6_h3_ratio, curvature)
     elif method == "logistic":
         # Smoothly caps the scaling for extreme ratios while approaching
@@ -150,9 +167,16 @@ def fit_h3_extrapolation_curve(
     log_h3 = np.log(np.asarray(b2_h3)[valid])
     log_h6 = np.log(np.asarray(b2_h6)[valid])
     w = np.asarray(weights)[valid] if weights is not None else None
-    stats_weights = np.ones_like(log_h3) if w is None else w
-    x_mean = np.average(log_h3, weights=stats_weights)
-    ss_x = float(np.sum(stats_weights * (log_h3 - x_mean) ** 2))
+
+    # np.polyfit(w=w) weights the residual (not squared residual) by w,
+    # so the effective least-squares weight is w^2.  Use w^2 consistently
+    # for all diagnostic statistics (SE, R²) to match the fitted model.
+    if w is not None:
+        eff_w = w ** 2  # effective weights matching np.polyfit's convention
+    else:
+        eff_w = np.ones_like(log_h3)
+    x_mean = np.average(log_h3, weights=eff_w)
+    ss_x = float(np.sum(eff_w * (log_h3 - x_mean) ** 2))
 
     if not np.isfinite(ss_x) or ss_x <= 1e-10:
         return ("linear", 1.0, {**fallback_diag, "note": "ill_conditioned_design"})
@@ -163,8 +187,8 @@ def fit_h3_extrapolation_curve(
 
     predicted = alpha * log_h3 + intercept
     residuals = log_h6 - predicted
-    ss_res = float(np.sum(stats_weights * residuals**2))
-    ss_tot = float(np.sum(stats_weights * (log_h6 - np.average(log_h6, weights=stats_weights)) ** 2))
+    ss_res = float(np.sum(eff_w * residuals**2))
+    ss_tot = float(np.sum(eff_w * (log_h6 - np.average(log_h6, weights=eff_w)) ** 2))
     r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
     mse = ss_res / max(n_valid - 2, 1)
@@ -370,6 +394,11 @@ def calculate_annual_coef(date_ini_book_obs: pd.Timestamp, date_fin_book_obs: pd
     """
     Calculate annual coefficient based on the time range.
     """
+    if date_fin_book_obs < date_ini_book_obs:
+        raise ValueError(
+            f"date_fin_book_obs ({date_fin_book_obs.date()}) is before "
+            f"date_ini_book_obs ({date_ini_book_obs.date()})"
+        )
     n_month = (
         (date_fin_book_obs.year - date_ini_book_obs.year) * 12 + (date_fin_book_obs.month - date_ini_book_obs.month) + 1
     )
@@ -507,10 +536,10 @@ def calculate_bootstrap_intervals(
     lower_p = alpha * 100
     upper_p = (1 - alpha) * 100
 
-    prod_lower = np.percentile(productions, lower_p)
-    prod_upper = np.percentile(productions, upper_p)
-    risk_lower = np.percentile(risks, lower_p)
-    risk_upper = np.percentile(risks, upper_p)
+    prod_lower = np.nanpercentile(productions, lower_p)
+    prod_upper = np.nanpercentile(productions, upper_p)
+    risk_lower = np.nanpercentile(risks, lower_p)
+    risk_upper = np.nanpercentile(risks, upper_p)
 
     # Note: model_cv_se_risk is no longer used for inflation because it is on
     # the RMSE scale (prediction error), not the risk-ratio scale.  Combining

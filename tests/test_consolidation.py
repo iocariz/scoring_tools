@@ -262,8 +262,8 @@ class TestAggregateMetrics:
         assert result["actual"]["production"] == 0
         assert result["actual"]["todu_30ever_h6"] == 0
 
-    def test_production_ci_aggregates_using_bounds(self):
-        """Test that aggregate production CI sums segment lower and upper bounds."""
+    def test_production_ci_aggregates_using_variance_addition(self):
+        """Test that aggregate production CI uses variance addition (independence assumption)."""
         metrics = [
             {
                 "actual": {"production": 1000, "todu_30ever_h6": 10, "todu_amt_pile_h6": 100},
@@ -297,8 +297,23 @@ class TestAggregateMetrics:
 
         result = aggregate_metrics(metrics, multiplier=1)
 
-        assert result["optimum"]["production_ci_lower"] == 3100
-        assert result["optimum"]["production_ci_upper"] == 3500
+        # Variance addition: combined SE = sqrt(SE1² + SE2²), not sum of bounds
+        # Segment 1: CI width=200, SE=200/(2*1.96)≈51.02
+        # Segment 2: CI width=200, SE=200/(2*1.96)≈51.02
+        # Combined SE = sqrt(51.02² + 51.02²) ≈ 72.15
+        # Aggregate production = 3300
+        # Lower = 3300 - 1.96*72.15 ≈ 3158.6
+        # Upper = 3300 + 1.96*72.15 ≈ 3441.4
+        import math
+
+        z = 1.96
+        se1 = 200 / (2 * z)
+        se2 = 200 / (2 * z)
+        combined_se = math.sqrt(se1**2 + se2**2)
+        expected_lower = 3300 - z * combined_se
+        expected_upper = 3300 + z * combined_se
+        assert abs(result["optimum"]["production_ci_lower"] - expected_lower) < 0.5
+        assert abs(result["optimum"]["production_ci_upper"] - expected_upper) < 0.5
 
     def test_risk_ci_uses_exposure_weighted_delta_method(self):
         """Test that aggregate risk CI is weighted by segment exposure, not added directly."""

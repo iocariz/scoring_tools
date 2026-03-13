@@ -211,6 +211,9 @@ def _enforce_multiplier_monotonicity(
     """
     from sklearn.isotonic import IsotonicRegression
 
+    if result.empty or "reject_risk_multiplier" not in result.columns:
+        return result
+
     inv_set = set(inv_vars) if inv_vars else set()
 
     for iteration in range(max_iterations):
@@ -218,13 +221,31 @@ def _enforce_multiplier_monotonicity(
 
         for var in variables:
             increasing = var not in inv_set
-            iso = IsotonicRegression(increasing=increasing, out_of_bounds="clip")
-            grouped = result.groupby(var)["reject_risk_multiplier"].mean().sort_index()
-            if len(grouped) < 2:
-                continue
-            iso_values = iso.fit_transform(grouped.index.values.astype(float), grouped.values)
-            iso_map = dict(zip(grouped.index, iso_values))
-            result["reject_risk_multiplier"] = result[var].map(iso_map).fillna(result["reject_risk_multiplier"])
+            other_vars = [v for v in variables if v != var]
+
+            if not other_vars:
+                # Single variable: apply isotonic on the whole column
+                sorted_df = result.sort_values(var)
+                if len(sorted_df) < 2:
+                    continue
+                iso = IsotonicRegression(increasing=increasing, out_of_bounds="clip")
+                iso_values = iso.fit_transform(
+                    sorted_df[var].values.astype(float), sorted_df["reject_risk_multiplier"].values
+                )
+                result.loc[sorted_df.index, "reject_risk_multiplier"] = iso_values
+            else:
+                # Per-slice isotonic: for each unique combo of other vars,
+                # apply isotonic along the target variable axis.
+                # This preserves cross-dimensional variation.
+                for _, slice_idx in result.groupby(other_vars, observed=True).groups.items():
+                    slice_df = result.loc[slice_idx].sort_values(var)
+                    if len(slice_df) < 2:
+                        continue
+                    iso = IsotonicRegression(increasing=increasing, out_of_bounds="clip")
+                    iso_values = iso.fit_transform(
+                        slice_df[var].values.astype(float), slice_df["reject_risk_multiplier"].values
+                    )
+                    result.loc[slice_df.index, "reject_risk_multiplier"] = iso_values
 
         max_change = np.abs(result["reject_risk_multiplier"].values - prev_values).max()
         if max_change < tol:
