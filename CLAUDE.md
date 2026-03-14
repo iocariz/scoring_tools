@@ -23,11 +23,21 @@ uv run python main.py --skip-dq-checks         # skip data quality checks
 uv run python run_batch.py
 uv run python run_batch.py --parallel --workers 4 -s segment1 segment2
 uv run python run_batch.py --list               # list available segments
+uv run python run_batch.py --reuse-models        # reuse existing supersegment models
+uv run python run_batch.py --consolidate-only    # only generate consolidated report
+uv run python run_batch.py --clean               # clean output dirs before running
+uv run python run_batch.py --no-report           # skip HTML reports
+uv run python run_batch.py --training-only       # only run DQ + training
 
 # Run allocation (global MILP across segments)
-uv run python run_allocation.py
-uv run python run_allocation.py --production-floor 1000000
-uv run python run_allocation.py --lock segment1:3
+uv run python run_allocation.py --target 2.5
+uv run python run_allocation.py --target 2.5 --method greedy
+uv run python run_allocation.py --target 2.5 --production-floor 1000000
+uv run python run_allocation.py --target 2.5 --lock segment1:3
+
+# Generate presentation (.pptx / .pdf)
+uv run python generate_presentation.py
+uv run python generate_presentation.py --pdf     # also convert to PDF (requires LibreOffice)
 
 # Tests
 uv run pytest tests/                                    # all tests
@@ -44,7 +54,7 @@ uv run ruff format .         # format
 docker build -t scoring-tools .
 ```
 
-Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `make format`, `make docker-build`, `make docker-run`.
+Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `make format`, `make clean`, `make setup`, `make docker-build`, `make docker-run`.
 
 ## Architecture
 
@@ -72,7 +82,7 @@ Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `mak
   - Reject inference: `reject_inference.py`, `reject_inference_optimizer.py`
   - Analysis: `mr_pipeline.py`, `stability.py`, `sensitivity.py`, `trends.py`, `alerts.py`, `audit.py`
   - Output: `consolidation.py`, `reporting.py`, `plots.py`, `styles.py`, `metrics.py`, `utils.py`
-- Entry points: `main.py` (single segment), `run_batch.py` (multi-segment with global bin learning), `run_allocation.py` (MILP allocation with segment constraints/locking), `run_score_metrics.py` (score discriminance), `dashboard.py` / `interactive_allocator.py` (Dash web UIs), `gradio_dashboard.py` (Gradio web UI)
+- Entry points: `main.py` (single segment), `run_batch.py` (multi-segment with global bin learning + supersegment model sharing), `run_allocation.py` (MILP allocation with segment constraints/locking), `generate_presentation.py` (PowerPoint/PDF output), `run_score_metrics.py` (score discriminance), `dashboard.py` / `interactive_allocator.py` (Dash web UIs), `gradio_dashboard.py` (Gradio web UI)
 
 ### Key Design Patterns
 
@@ -92,13 +102,15 @@ Two-tier config: `config.toml` (global defaults) overridden per-segment by `segm
 
 **Binning:** `octroi_bins`/`efx_bins` (legacy) or `[preprocessing.bins.*]` (N-variable `BinConfig` with `source_col`, `output_col`, `bin_edges`/`max_bins`, `method`). Batch mode supports global bin learning across all segments.
 
-**Reject inference:** `reject_inference_method` ("none"/"parceling"), `reject_parceling_method` ("linear"/"power"/"sigmoid"), `reject_bayesian_smoothing`, `reject_bayesian_prior_strength`, `reject_enforce_monotonicity`, `ri_calibration_gamma`, `ri_optimizer_method` ("grid"/"optuna"), `ri_optuna_n_trials`.
+**Reject inference:** `reject_inference_method` ("none"/"parceling"), `reject_parceling_method` ("linear"/"power"/"sigmoid"), `reject_uplift_factor`, `reject_max_risk_multiplier`, `reject_bayesian_smoothing`, `reject_bayesian_prior_strength`, `reject_enforce_monotonicity`, `reject_include_all_rejections`. RI optimizer: `run_ri_optimizer`, `ri_validation_split`, `ri_optimizer_methods` ("grid"/"optuna"), `ri_optuna_n_trials`, `ri_calibration_gamma`, `ri_uplift_range`, `ri_max_mult_range`.
 
-**H3 metrics:** `multiplier_h3` (scaling factor for 3-month risk), `use_mr_outcomes` (enable H3→H6 extrapolation), `mr_min_obs_per_bin`, `mr_extrapolation_method` (`"linear"` / `"power"` / `"logistic"` / `"auto"`), `mr_extrapolation_curvature` (power exponent; ignored when method is `"auto"` — curvature is fitted from main-period data via weighted log-log regression in `fit_h3_extrapolation_curve`).
+**H3 metrics:** `multiplier_h3` (scaling factor for 3-month risk), `use_mr_outcomes` (enable H3→H6 extrapolation), `mr_min_obs_per_bin`, `mr_extrapolation_method` (`"linear"` / `"power"` / `"logistic"` / `"auto"`), `mr_extrapolation_curvature` (power exponent; ignored when method is `"auto"` — curvature is fitted from main-period data via weighted log-log regression in `fit_h3_extrapolation_curve`), `mr_maturity_months` (min months since booking for H6 maturity filter), `mr_extrapolation_risk_multiplier` (relative ceiling for MR risk), `mr_extrapolation_hard_cap` (absolute ceiling for risk %).
+
+**Stress & transformation:** `stress_mode` ("global"/"per_bin"/"disabled"), `per_bin_tasa_fin` (compute transformation rate per grid cell).
 
 **Swap-in constraints:** `max_swapin_production_pct`, `max_swapin_risk`.
 
-**Segment constraints** (in `segments.toml`): `min_risk`, `max_risk`, `min_production` (production floor), `locked_sol_fac` (lock to specific frontier point).
+**Segment constraints** (in `segments.toml`): `min_risk`, `max_risk`, `min_production` (production floor), `locked_sol_fac` (lock to specific frontier point). Supersegments (`[supersegments.*]`) allow grouping segments that share model training.
 
 **Fixed cutoffs:** `fixed_cutoffs` to skip MILP and use predefined cutoff combinations. For 2-var: paired bins/cutoffs lists. For N>2: per-variable lists of accepted bin values (cell accepted iff all coordinates are in their respective accepted lists).
 
