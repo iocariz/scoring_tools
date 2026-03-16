@@ -1282,3 +1282,152 @@ class TestProcessMRPeriodRegression:
         assert captured["used_variables"] == ["sc_octroi_new_clus", "new_efx_clus"]
         assert captured["used_features"] == ["sc_octroi_new_clus", "new_efx_clus"]
         assert captured["imputed_b2"] == pytest.approx(0.55)
+
+    def test_hybrid_mode_model_fallback_infers_risk_nd(self, monkeypatch, tmp_path):
+        """In hybrid MR mode with N>2 variables, model_fallback bins should get model-inferred risk."""
+
+        class DummyRVModel:
+            def predict(self, X):
+                return np.full(len(X), 100.0)
+
+        class DummyStabilityReport:
+            unstable_vars = []
+
+            def to_dataframe(self):
+                return pd.DataFrame()
+
+        class DummyAlertReport:
+            def to_json(self, path):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("{}")
+
+        captured = {}
+
+        def fake_calculate_B2(df, model_risk, variables, stressor, var_reg):
+            captured["called"] = True
+            captured["used_variables"] = list(variables)
+            out = df.copy()
+            out["b2_ever_h6"] = 0.42
+            return out
+
+        def fake_run_optimization_pipeline(*, data_booked, data_demand, **kwargs):
+            # Check that model_fallback bins now have inferred risk (not NaN)
+            mr_row = data_demand.loc[
+                (data_demand["status_name"] == "booked")
+                & (data_demand["sc_octroi_new_clus"] == 1)
+                & (data_demand["new_efx_clus"] == 1)
+                & (data_demand["income_bin"] == 2)
+            ]
+            assert len(mr_row) == 1
+            captured["imputed_b2"] = float(mr_row["b2_ever_h6_tmp"].iloc[0])
+            return data_booked.copy()
+
+        monkeypatch.setattr("src.mr_pipeline.calculate_B2", fake_calculate_B2)
+        monkeypatch.setattr("src.mr_pipeline.run_optimization_pipeline", fake_run_optimization_pipeline)
+        monkeypatch.setattr("src.mr_pipeline.compare_main_vs_mr", lambda *args, **kwargs: DummyStabilityReport())
+        monkeypatch.setattr("src.mr_pipeline.styles.apply_plotly_style", lambda *args, **kwargs: None)
+        monkeypatch.setattr("src.alerts.generate_drift_alerts", lambda *args, **kwargs: DummyAlertReport())
+
+        settings = PreprocessingSettings(
+            keep_vars=["mis_date", "status_name", "segment_cut_off", "score_rf", "risk_score_rf"],
+            indicators=["acct_booked_h0", "oa_amt", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"],
+            segment_filter="seg_a",
+            date_ini_book_obs="2024-01-01",
+            date_fin_book_obs="2024-06-30",
+            date_ini_book_obs_mr="2024-07-01",
+            date_fin_book_obs_mr="2024-07-31",
+            variables=["sc_octroi_new_clus", "new_efx_clus", "income_bin"],
+            inference_variables=["sc_octroi_new_clus", "new_efx_clus"],
+            octroi_bins=[-float("inf"), 1.5, float("inf")],
+            efx_bins=[-float("inf"), 1.5, float("inf")],
+            bins={
+                "income_bin": BinConfig(
+                    source_col="income_t1t2_m",
+                    output_col="income_bin",
+                    bin_edges=[-float("inf"), 1.5, float("inf")],
+                )
+            },
+            use_mr_outcomes=True,
+        )
+
+        # Main period: bins (1,1,1) and (2,2,1) exist
+        data_clean = pd.DataFrame(
+            [
+                {
+                    "mis_date": "2024-01-15",
+                    "status_name": "booked",
+                    "segment_cut_off": "seg_a",
+                    "score_rf": 300.0,
+                    "risk_score_rf": 20.0,
+                    "acct_booked_h0": 1,
+                    "oa_amt": 1000.0,
+                    "oa_amt_h0": 1000.0,
+                    "todu_30ever_h6": 10.0,
+                    "todu_amt_pile_h6": 100.0,
+                    "sc_octroi_new_clus": 1,
+                    "new_efx_clus": 1,
+                    "income_bin": 1,
+                },
+                {
+                    "mis_date": "2024-02-15",
+                    "status_name": "booked",
+                    "segment_cut_off": "seg_a",
+                    "score_rf": 320.0,
+                    "risk_score_rf": 25.0,
+                    "acct_booked_h0": 1,
+                    "oa_amt": 1200.0,
+                    "oa_amt_h0": 1200.0,
+                    "todu_30ever_h6": 5.0,
+                    "todu_amt_pile_h6": 100.0,
+                    "sc_octroi_new_clus": 2,
+                    "new_efx_clus": 2,
+                    "income_bin": 1,
+                },
+                # MR period: bin (1,1,2) does NOT exist in main period -> model_fallback
+                {
+                    "mis_date": "2024-07-15",
+                    "status_name": "booked",
+                    "segment_cut_off": "seg_a",
+                    "score_rf": 305.0,
+                    "risk_score_rf": 21.0,
+                    "acct_booked_h0": 1,
+                    "oa_amt": 500.0,
+                    "oa_amt_h0": 500.0,
+                    "todu_30ever_h6": 3.0,
+                    "todu_amt_pile_h6": 50.0,
+                    "sc_octroi_new_clus": 1,
+                    "new_efx_clus": 1,
+                    "income_bin": 2,
+                },
+            ]
+        )
+        data_clean["mis_date"] = pd.to_datetime(data_clean["mis_date"])
+        data_booked = data_clean.loc[data_clean["mis_date"] < pd.Timestamp("2024-07-01")].copy()
+
+        risk_inference = {
+            "best_model_info": {"model": object()},
+            "features": ["sc_octroi_new_clus", "new_efx_clus"],
+            "model_variables": ["sc_octroi_new_clus", "new_efx_clus"],
+        }
+
+        output = OutputPaths(base_dir=tmp_path)
+        output.ensure_dirs()
+
+        process_mr_period(
+            data_clean=data_clean,
+            data_booked=data_booked,
+            settings=settings,
+            risk_inference=risk_inference,
+            reg_todu_amt_pile=DummyRVModel(),
+            stress_factor=1.0,
+            tasa_fin=1.0,
+            annual_coef=1.0,
+            optimal_solution_df=None,
+            output=output,
+        )
+
+        # calculate_B2 must have been called for the model_fallback bin
+        assert captured.get("called"), "calculate_B2 was not called for model_fallback bins in hybrid mode"
+        assert captured["used_variables"] == ["sc_octroi_new_clus", "new_efx_clus"]
+        # The imputed value should be 0.42 (from fake_calculate_B2), not NaN or 0
+        assert captured["imputed_b2"] == pytest.approx(0.42)

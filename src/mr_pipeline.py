@@ -860,6 +860,86 @@ def process_mr_period(
             non_booked_mask = data_demand_mr["status_name"] != StatusName.BOOKED.value
             data_demand_mr.loc[non_booked_mask, "b2_ever_h6_tmp"] = np.nan
 
+            # --- Infer risk for model_fallback bins using trained model ---
+            booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
+            null_b2_mask = booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()
+            null_count = null_b2_mask.sum()
+
+            if null_count > 0:
+                missing_bins = data_demand_mr.loc[null_b2_mask, merge_keys].drop_duplicates()
+                logger.warning(
+                    f"Hybrid MR: {null_count:,} booked accounts in {len(missing_bins)} model_fallback bins "
+                    f"have no risk estimate. Inferring b2_ever_h6 using the risk model..."
+                )
+                for bin_combo in missing_bins.itertuples(index=False):
+                    logger.warning(f"  model_fallback bin: {bin_combo._asdict()}")
+
+                try:
+                    best_model_info = risk_inference.get("best_model_info")
+                    if best_model_info is None:
+                        raise KeyError("'best_model_info' not found in risk_inference")
+                    final_model = best_model_info.get("model")
+                    if final_model is None:
+                        raise KeyError("'model' not found in risk_inference['best_model_info']")
+                    final_features = risk_inference.get("features")
+                    if final_features is None:
+                        raise KeyError("'features' not found in risk_inference")
+
+                    model_vars = risk_inference.get("model_variables", merge_keys)
+                    missing_bins_df = missing_bins.copy()
+                    missing_bins_df = calculate_B2(
+                        missing_bins_df, final_model, model_vars, stress_factor, final_features
+                    )
+
+                    # Clip inferred risk using observed risk range from comparison_df
+                    observed_risk = comparison_df.loc[
+                        comparison_df["risk_source"] != "model_fallback", "b2_ever_h6_tmp"
+                    ].dropna()
+                    if len(observed_risk) > 0:
+                        risk_floor = float(observed_risk.min())
+                        risk_ceil_base = float(observed_risk.max())
+                        risk_ceil_scaled = risk_ceil_base * settings.mr_extrapolation_risk_multiplier
+                        risk_ceil = min(risk_ceil_scaled, settings.mr_extrapolation_hard_cap)
+                        missing_bins_df["b2_ever_h6"] = missing_bins_df["b2_ever_h6"].clip(
+                            lower=risk_floor, upper=risk_ceil
+                        )
+                        logger.info(
+                            f"  Clipped model-imputed risk to [{risk_floor:.4f}, {risk_ceil:.4f}] "
+                            f"(base max={risk_ceil_base:.4f}, mult={settings.mr_extrapolation_risk_multiplier}, "
+                            f"cap={settings.mr_extrapolation_hard_cap})"
+                        )
+
+                    inferred_b2 = missing_bins_df[merge_keys + ["b2_ever_h6"]].rename(
+                        columns={"b2_ever_h6": "b2_ever_h6_inferred"}
+                    )
+                    data_demand_mr = pd.merge(data_demand_mr, inferred_b2, on=merge_keys, how="left")
+
+                    fill_mask = data_demand_mr["b2_ever_h6_tmp"].isna() & data_demand_mr["b2_ever_h6_inferred"].notna()
+                    data_demand_mr.loc[fill_mask, "b2_ever_h6_tmp"] = data_demand_mr.loc[
+                        fill_mask, "b2_ever_h6_inferred"
+                    ]
+                    data_demand_mr = data_demand_mr.drop(columns=["b2_ever_h6_inferred"], errors="ignore")
+
+                    booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
+                    remaining_nulls = (booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()).sum()
+                    if remaining_nulls > 0:
+                        logger.error(
+                            f"Still have {remaining_nulls:,} booked accounts with null b2_ever_h6_tmp "
+                            f"after model_fallback inference"
+                        )
+
+                    logger.info(
+                        f"Successfully inferred b2_ever_h6 for {null_count:,} booked accounts "
+                        f"across {len(missing_bins)} model_fallback bins using risk model"
+                    )
+
+                except (ValueError, KeyError, RuntimeError) as e:
+                    logger.error(f"Error inferring b2_ever_h6 for model_fallback bins: {e}")
+                    logger.warning(
+                        "model_fallback bins will have NaN risk — downstream aggregation "
+                        "will treat them as zero risk."
+                    )
+
         elif all(col in data_booked.columns for col in required_agg_cols):
             # Default mode: use main-period risk for all bins
             logger.info(f"Calculating b2_ever_h6_tmp aggregated by {merge_keys} from initial period...")
