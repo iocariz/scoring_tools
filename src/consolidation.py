@@ -22,7 +22,7 @@ from loguru import logger
 from plotly.subplots import make_subplots
 
 from .constants import DEFAULT_RISK_MULTIPLIER, DEFAULT_RISK_MULTIPLIER_H3
-from .utils import calculate_b2_ever_h6
+from .utils import calculate_b2_ever_h6, resolve_reporting_supersegment
 
 
 @dataclass
@@ -777,10 +777,10 @@ def consolidate_segments(
 
     results = []
 
-    # Build supersegment membership map
+    # Build supersegment membership map (reporting grouping)
     segment_to_supersegment = {}
     for seg_name, seg_config in segments.items():
-        ss = seg_config.get("supersegment")
+        ss = resolve_reporting_supersegment(seg_config)
         if ss:
             segment_to_supersegment[seg_name] = ss
 

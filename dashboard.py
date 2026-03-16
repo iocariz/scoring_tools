@@ -224,7 +224,8 @@ def _resolve_supersegment(segment: str | None) -> str | None:
 
         with open("segments.toml", "rb") as f:
             seg_config = tomllib.load(f).get("segments", {})
-            return seg_config.get(segment, {}).get("supersegment")
+            cfg = seg_config.get(segment, {})
+            return cfg.get("modelling_supersegment") or cfg.get("supersegment")
     except Exception:
         return None
 

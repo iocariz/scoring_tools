@@ -38,6 +38,7 @@ from loguru import logger
 from tqdm import tqdm
 
 from src.consolidation import generate_consolidation_report
+from src.utils import resolve_modelling_supersegment, resolve_reporting_supersegment
 
 
 class SegmentPipelineError(RuntimeError):
@@ -476,10 +477,10 @@ def run_segments_sequential(
 
     # Phase 1: Train supersegment models (or reuse existing)
     if supersegments:
-        # Find which supersegments are actually used by the selected segments
+        # Find which modelling supersegments are actually used by the selected segments
         used_supersegments = []
         for segment_config in segments.values():
-            ss = segment_config.get("supersegment")
+            ss = resolve_modelling_supersegment(segment_config)
             if ss and ss in supersegments and ss not in used_supersegments:
                 used_supersegments.append(ss)
 
@@ -527,9 +528,9 @@ def run_segments_sequential(
                     logger.info(f"Supersegment {ss_name} model ready: {model_path}")
                 else:
                     logger.error(f"Failed to train supersegment {ss_name}")
-                    # Mark all segments using this supersegment as failed
+                    # Mark all segments using this modelling supersegment as failed
                     for seg_name, seg_config in segments.items():
-                        if seg_config.get("supersegment") == ss_name:
+                        if resolve_modelling_supersegment(seg_config) == ss_name:
                             results[seg_name] = False
                             logger.error(f"Segment {seg_name} marked as failed (supersegment training failed)")
 
@@ -552,12 +553,12 @@ def run_segments_sequential(
         for segment_name, segment_config in seg_progress:
             seg_progress.set_postfix_str(segment_name)
 
-            # Check if this segment uses a supersegment model
-            supersegment = segment_config.get("supersegment")
+            # Check if this segment uses a modelling supersegment model
+            modelling_ss = resolve_modelling_supersegment(segment_config)
             model_path = None
-            if supersegment and supersegment in supersegment_models:
-                model_path = supersegment_models[supersegment]
-                logger.info(f"Using supersegment model: {supersegment}")
+            if modelling_ss and modelling_ss in supersegment_models:
+                model_path = supersegment_models[modelling_ss]
+                logger.info(f"Using supersegment model: {modelling_ss}")
 
             success = run_segment_pipeline(
                 segment_name,
@@ -624,7 +625,7 @@ def run_segments_parallel(
     if supersegments:
         used_supersegments = []
         for segment_config in segments.values():
-            ss = segment_config.get("supersegment")
+            ss = resolve_modelling_supersegment(segment_config)
             if ss and ss in supersegments and ss not in used_supersegments:
                 used_supersegments.append(ss)
 
@@ -668,7 +669,7 @@ def run_segments_parallel(
                     supersegment_models[ss_name] = model_path
                 else:
                     for seg_name, seg_config in segments.items():
-                        if seg_config.get("supersegment") == ss_name:
+                        if resolve_modelling_supersegment(seg_config) == ss_name:
                             results[seg_name] = False
 
     # Phase 2: Run individual segment optimizations IN PARALLEL
@@ -682,8 +683,8 @@ def run_segments_parallel(
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for segment_name, segment_config in segments_to_run.items():
-                supersegment = segment_config.get("supersegment")
-                model_path = supersegment_models.get(supersegment) if supersegment else None
+                modelling_ss = resolve_modelling_supersegment(segment_config)
+                model_path = supersegment_models.get(modelling_ss) if modelling_ss else None
 
                 future = executor.submit(
                     run_segment_pipeline,
@@ -766,10 +767,10 @@ def clean_output_directories(
     results = {}
     output_path = Path(output_base)
 
-    # Find supersegments used by these segments
+    # Find modelling supersegments used by these segments
     used_supersegments = set()
     for seg_config in segments.values():
-        ss = seg_config.get("supersegment")
+        ss = resolve_modelling_supersegment(seg_config)
         if ss and ss in supersegments:
             used_supersegments.add(ss)
 
@@ -827,12 +828,15 @@ def list_segments(segments_path: str = "segments.toml") -> None:
     for name, config in segments.items():
         filter_val = config.get("segment_filter", "N/A")
         risk = config.get("optimum_risk", "default")
-        supersegment = config.get("supersegment", None)
+        modelling_ss = resolve_modelling_supersegment(config)
+        reporting_ss = resolve_reporting_supersegment(config)
         print(f"  {name}:")
         print(f"    segment_filter: {filter_val}")
         print(f"    optimum_risk: {risk}")
-        if supersegment:
-            print(f"    supersegment: {supersegment} (uses shared model)")
+        if modelling_ss:
+            print(f"    modelling_supersegment: {modelling_ss} (shared model)")
+        if reporting_ss:
+            print(f"    reporting_supersegment: {reporting_ss} (reporting group)")
         print()
 
 
@@ -910,14 +914,18 @@ def main():
     # Identify and validate supersegments used by selected segments
     used_supersegments = set()
     for seg_name, seg_config in segments.items():
-        ss = seg_config.get("supersegment")
-        if ss:
-            if ss not in all_supersegments:
-                print(f"Warning: Segment '{seg_name}' references unknown supersegment '{ss}'")
+        modelling_ss = resolve_modelling_supersegment(seg_config)
+        if modelling_ss:
+            if modelling_ss not in all_supersegments:
+                print(f"Warning: Segment '{seg_name}' references unknown modelling supersegment '{modelling_ss}'")
                 print(f"  Available supersegments: {list(all_supersegments.keys())}")
                 print("  Segment will train its own model instead.")
             else:
-                used_supersegments.add(ss)
+                used_supersegments.add(modelling_ss)
+        reporting_ss = resolve_reporting_supersegment(seg_config)
+        if reporting_ss and reporting_ss not in all_supersegments:
+            print(f"Warning: Segment '{seg_name}' references unknown reporting supersegment '{reporting_ss}'")
+            print(f"  Available supersegments: {list(all_supersegments.keys())}")
 
     # Handle clean operations
     if args.clean or args.clean_only:

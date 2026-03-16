@@ -110,7 +110,7 @@ Two-tier config: `config.toml` (global defaults) overridden per-segment by `segm
 
 **Swap-in constraints:** `max_swapin_production_pct`, `max_swapin_risk`.
 
-**Segment constraints** (in `segments.toml`): `min_risk`, `max_risk`, `min_production` (production floor), `locked_sol_fac` (lock to specific frontier point). Supersegments (`[supersegments.*]`) allow grouping segments that share model training.
+**Segment constraints** (in `segments.toml`): `min_risk`, `max_risk`, `min_production` (production floor), `locked_sol_fac` (lock to specific frontier point). Supersegments (`[supersegments.*]`) define named groups of segments. Each segment can independently reference a **modelling supersegment** (shared model training) and a **reporting supersegment** (consolidated report grouping) via `modelling_supersegment` and `reporting_supersegment` fields. Legacy `supersegment` field sets both. Resolution: `modelling_supersegment > supersegment > None`, `reporting_supersegment > supersegment > None`.
 
 **Fixed cutoffs:** `fixed_cutoffs` to skip MILP and use predefined cutoff combinations. For 2-var: paired bins/cutoffs lists. For N>2: per-variable lists of accepted bin values (cell accepted iff all coordinates are in their respective accepted lists).
 

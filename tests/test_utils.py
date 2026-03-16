@@ -20,6 +20,8 @@ from src.utils import (
     generate_cutoff_summary,
     get_data_information,
     optimize_dtypes,
+    resolve_modelling_supersegment,
+    resolve_reporting_supersegment,
 )
 
 # =============================================================================
@@ -730,3 +732,45 @@ class TestCalculateStressFactorEdgeCases:
 
         # Returns neutral 1.0 (not 0.0) to avoid zeroing out all risk predictions
         assert stress == 1.0
+
+
+# =============================================================================
+# Supersegment resolution helpers
+# =============================================================================
+
+
+class TestResolveModellingSuperSegment:
+    def test_legacy_supersegment_field(self):
+        assert resolve_modelling_supersegment({"supersegment": "total"}) == "total"
+
+    def test_modelling_supersegment_overrides_legacy(self):
+        cfg = {"supersegment": "total", "modelling_supersegment": "model_group"}
+        assert resolve_modelling_supersegment(cfg) == "model_group"
+
+    def test_no_field_returns_none(self):
+        assert resolve_modelling_supersegment({}) is None
+
+    def test_reporting_does_not_affect_modelling(self):
+        cfg = {"reporting_supersegment": "report_group"}
+        assert resolve_modelling_supersegment(cfg) is None
+
+
+class TestResolveReportingSuperSegment:
+    def test_legacy_supersegment_field(self):
+        assert resolve_reporting_supersegment({"supersegment": "total"}) == "total"
+
+    def test_reporting_supersegment_overrides_legacy(self):
+        cfg = {"supersegment": "total", "reporting_supersegment": "report_group"}
+        assert resolve_reporting_supersegment(cfg) == "report_group"
+
+    def test_no_field_returns_none(self):
+        assert resolve_reporting_supersegment({}) is None
+
+    def test_modelling_does_not_affect_reporting(self):
+        cfg = {"modelling_supersegment": "model_group"}
+        assert resolve_reporting_supersegment(cfg) is None
+
+    def test_both_set_independently(self):
+        cfg = {"modelling_supersegment": "model_group", "reporting_supersegment": "report_group"}
+        assert resolve_modelling_supersegment(cfg) == "model_group"
+        assert resolve_reporting_supersegment(cfg) == "report_group"

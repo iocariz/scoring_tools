@@ -81,7 +81,7 @@ def _resolve_supersegment(segment: str) -> str | None:
                     data = tomllib.load(f)
                 for name, cfg in data.get("segments", {}).items():
                     if name == segment:
-                        return cfg.get("supersegment")
+                        return cfg.get("modelling_supersegment") or cfg.get("supersegment")
             except Exception:
                 pass
     return None

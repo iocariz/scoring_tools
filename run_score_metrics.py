@@ -43,6 +43,7 @@ from src.styles import (
     COLOR_SECONDARY,
     apply_matplotlib_style,
 )
+from src.utils import resolve_reporting_supersegment
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -422,7 +423,7 @@ def generate_score_discriminance_report(
             logger.warning(f"Segment '{seg_name}' has no segment_filter — skipping.")
             continue
 
-        ss_name = seg_config.get("supersegment", "")
+        ss_name = resolve_reporting_supersegment(seg_config) or ""
 
         logger.info(f"Processing segment: {seg_name}")
         df_base = _filter_base_population(preloaded_data, segment_filter)
@@ -451,7 +452,7 @@ def generate_score_discriminance_report(
 
     # --- Per-supersegment metrics ---
     for ss_name, _ss_config in supersegments.items():
-        member_segments = [sn for sn, sc in segments.items() if sc.get("supersegment") == ss_name]
+        member_segments = [sn for sn, sc in segments.items() if resolve_reporting_supersegment(sc) == ss_name]
 
         if not member_segments:
             logger.warning(f"Supersegment '{ss_name}': no member segments found — skipping.")

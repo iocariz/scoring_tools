@@ -21,6 +21,26 @@ from .constants import DEFAULT_N_BOOTSTRAPS, DEFAULT_RISK_MULTIPLIER
 MAX_PARALLEL_JOBS = int(os.environ.get("SCORING_TOOLS_MAX_JOBS", min(4, os.cpu_count() or 4)))
 
 
+# ---------------------------------------------------------------------------
+# Supersegment resolution helpers
+# ---------------------------------------------------------------------------
+
+def resolve_modelling_supersegment(segment_config: dict) -> str | None:
+    """Return the modelling supersegment for a segment.
+
+    Resolution order: ``modelling_supersegment`` > ``supersegment`` > ``None``.
+    """
+    return segment_config.get("modelling_supersegment") or segment_config.get("supersegment")
+
+
+def resolve_reporting_supersegment(segment_config: dict) -> str | None:
+    """Return the reporting supersegment for a segment.
+
+    Resolution order: ``reporting_supersegment`` > ``supersegment`` > ``None``.
+    """
+    return segment_config.get("reporting_supersegment") or segment_config.get("supersegment")
+
+
 def calculate_b2_ever_h6(
     numerator: pd.Series | np.ndarray | float,
     denominator: pd.Series | np.ndarray | float,

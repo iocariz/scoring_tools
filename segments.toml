@@ -4,12 +4,24 @@
 # =============================================================================
 # SUPERSEGMENTS
 # =============================================================================
-# A supersegment combines multiple segments for shared model training.
-# When segments share a supersegment, the model is trained on combined data
-# and then optimization runs individually for each sub-segment.
+# A supersegment groups segments. There are two independent uses:
+#
+#   modelling_supersegment  — segments that share a trained inference model.
+#                             The model is trained on combined data (Phase 1),
+#                             then optimization runs individually per segment.
+#   reporting_supersegment  — segments that are grouped together in the
+#                             consolidated report / Excel dashboard.
+#
+# Each segment can reference different supersegments for modelling and
+# reporting (or the same one for both). For backward compatibility, a plain
+# `supersegment` field is treated as both modelling AND reporting.
+#
+# Per-segment resolution order:
+#   modelling:  modelling_supersegment > supersegment > None (train own model)
+#   reporting:  reporting_supersegment > supersegment > None (standalone)
 
 [supersegments.total]
-# List of segment_filter values to combine for model training
+# List of segment_filter values that belong to this group
 segment_filters = [
     "no_premium_ab",
     "no_premium_cd",
@@ -31,7 +43,7 @@ segment_filters = [
 segment_filter = "no_premium_ab"
 optimum_risk = 1.0
 risk_step = 0.1
-supersegment = "total"  # Use shared model from supersegment
+reporting_supersegment = "total"  # Grouped in "total" for reporting
 min_risk = 0.8  # Optional: minimum risk for global allocation
 max_risk = 1.4  # Optional: maximum risk for global allocation
 
@@ -39,37 +51,37 @@ max_risk = 1.4  # Optional: maximum risk for global allocation
 segment_filter = "no_premium_cd"
 optimum_risk = 1.28
 risk_step = 0.1
-supersegment = "total"  # Use shared model from supersegment
+reporting_supersegment = "total"  # Grouped in "total" for reporting
 
 [segments.no_premium_ef]
 segment_filter = "no_premium_ef"
 optimum_risk = 1.09
 risk_step = 0.1
-supersegment = "total"  # Use shared model from supersegment
+reporting_supersegment = "total"  # Grouped in "total" for reporting
 
 [segments.premium]
 segment_filter = "premium"
 optimum_risk = 1.47
 risk_step = 0.1
-supersegment = "total"  # Use shared model from supersegment
+reporting_supersegment = "total"  # Grouped in "total" for reporting
 
 [segments.precon]
 segment_filter = "precon"
 optimum_risk = 1.07
 risk_step = 0.1
-supersegment = "total"  # Use shared model from supersegment
+reporting_supersegment = "total"  # Grouped in "total" for reporting
 
 [segments.new_fintonic]
 segment_filter = "new_fintonic"
 optimum_risk = 1.02
 risk_step = 0.1
-supersegment = "total"  # Use shared model from supersegment
+reporting_supersegment = "total"  # Grouped in "total" for reporting
 
 [segments.new_no_fintonic]
 segment_filter = "new_no_fintonic"
 optimum_risk = 1.52
 risk_step = 0.1
-supersegment = "total"  # Use shared model from supersegment
+reporting_supersegment = "total"  # Grouped in "total" for reporting
 reject_uplift_factor = 1.5
 reject_max_risk_multiplier = 3.0
 run_ri_optimizer = false
@@ -78,26 +90,28 @@ run_ri_optimizer = false
 segment_filter = "open_banking"
 optimum_risk = 1.20
 risk_step = 0.1
-supersegment = "total"  # Use shared model from supersegment
+reporting_supersegment = "total"  # Grouped in "total" for reporting
 
 [segments.conso_no_premium]
 segment_filter = "conso_no_premium"
 optimum_risk = 1.30
 risk_step = 0.1
-supersegment = "total"  # Use shared model from supersegment
+reporting_supersegment = "total"  # Grouped in "total" for reporting
 
 [segments.conso_premium]
 segment_filter = "conso_premium"
 optimum_risk = 0.44
 risk_step = 0.1
-supersegment = "total"  # Use shared model from supersegment
+reporting_supersegment = "total"  # Grouped in "total" for reporting
 
 # Add more segments as needed:
 # [segments.another_segment]
 # segment_filter = "your_segment_filter_value"
 # optimum_risk = 1.0  # optional, defaults to config.toml value
 # risk_step = 0.1  # optional override
-# supersegment = "supersegment_name"  # optional, for shared model training
+# modelling_supersegment = "name"   # optional: share model with other segments
+# reporting_supersegment = "name"   # optional: group in consolidated report
+# supersegment = "name"             # legacy: sets both modelling + reporting
 
 # =============================================================================
 # FIXED CUTOFFS EXAMPLE
