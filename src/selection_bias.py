@@ -21,8 +21,9 @@ import pandas as pd
 from loguru import logger
 from scipy import stats
 
-from src.constants import StatusName
+from src.constants import RejectReason, StatusName
 from src.metrics import compute_metrics
+from src.stability import calculate_psi
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +432,308 @@ def compute_acceptance_gini_correlation(
 
 
 # ---------------------------------------------------------------------------
+# Analysis 7: Booked-vs-Rejected discriminance (no target needed)
+# ---------------------------------------------------------------------------
+def compute_booked_vs_rejected_discriminance(
+    df_demand: pd.DataFrame,
+    score_columns: dict[str, dict],
+) -> pd.DataFrame:
+    """Compute Gini/AUROC/KS of each score for separating booked from rejected.
+
+    Uses ``status_name`` as a binary target (booked=1, rejected=0) on the
+    full demand population.  This does NOT require ``early_bad``.
+
+    A high Gini here means the score is good at predicting who gets accepted.
+    If a score has high booked-vs-rejected Gini but low early_bad Gini, that
+    is the classic selection-bias signature.
+    """
+    df = df_demand.dropna(subset=[s["column"] for s in score_columns.values()]).copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    y_binary = (df["status_name"] == StatusName.BOOKED.value).astype(int).values
+    if len(np.unique(y_binary)) < 2:
+        return pd.DataFrame()
+
+    rows: list[dict] = []
+    for score_name, info in score_columns.items():
+        # Use raw score (no negation): higher score → more likely booked
+        scores = df[info["column"]].values
+        try:
+            gini, auroc, ks, _ = compute_metrics(y_binary, scores)
+        except ValueError:
+            continue
+        rows.append(
+            {
+                "score": score_name,
+                "target": "booked_vs_rejected",
+                "auroc": round(auroc, 4),
+                "gini": round(gini, 4),
+                "ks": round(ks, 4),
+                "n_booked": int(y_binary.sum()),
+                "n_rejected": int(len(y_binary) - y_binary.sum()),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Analysis 8: Score-rejection-only truncation
+# ---------------------------------------------------------------------------
+def compute_score_rejection_only_truncation(
+    df_demand: pd.DataFrame,
+    score_columns: dict[str, dict],
+) -> pd.DataFrame:
+    """Recompute truncation stats using only score-based rejections.
+
+    Filters demand to ``booked + (rejected AND reject_reason == "09-score")``,
+    excluding non-score rejections ("08-other") that are orthogonal to the score.
+    This gives a cleaner measure of score-based selection intensity.
+    """
+    is_booked = df_demand["status_name"] == StatusName.BOOKED.value
+    is_score_rejected = (df_demand["status_name"] == StatusName.REJECTED.value) & (
+        df_demand["reject_reason"] == RejectReason.SCORE.value
+    )
+    df_filtered = df_demand[is_booked | is_score_rejected].copy()
+
+    if df_filtered.empty:
+        return pd.DataFrame()
+
+    rows: list[dict] = []
+    for score_name, info in score_columns.items():
+        trunc = compute_distribution_truncation(df_filtered, info["column"], score_negate=info.get("negate", False))
+        trunc["score"] = score_name
+        trunc["filter"] = "score_rejection_only"
+        rows.append(trunc)
+
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Analysis 9: Bad rate gradient by score decile (within booked)
+# ---------------------------------------------------------------------------
+def compute_bad_rate_by_decile(
+    df_booked: pd.DataFrame,
+    score_col: str,
+    target_col: str,
+    *,
+    score_negate: bool = False,
+    n_bins: int = 10,
+) -> pd.DataFrame:
+    """Compute bad rate (early_bad) by score decile within booked population.
+
+    A flat curve means the score has no rank-ordering power.
+    A steep gradient means the score discriminates even within the selected range.
+    """
+    df = df_booked.dropna(subset=[score_col, target_col]).copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    sign = -1 if score_negate else 1
+    df["_score"] = sign * df[score_col]
+
+    try:
+        df["_decile"] = pd.qcut(df["_score"], q=n_bins, labels=False, duplicates="drop") + 1
+    except ValueError:
+        return pd.DataFrame()
+
+    agg = (
+        df.groupby("_decile")
+        .agg(
+            score_min=("_score", "min"),
+            score_max=("_score", "max"),
+            n_records=(target_col, "count"),
+            n_bads=(target_col, "sum"),
+        )
+        .reset_index()
+        .rename(columns={"_decile": "decile"})
+    )
+
+    agg["n_bads"] = agg["n_bads"].astype(int)
+    agg["bad_rate"] = (agg["n_bads"] / agg["n_records"]).round(4)
+
+    return agg
+
+
+# ---------------------------------------------------------------------------
+# Analysis 10: Score-to-score correlation
+# ---------------------------------------------------------------------------
+def compute_score_correlations(
+    df_demand: pd.DataFrame,
+    score_columns: dict[str, dict],
+) -> pd.DataFrame:
+    """Compute pairwise Pearson and Spearman correlations between scores.
+
+    Computed on the full demand population (booked + rejected).
+    High correlation means selection on one score automatically truncates the other.
+    """
+    cols = {name: info["column"] for name, info in score_columns.items()}
+    df = df_demand[list(cols.values())].dropna()
+    if df.empty:
+        return pd.DataFrame()
+
+    names = list(cols.keys())
+    raw_cols = list(cols.values())
+    rows: list[dict] = []
+
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            x = df[raw_cols[i]].values
+            y = df[raw_cols[j]].values
+            pearson_r, pearson_p = stats.pearsonr(x, y)
+            spearman_r, spearman_p = stats.spearmanr(x, y)
+            rows.append(
+                {
+                    "score_1": names[i],
+                    "score_2": names[j],
+                    "pearson_r": round(pearson_r, 4),
+                    "pearson_p": round(pearson_p, 6),
+                    "spearman_r": round(spearman_r, 4),
+                    "spearman_p": round(spearman_p, 6),
+                    "n_records": len(x),
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Analysis 11: Reject inference Gini (bin-level imputation)
+# ---------------------------------------------------------------------------
+def compute_ri_gini(
+    df_demand: pd.DataFrame,
+    score_col: str,
+    target_col: str,
+    *,
+    score_negate: bool = False,
+    n_bins: int = 10,
+    uplift_factor: float = 1.5,
+) -> dict:
+    """Estimate full-population Gini by imputing outcomes for rejected applicants.
+
+    For each score decile, the rejected bad rate is imputed as::
+
+        imputed_bad_rate = min(booked_bad_rate * uplift_factor, 1.0)
+
+    Binary outcomes are then sampled for rejected records using this rate,
+    and Gini is computed on the combined (booked-observed + rejected-imputed)
+    population.  Repeated 50 times to produce a mean and CI.
+
+    This is inherently circular (the score informs both selection and imputation)
+    but provides an upper-bound estimate of unrestricted Gini.
+    """
+    rng = np.random.RandomState(42)
+
+    df = df_demand.dropna(subset=[score_col]).copy()
+    if df.empty:
+        return {}
+
+    sign = -1 if score_negate else 1
+    df["_score"] = sign * df[score_col]
+
+    try:
+        df["_decile"] = pd.qcut(df["_score"], q=n_bins, labels=False, duplicates="drop") + 1
+    except ValueError:
+        return {}
+
+    is_booked = df["status_name"] == StatusName.BOOKED.value
+    df_booked = df[is_booked].dropna(subset=[target_col])
+    df_rejected = df[~is_booked]
+
+    if df_booked.empty or df_booked[target_col].nunique() < 2 or df_rejected.empty:
+        return {}
+
+    # Compute per-decile bad rate from booked
+    bin_rates = df_booked.groupby("_decile")[target_col].mean().to_dict()
+
+    # Impute and compute Gini multiple times
+    gini_samples = []
+    for _ in range(50):
+        imputed_bad = np.zeros(len(df_rejected))
+        for dec, rate in bin_rates.items():
+            mask = df_rejected["_decile"].values == dec
+            imputed_rate = min(rate * uplift_factor, 1.0)
+            imputed_bad[mask] = rng.binomial(1, imputed_rate, mask.sum())
+
+        y_full = np.concatenate([df_booked[target_col].values, imputed_bad])
+        s_full = np.concatenate([df_booked["_score"].values, df_rejected["_score"].values])
+
+        if len(np.unique(y_full)) < 2:
+            continue
+        try:
+            gini, _, _, _ = compute_metrics(y_full, s_full)
+            gini_samples.append(gini)
+        except ValueError:
+            continue
+
+    if not gini_samples:
+        return {}
+
+    return {
+        "ri_gini_mean": round(float(np.mean(gini_samples)), 4),
+        "ri_gini_ci_lo": round(float(np.percentile(gini_samples, 2.5)), 4),
+        "ri_gini_ci_hi": round(float(np.percentile(gini_samples, 97.5)), 4),
+        "n_booked": len(df_booked),
+        "n_rejected": len(df_rejected),
+        "uplift_factor": uplift_factor,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Analysis 12: Score PSI over monthly vintages (within booked)
+# ---------------------------------------------------------------------------
+def compute_monthly_psi(
+    df_booked: pd.DataFrame,
+    score_col: str,
+    *,
+    score_negate: bool = False,
+    reference_months: int = 3,
+) -> pd.DataFrame:
+    """Compute PSI of a score's distribution across monthly vintages.
+
+    The first *reference_months* months form the baseline distribution.
+    PSI is then computed for each subsequent month against that baseline.
+
+    High PSI indicates the score distribution is shifting (model drift),
+    which is a separate explanation from selection bias for changing Gini.
+    """
+    df = df_booked.dropna(subset=[score_col]).copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    sign = -1 if score_negate else 1
+    df["_score"] = sign * df[score_col]
+    df["mis_date"] = pd.to_datetime(df["mis_date"])
+    df["year_month"] = df["mis_date"].dt.to_period("M")
+
+    months_sorted = sorted(df["year_month"].unique())
+    if len(months_sorted) <= reference_months:
+        return pd.DataFrame()
+
+    # Baseline: first N months
+    baseline_months = months_sorted[:reference_months]
+    baseline_scores = df[df["year_month"].isin(baseline_months)]["_score"]
+
+    rows: list[dict] = []
+    for month in months_sorted[reference_months:]:
+        comparison_scores = df[df["year_month"] == month]["_score"]
+        if comparison_scores.empty:
+            continue
+        psi_val, _ = calculate_psi(baseline_scores, comparison_scores, bins=10)
+        rows.append(
+            {
+                "month": str(month),
+                "psi": round(psi_val, 4),
+                "n_baseline": len(baseline_scores),
+                "n_comparison": len(comparison_scores),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
 # Master function: full selection bias report for one segment/period
 # ---------------------------------------------------------------------------
 def compute_selection_bias_report(
@@ -513,5 +816,59 @@ def compute_selection_bias_report(
             profile["period"] = period
         rejection_profiles[score_name] = profile
     results["rejection_profiles"] = rejection_profiles
+
+    # 7. Booked-vs-Rejected discriminance
+    bvr = compute_booked_vs_rejected_discriminance(df_demand, score_columns)
+    if not bvr.empty:
+        bvr["segment"] = segment_name
+        bvr["period"] = period
+    results["booked_vs_rejected"] = bvr
+
+    # 8. Score-rejection-only truncation
+    sro = compute_score_rejection_only_truncation(df_demand, score_columns)
+    if not sro.empty:
+        sro["segment"] = segment_name
+        sro["period"] = period
+    results["score_rejection_truncation"] = sro
+
+    # 9. Bad rate gradient by score decile
+    bad_rate_profiles = {}
+    for score_name, info in score_columns.items():
+        br = compute_bad_rate_by_decile(df_booked, info["column"], target_col, score_negate=info.get("negate", False))
+        if not br.empty:
+            br["score"] = score_name
+            br["segment"] = segment_name
+            br["period"] = period
+        bad_rate_profiles[score_name] = br
+    results["bad_rate_profiles"] = bad_rate_profiles
+
+    # 10. Score-to-score correlation
+    corr = compute_score_correlations(df_demand, score_columns)
+    if not corr.empty:
+        corr["segment"] = segment_name
+        corr["period"] = period
+    results["score_correlations"] = corr
+
+    # 11. Reject inference Gini
+    ri_rows = []
+    for score_name, info in score_columns.items():
+        ri = compute_ri_gini(df_demand, info["column"], target_col, score_negate=info.get("negate", False))
+        if ri:
+            ri["score"] = score_name
+            ri["segment"] = segment_name
+            ri["period"] = period
+            ri_rows.append(ri)
+    results["ri_gini"] = pd.DataFrame(ri_rows)
+
+    # 12. Monthly PSI (score stability)
+    psi_profiles = {}
+    for score_name, info in score_columns.items():
+        psi_df = compute_monthly_psi(df_booked, info["column"], score_negate=info.get("negate", False))
+        if not psi_df.empty:
+            psi_df["score"] = score_name
+            psi_df["segment"] = segment_name
+            psi_df["period"] = period
+        psi_profiles[score_name] = psi_df
+    results["monthly_psi"] = psi_profiles
 
     return results

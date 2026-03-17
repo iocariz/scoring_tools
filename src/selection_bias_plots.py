@@ -412,3 +412,280 @@ def plot_cross_segment_scatter(
     plt.close(fig)
     logger.info(f"Cross-segment scatter saved to {fig_path}")
     return fig_path
+
+
+# ---------------------------------------------------------------------------
+# 7. Booked-vs-Rejected discriminance — grouped bar chart
+# ---------------------------------------------------------------------------
+def plot_booked_vs_rejected_discriminance(
+    bvr_df: pd.DataFrame,
+    early_bad_df: pd.DataFrame | None,
+    output_dir: Path,
+) -> Path | None:
+    """Grouped bar chart comparing Gini for booked-vs-rejected vs early_bad targets."""
+    if bvr_df.empty:
+        return None
+
+    apply_matplotlib_style()
+
+    # Merge the two discriminance sources side by side
+    bvr = bvr_df[["segment", "score", "gini"]].copy().rename(columns={"gini": "gini_bvr"})
+
+    if early_bad_df is not None and not early_bad_df.empty:
+        eb = early_bad_df[["segment", "score", "gini"]].copy().rename(columns={"gini": "gini_early_bad"})
+        merged = bvr.merge(eb, on=["segment", "score"], how="left")
+    else:
+        merged = bvr.copy()
+        merged["gini_early_bad"] = 0.0
+
+    merged["label"] = merged["segment"] + " / " + merged["score"]
+    labels = merged["label"].tolist()
+    x = np.arange(len(labels))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(max(8, 2.5 * len(labels)), 6))
+    ax.bar(x - width / 2, merged["gini_bvr"], width, label="Booked vs Rejected (selection)", color=COLOR_ACCENT)
+    ax.bar(x + width / 2, merged["gini_early_bad"], width, label="Early Bad (outcome)", color=COLOR_RISK)
+
+    for i, row in merged.iterrows():
+        ax.text(
+            x[i] - width / 2, row["gini_bvr"] + 0.005, f"{row['gini_bvr']:.3f}", ha="center", va="bottom", fontsize=8
+        )
+        ax.text(
+            x[i] + width / 2,
+            row["gini_early_bad"] + 0.005,
+            f"{row['gini_early_bad']:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=9)
+    ax.set_ylabel("Gini")
+    ax.set_title("Selection Gini vs Outcome Gini", fontsize=15, fontweight="bold")
+    ax.legend(fontsize=10)
+    ax.axhline(0, color="black", lw=0.5)
+
+    fig.tight_layout()
+    fig_path = output_dir / "booked_vs_rejected_discriminance.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Booked-vs-rejected discriminance plot saved to {fig_path}")
+    return fig_path
+
+
+# ---------------------------------------------------------------------------
+# 8. Score-rejection-only truncation — comparison bar chart
+# ---------------------------------------------------------------------------
+def plot_truncation_comparison(
+    all_trunc: pd.DataFrame,
+    score_only_trunc: pd.DataFrame,
+    output_dir: Path,
+) -> Path | None:
+    """Bar chart comparing u_ratio from all demand vs score-rejection-only."""
+    if all_trunc.empty or score_only_trunc.empty:
+        return None
+
+    apply_matplotlib_style()
+
+    at = all_trunc[["segment", "score", "u_ratio"]].copy().rename(columns={"u_ratio": "u_all"})
+    so = score_only_trunc[["segment", "score", "u_ratio"]].copy().rename(columns={"u_ratio": "u_score_only"})
+    merged = at.merge(so, on=["segment", "score"], how="inner")
+
+    if merged.empty:
+        return None
+
+    merged["label"] = merged["segment"] + " / " + merged["score"]
+    labels = merged["label"].tolist()
+    x = np.arange(len(labels))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(max(8, 2.5 * len(labels)), 6))
+    ax.bar(x - width / 2, merged["u_all"], width, label="All demand", color=COLOR_SECONDARY)
+    ax.bar(x + width / 2, merged["u_score_only"], width, label="Score-rejection only", color=COLOR_ACCENT)
+
+    for i, row in merged.iterrows():
+        ax.text(x[i] - width / 2, row["u_all"] + 0.005, f"{row['u_all']:.3f}", ha="center", va="bottom", fontsize=8)
+        ax.text(
+            x[i] + width / 2,
+            row["u_score_only"] + 0.005,
+            f"{row['u_score_only']:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=9)
+    ax.set_ylabel("u ratio (SD_booked / SD_demand)")
+    ax.set_title("Variance Ratio: All Demand vs Score-Rejection Only", fontsize=15, fontweight="bold")
+    ax.axhline(1.0, color=COLOR_RISK, linestyle="--", lw=1, label="u = 1 (no restriction)")
+    ax.legend(fontsize=10)
+
+    fig.tight_layout()
+    fig_path = output_dir / "truncation_comparison.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Truncation comparison plot saved to {fig_path}")
+    return fig_path
+
+
+# ---------------------------------------------------------------------------
+# 9. Bad rate by score decile — line chart
+# ---------------------------------------------------------------------------
+def plot_bad_rate_by_decile(
+    profiles: dict[str, pd.DataFrame],
+    segment_name: str,
+    output_dir: Path,
+) -> Path | None:
+    """Line chart of bad rate by score decile within booked."""
+    non_empty = {k: v for k, v in profiles.items() if not v.empty}
+    if not non_empty:
+        return None
+
+    apply_matplotlib_style()
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for score_name, prof in non_empty.items():
+        color = SCORE_COLORS.get(score_name, COLOR_SECONDARY)
+        ax.plot(
+            prof["decile"],
+            prof["bad_rate"] * 100,
+            marker="o",
+            markersize=6,
+            lw=2,
+            label=score_name,
+            color=color,
+        )
+
+    overall_rate = sum(p["n_bads"].sum() for p in non_empty.values()) / max(
+        sum(p["n_records"].sum() for p in non_empty.values()), 1
+    )
+    ax.axhline(
+        overall_rate * 100, color=COLOR_SECONDARY, linestyle="--", lw=1, label=f"Overall ({overall_rate * 100:.2f}%)"
+    )
+
+    ax.set_xlabel("Score Decile (1 = safest)")
+    ax.set_ylabel("Bad Rate (%)")
+    ax.set_title(f"Bad Rate by Score Decile (Booked): {segment_name}", fontsize=14, fontweight="bold")
+    ax.legend(fontsize=10)
+    ax.grid(True, linestyle="--", lw=0.5)
+
+    fig.tight_layout()
+    fig_path = output_dir / f"bad_rate_decile_{segment_name}.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Bad rate by decile plot saved to {fig_path}")
+    return fig_path
+
+
+# ---------------------------------------------------------------------------
+# 10. RI Gini — bar chart (observed vs RI-imputed)
+# ---------------------------------------------------------------------------
+def plot_ri_gini(
+    ri_df: pd.DataFrame,
+    thorndike_df: pd.DataFrame | None,
+    output_dir: Path,
+) -> Path | None:
+    """Bar chart comparing observed Gini, Thorndike-corrected, and RI-imputed."""
+    if ri_df.empty:
+        return None
+
+    apply_matplotlib_style()
+
+    df = ri_df.copy()
+    if thorndike_df is not None and not thorndike_df.empty:
+        df = df.merge(
+            thorndike_df[["segment", "score", "observed_gini", "corrected_gini"]],
+            on=["segment", "score"],
+            how="left",
+        )
+    else:
+        df["observed_gini"] = 0.0
+        df["corrected_gini"] = 0.0
+
+    df["label"] = df["segment"] + " / " + df["score"]
+    labels = df["label"].tolist()
+    x = np.arange(len(labels))
+    width = 0.25
+
+    fig, ax = plt.subplots(figsize=(max(8, 3 * len(labels)), 6))
+    ax.bar(x - width, df["observed_gini"], width, label="Observed", color=COLOR_SECONDARY)
+    ax.bar(x, df["corrected_gini"], width, label="Thorndike corrected", color=COLOR_ACCENT)
+    ax.bar(x + width, df["ri_gini_mean"], width, label="RI-imputed", color=COLOR_PRODUCTION)
+
+    # Error bars for RI
+    ri_err_lo = df["ri_gini_mean"] - df["ri_gini_ci_lo"]
+    ri_err_hi = df["ri_gini_ci_hi"] - df["ri_gini_mean"]
+    ax.errorbar(x + width, df["ri_gini_mean"], yerr=[ri_err_lo, ri_err_hi], fmt="none", ecolor="black", capsize=3)
+
+    for i, row in df.iterrows():
+        ax.text(
+            x[i] - width,
+            row["observed_gini"] + 0.005,
+            f"{row['observed_gini']:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=7,
+        )
+        ax.text(
+            x[i] + width,
+            row["ri_gini_mean"] + 0.005,
+            f"{row['ri_gini_mean']:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=7,
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=9)
+    ax.set_ylabel("Gini")
+    ax.set_title("Observed vs Corrected vs RI-Imputed Gini", fontsize=15, fontweight="bold")
+    ax.legend(fontsize=10)
+    ax.axhline(0, color="black", lw=0.5)
+
+    fig.tight_layout()
+    fig_path = output_dir / "ri_gini_comparison.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"RI Gini comparison plot saved to {fig_path}")
+    return fig_path
+
+
+# ---------------------------------------------------------------------------
+# 11. Monthly PSI — line chart
+# ---------------------------------------------------------------------------
+def plot_monthly_psi(
+    psi_profiles: dict[str, pd.DataFrame],
+    segment_name: str,
+    output_dir: Path,
+) -> Path | None:
+    """Line chart of monthly PSI per score."""
+    non_empty = {k: v for k, v in psi_profiles.items() if not v.empty}
+    if not non_empty:
+        return None
+
+    apply_matplotlib_style()
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    for score_name, psi_df in non_empty.items():
+        color = SCORE_COLORS.get(score_name, COLOR_SECONDARY)
+        ax.plot(psi_df["month"], psi_df["psi"], marker="o", markersize=5, lw=2, label=score_name, color=color)
+
+    ax.axhline(0.1, color="#F39C12", linestyle="--", lw=1, label="Moderate (0.1)")
+    ax.axhline(0.25, color=COLOR_RISK, linestyle="--", lw=1, label="Significant (0.25)")
+
+    ax.set_xlabel("Month")
+    ax.set_ylabel("PSI")
+    ax.set_title(f"Score Distribution Stability (PSI): {segment_name}", fontsize=14, fontweight="bold")
+    ax.legend(fontsize=9)
+    ax.grid(True, linestyle="--", lw=0.5)
+    ax.tick_params(axis="x", rotation=45)
+
+    fig.tight_layout()
+    fig_path = output_dir / f"monthly_psi_{segment_name}.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Monthly PSI plot saved to {fig_path}")
+    return fig_path

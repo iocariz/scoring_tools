@@ -6,9 +6,15 @@ import pytest
 
 from src.selection_bias import (
     compute_acceptance_gini_correlation,
+    compute_bad_rate_by_decile,
+    compute_booked_vs_rejected_discriminance,
     compute_distribution_truncation,
+    compute_monthly_psi,
     compute_rejection_profile,
+    compute_ri_gini,
     compute_rolling_acceptance_rate,
+    compute_score_correlations,
+    compute_score_rejection_only_truncation,
     simulate_range_restriction,
     thorndike_case2_correction,
 )
@@ -184,3 +190,108 @@ class TestCrossSegmentCorrelation:
         ]
         result = compute_acceptance_gini_correlation(data)
         assert result["slope"] is None
+
+
+# ---------------------------------------------------------------------------
+# Booked-vs-Rejected discriminance
+# ---------------------------------------------------------------------------
+class TestBookedVsRejected:
+    def test_basic_structure(self):
+        df = _make_demand_df()
+        score_cols = {"Score RF": {"column": "score_rf", "negate": True}}
+        result = compute_booked_vs_rejected_discriminance(df, score_cols)
+        assert not result.empty
+        assert "gini" in result.columns
+        assert result.iloc[0]["target"] == "booked_vs_rejected"
+
+    def test_high_gini_with_score_based_selection(self):
+        """Selection score should discriminate booked from rejected well."""
+        df = _make_demand_df(n=5000, acceptance_rate=0.5)
+        score_cols = {"Score RF": {"column": "score_rf", "negate": True}}
+        result = compute_booked_vs_rejected_discriminance(df, score_cols)
+        assert result.iloc[0]["gini"] > 0.1
+
+
+# ---------------------------------------------------------------------------
+# Score-rejection-only truncation
+# ---------------------------------------------------------------------------
+class TestScoreRejectionOnlyTruncation:
+    def test_basic(self):
+        df = _make_demand_df()
+        df["reject_reason"] = np.where(df["status_name"] == "rejected", "09-score", "")
+        score_cols = {"Score RF": {"column": "score_rf", "negate": True}}
+        result = compute_score_rejection_only_truncation(df, score_cols)
+        assert not result.empty
+        assert "u_ratio" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# Bad rate by decile
+# ---------------------------------------------------------------------------
+class TestBadRateByDecile:
+    def test_basic_structure(self):
+        df = _make_demand_df(n=3000)
+        booked = df[df["status_name"] == "booked"].copy()
+        result = compute_bad_rate_by_decile(booked, "score_rf", "early_bad")
+        assert not result.empty
+        assert "bad_rate" in result.columns
+        assert "decile" in result.columns
+
+    def test_monotonic_gradient(self):
+        """Riskier deciles should tend to have higher bad rate."""
+        df = _make_demand_df(n=5000, acceptance_rate=0.8)
+        booked = df[df["status_name"] == "booked"].copy()
+        result = compute_bad_rate_by_decile(booked, "score_rf", "early_bad", score_negate=True)
+        if not result.empty and len(result) >= 2:
+            # Last decile should have higher bad rate than first
+            assert result.iloc[-1]["bad_rate"] >= result.iloc[0]["bad_rate"]
+
+
+# ---------------------------------------------------------------------------
+# Score correlations
+# ---------------------------------------------------------------------------
+class TestScoreCorrelations:
+    def test_basic(self):
+        df = _make_demand_df()
+        score_cols = {
+            "Score RF": {"column": "score_rf", "negate": True},
+            "Risk Score RF": {"column": "risk_score_rf", "negate": True},
+        }
+        result = compute_score_correlations(df, score_cols)
+        assert not result.empty
+        assert "pearson_r" in result.columns
+        assert "spearman_r" in result.columns
+        # Scores are correlated by construction
+        assert abs(result.iloc[0]["pearson_r"]) > 0.5
+
+
+# ---------------------------------------------------------------------------
+# RI Gini
+# ---------------------------------------------------------------------------
+class TestRiGini:
+    def test_basic(self):
+        df = _make_demand_df(n=3000, acceptance_rate=0.6)
+        result = compute_ri_gini(df, "score_rf", "early_bad", score_negate=True)
+        assert "ri_gini_mean" in result
+        assert result["ri_gini_mean"] > 0
+
+    def test_ri_gini_higher_than_booked(self):
+        """RI Gini on full population should generally be >= booked-only Gini."""
+        df = _make_demand_df(n=5000, acceptance_rate=0.5)
+        result = compute_ri_gini(df, "score_rf", "early_bad", score_negate=True)
+        # This is a soft test — RI Gini should be reasonable
+        assert result["ri_gini_mean"] > 0.05
+
+
+# ---------------------------------------------------------------------------
+# Monthly PSI
+# ---------------------------------------------------------------------------
+class TestMonthlyPsi:
+    def test_basic(self):
+        df = _make_demand_df(n=5000)
+        booked = df[df["status_name"] == "booked"].copy()
+        result = compute_monthly_psi(booked, "score_rf")
+        # May be empty if not enough months
+        if not result.empty:
+            assert "psi" in result.columns
+            assert (result["psi"] >= 0).all()

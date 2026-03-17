@@ -47,11 +47,16 @@ from src.selection_bias import (
 )
 from src.selection_bias_plots import (
     plot_all_truncation_panels,
+    plot_bad_rate_by_decile,
+    plot_booked_vs_rejected_discriminance,
     plot_cross_segment_scatter,
+    plot_monthly_psi,
     plot_rejection_profile,
+    plot_ri_gini,
     plot_simulated_restriction,
     plot_temporal_acceptance_vs_gini,
     plot_thorndike_correction,
+    plot_truncation_comparison,
 )
 from src.utils import resolve_reporting_supersegment
 
@@ -83,6 +88,12 @@ def _run_analyses_for_group(
     all_rolling_acceptance: list,
     all_rolling_gini: list,
     cross_group_data: list,
+    all_bvr: list,
+    all_score_only_trunc: list,
+    all_bad_rate_profiles: list,
+    all_score_corr: list,
+    all_ri_gini: list,
+    all_monthly_psi: list,
 ):
     """Run all selection bias analyses for one group (supersegment or total) and period."""
     if not date_ini or not date_fin:
@@ -137,9 +148,32 @@ def _run_analyses_for_group(
             safe = f"{label}_{score_name.replace(' ', '_')}"
             profile_df.to_csv(profile_dir / f"{safe}.csv", index=False)
 
+    # New analyses (7-12)
+    if not report["booked_vs_rejected"].empty:
+        all_bvr.append(report["booked_vs_rejected"])
+
+    if not report["score_rejection_truncation"].empty:
+        all_score_only_trunc.append(report["score_rejection_truncation"])
+
+    for _, br_df in report["bad_rate_profiles"].items():
+        if not br_df.empty:
+            all_bad_rate_profiles.append(br_df)
+
+    if not report["score_correlations"].empty:
+        all_score_corr.append(report["score_correlations"])
+
+    if not report["ri_gini"].empty:
+        all_ri_gini.append(report["ri_gini"])
+
+    for _, psi_df in report["monthly_psi"].items():
+        if not psi_df.empty:
+            all_monthly_psi.append(psi_df)
+
     # Plots
     plot_all_truncation_panels(df_demand_period, SCORE_COLUMNS, label, out_dir)
     plot_rejection_profile(report["rejection_profiles"], label, out_dir)
+    plot_bad_rate_by_decile(report["bad_rate_profiles"], label, out_dir)
+    plot_monthly_psi(report["monthly_psi"], label, out_dir)
 
     # Cross-group scatter data
     required = [TARGET_COLUMN] + [s["column"] for s in SCORE_COLUMNS.values()]
@@ -196,6 +230,12 @@ def generate_selection_bias_report(
     all_rolling_acceptance: list[pd.DataFrame] = []
     all_rolling_gini: list[pd.DataFrame] = []
     cross_group_data: list[dict] = []
+    all_bvr: list[pd.DataFrame] = []
+    all_score_only_trunc: list[pd.DataFrame] = []
+    all_bad_rate_profiles: list[pd.DataFrame] = []
+    all_score_corr: list[pd.DataFrame] = []
+    all_ri_gini: list[pd.DataFrame] = []
+    all_monthly_psi: list[pd.DataFrame] = []
 
     # --- Build per-segment base DataFrames (demand = booked + rejected) ---
     segment_base_cache: dict[str, pd.DataFrame] = {}
@@ -234,6 +274,12 @@ def generate_selection_bias_report(
             "all_rolling_acceptance": all_rolling_acceptance,
             "all_rolling_gini": all_rolling_gini,
             "cross_group_data": cross_group_data,
+            "all_bvr": all_bvr,
+            "all_score_only_trunc": all_score_only_trunc,
+            "all_bad_rate_profiles": all_bad_rate_profiles,
+            "all_score_corr": all_score_corr,
+            "all_ri_gini": all_ri_gini,
+            "all_monthly_psi": all_monthly_psi,
         }
 
         for period, d_ini, d_fin in [
@@ -256,6 +302,12 @@ def generate_selection_bias_report(
             "all_rolling_acceptance": all_rolling_acceptance,
             "all_rolling_gini": all_rolling_gini,
             "cross_group_data": cross_group_data,
+            "all_bvr": all_bvr,
+            "all_score_only_trunc": all_score_only_trunc,
+            "all_bad_rate_profiles": all_bad_rate_profiles,
+            "all_score_corr": all_score_corr,
+            "all_ri_gini": all_ri_gini,
+            "all_monthly_psi": all_monthly_psi,
         }
 
         for period, d_ini, d_fin in [
@@ -323,6 +375,58 @@ def generate_selection_bias_report(
 
         regression = compute_acceptance_gini_correlation(cross_group_data)
         plot_cross_segment_scatter(cross_group_data, regression, out_dir)
+
+    # --- New analyses (7-12) ---
+
+    # 7. Booked-vs-Rejected discriminance
+    if all_bvr:
+        bvr_df = pd.concat(all_bvr, ignore_index=True)
+        bvr_df.to_csv(out_dir / "booked_vs_rejected_discriminance.csv", index=False)
+        outputs["booked_vs_rejected"] = bvr_df
+        logger.info(f"Booked-vs-rejected discriminance saved ({len(bvr_df)} rows)")
+        # Build early_bad Gini from cross_group_data for comparison plot
+        eb_df = pd.DataFrame(cross_group_data) if cross_group_data else None
+        plot_booked_vs_rejected_discriminance(bvr_df, eb_df, out_dir)
+
+    # 8. Score-rejection-only truncation
+    if all_score_only_trunc:
+        sro_df = pd.concat(all_score_only_trunc, ignore_index=True)
+        sro_df.to_csv(out_dir / "score_rejection_only_truncation.csv", index=False)
+        outputs["score_rejection_truncation"] = sro_df
+        logger.info(f"Score-rejection-only truncation saved ({len(sro_df)} rows)")
+        if all_truncation:
+            trunc_df = outputs.get("truncation", pd.concat(all_truncation, ignore_index=True))
+            plot_truncation_comparison(trunc_df, sro_df, out_dir)
+
+    # 9. Bad rate profiles (already saved per-group above, collect CSV)
+    if all_bad_rate_profiles:
+        br_df = pd.concat(all_bad_rate_profiles, ignore_index=True)
+        br_df.to_csv(out_dir / "bad_rate_by_decile.csv", index=False)
+        outputs["bad_rate_profiles"] = br_df
+        logger.info(f"Bad rate by decile saved ({len(br_df)} rows)")
+
+    # 10. Score correlations
+    if all_score_corr:
+        corr_df = pd.concat(all_score_corr, ignore_index=True)
+        corr_df.to_csv(out_dir / "score_correlations.csv", index=False)
+        outputs["score_correlations"] = corr_df
+        logger.info(f"Score correlations saved ({len(corr_df)} rows)")
+
+    # 11. RI Gini
+    if all_ri_gini:
+        ri_df = pd.concat(all_ri_gini, ignore_index=True)
+        ri_df.to_csv(out_dir / "ri_gini.csv", index=False)
+        outputs["ri_gini"] = ri_df
+        logger.info(f"RI Gini saved ({len(ri_df)} rows)")
+        thor_df = outputs.get("thorndike")
+        plot_ri_gini(ri_df, thor_df, out_dir)
+
+    # 12. Monthly PSI (already saved per-group above, collect CSV)
+    if all_monthly_psi:
+        psi_df = pd.concat(all_monthly_psi, ignore_index=True)
+        psi_df.to_csv(out_dir / "monthly_psi.csv", index=False)
+        outputs["monthly_psi"] = psi_df
+        logger.info(f"Monthly PSI saved ({len(psi_df)} rows)")
 
     return outputs
 
@@ -403,6 +507,31 @@ def main():
                 pivot["gini_drop_pct"] = ((pivot[1.0] - pivot[0.5]) / pivot[1.0] * 100).round(1)
             print(pivot.to_string())
 
+    if "booked_vs_rejected" in outputs:
+        print("\n--- Booked-vs-Rejected Discriminance (selection Gini) ---")
+        print(
+            outputs["booked_vs_rejected"][["segment", "score", "gini", "ks", "n_booked", "n_rejected"]].to_string(
+                index=False
+            )
+        )
+
+    if "score_rejection_truncation" in outputs:
+        print("\n--- Score-Rejection-Only Truncation (u ratio) ---")
+        sro = outputs["score_rejection_truncation"]
+        print(sro[["segment", "score", "u_ratio", "acceptance_rate", "n_demand", "n_booked"]].to_string(index=False))
+
+    if "score_correlations" in outputs:
+        print("\n--- Score-to-Score Correlations (full demand) ---")
+        print(outputs["score_correlations"].to_string(index=False))
+
+    if "ri_gini" in outputs:
+        print("\n--- Reject Inference Gini (imputed) ---")
+        print(
+            outputs["ri_gini"][["segment", "score", "ri_gini_mean", "ri_gini_ci_lo", "ri_gini_ci_hi"]].to_string(
+                index=False
+            )
+        )
+
     if "cross_group" in outputs:
         print("\n--- Cross-Group: Acceptance Rate vs Gini ---")
         cs = outputs["cross_group"]
@@ -413,20 +542,7 @@ def main():
             p = regression.get("p_value", "N/A")
             print(f"  {score_name}: r={r}, p={p} (n={len(sdf)} groups)")
 
-    print(f"\nOutputs saved to {args.output}/:")
-    print("  - truncation_report.csv              (distribution statistics)")
-    print("  - thorndike_correction.csv            (observed vs corrected Gini)")
-    print("  - simulated_restriction.csv           (progressive truncation)")
-    print("  - rolling_acceptance.csv              (3-month rolling acceptance)")
-    print("  - temporal_gini_vs_acceptance.csv      (merged rolling Gini + acceptance)")
-    print("  - cross_group_scatter.csv             (acceptance vs Gini per group)")
-    print("  - rejection_profiles/*.csv            (booked/rejected by decile)")
-    print("  - truncation_*.png                    (KDE overlays)")
-    print("  - thorndike_correction.png            (bar chart)")
-    print("  - simulated_restriction.png           (sensitivity curves)")
-    print("  - temporal_acceptance_vs_gini.png     (within-group scatter)")
-    print("  - rejection_profile_*.png             (stacked bars)")
-    print("  - cross_segment_acceptance_vs_gini.png (scatter)")
+    print(f"\nOutputs saved to {args.output}/")
 
     return 0
 
