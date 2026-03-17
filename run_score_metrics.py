@@ -30,9 +30,11 @@ from run_batch import (
 )
 from src.metrics import (
     calculate_lift_table,
+    compute_metrics,
     compute_precision_recall,
     compute_score_discriminance,
     delong_test,
+    train_logistic_regression,
 )
 from src.plots import plot_precision_recall_curve, plot_roc_curve, plot_score_distribution
 from src.styles import (
@@ -101,12 +103,25 @@ def _validate_target(df: pd.DataFrame, label: str) -> bool:
     return True
 
 
-def _prepare_scores(df: pd.DataFrame) -> dict[str, np.ndarray]:
-    """Build negated score arrays from the dataframe, matching SCORE_COLUMNS config."""
+def _prepare_scores(df: pd.DataFrame, include_combined: bool = False) -> dict[str, np.ndarray]:
+    """Build negated score arrays from the dataframe, matching SCORE_COLUMNS config.
+
+    When *include_combined* is True, also fit a logistic regression on
+    COMBINED_COLUMNS and append the resulting combined scores.
+    """
     scores = {}
     for name, info in SCORE_COLUMNS.items():
         sign = -1 if info["negate"] else 1
         scores[name] = sign * df[info["column"]].values
+
+    if include_combined and COMBINED_COLUMNS:
+        y = df[TARGET_COLUMN].values
+        for cname, columns in COMBINED_COLUMNS.items():
+            if any(c not in df.columns for c in columns):
+                continue
+            log_reg, X_std = train_logistic_regression(df[list(columns)], y)
+            scores[cname] = (log_reg.coef_[0] * X_std).sum(axis=1)
+
     return scores
 
 
@@ -146,7 +161,7 @@ def _compute_for_period(
         return None
 
     y_true = df_booked[TARGET_COLUMN].values
-    scores_dict = _prepare_scores(df_booked)
+    scores_dict = _prepare_scores(df_booked, include_combined=True)
 
     # 1. Discriminance (AUROC, Gini, KS)
     metrics_df = compute_score_discriminance(
@@ -159,6 +174,8 @@ def _compute_for_period(
     metrics_df["name"] = name
     metrics_df["supersegment"] = supersegment
     metrics_df["period"] = period
+    metrics_df["date_ini"] = date_ini
+    metrics_df["date_fin"] = date_fin
 
     # 2. Lift tables per score
     lift_tables = {}
@@ -192,11 +209,137 @@ def _compute_for_period(
         "delong_results": delong_results,
         "scores_dict": scores_dict,
         "y_true": y_true,
+        "df_booked": df_booked,
         "label": label,
         "level": level,
         "name": name,
         "period": period,
+        "date_ini": date_ini,
+        "date_fin": date_fin,
     }
+
+
+def _compute_rolling_gini(
+    df_booked: pd.DataFrame,
+    level: str,
+    name: str,
+    period: str,
+    window_months: int = 3,
+) -> pd.DataFrame:
+    """
+    Compute Gini per score in a rolling window of *window_months* months.
+
+    The DataFrame must already be filtered to booked records within the
+    period and have ``mis_date`` as a datetime column.
+
+    Returns a DataFrame with columns:
+        [level, name, period, month, score, gini, n_records, n_bads].
+    """
+    required_cols = [TARGET_COLUMN] + [s["column"] for s in SCORE_COLUMNS.values()]
+    df = df_booked.dropna(subset=required_cols).copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    df["mis_date"] = pd.to_datetime(df["mis_date"])
+    df["year_month"] = df["mis_date"].dt.to_period("M")
+
+    months_sorted = sorted(df["year_month"].unique())
+    if len(months_sorted) < window_months:
+        logger.warning(
+            f"[{level}/{name}/{period}] Only {len(months_sorted)} month(s) available — "
+            f"need at least {window_months} for rolling Gini."
+        )
+        return pd.DataFrame()
+
+    rows: list[dict] = []
+    for i in range(len(months_sorted) - window_months + 1):
+        window = months_sorted[i : i + window_months]
+        window_end = window[-1]
+        df_win = df[df["year_month"].isin(window)]
+
+        if df_win.empty or df_win[TARGET_COLUMN].nunique() < 2:
+            continue
+
+        y_true = df_win[TARGET_COLUMN].values
+        scores_dict = _prepare_scores(df_win, include_combined=True)
+        n_records = len(y_true)
+        n_bads = int(y_true.sum())
+
+        for score_name, score_arr in scores_dict.items():
+            try:
+                gini, _, _, _ = compute_metrics(y_true, score_arr)
+            except ValueError:
+                continue
+            rows.append(
+                {
+                    "level": level,
+                    "name": name,
+                    "period": period,
+                    "month": str(window_end),
+                    "score": score_name,
+                    "gini": round(gini, 4),
+                    "n_records": n_records,
+                    "n_bads": n_bads,
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def plot_rolling_gini(df: pd.DataFrame, output_dir: Path) -> Path | None:
+    """
+    Line chart of rolling 3-month Gini over time.
+
+    One subplot per (level, name, period) combination.
+    """
+    if df.empty:
+        return None
+
+    apply_matplotlib_style()
+
+    groups = df.groupby(["level", "name", "period"])
+    n_groups = len(groups)
+    if n_groups == 0:
+        return None
+
+    ncols = min(n_groups, 3)
+    nrows = (n_groups + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(7 * ncols, 5 * nrows), squeeze=False)
+
+    for idx, ((lvl, nm, per), gdf) in enumerate(groups):
+        ax = axes[idx // ncols, idx % ncols]
+        for score_name in gdf["score"].unique():
+            sdf = gdf[gdf["score"] == score_name].sort_values("month")
+            color = SCORE_COLORS.get(score_name, "#95A5A6")
+            ax.plot(sdf["month"], sdf["gini"], marker="o", markersize=4, lw=2, label=score_name, color=color)
+
+        if lvl == "total":
+            title = f"[TOTAL] ({per})"
+        elif lvl == "supersegment":
+            title = f"[SS] {nm} ({per})"
+        else:
+            title = f"{nm} ({per})"
+        ax.set_title(title, fontsize=12)
+        ax.set_xlabel("Month (window end)")
+        ax.set_ylabel("Gini")
+        ax.legend(fontsize=9)
+        ax.grid(True, linestyle="--", linewidth=0.5)
+        ax.tick_params(axis="x", rotation=45)
+
+    # Hide unused axes
+    for idx in range(n_groups, nrows * ncols):
+        axes[idx // ncols, idx % ncols].set_visible(False)
+
+    fig.suptitle("Rolling 3-Month Gini", fontsize=16, fontweight="bold", color=COLOR_PRIMARY, y=1.02)
+    fig.tight_layout()
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fig_path = output_dir / "rolling_gini.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Rolling Gini plot saved to {fig_path}")
+    return fig_path
 
 
 # ---------------------------------------------------------------------------
@@ -223,12 +366,14 @@ def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
     apply_matplotlib_style()
 
     df = df.copy()
-    df["x_label"] = df.apply(
-        lambda r: (
-            f"[SS] {r['name']} ({r['period']})" if r["level"] == "supersegment" else f"{r['name']} ({r['period']})"
-        ),
-        axis=1,
-    )
+    def _make_x_label(r):
+        if r["level"] == "supersegment":
+            return f"[SS] {r['name']} ({r['period']})"
+        if r["level"] == "total":
+            return f"[TOTAL] ({r['period']})"
+        return f"{r['name']} ({r['period']})"
+
+    df["x_label"] = df.apply(_make_x_label, axis=1)
 
     label_order = (
         df.sort_values(["level", "name", "period"], ascending=[False, True, True])["x_label"].drop_duplicates().tolist()
@@ -369,7 +514,15 @@ def plot_monitoring_dashboard(period_result: dict, output_dir: Path) -> Path:
     # [2,1] Empty for now
     axes[2, 1].set_visible(False)
 
-    fig.suptitle(f"Score Monitoring: {label}", fontsize=18, fontweight="bold", color=COLOR_PRIMARY, y=1.02)
+    date_ini = period_result.get("date_ini", "")
+    date_fin = period_result.get("date_fin", "")
+    fig.suptitle(
+        f"Score Monitoring: {label}\n({date_ini}  \u2192  {date_fin})",
+        fontsize=18,
+        fontweight="bold",
+        color=COLOR_PRIMARY,
+        y=1.04,
+    )
     fig.tight_layout()
 
     safe_label = label.replace("/", "_")
@@ -481,6 +634,27 @@ def generate_score_discriminance_report(
                 safe_name = f"SS_{ss_name}_{period}_{score_name.replace(' ', '_')}"
                 lift_df.to_csv(lift_dir / f"{safe_name}.csv", index=False)
 
+    # --- Total (all segments combined) ---
+    if segment_base_cache:
+        df_total = pd.concat(segment_base_cache.values(), ignore_index=True)
+        logger.info(f"Processing total: {len(segment_base_cache)} segments, {len(df_total):,} rows")
+
+        for period, d_ini, d_fin in [
+            ("main", date_ini_main, date_fin_main),
+            ("mr", date_ini_mr, date_fin_mr),
+        ]:
+            result = _compute_for_period(df_total, d_ini, d_fin, period, "total", "total", "")
+            if result is None:
+                continue
+
+            all_discriminance.append(result["discriminance_df"])
+            all_delong.extend(result["delong_results"])
+            all_period_results.append(result)
+
+            for score_name, lift_df in result["lift_tables"].items():
+                safe_name = f"TOTAL_{period}_{score_name.replace(' ', '_')}"
+                lift_df.to_csv(lift_dir / f"{safe_name}.csv", index=False)
+
     # --- Assemble & save ---
     if not all_discriminance:
         logger.warning("No metrics computed — output files will not be created.")
@@ -493,6 +667,8 @@ def generate_score_discriminance_report(
         "name",
         "supersegment",
         "period",
+        "date_ini",
+        "date_fin",
         "score",
         "auroc",
         "gini",
@@ -528,6 +704,24 @@ def generate_score_discriminance_report(
         delong_df = delong_df.round({"auc1": 4, "auc2": 4, "auc_diff": 4, "se_diff": 4, "z_statistic": 3, "p_value": 4})
         delong_df.to_csv(out_dir / "delong_comparisons.csv", index=False)
         logger.info(f"DeLong comparisons saved to {out_dir / 'delong_comparisons.csv'}")
+
+    # Rolling 3-month Gini
+    all_rolling: list[pd.DataFrame] = []
+    for result in all_period_results:
+        rg = _compute_rolling_gini(
+            result["df_booked"],
+            level=result["level"],
+            name=result["name"],
+            period=result["period"],
+        )
+        if not rg.empty:
+            all_rolling.append(rg)
+
+    if all_rolling:
+        rolling_df = pd.concat(all_rolling, ignore_index=True)
+        rolling_df.to_csv(out_dir / "rolling_gini.csv", index=False)
+        logger.info(f"Rolling Gini saved to {out_dir / 'rolling_gini.csv'}")
+        plot_rolling_gini(rolling_df, out_dir)
 
     # Per-period monitoring dashboards
     for result in all_period_results:
@@ -618,8 +812,10 @@ def main():
             print("\n  * No significant AUC differences detected")
 
     print(f"\nOutputs saved to {args.output}/:")
-    print("  - score_discriminance.csv    (AUROC, Gini, KS)")
+    print("  - score_discriminance.csv    (AUROC, Gini, KS + period dates)")
     print("  - score_discriminance.png    (bar chart)")
+    print("  - rolling_gini.csv           (3-month rolling Gini)")
+    print("  - rolling_gini.png           (rolling Gini line chart)")
     print("  - delong_comparisons.csv     (pairwise AUC tests)")
     print("  - lift_tables/*.csv          (decile lift tables)")
     print("  - monitoring_*.png           (per-segment dashboards)")
