@@ -170,10 +170,17 @@ def load_segments_config(segments_path: str = "segments.toml") -> dict[str, dict
 
 
 def load_supersegments_config(segments_path: str = "segments.toml") -> dict[str, dict[str, Any]]:
-    """Load supersegment configurations from segments.toml."""
+    """Load supersegment configurations from segments.toml.
+
+    Merges names from ``supersegments``, ``modelling_supersegments``, and
+    ``reporting_supersegments`` so that validation sees all defined supersegments.
+    """
     with open(segments_path, "rb") as f:
         config = tomllib.load(f)
-    return config.get("supersegments", {})
+    merged: dict[str, dict[str, Any]] = {}
+    for key in ("supersegments", "modelling_supersegments", "reporting_supersegments"):
+        merged.update(config.get(key, {}))
+    return merged
 
 
 def create_output_directories(base_output_dir: Path) -> dict[str, Path]:

@@ -20,8 +20,26 @@
 #   modelling:  modelling_supersegment > supersegment > None (train own model)
 #   reporting:  reporting_supersegment > supersegment > None (standalone)
 
-[supersegments.total]
+[reporting_supersegments.known]
 # List of segment_filter values that belong to this group
+segment_filters = [
+    "no_premium_ab",
+    "no_premium_cd",
+    "no_premium_ef",
+    "premium",
+    "precon"
+]
+
+[reporting_supersegments.others]
+segment_filters = [
+    "new_fintonic",
+    "new_no_fintonic",
+    "open_banking",
+    "conso_no_premium",
+    "conso_premium"
+]
+
+[modelling_supersegments.total]
 segment_filters = [
     "no_premium_ab",
     "no_premium_cd",
@@ -35,6 +53,7 @@ segment_filters = [
     "conso_premium"
 ]
 
+
 # =============================================================================
 # SEGMENTS
 # =============================================================================
@@ -43,7 +62,8 @@ segment_filters = [
 segment_filter = "no_premium_ab"
 optimum_risk = 1.0
 risk_step = 0.1
-reporting_supersegment = "total"  # Grouped in "total" for reporting
+reporting_supersegment = "known"  # Grouped in "total" for reporting
+modelling_supersegment = "total"
 min_risk = 0.8  # Optional: minimum risk for global allocation
 max_risk = 1.4  # Optional: maximum risk for global allocation
 
@@ -51,37 +71,43 @@ max_risk = 1.4  # Optional: maximum risk for global allocation
 segment_filter = "no_premium_cd"
 optimum_risk = 1.28
 risk_step = 0.1
-reporting_supersegment = "total"  # Grouped in "total" for reporting
+reporting_supersegment = "known"  # Grouped in "total" for reporting
+modelling_supersegment = "total"
 
 [segments.no_premium_ef]
 segment_filter = "no_premium_ef"
 optimum_risk = 1.09
 risk_step = 0.1
-reporting_supersegment = "total"  # Grouped in "total" for reporting
+reporting_supersegment = "known"  # Grouped in "total" for reporting
+modelling_supersegment = "total"
 
 [segments.premium]
 segment_filter = "premium"
 optimum_risk = 1.47
 risk_step = 0.1
-reporting_supersegment = "total"  # Grouped in "total" for reporting
+reporting_supersegment = "known"  # Grouped in "total" for reporting
+modelling_supersegment = "total"
 
 [segments.precon]
 segment_filter = "precon"
 optimum_risk = 1.07
 risk_step = 0.1
-reporting_supersegment = "total"  # Grouped in "total" for reporting
+reporting_supersegment = "known"  # Grouped in "total" for reporting
+modelling_supersegment = "total"
 
 [segments.new_fintonic]
 segment_filter = "new_fintonic"
 optimum_risk = 1.02
 risk_step = 0.1
-reporting_supersegment = "total"  # Grouped in "total" for reporting
+reporting_supersegment = "others"  # Grouped in "total" for reporting
+modelling_supersegment = "total"
 
 [segments.new_no_fintonic]
 segment_filter = "new_no_fintonic"
 optimum_risk = 1.52
 risk_step = 0.1
-reporting_supersegment = "total"  # Grouped in "total" for reporting
+reporting_supersegment = "others"  # Grouped in "total" for reporting
+modelling_supersegment = "total"
 reject_uplift_factor = 1.5
 reject_max_risk_multiplier = 3.0
 run_ri_optimizer = false
@@ -90,19 +116,22 @@ run_ri_optimizer = false
 segment_filter = "open_banking"
 optimum_risk = 1.20
 risk_step = 0.1
-reporting_supersegment = "total"  # Grouped in "total" for reporting
+reporting_supersegment = "others"  # Grouped in "total" for reporting
+modelling_supersegment = "total"
 
 [segments.conso_no_premium]
 segment_filter = "conso_no_premium"
 optimum_risk = 1.30
 risk_step = 0.1
-reporting_supersegment = "total"  # Grouped in "total" for reporting
+reporting_supersegment = "others"  # Grouped in "total" for reporting
+modelling_supersegment = "total"
 
 [segments.conso_premium]
 segment_filter = "conso_premium"
 optimum_risk = 0.44
 risk_step = 0.1
-reporting_supersegment = "total"  # Grouped in "total" for reporting
+reporting_supersegment = "others"  # Grouped in "total" for reporting
+modelling_supersegment = "total"
 
 # Add more segments as needed:
 # [segments.another_segment]

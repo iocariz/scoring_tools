@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import sys
+import tomllib
 import warnings
 from pathlib import Path
 
@@ -26,7 +27,6 @@ from run_batch import (
     load_and_standardize_data,
     load_base_config,
     load_segments_config,
-    load_supersegments_config,
 )
 from src.metrics import (
     calculate_lift_table,
@@ -46,6 +46,14 @@ from src.styles import (
     apply_matplotlib_style,
 )
 from src.utils import resolve_reporting_supersegment
+
+
+def _load_reporting_supersegments(segments_path: str = "segments.toml") -> dict[str, dict]:
+    """Load reporting supersegment definitions from segments.toml."""
+    with open(segments_path, "rb") as f:
+        config = tomllib.load(f)
+    return config.get("reporting_supersegments", {})
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -752,7 +760,7 @@ def main():
     try:
         base_config = load_base_config(args.config)
         all_segments = load_segments_config(args.segments_config)
-        all_supersegments = load_supersegments_config(args.segments_config)
+        all_supersegments = _load_reporting_supersegments(args.segments_config)
     except FileNotFoundError as e:
         print(f"Error: Configuration file not found: {e}")
         return 1
