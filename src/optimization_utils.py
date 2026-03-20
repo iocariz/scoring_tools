@@ -42,6 +42,7 @@ class CellGrid:
     cell_index: dict[tuple, int] = field(default_factory=dict, repr=False)
     cell_data: pd.DataFrame = field(default_factory=pd.DataFrame, repr=False)
     shape: tuple[int, ...] = ()
+    observed: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool), repr=False)
 
     @classmethod
     def from_summary(cls, data_summary_desagregado: pd.DataFrame, variables: list[str]) -> "CellGrid":
@@ -56,7 +57,16 @@ class CellGrid:
         # Build cell_data aligned to flat index
         # Left-join all combos with actual data to handle missing cells (fill 0)
         grid_df = pd.DataFrame(all_combos, columns=variables)
-        cell_data = grid_df.merge(data_summary_desagregado, on=variables, how="left").fillna(0)
+        merged = grid_df.merge(data_summary_desagregado, on=variables, how="left", indicator=True)
+        observed = (merged["_merge"] == "both").values
+        cell_data = merged.drop(columns=["_merge"]).fillna(0)
+
+        n_phantom = int((~observed).sum())
+        if n_phantom > 0:
+            logger.info(
+                f"CellGrid: {n_phantom}/{len(all_combos)} cells unobserved in data "
+                f"(will be excluded from optimization)"
+            )
 
         return cls(
             variables=variables,
@@ -64,6 +74,7 @@ class CellGrid:
             cell_index=cell_index,
             cell_data=cell_data,
             shape=shape,
+            observed=observed,
         )
 
     @property
@@ -263,6 +274,14 @@ def milp_solve_cutoffs(
     from scipy.optimize import Bounds
 
     bounds = Bounds(lb=np.zeros(n), ub=np.ones(n))
+
+    # Exclude phantom (unobserved) cells: force x=0 so MILP cannot accept them
+    if len(grid.observed) == n and not grid.observed.all():
+        lb = bounds.lb.copy()
+        ub = bounds.ub.copy()
+        phantom_mask = ~grid.observed
+        ub[phantom_mask] = 0
+        bounds = Bounds(lb=lb, ub=ub)
 
     if fixed_cells:
         lb = bounds.lb.copy()
@@ -764,9 +783,14 @@ def _ga_pareto_fallback(
     for target in np.linspace(0.01, max_risk * 1.1, n_points):
         risk_coeffs = multiplier * todu_30 - (target / 100.0) * todu_amt
 
+        # Build upper bounds: phantom cells forced to 0
+        xu = np.ones(grid.n_cells)
+        if len(grid.observed) == grid.n_cells and not grid.observed.all():
+            xu[~grid.observed] = 0
+
         class CutoffProblem(Problem):
-            def __init__(self, _risk_coeffs=risk_coeffs):
-                super().__init__(n_var=grid.n_cells, n_obj=1, n_ieq_constr=1 + A_mono.shape[0], xl=0, xu=1)
+            def __init__(self, _risk_coeffs=risk_coeffs, _xu=xu):
+                super().__init__(n_var=grid.n_cells, n_obj=1, n_ieq_constr=1 + A_mono.shape[0], xl=0, xu=_xu)
                 self._risk_coeffs = _risk_coeffs
 
             def _evaluate(self, X, out, *args, **kwargs):
@@ -1323,6 +1347,9 @@ def create_fixed_cutoff_mask(
 # =============================================================================
 
 
+_MAX_LEGACY_SOLUTIONS = 500_000
+
+
 def get_fact_sol(
     values_var0: list[float],
     values_var1: list[float],
@@ -1330,6 +1357,8 @@ def get_fact_sol(
     chunk_size: int = 10000,
 ) -> pd.DataFrame:
     """Generate all feasible solutions with monotonicity constraint (legacy 2-var)."""
+    from math import comb
+
     from .utils import optimize_dtypes
 
     n_bins = len(values_var0)
@@ -1339,6 +1368,16 @@ def get_fact_sol(
     logger.info(f"Bins: {n_bins}, Cut values: {len(cut_values)}")
 
     n_values = len(cut_values)
+
+    # Pre-check: C(n_values + n_bins - 1, n_bins) combinations
+    n_expected = comb(n_values + n_bins - 1, n_bins)
+    if n_expected > _MAX_LEGACY_SOLUTIONS:
+        raise RuntimeError(
+            f"Legacy enumeration would generate {n_expected:,} solutions "
+            f"(limit: {_MAX_LEGACY_SOLUTIONS:,}). "
+            f"Reduce bin count or use MILP (the default solver)."
+        )
+
     comb_indices = np.array(
         list(combinations_with_replacement(range(n_values), n_bins)),
         dtype=np.int16,

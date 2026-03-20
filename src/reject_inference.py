@@ -254,7 +254,69 @@ def _enforce_multiplier_monotonicity(
     else:
         logger.debug(f"Isotonic monotonicity did not converge after {max_iterations} iterations (max_change={max_change:.2e})")
 
+    # Post-hoc: verify and fix partial-order violations across all dimensions.
+    # A cell a dominates b if a[v] >= b[v] for all v (respecting direction).
+    # For dominated pairs: multiplier[riskier] >= multiplier[safer].
+    if len(variables) >= 2 and len(result) > 1:
+        n_violations = _fix_partial_order_violations(result, variables, inv_set)
+        if n_violations > 0:
+            logger.warning(
+                f"Isotonic post-hoc: fixed {n_violations} partial-order violation(s) "
+                f"remaining after alternating projections."
+            )
+
     return result
+
+
+def _fix_partial_order_violations(
+    result: pd.DataFrame,
+    variables: list[str],
+    inv_set: set[str],
+) -> int:
+    """Check and fix partial-order violations by averaging violating pairs.
+
+    Returns the number of violations fixed.
+    """
+    vals = result["reject_risk_multiplier"].values.copy()
+    coords = result[variables].values  # (n_cells, n_vars)
+    n = len(result)
+
+    # Build direction signs: +1 if higher bin = riskier, -1 if inverted
+    signs = np.array([(-1 if v in inv_set else 1) for v in variables])
+
+    # Orient coordinates so that higher = riskier in all dimensions
+    oriented = coords * signs
+
+    violations_fixed = 0
+    # Iterate until no violations remain (typically 1-2 passes)
+    for _ in range(5):
+        changed = False
+        for i in range(n):
+            for j in range(i + 1, n):
+                # Check if i dominates j (i is riskier or equal in all dims)
+                diff = oriented[i] - oriented[j]
+                if np.all(diff >= 0) and np.any(diff > 0):
+                    # i is strictly riskier → multiplier[i] should >= multiplier[j]
+                    if vals[i] < vals[j]:
+                        avg = (vals[i] + vals[j]) / 2
+                        vals[i] = avg
+                        vals[j] = avg
+                        violations_fixed += 1
+                        changed = True
+                elif np.all(diff <= 0) and np.any(diff < 0):
+                    # j is strictly riskier → multiplier[j] should >= multiplier[i]
+                    if vals[j] < vals[i]:
+                        avg = (vals[i] + vals[j]) / 2
+                        vals[j] = avg
+                        vals[i] = avg
+                        violations_fixed += 1
+                        changed = True
+        if not changed:
+            break
+
+    if violations_fixed > 0:
+        result["reject_risk_multiplier"] = vals
+    return violations_fixed
 
 
 def apply_parceling_adjustment(

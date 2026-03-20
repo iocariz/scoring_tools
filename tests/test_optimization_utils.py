@@ -443,6 +443,23 @@ class TestCellGrid:
         # The missing cell should have 0 values
         assert grid.cell_data["oa_amt_h0"].iloc[-1] == 0.0
 
+    def test_observed_flag_full_grid(self):
+        """All cells observed when data covers the full grid."""
+        df = _make_summary_2d(2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        assert grid.observed.all()
+        assert len(grid.observed) == grid.n_cells
+
+    def test_observed_flag_sparse_grid(self):
+        """Phantom cells are marked as unobserved."""
+        df = _make_summary_2d(2, 2)
+        df = df.iloc[:-1]  # remove one cell
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        assert grid.observed.sum() == 3
+        assert (~grid.observed).sum() == 1
+        # The unobserved cell should be the last one
+        assert not grid.observed[-1]
+
 
 # =============================================================================
 # Monotonicity Constraints Tests
@@ -1770,3 +1787,64 @@ class TestMaskToCutoffsNd:
         # Inverted → min accepted (which is 1.0 for all prefixes)
         for prefix in result["var2"]:
             assert result["var2"][prefix] == 1.0
+
+
+# =============================================================================
+# Phantom cell exclusion in MILP
+# =============================================================================
+
+
+class TestPhantomCellExclusion:
+    """Tests that unobserved (phantom) cells are excluded from optimization."""
+
+    def test_milp_rejects_phantom_cells(self):
+        """MILP must not accept cells that were unobserved in data."""
+        df = _make_summary_2d(3, 3)
+        # Remove 2 cells to create phantoms
+        df = df.iloc[:-2]
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+
+        assert (~grid.observed).sum() == 2  # 2 phantom cells
+
+        # Solve with a generous risk budget (accept everything feasible)
+        mask = milp_solve_cutoffs(grid, target_risk=50.0, inv_vars=[], multiplier=7)
+        if mask is not None:
+            # Phantom cells must be rejected
+            phantom_indices = np.where(~grid.observed)[0]
+            for idx in phantom_indices:
+                assert mask[idx] == 0, f"Phantom cell {idx} was accepted by MILP"
+
+    def test_full_grid_no_phantom_exclusion(self):
+        """When all cells are observed, none should be excluded."""
+        df = _make_summary_2d(2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        assert grid.observed.all()
+
+        mask = milp_solve_cutoffs(grid, target_risk=50.0, inv_vars=[], multiplier=7)
+        if mask is not None:
+            # All cells could potentially be accepted
+            assert mask.sum() > 0
+
+
+# =============================================================================
+# Legacy enumeration limit
+# =============================================================================
+
+
+class TestLegacyEnumerationLimit:
+    """Tests for the hard limit on legacy 2-var combinatorial enumeration."""
+
+    def test_small_enumeration_succeeds(self):
+        """Small problem should work fine."""
+        values_var0 = [1.0, 2.0, 3.0]
+        values_var1 = [1.0, 2.0]
+        result = get_fact_sol(values_var0, values_var1)
+        assert len(result) > 0
+
+    def test_huge_enumeration_raises(self):
+        """Problem exceeding limit should raise RuntimeError."""
+        # 30 bins × 30 cutoff values → way over 500K
+        values_var0 = list(range(1, 31))
+        values_var1 = list(range(1, 31))
+        with pytest.raises(RuntimeError, match="Legacy enumeration"):
+            get_fact_sol(values_var0, values_var1)

@@ -321,7 +321,13 @@ def _compute_hybrid_mr_risk(
     if "oa_amt_h0" in mr_booked.columns:
         mr_prod = mr_booked.groupby(merge_keys)["oa_amt_h0"].sum().reset_index()
         mr_prod = mr_prod.rename(columns={"oa_amt_h0": "mr_production"})
+        n_before = len(mr_agg)
         mr_agg = mr_agg.merge(mr_prod, on=merge_keys, how="outer")
+        if len(mr_agg) > n_before + len(mr_prod):
+            logger.warning(
+                f"MR outer merge expanded rows unexpectedly: {n_before} + {len(mr_prod)} → {len(mr_agg)}. "
+                f"Check merge key uniqueness in mr_agg/mr_prod."
+            )
     else:
         mr_agg["mr_production"] = 0.0
 
@@ -329,7 +335,14 @@ def _compute_hybrid_mr_risk(
     mr_agg = mr_agg[merge_keys + ["b2_mr", "n_obs_mr", "mr_production"]]
 
     # --- Outer join ---
+    n_main = len(main_agg)
+    n_mr = len(mr_agg)
     combined = main_agg.merge(mr_agg, on=merge_keys, how="outer")
+    if len(combined) > n_main + n_mr:
+        logger.warning(
+            f"Main/MR outer merge expanded rows unexpectedly: {n_main} + {n_mr} → {len(combined)}. "
+            f"Check merge key uniqueness."
+        )
 
     # --- H3 aggregation (needed before risk source selection for extrapolation) ---
     has_h3 = multiplier_h3 is not None and "todu_30ever_h3" in data_booked.columns

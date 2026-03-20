@@ -127,23 +127,17 @@ def transform_variables(df: pd.DataFrame, variables: list[str], degree: int = 3)
     """
     Apply polynomial and interaction transformations to create regression features.
 
-    For **2 variables**: uses the legacy hardcoded feature set for exact backward
-    compatibility (interaction, squares, cubes, complements).
-
-    For **N > 2 variables**: computes complements (SCORE_SCALE_MAX - var) for each
-    variable, then applies ``PolynomialFeatures(degree=degree)`` on
-    ``[variables + complements]`` to generate all polynomial and interaction terms.
+    Uses ``PolynomialFeatures(degree=degree)`` for all dimensions to produce a
+    consistent feature set regardless of variable count.
 
     Args:
         df: Input DataFrame containing the base variables.
-        variables: List of variable names to transform (len >= 2).
-        degree: Polynomial degree (only used for N > 2). Default 3.
+        variables: List of variable names to transform (len >= 1).
+        degree: Polynomial degree. Default 3.
 
     Returns:
         DataFrame with original columns plus all transformed features.
     """
-    if len(variables) == 2:
-        return _transform_variables_2d(df, variables)
     return _transform_variables_nd(df, variables, degree)
 
 
@@ -169,21 +163,24 @@ def _transform_variables_2d(df: pd.DataFrame, variables: list[str]) -> pd.DataFr
 
 
 def _transform_variables_nd(df: pd.DataFrame, variables: list[str], degree: int = 3) -> pd.DataFrame:
-    """N-variable transform using PolynomialFeatures."""
-    # Build feature matrix: [variables]
+    """N-variable transform using PolynomialFeatures.
+
+    Works for any number of variables (including 2).
+    """
+    result = df.copy()
     input_cols = list(variables)
-    X = df[input_cols].values
+    X = result[input_cols].values
 
     poly = PolynomialFeatures(degree=degree, include_bias=False, interaction_only=False)
     X_poly = poly.fit_transform(X)
     feature_names = poly.get_feature_names_out(input_cols)
 
-    # Add polynomial features (skip columns already present in df)
+    # Add polynomial features (skip columns already present)
     for i, fname in enumerate(feature_names):
-        if fname not in df.columns:
-            df[fname] = X_poly[:, i]
+        if fname not in result.columns:
+            result[fname] = X_poly[:, i]
 
-    return df
+    return result
 
 
 def preprocess_data(

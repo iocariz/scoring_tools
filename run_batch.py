@@ -162,6 +162,18 @@ def load_base_config(config_path: str = "config.toml") -> dict[str, Any]:
     return config.get("preprocessing", {})
 
 
+_VALID_SEGMENT_NAME = re.compile(r"^[a-zA-Z0-9_.\-]+$")
+
+
+def validate_segment_name(name: str) -> None:
+    """Validate segment/supersegment name to prevent path traversal."""
+    if not _VALID_SEGMENT_NAME.match(name):
+        raise ValueError(
+            f"Invalid segment name {name!r}: must match [a-zA-Z0-9_.-]. "
+            f"Path separators and special characters are not allowed."
+        )
+
+
 def load_segments_config(segments_path: str = "segments.toml") -> dict[str, dict[str, Any]]:
     """Load segment configurations from segments.toml."""
     with open(segments_path, "rb") as f:
@@ -243,6 +255,8 @@ def run_segment_pipeline(
     Returns:
         True if successful, False otherwise
     """
+    validate_segment_name(segment_name)
+
     # Create output directories
     output_dir = Path(output_base) / segment_name
     dirs = create_output_directories(output_dir)
@@ -334,6 +348,8 @@ def run_supersegment_training(
     Returns:
         Path to the trained model directory, or None if training failed
     """
+    validate_segment_name(supersegment_name)
+
     # Create output directories for supersegment
     output_dir = Path(output_base) / f"_supersegment_{supersegment_name}"
     dirs = create_output_directories(output_dir)

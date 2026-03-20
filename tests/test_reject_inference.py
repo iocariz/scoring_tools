@@ -735,3 +735,50 @@ class TestConfigRejectInference:
                 variables=["var0", "var1"],
                 ri_calibration_gamma=1.5,
             )
+
+
+# =============================================================================
+# Partial-order verification in N-D isotonic monotonicity
+# =============================================================================
+
+
+class TestPartialOrderVerification:
+    """Tests that _enforce_multiplier_monotonicity fixes N-D partial-order violations."""
+
+    def test_2d_partial_order_violation_fixed(self):
+        """A cell that is riskier in both dims must have >= multiplier."""
+        result = pd.DataFrame(
+            {
+                "var0": [1, 1, 2, 2],
+                "var1": [1, 2, 1, 2],
+                # (2,2) dominates (1,1) → mult should be >= (1,1)'s mult
+                # But here (2,2) has lower mult → partial-order violation
+                "reject_risk_multiplier": [1.0, 1.5, 1.5, 0.8],
+            }
+        )
+        enforced = _enforce_multiplier_monotonicity(result.copy(), ["var0", "var1"])
+        mults = enforced.set_index(["var0", "var1"])["reject_risk_multiplier"]
+        # (2,2) should not be less than (1,1)
+        assert mults[(2, 2)] >= mults[(1, 1)] - 1e-9
+
+    def test_3d_partial_order_check(self):
+        """3D grid: all domination relationships should hold after enforcement."""
+        rows = []
+        for v0 in [1, 2]:
+            for v1 in [1, 2]:
+                for v2 in [1, 2]:
+                    # Deliberately non-monotone: lower-risk cells get higher mults
+                    rows.append({"var0": v0, "var1": v1, "var2": v2, "reject_risk_multiplier": 3.0 - v0 - v1 + v2 * 0.1})
+        result = pd.DataFrame(rows)
+        variables = ["var0", "var1", "var2"]
+        enforced = _enforce_multiplier_monotonicity(result.copy(), variables)
+        mults = enforced.set_index(variables)["reject_risk_multiplier"]
+
+        # Check all domination pairs: if a >= b in all coords, mult[a] >= mult[b]
+        for idx_a in mults.index:
+            for idx_b in mults.index:
+                if all(a >= b for a, b in zip(idx_a, idx_b)) and any(a > b for a, b in zip(idx_a, idx_b)):
+                    assert mults[idx_a] >= mults[idx_b] - 1e-6, (
+                        f"Partial-order violation: {idx_a} dominates {idx_b} "
+                        f"but mult {mults[idx_a]:.4f} < {mults[idx_b]:.4f}"
+                    )

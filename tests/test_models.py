@@ -63,22 +63,25 @@ class TestOptimalSplitsUsingTree:
 
 class TestTransformVariables:
     def test_creates_expected_columns(self):
+        """PolynomialFeatures(degree=3) produces polynomial + interaction terms."""
         df = pd.DataFrame({"var0": [1, 2, 3], "var1": [4, 5, 6]})
         result = transform_variables(df, ["var0", "var1"])
 
-        assert "var0_var1" in result.columns
+        # PolynomialFeatures names: "var0^2", "var0 var1", "var1^2",
+        # "var0^3", "var0^2 var1", "var0 var1^2", "var1^3"
+        assert "var0 var1" in result.columns
         assert "var0^2" in result.columns
         assert "var1^2" in result.columns
         assert "var0^3" in result.columns
         assert "var1^3" in result.columns
-        assert "var0^2 x var1" in result.columns
-        assert "var0 x var1^2" in result.columns
+        assert "var0^2 var1" in result.columns
+        assert "var0 var1^2" in result.columns
 
     def test_interaction_term(self):
         df = pd.DataFrame({"a": [2, 3], "b": [4, 5]})
         result = transform_variables(df, ["a", "b"])
-        assert result["a_b"].iloc[0] == 8
-        assert result["a_b"].iloc[1] == 15
+        assert result["a b"].iloc[0] == 8
+        assert result["a b"].iloc[1] == 15
 
     def test_square_term(self):
         df = pd.DataFrame({"a": [3, 4], "b": [1, 2]})
@@ -91,6 +94,26 @@ class TestTransformVariables:
         result = transform_variables(df, ["x", "y"])
         assert "x" in result.columns
         assert "y" in result.columns
+
+    def test_does_not_mutate_input(self):
+        """transform_variables should not modify the input DataFrame."""
+        df = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
+        original_cols = list(df.columns)
+        _ = transform_variables(df, ["a", "b"])
+        assert list(df.columns) == original_cols
+
+    def test_consistent_2d_and_3d(self):
+        """2-var and 3-var paths should both use PolynomialFeatures."""
+        df2 = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
+        result2 = transform_variables(df2, ["a", "b"])
+        # Both should produce PolynomialFeatures-style names
+        assert "a b" in result2.columns  # not "a_b"
+        assert "a^2 b" in result2.columns  # not "a^2 x b"
+
+        df3 = pd.DataFrame({"a": [1, 2], "b": [3, 4], "c": [5, 6]})
+        result3 = transform_variables(df3, ["a", "b", "c"])
+        assert "a b" in result3.columns
+        assert "a c" in result3.columns
 
 
 # =============================================================================
@@ -219,17 +242,17 @@ class TestCalculateRiskValues:
 
 class TestTransformVariablesEdgeCases:
     def test_all_columns_created(self):
-        """Verify all expected columns are created by transform_variables."""
+        """Verify all expected polynomial columns are created for 2 variables."""
         df = pd.DataFrame({"var0": [1, 2], "var1": [3, 4]})
         result = transform_variables(df, ["var0", "var1"])
         expected_new_columns = [
-            "var0_var1",
+            "var0 var1",
             "var0^2",
             "var1^2",
             "var0^3",
             "var1^3",
-            "var0^2 x var1",
-            "var0 x var1^2",
+            "var0^2 var1",
+            "var0 var1^2",
         ]
         for col in expected_new_columns:
             assert col in result.columns, f"Missing expected column: {col}"
