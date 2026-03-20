@@ -51,6 +51,7 @@ class OptimizerInputs:
     calibration_gamma: float = 1.0
     per_bin_tasa_fin: pd.DataFrame | None = None
     enforce_monotonicity: bool = False
+    apply_h3_multiplier: bool = True
 
 
 def _compute_calibration_error(
@@ -123,6 +124,7 @@ def evaluate_ri_params(
         method=inputs.parceling_method,
         enforce_monotonicity=inputs.enforce_monotonicity,
         inv_vars=inputs.inv_vars,
+        apply_h3_multiplier=inputs.apply_h3_multiplier,
     )
 
     # Drop auxiliary columns

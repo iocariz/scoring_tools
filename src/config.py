@@ -302,6 +302,7 @@ class PreprocessingSettings(BaseModel):
     reject_bayesian_prior_strength: float = Field(default=10.0, gt=0, le=1000)
     reject_enforce_monotonicity: bool = False
     reject_include_all_rejections: bool = False
+    reject_apply_h3_multiplier: bool = True
     ri_calibration_gamma: float = Field(default=1.0, gt=0, le=1)
     ri_optimizer_method: Literal["grid", "optuna"] = "grid"
     ri_optuna_n_trials: int = Field(default=100, ge=10, le=10000)

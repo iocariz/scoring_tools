@@ -782,3 +782,88 @@ class TestPartialOrderVerification:
                         f"Partial-order violation: {idx_a} dominates {idx_b} "
                         f"but mult {mults[idx_a]:.4f} < {mults[idx_b]:.4f}"
                     )
+
+
+# =============================================================================
+# H1-new: reject_apply_h3_multiplier flag
+# =============================================================================
+
+
+class TestApplyH3MultiplierFlag:
+    """Tests that apply_h3_multiplier controls H3 risk adjustment."""
+
+    def _make_repesca_with_h3(self):
+        return pd.DataFrame(
+            {
+                "var0": [1, 2, 3],
+                "var1": [1, 1, 1],
+                "todu_30ever_h6": [100.0, 200.0, 300.0],
+                "todu_amt_pile_h6": [500.0, 500.0, 500.0],
+                "todu_30ever_h3": [50.0, 100.0, 150.0],
+                "todu_amt_pile_h3": [500.0, 500.0, 500.0],
+            }
+        )
+
+    def _make_rates(self):
+        return pd.DataFrame(
+            {
+                "var0": [1, 2, 3],
+                "var1": [1, 1, 1],
+                "n_booked": [8, 5, 2],
+                "n_score_rejected": [2, 5, 8],
+                "acceptance_rate": [0.8, 0.5, 0.2],
+            }
+        )
+
+    def test_h3_multiplier_applied_by_default(self):
+        """Default (apply_h3_multiplier=True): H3 is scaled like H6."""
+        repesca = self._make_repesca_with_h3()
+        rates = self._make_rates()
+        original_h3 = repesca["todu_30ever_h3"].copy()
+
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES)
+
+        # H3 should have been modified (multiplied by reject_risk_multiplier)
+        assert not np.allclose(result["todu_30ever_h3"].values, original_h3.values)
+        # H3 and H6 should have the same multiplier
+        h6_ratio = result["todu_30ever_h6"].values / self._make_repesca_with_h3()["todu_30ever_h6"].values
+        h3_ratio = result["todu_30ever_h3"].values / original_h3.values
+        np.testing.assert_array_almost_equal(h6_ratio, h3_ratio)
+
+    def test_h3_multiplier_not_applied(self):
+        """apply_h3_multiplier=False: H3 is preserved unchanged."""
+        repesca = self._make_repesca_with_h3()
+        rates = self._make_rates()
+        original_h3 = repesca["todu_30ever_h3"].values.copy()
+
+        result = apply_parceling_adjustment(
+            repesca, rates, VARIABLES, apply_h3_multiplier=False
+        )
+
+        # H6 should still be adjusted
+        assert result["todu_30ever_h6"].iloc[2] > 300.0
+        # H3 should be unchanged
+        np.testing.assert_array_equal(result["todu_30ever_h3"].values, original_h3)
+
+    def test_no_h3_column_no_error(self):
+        """When todu_30ever_h3 is absent, no error regardless of flag."""
+        repesca = pd.DataFrame(
+            {
+                "var0": [1, 2],
+                "var1": [1, 1],
+                "todu_30ever_h6": [100.0, 200.0],
+                "todu_amt_pile_h6": [500.0, 500.0],
+            }
+        )
+        rates = pd.DataFrame(
+            {
+                "var0": [1, 2],
+                "var1": [1, 1],
+                "n_booked": [8, 5],
+                "n_score_rejected": [2, 5],
+                "acceptance_rate": [0.8, 0.5],
+            }
+        )
+        # Should not raise for either flag value
+        apply_parceling_adjustment(repesca, rates, VARIABLES, apply_h3_multiplier=True)
+        apply_parceling_adjustment(repesca.copy(), rates, VARIABLES, apply_h3_multiplier=False)

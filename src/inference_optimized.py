@@ -1699,6 +1699,7 @@ def run_optimization_pipeline(
     reject_bayesian_prior_strength: float = 10.0,
     reject_enforce_monotonicity: bool = False,
     reject_include_all_rejections: bool = False,
+    reject_apply_h3_multiplier: bool = True,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
     inv_vars: list[str] | None = None,
     per_bin_stress: pd.DataFrame | None = None,
@@ -1746,6 +1747,7 @@ def run_optimization_pipeline(
             enforce_monotonicity=reject_enforce_monotonicity,
             inv_vars=inv_vars,
             include_all_rejections=reject_include_all_rejections,
+            apply_h3_multiplier=reject_apply_h3_multiplier,
         )
         # Drop auxiliary columns before downstream merge
         data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.drop(

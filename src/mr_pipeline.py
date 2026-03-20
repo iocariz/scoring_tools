@@ -12,7 +12,6 @@ Key functions:
 - process_mr_period: Execute full MR analysis for a time period
 """
 
-import traceback
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -228,8 +227,7 @@ def calculate_metrics_from_cuts(
         return pd.DataFrame(summary_data)
 
     except (KeyError, IndexError, ValueError) as e:
-        logger.error(f"Error calculating metrics from cuts: {e}")
-        logger.error(traceback.format_exc())
+        logger.opt(exception=True).error(f"Error calculating metrics from cuts: {e}")
         return None
 
 
@@ -347,7 +345,6 @@ def _compute_hybrid_mr_risk(
     # --- H3 aggregation (needed before risk source selection for extrapolation) ---
     has_h3 = multiplier_h3 is not None and "todu_30ever_h3" in data_booked.columns
     if has_h3:
-        mr_booked_h3 = data_demand_mr[data_demand_mr["status_name"] == StatusName.BOOKED.value]
         h3_cols = ["todu_30ever_h3", "todu_amt_pile_h3"]
 
         # Main-period H3
@@ -362,9 +359,9 @@ def _compute_hybrid_mr_risk(
             combined["b2_main_h3"] = np.nan
 
         # MR-period H3 — only accounts with mature H3 (maturity >= 3 months)
-        if all(c in mr_booked_h3.columns for c in h3_cols):
-            mr_h3_valid = mr_booked_h3[
-                mr_booked_h3["todu_30ever_h3"].notna() & mr_booked_h3["todu_amt_pile_h3"].notna()
+        if all(c in mr_booked.columns for c in h3_cols):
+            mr_h3_valid = mr_booked[
+                mr_booked["todu_30ever_h3"].notna() & mr_booked["todu_amt_pile_h3"].notna()
             ]
             # Filter for H3 maturity: maturity = max(mis_date) - mis_date >= 3 months
             h3_maturity_months = 3
@@ -589,6 +586,15 @@ def _compute_hybrid_mr_risk(
 
         # Use per-bin ratio where reliable, fall back to global median
         h6_h3_ratio = np.where(np.isfinite(h6_h3_ratio_raw), h6_h3_ratio_raw, global_h6_h3_ratio)
+        n_clipped_low = int((h6_h3_ratio < 0.5).sum())
+        n_clipped_high = int((h6_h3_ratio > 5.0).sum())
+        if n_clipped_low > 0 or n_clipped_high > 0:
+            logger.warning(
+                f"H6/H3 ratio clipping: {n_clipped_low} bin(s) below 0.5, "
+                f"{n_clipped_high} bin(s) above 5.0 (range before clip: "
+                f"[{np.nanmin(h6_h3_ratio):.2f}, {np.nanmax(h6_h3_ratio):.2f}]). "
+                f"Clipped values may understate or overstate extrapolated risk."
+            )
         h6_h3_ratio = np.clip(h6_h3_ratio, 0.5, 5.0)
 
         # H3 extrapolation: MR H3 risk × calibrated H6/H3 scaling
@@ -958,10 +964,12 @@ def process_mr_period(
             logger.info(f"Calculating b2_ever_h6_tmp aggregated by {merge_keys} from initial period...")
             agg_data = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
 
-            # Calculate b2_ever_h6_tmp
+            # Calculate b2_ever_h6_tmp — NaN means "no usable H6 data" (zero exposure);
+            # preserve to distinguish from genuine zero risk.  Downstream model_fallback
+            # fills these via the inference model.
             agg_data["b2_ever_h6_tmp"] = calculate_b2_ever_h6(
                 agg_data["todu_30ever_h6"], agg_data["todu_amt_pile_h6"], multiplier=settings.multiplier
-            ).fillna(0.0)
+            )
 
             merge_df = agg_data[merge_keys + ["b2_ever_h6_tmp"]]
 
@@ -1187,6 +1195,7 @@ def process_mr_period(
             reject_bayesian_prior_strength=settings.reject_bayesian_prior_strength,
             reject_enforce_monotonicity=settings.reject_enforce_monotonicity,
             reject_include_all_rejections=settings.reject_include_all_rejections,
+            reject_apply_h3_multiplier=settings.reject_apply_h3_multiplier,
             per_bin_stress=per_bin_stress,
             per_bin_tasa_fin=per_bin_tasa_fin,
         )
@@ -1419,9 +1428,7 @@ def process_mr_period(
                 logger.warning("No numeric variables found for stability analysis")
 
         except (ValueError, KeyError) as e:
-            logger.warning(f"Error calculating stability metrics: {e}")
-            logger.warning(traceback.format_exc())
+            logger.opt(exception=True).warning(f"Error calculating stability metrics: {e}")
 
     except (ValueError, KeyError, RuntimeError) as e:
-        logger.error(f"Error processing MR period: {e}")
-        logger.error(traceback.format_exc())
+        logger.opt(exception=True).error(f"Error processing MR period: {e}")

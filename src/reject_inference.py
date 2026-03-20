@@ -329,6 +329,7 @@ def apply_parceling_adjustment(
     method: Literal["linear", "power", "sigmoid"] = "linear",
     enforce_monotonicity: bool = False,
     inv_vars: list[str] | None = None,
+    apply_h3_multiplier: bool = True,
 ) -> pd.DataFrame:
     """Apply per-bin risk uplift to repesca summary based on acceptance rates.
 
@@ -436,10 +437,20 @@ def apply_parceling_adjustment(
 
     result["todu_30ever_h6"] = result["todu_30ever_h6"] * result["reject_risk_multiplier"]
 
-    # Apply the same uplift to H3 risk numerator when present, so that
-    # the H6/H3 ratio remains consistent for downstream H3 extrapolation.
+    # Optionally apply the same uplift to H3 risk numerator.
+    # When True (default): preserves the observed H6/H3 ratio for downstream
+    # H3→H6 extrapolation — appropriate when the ratio is stable.
+    # When False: keeps H3 original so that extrapolation uses unbiased H3
+    # data — useful when the H6/H3 ratio differs between booked and rejected
+    # populations (e.g., due to cohort maturity or selection effects).
     if "todu_30ever_h3" in result.columns:
-        result["todu_30ever_h3"] = result["todu_30ever_h3"] * result["reject_risk_multiplier"]
+        if apply_h3_multiplier:
+            result["todu_30ever_h3"] = result["todu_30ever_h3"] * result["reject_risk_multiplier"]
+        else:
+            logger.debug(
+                "Reject inference: H3 multiplier NOT applied (reject_apply_h3_multiplier=False). "
+                "H3 risk numerator preserved for unbiased H3→H6 extrapolation."
+            )
 
     adjusted_bins = (result["reject_risk_multiplier"] > 1.0).sum()
     if adjusted_bins > 0:
@@ -466,6 +477,7 @@ def apply_reject_inference(
     enforce_monotonicity: bool = False,
     inv_vars: list[str] | None = None,
     include_all_rejections: bool = False,
+    apply_h3_multiplier: bool = True,
 ) -> pd.DataFrame:
     """Dispatcher: apply reject-inference adjustment to repesca risk predictions.
 
@@ -497,6 +509,10 @@ def apply_reject_inference(
         isotonic regression direction when *enforce_monotonicity* is True.
     include_all_rejections:
         If True, include all rejections in acceptance rate denominator.
+    apply_h3_multiplier:
+        If True (default), apply the reject risk multiplier to H3 numerator
+        as well as H6, preserving the observed H6/H3 ratio.  Set to False
+        to keep H3 original for unbiased H3→H6 extrapolation.
 
     Returns
     -------
@@ -528,6 +544,7 @@ def apply_reject_inference(
             method=parceling_method,
             enforce_monotonicity=enforce_monotonicity,
             inv_vars=inv_vars,
+            apply_h3_multiplier=apply_h3_multiplier,
         )
 
         # Merge per-bin confidence scores

@@ -89,6 +89,7 @@ def run_optimization_phase(
         reject_bayesian_prior_strength=settings.reject_bayesian_prior_strength,
         reject_enforce_monotonicity=settings.reject_enforce_monotonicity,
         reject_include_all_rejections=settings.reject_include_all_rejections,
+        reject_apply_h3_multiplier=settings.reject_apply_h3_multiplier,
         multiplier=settings.multiplier,
         inv_vars=settings.inv_vars,
         per_bin_stress=per_bin_stress,
@@ -846,6 +847,7 @@ def run_ri_optimizer_phase(
             calibration_gamma=settings.ri_calibration_gamma,
             per_bin_tasa_fin=per_bin_tasa_fin,
             enforce_monotonicity=settings.reject_enforce_monotonicity,
+            apply_h3_multiplier=settings.reject_apply_h3_multiplier,
         )
 
         # Step 5: Run optimization (grid or Optuna)
@@ -901,6 +903,7 @@ def run_ri_optimizer_phase(
                     calibration_gamma=settings.ri_calibration_gamma,
                     per_bin_tasa_fin=per_bin_tasa_fin,
                     enforce_monotonicity=settings.reject_enforce_monotonicity,
+                    apply_h3_multiplier=settings.reject_apply_h3_multiplier,
                 )
 
                 validation = validate_ri_with_mr(
