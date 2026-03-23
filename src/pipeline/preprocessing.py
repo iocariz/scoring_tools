@@ -12,7 +12,7 @@ from src.plots import (
     plot_bin_threshold_diagnostic,
     plot_risk_vs_production,
 )
-from src.preprocess_improved import complete_preprocessing_pipeline
+from src.preprocess_improved import complete_preprocessing_pipeline, filter_by_date
 from src.utils import calculate_per_bin_stress_factors, calculate_stress_factor
 
 
@@ -121,8 +121,14 @@ def run_preprocessing_phase(
     # -------------------------------------------------------------------------
     # Transformation rate (tasa_fin)
     # -------------------------------------------------------------------------
+    # Avoid look-ahead / leakage: transformation rate rolling window must be computed
+    # within the configured observation period, not relative to max(df) across the full dataset.
+    data_for_tasa_fin = data_clean
+    if settings.date_ini_book_obs and settings.date_fin_book_obs:
+        data_for_tasa_fin = filter_by_date(data_clean, "mis_date", settings.date_ini_book_obs, settings.date_fin_book_obs)
+
     result = calculate_and_plot_transformation_rate(
-        data_clean, date_col="mis_date", amount_col="oa_amt", n_months=settings.n_months
+        data_for_tasa_fin, date_col="mis_date", amount_col="oa_amt", n_months=settings.n_months
     )
     result["figure"].write_html(output.transformation_rate_html)
     tasa_fin = result["overall_rate"]
@@ -135,7 +141,7 @@ def run_preprocessing_phase(
     per_bin_tasa_fin: pd.DataFrame | None = None
     if getattr(settings, "per_bin_tasa_fin", False):
         per_bin_tasa_fin = calculate_per_bin_transformation_rate(
-            data_clean,
+            data_for_tasa_fin,
             settings.variables,
             date_col="mis_date",
             amount_col="oa_amt",

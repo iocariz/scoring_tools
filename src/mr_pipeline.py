@@ -651,16 +651,33 @@ def _compute_hybrid_mr_risk(
 
         # Use per-bin ratio where reliable, fall back to global median
         h6_h3_ratio = np.where(np.isfinite(h6_h3_ratio_raw), h6_h3_ratio_raw, global_h6_h3_ratio)
-        n_clipped_low = int((h6_h3_ratio < 0.5).sum())
-        n_clipped_high = int((h6_h3_ratio > 5.0).sum())
+
+        # Robust clipping to prevent extreme ratios from dominating extrapolation.
+        # Fixed [0.5, 5.0] can bias results when the ratio distribution drifts,
+        # so we clip to percentiles of the raw per-bin ratios.
+        ratio_vals = h6_h3_ratio_raw[np.isfinite(h6_h3_ratio_raw)]
+        if ratio_vals.size > 0:
+            lower_q = float(np.nanpercentile(ratio_vals, 1.0))
+            upper_q = float(np.nanpercentile(ratio_vals, 99.0))
+        else:
+            lower_q, upper_q = 0.5, 5.0
+
+        # Fallback guards for degenerate percentile outputs.
+        if not np.isfinite(lower_q) or lower_q <= 0:
+            lower_q = 0.5
+        if not np.isfinite(upper_q) or upper_q <= lower_q:
+            upper_q = 5.0
+
+        n_clipped_low = int((h6_h3_ratio < lower_q).sum())
+        n_clipped_high = int((h6_h3_ratio > upper_q).sum())
         if n_clipped_low > 0 or n_clipped_high > 0:
             logger.warning(
-                f"H6/H3 ratio clipping: {n_clipped_low} bin(s) below 0.5, "
-                f"{n_clipped_high} bin(s) above 5.0 (range before clip: "
-                f"[{np.nanmin(h6_h3_ratio):.2f}, {np.nanmax(h6_h3_ratio):.2f}]). "
-                f"Clipped values may understate or overstate extrapolated risk."
+                f"H6/H3 ratio clipping: {n_clipped_low} bin(s) below {lower_q:.3f}, "
+                f"{n_clipped_high} bin(s) above {upper_q:.3f} "
+                f"(range before clip: [{np.nanmin(h6_h3_ratio):.2f}, {np.nanmax(h6_h3_ratio):.2f}])."
             )
-        h6_h3_ratio = np.clip(h6_h3_ratio, 0.5, 5.0)
+
+        h6_h3_ratio = np.clip(h6_h3_ratio, lower_q, upper_q)
 
         # H3 extrapolation: MR H3 risk × calibrated H6/H3 scaling
         # Use a lower threshold for H3 obs — we only have ~half the MR window
@@ -706,7 +723,14 @@ def _compute_hybrid_mr_risk(
         # a longer horizon.  Use best available H3 (MR if any data, else main).
         # Unlike extrapolation (which needs min_obs for reliability), the floor
         # is valid with any non-NaN H3 observation.
-        h3_floor = combined["b2_mr_h3"].where(combined["b2_mr_h3"].notna(), combined.get("b2_main_h3"))
+        # Gate MR H3 usage by the same reliability criterion used for can_extrapolate.
+        # This prevents unreliable MR H3 bins (low n_obs_mr_h3) from overriding the
+        # intended reliability hierarchy.
+        if "b2_main_h3" in combined.columns:
+            b2_main_h3 = combined["b2_main_h3"]
+        else:
+            b2_main_h3 = pd.Series(np.nan, index=combined.index)
+        h3_floor = combined["b2_mr_h3"].where(has_h3_obs, b2_main_h3)
         floored_mask = (
             combined["b2_ever_h6_tmp"].notna()
             & h3_floor.notna()
@@ -873,12 +897,16 @@ def _assign_tiered_risk(
     multiplier_h3: float | None = None,
     mr_extrapolation_method: str = "linear",
     mr_extrapolation_curvature: float = 1.0,
+    mr_maturity_months: int = 6,
+    min_obs_per_bin: int = 30,
 ) -> pd.DataFrame:
     """Assign per-account tiered MR risk based on maturity.
 
-    Tier 1: >=6 months maturity — use actual H6 outcomes.
-    Tier 2: >=3, <6 months — extrapolate account-level H3 via bin ratio.
-    Tier 3: <3 months — use bin-level main rate (from merge_df).
+    Tier 1: >=mr_maturity_months months maturity — use actual H6 outcomes.
+    Tier 2: >=3 months and, when mr_maturity_months > 0, <mr_maturity_months — extrapolate
+        account-level H3 via bin ratio (when the bin-level H3 is reliable).
+    Tier 3: otherwise for remaining booked accounts — use whatever per-bin risk was
+        provided in ``merge_df`` (bin-level main / MR observed / etc.).
     Tier 4: unfilled (no merge match) — handled by model_fallback downstream.
 
     Parameters
@@ -918,12 +946,12 @@ def _assign_tiered_risk(
     else:
         maturity = pd.Series(np.nan, index=data_demand_mr.index)
 
-    # --- Tier 1: actual H6 (maturity >= 6) ---
+    # --- Tier 1: actual H6 (maturity >= mr_maturity_months) ---
     has_actual_h6 = (
         booked_mask
         & data_demand_mr.get("_actual_todu_30ever_h6", pd.Series(dtype=float)).notna()
         & data_demand_mr.get("_actual_todu_amt_pile_h6", pd.Series(dtype=float)).notna()
-        & (maturity >= 6)
+        & (maturity >= mr_maturity_months)
     )
     if has_actual_h6.any():
         actual_b2 = calculate_b2_ever_h6(
@@ -940,7 +968,7 @@ def _assign_tiered_risk(
         ]
         data_demand_mr.loc[has_actual_h6, "_mr_tier"] = 1
 
-    # --- Tier 2: account-level H3 × bin ratio (maturity >= 3, < 6) ---
+    # --- Tier 2: account-level H3 × bin ratio ---
     has_h3_cols = (
         multiplier_h3 is not None
         and "todu_30ever_h3" in data_demand_mr.columns
@@ -949,10 +977,17 @@ def _assign_tiered_risk(
         and "h6_h3_ratio" in comparison_df.columns
     )
     if has_h3_cols:
+        # Mirror reliability threshold used during per-bin H3 extrapolation.
+        h3_min_obs = max(min_obs_per_bin // 2, 10)
+
+        tier2_maturity = maturity >= 3
+        if mr_maturity_months > 0:
+            tier2_maturity = tier2_maturity & (maturity < mr_maturity_months)
+
         h3_eligible = (
             booked_mask
             & (data_demand_mr["_mr_tier"] == 0)
-            & (maturity >= 3)
+            & tier2_maturity
             & data_demand_mr["todu_30ever_h3"].notna()
             & data_demand_mr["todu_amt_pile_h3"].notna()
         )
@@ -964,11 +999,29 @@ def _assign_tiered_risk(
                 multiplier=multiplier_h3,
             )
 
-            # Merge bin-level h6_h3_ratio
-            ratio_df = comparison_df[merge_keys + ["h6_h3_ratio"]].drop_duplicates(subset=merge_keys)
+            # Merge bin-level calibration ratio and (optionally) reliability indicators.
+            ratio_cols = merge_keys + ["h6_h3_ratio"]
+            if "n_obs_mr_h3" in comparison_df.columns:
+                ratio_cols.append("n_obs_mr_h3")
+            if "b2_mr_h3" in comparison_df.columns:
+                ratio_cols.append("b2_mr_h3")
+            ratio_df = comparison_df[ratio_cols].drop_duplicates(subset=merge_keys)
             acct_keys = data_demand_mr.loc[h3_eligible, merge_keys].copy()
             acct_keys = acct_keys.merge(ratio_df, on=merge_keys, how="left")
             bin_ratio = acct_keys["h6_h3_ratio"].values
+
+            # Reliability gate: only enforce floor / extrapolate when H3 is reliable at the bin level.
+            if "n_obs_mr_h3" in acct_keys.columns and "b2_mr_h3" in acct_keys.columns:
+                bin_n_obs_mr_h3 = acct_keys["n_obs_mr_h3"].fillna(0).values.astype(float)
+                bin_b2_mr_h3 = acct_keys["b2_mr_h3"].values.astype(float)
+                can_extrapolate_bin = (
+                    np.isfinite(bin_ratio)
+                    & (bin_b2_mr_h3 >= 0)
+                    & (bin_n_obs_mr_h3 >= h3_min_obs)
+                )
+            else:
+                # Backward compatibility for unit tests / partial diagnostic tables.
+                can_extrapolate_bin = np.isfinite(bin_ratio)
 
             # Also get b2_main_h3 for power extrapolation
             b2_main_h3_vals = None
@@ -988,18 +1041,15 @@ def _assign_tiered_risk(
                 b2_h3_main=b2_main_h3_vals,
             )
 
-            # H3 floor: H6 must be >= H3 (delinquencies accumulate)
-            h6_extrapolated = np.maximum(h6_extrapolated, acct_b2_h3.values)
+            # H3 floor: H6 must be >= H3, but only when the bin-level H3 is reliable.
+            h3_floor_values = acct_b2_h3.values
+            h6_floored = np.maximum(h6_extrapolated, h3_floor_values)
+            h6_extrapolated = np.where(can_extrapolate_bin, h6_floored, h6_extrapolated)
 
-            # Only assign where ratio was available
-            valid_ratio = np.isfinite(bin_ratio)
-            tier2_mask = h3_eligible.copy()
             tier2_idx = data_demand_mr.index[h3_eligible]
-            tier2_mask.iloc[:] = False
-            tier2_mask.loc[tier2_idx[valid_ratio]] = True
-
-            data_demand_mr.loc[tier2_mask, "b2_ever_h6_tmp"] = h6_extrapolated[valid_ratio]
-            data_demand_mr.loc[tier2_mask, "_mr_tier"] = 2
+            valid_idx = tier2_idx[can_extrapolate_bin]
+            data_demand_mr.loc[valid_idx, "b2_ever_h6_tmp"] = h6_extrapolated[can_extrapolate_bin]
+            data_demand_mr.loc[valid_idx, "_mr_tier"] = 2
 
     # --- Tier 3: bin-level main rate (remaining booked with a merge match) ---
     tier3_mask = booked_mask & (data_demand_mr["_mr_tier"] == 0) & data_demand_mr["b2_ever_h6_tmp"].notna()
@@ -1171,6 +1221,8 @@ def process_mr_period(
                 multiplier_h3=settings.multiplier_h3,
                 mr_extrapolation_method=resolved_method,
                 mr_extrapolation_curvature=resolved_curvature,
+                mr_maturity_months=settings.mr_maturity_months,
+                min_obs_per_bin=settings.mr_min_obs_per_bin,
             )
 
             # --- Infer risk for model_fallback bins using trained model ---
@@ -1526,12 +1578,27 @@ def process_mr_period(
                 columns={"b2_ever_h6_tmp": "_mr_b2"}
             )
 
-            cal = data_summary_desagregado_mr.merge(
-                main_bin_agg[merge_keys + ["_main_b2"]], on=merge_keys, how="left"
-            ).merge(mr_bin_b2, on=merge_keys, how="left")
+            # Recompute calibration factor per *bin* and merge it back by merge_keys.
+            # This avoids relying on row-order alignment assumptions (`cal_factor.values`).
+            if main_bin_agg.duplicated(merge_keys).any():
+                logger.warning("MR recalibration: main_bin_agg has non-unique merge_keys; results may be inconsistent.")
+            if mr_bin_b2.duplicated(merge_keys).any():
+                logger.warning("MR recalibration: mr_bin_b2 has non-unique merge_keys; results may be inconsistent.")
 
-            safe_main_b2 = cal["_main_b2"].clip(lower=1e-9)
-            cal_factor = (cal["_mr_b2"] / safe_main_b2).clip(lower=0.1, upper=10.0).fillna(1.0)
+            cal_factor_by_bin = main_bin_agg[merge_keys + ["_main_b2"]].merge(
+                mr_bin_b2, on=merge_keys, how="left"
+            )
+            safe_main_b2 = cal_factor_by_bin["_main_b2"].clip(lower=1e-9)
+            cal_factor_by_bin["_mr_cal_factor"] = (cal_factor_by_bin["_mr_b2"] / safe_main_b2).clip(
+                lower=0.1, upper=10.0
+            ).fillna(1.0)
+
+            data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
+                cal_factor_by_bin[merge_keys + ["_mr_cal_factor"]],
+                on=merge_keys,
+                how="left",
+            )
+            data_summary_desagregado_mr["_mr_cal_factor"] = data_summary_desagregado_mr["_mr_cal_factor"].fillna(1.0)
 
             rep_col = "todu_30ever_h6_rep"
             if rep_col in data_summary_desagregado_mr.columns:
@@ -1540,26 +1607,25 @@ def process_mr_period(
                     data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
                     multiplier=settings.multiplier, as_percentage=True,
                 )
-                data_summary_desagregado_mr[rep_col] = (
-                    data_summary_desagregado_mr[rep_col] * cal_factor.values
-                )
+                data_summary_desagregado_mr[rep_col] = data_summary_desagregado_mr[rep_col] * data_summary_desagregado_mr["_mr_cal_factor"]
                 after_avg = calculate_b2_ever_h6(
                     data_summary_desagregado_mr[rep_col].sum(),
                     data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
                     multiplier=settings.multiplier, as_percentage=True,
                 )
                 logger.info(
-                    f"MR repesca recalibration: avg factor={cal_factor.mean():.3f} "
-                    f"(range [{cal_factor.min():.3f}, {cal_factor.max():.3f}]). "
+                    f"MR repesca recalibration: avg factor={data_summary_desagregado_mr['_mr_cal_factor'].mean():.3f} "
+                    f"(range [{data_summary_desagregado_mr['_mr_cal_factor'].min():.3f}, {data_summary_desagregado_mr['_mr_cal_factor'].max():.3f}]). "
                     f"Repesca risk: {before_avg:.2f}% → {after_avg:.2f}%"
                 )
 
             # Also recalibrate H3 repesca if present
             rep_h3_col = "todu_30ever_h3_rep"
             if rep_h3_col in data_summary_desagregado_mr.columns:
-                data_summary_desagregado_mr[rep_h3_col] = (
-                    data_summary_desagregado_mr[rep_h3_col] * cal_factor.values
-                )
+                data_summary_desagregado_mr[rep_h3_col] = data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor"]
+
+            # Drop helper calibration factor column
+            data_summary_desagregado_mr = data_summary_desagregado_mr.drop(columns=["_mr_cal_factor"], errors="ignore")
 
             # Recompute merged total columns after recalibration
             for suffix_pair in [("todu_30ever_h6", "_boo", "_rep"), ("todu_30ever_h3", "_boo", "_rep")]:

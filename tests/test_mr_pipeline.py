@@ -597,7 +597,8 @@ class TestComputeHybridMRRisk:
         assert (comparison_df["risk_source"] == "h3_extrapolated").all()
 
         for _, row in comparison_df.iterrows():
-            expected = row["b2_mr_h3"] * (row["b2_main"] / row["b2_main_h3"])
+            # Extrapolation uses the clipped / robust-calibrated per-bin H6/H3 ratio.
+            expected = row["b2_mr_h3"] * row["h6_h3_ratio"]
             assert np.isclose(row["b2_ever_h6_tmp"], expected), f"Expected {expected}, got {row['b2_ever_h6_tmp']}"
 
     def test_mr_h6_preferred_over_h3_when_both_available(self, merge_keys):
@@ -848,10 +849,20 @@ class TestComputeHybridMRRisk:
 
         assert "h6_h3_ratio" in comparison_df.columns
 
-        # Verify ratio = clipped(b2_main / b2_main_h3) within [0.5, 5.0]
+        # Verify ratio = clipped(b2_main / b2_main_h3) using robust percentiles.
+        raw_ratios = comparison_df["b2_main"] / comparison_df["b2_main_h3"]
+        ratio_vals = raw_ratios[np.isfinite(raw_ratios)].values
+        lower_q = float(np.nanpercentile(ratio_vals, 1.0)) if ratio_vals.size > 0 else 0.5
+        upper_q = float(np.nanpercentile(ratio_vals, 99.0)) if ratio_vals.size > 0 else 5.0
+
+        if not np.isfinite(lower_q) or lower_q <= 0:
+            lower_q = 0.5
+        if not np.isfinite(upper_q) or upper_q <= lower_q:
+            upper_q = 5.0
+
         for _, row in comparison_df.iterrows():
             raw_ratio = row["b2_main"] / row["b2_main_h3"]
-            expected_ratio = np.clip(raw_ratio, 0.5, 5.0)
+            expected_ratio = np.clip(raw_ratio, lower_q, upper_q)
             assert np.isclose(row["h6_h3_ratio"], expected_ratio), (
                 f"Expected ratio {expected_ratio}, got {row['h6_h3_ratio']}"
             )
@@ -1470,14 +1481,16 @@ class TestH3FloorEnforcement:
         # H3 risk is HIGHER than main H6 for bin (1,1)
         data_demand_mr = pd.DataFrame(
             {
-                "bin_a": [1] * 5 + [2] * 5,
-                "bin_b": [1] * 10,
-                "todu_30ever_h6": [2.0] * 10,
-                "todu_amt_pile_h6": [100.0] * 10,
-                "todu_30ever_h3": [4.0] * 5 + [3.0] * 5,  # bin (1,1) H3 > main H6
-                "todu_amt_pile_h3": [100.0] * 10,
-                "oa_amt_h0": [1000.0] * 10,
-                "status_name": ["booked"] * 10,
+                # Must have enough MR H3 observations to activate the
+                # (reliability-gated) H3 floor logic.
+                "bin_a": [1] * 20 + [2] * 20,
+                "bin_b": [1] * 40,
+                "todu_30ever_h6": [2.0] * 40,
+                "todu_amt_pile_h6": [100.0] * 40,
+                "todu_30ever_h3": [4.0] * 20 + [3.0] * 20,  # bin (1,1) H3 > main H6
+                "todu_amt_pile_h3": [100.0] * 40,
+                "oa_amt_h0": [1000.0] * 40,
+                "status_name": ["booked"] * 40,
             }
         )
 

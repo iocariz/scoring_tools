@@ -4,11 +4,11 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from src.config import OutputPaths, PreprocessingSettings
 import src.pipeline.inference as inference_module
 import src.pipeline.optimization as optimization_module
 import src.pipeline.preprocessing as preprocessing_module
 import src.pipeline.reporting as reporting_module
+from src.config import OutputPaths, PreprocessingSettings
 
 
 class DummyFigure:
@@ -114,6 +114,53 @@ class TestRunPreprocessingPhase:
         assert risk_fig.paths == [output.risk_vs_production_html]
         assert rate_fig.paths == [output.transformation_rate_html]
         assert diagnostics == ["sc_octroi_new_clus", "new_efx_clus"]
+
+    def test_transformation_rate_computed_in_observation_window(self, monkeypatch, tmp_path):
+        """run_preprocessing_phase must not compute tasa_fin on months outside the configured window."""
+        settings = make_settings()
+        output = OutputPaths(base_dir=tmp_path)
+        risk_fig = DummyFigure()
+        rate_fig = DummyFigure()
+
+        data_clean = pd.DataFrame(
+            {
+                "mis_date": pd.to_datetime(["2023-12-01", "2024-06-01"]),
+                "oa_amt": [1000.0, 2000.0],
+            }
+        )
+
+        def fake_complete_preprocessing_pipeline(data, settings):
+            return data_clean, pd.DataFrame(), pd.DataFrame()
+
+        monkeypatch.setattr(preprocessing_module, "complete_preprocessing_pipeline", fake_complete_preprocessing_pipeline)
+        monkeypatch.setattr(preprocessing_module, "plot_risk_vs_production", lambda *args, **kwargs: risk_fig)
+        monkeypatch.setattr(preprocessing_module, "calculate_stress_factor", lambda *args, **kwargs: 1.0)
+
+        captured = {}
+
+        def fake_calculate_and_plot_transformation_rate(data, date_col, amount_col="oa_amt", n_months=None, **kwargs):
+            captured["min_date"] = data[date_col].min()
+            captured["max_date"] = data[date_col].max()
+            assert captured["min_date"] >= pd.to_datetime(settings.date_ini_book_obs)
+            assert captured["max_date"] <= pd.to_datetime(settings.date_fin_book_obs)
+            return {"figure": rate_fig, "overall_rate": 0.5}
+
+        monkeypatch.setattr(
+            preprocessing_module,
+            "calculate_and_plot_transformation_rate",
+            fake_calculate_and_plot_transformation_rate,
+        )
+
+        result = preprocessing_module.run_preprocessing_phase(
+            pd.DataFrame({"raw": [1]}),
+            settings,
+            skip_dq_checks=True,
+            output=output,
+        )
+
+        assert result.tasa_fin == pytest.approx(0.5)
+        assert risk_fig.paths == [output.risk_vs_production_html]
+        assert rate_fig.paths == [output.transformation_rate_html]
 
 
 class TestRunInferencePhase:

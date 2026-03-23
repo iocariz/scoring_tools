@@ -3,9 +3,10 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from src.config import PreprocessingSettings
+from src.config import BinConfig, PreprocessingSettings
 from src.constants import RejectReason, StatusName
 from src.preprocess_improved import (
+    _run_data_transformations,
     apply_binning_transformations,
     complete_preprocessing_pipeline,
     filter_by_date,
@@ -466,6 +467,81 @@ def test_complete_pipeline_returns_three_dataframes(sample_data, config):
     assert isinstance(result, tuple)
     assert len(result) == 3
     assert all(isinstance(df, pd.DataFrame) for df in result)
+
+
+def test_bin_edge_learning_uses_updated_booked_mask():
+    """Edge learning must use the post-update booked label definition.
+
+    Regression for: learning edges from pre-update booked mask, then
+    relabeling status_name later via update_status_and_reject_reason.
+    """
+    n_booked = 10
+    n_rejected = 10
+
+    # Risk values are intentionally separated so quantile threshold differs
+    # depending on whether rejected rows are (incorrectly) included.
+    booked_values = np.arange(0, n_booked, dtype=float)
+    rejected_values = np.arange(100, 100 + n_rejected, dtype=float)
+
+    df = pd.DataFrame(
+        {
+            "mis_date": pd.to_datetime(["2024-06-01"] * (n_booked + n_rejected)),
+            "fuera_norma": ["n"] * (n_booked + n_rejected),
+            "fraud_flag": ["n"] * (n_booked + n_rejected),
+            "nature_holder": ["physical"] * (n_booked + n_rejected),
+            "segment_cut_off": ["test_segment"] * (n_booked + n_rejected),
+            "status_name": [StatusName.BOOKED.value] * (n_booked + n_rejected),
+            "reject_reason": [None] * (n_booked + n_rejected),
+            "risk_score_rf": np.concatenate([booked_values, rejected_values]),
+            "oa_amt": np.ones(n_booked + n_rejected, dtype=float) * 1000.0,
+            "oa_amt_h0": np.ones(n_booked + n_rejected, dtype=float) * 1000.0,
+            # Direct measures: rows with 'y' are relabeled as REJECTED
+            "m_ct_direct_sc_nov23": ["n"] * n_booked + ["y"] * n_rejected,
+        }
+    )
+
+    settings = PreprocessingSettings(
+        keep_vars=[
+            "mis_date",
+            "status_name",
+            "reject_reason",
+            "risk_score_rf",
+            "oa_amt",
+            "oa_amt_h0",
+            "fuera_norma",
+            "fraud_flag",
+            "nature_holder",
+            "segment_cut_off",
+        ],
+        indicators=["oa_amt", "oa_amt_h0"],
+        segment_filter="test_segment",
+        date_ini_book_obs="2024-01-01",
+        date_fin_book_obs="2024-12-31",
+        variables=["sc_octroi_new_clus"],
+        bins={
+            "sc_octroi_new_clus": BinConfig(
+                source_col="risk_score_rf",
+                output_col="sc_octroi_new_clus",
+                bin_edges=[],
+                max_bins=2,
+                method="quantile",
+            )
+        },
+        score_measures=["m_ct_direct_sc_nov23"],
+        log_level="WARNING",
+        # Legacy fields still required by schema but can be empty
+        octroi_bins=[],
+        efx_bins=[],
+    )
+
+    _run_data_transformations(df, settings)
+    learned_edges = settings.bins["sc_octroi_new_clus"].bin_edges
+
+    expected_median = pd.Series(booked_values).quantile(0.5)
+    assert len(learned_edges) == 3
+    assert np.isneginf(learned_edges[0])
+    assert np.isposinf(learned_edges[-1])
+    assert np.isclose(learned_edges[1], expected_median)
 
 
 # =============================================================================

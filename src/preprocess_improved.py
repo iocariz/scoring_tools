@@ -865,6 +865,20 @@ def _run_data_transformations(df: pd.DataFrame, settings: "PreprocessingSettings
     logger.info("=" * 80)
     data_clean = preprocess_data(df, settings.keep_vars, settings.indicators, settings.segment_filter)
 
+    # IMPORTANT: status_name ("booked" vs non-booked) drives bin-edge learning
+    # (booked mask) and oa_amt_h0 updates. update_status_and_reject_reason can
+    # relabel records, so apply it before learning any bin edges to avoid
+    # learning on an inconsistent "booked" definition.
+    logger.info("\n" + "=" * 80)
+    logger.info("Step 3: Update oa_amt_h0 (before bin edge learning)")
+    logger.info("=" * 80)
+    data_clean = update_oa_amt_h0(data_clean)
+
+    logger.info("\n" + "=" * 80)
+    logger.info("Step 4: Update status and reject reasons (before bin edge learning)")
+    logger.info("=" * 80)
+    data_clean = update_status_and_reject_reason(data_clean, settings.score_measures)
+
     if settings.bins:
         from src.constants import StatusName
 
@@ -930,16 +944,6 @@ def _run_data_transformations(df: pd.DataFrame, settings: "PreprocessingSettings
         data_clean = apply_binning_transformations(data_clean, settings.octroi_bins, settings.efx_bins)
     else:
         logger.warning("Skipping binning transformations (bins not provided)")
-
-    logger.info("\n" + "=" * 80)
-    logger.info("Step 3: Update oa_amt_h0")
-    logger.info("=" * 80)
-    data_clean = update_oa_amt_h0(data_clean)
-
-    logger.info("\n" + "=" * 80)
-    logger.info("Step 4: Update status and reject reasons")
-    logger.info("=" * 80)
-    data_clean = update_status_and_reject_reason(data_clean, settings.score_measures)
 
     return data_clean
 
