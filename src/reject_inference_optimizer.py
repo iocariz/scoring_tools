@@ -222,7 +222,12 @@ def _select_best(results_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """Select the best parameter combination from optimizer results.
 
     Best = min calibration_error among feasible; ties within 5% tolerance
-    broken by max production. Returns (results_df with is_best column, best_params dict).
+    broken by max production.
+
+    Returns:
+        ``(results_df, best_params)`` — *results_df* gains an ``is_best`` column;
+        *best_params* is a dict with the winning parameters, or empty dict if
+        no feasible solution exists or all calibration errors are non-finite.
     """
     feasible = results_df[results_df["feasible"]]
     if feasible.empty:

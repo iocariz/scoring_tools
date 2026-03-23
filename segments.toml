@@ -29,6 +29,7 @@ segment_filters = [
     "premium",
     "precon"
 ]
+# learn_own_bin_edges = true  # uncomment to learn bin edges from "known" population only
 
 [reporting_supersegments.others]
 segment_filters = [
@@ -38,6 +39,7 @@ segment_filters = [
     "conso_no_premium",
     "conso_premium"
 ]
+learn_own_bin_edges = true  # learn bin edges from "others" population instead of global
 
 [modelling_supersegments.total]
 segment_filters = [

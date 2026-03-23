@@ -62,6 +62,17 @@ def compute_acceptance_rates(
         If True, include all rejections (not just score rejections) in the
         denominator.  Use when non-score rejections are a material share of
         demand (>5-10%).
+    recent_months:
+        If set (and *decay_half_life_months* is None), restrict the demand
+        population to the most recent N months before computing acceptance
+        rates.  Uses a hard date filter — counts remain integer.
+    decay_half_life_months:
+        If set, apply exponential time-decay weights to demand records.
+        More recent records contribute more to bin-level acceptance rates.
+        Takes precedence over *recent_months* when both are provided.
+        Counts become float "effective counts".
+    date_col:
+        Name of the date column used for temporal filtering/weighting.
 
     Returns
     -------

@@ -175,7 +175,9 @@ def fit_h3_extrapolation_curve(
     Returns:
         ``(method, curvature, diagnostics)`` where *method* is ``"linear"`` or
         ``"power"``, *curvature* is the fitted alpha (clipped to [0.3, 3.0]),
-        and *diagnostics* is a dict with ``alpha``, ``se``, ``r_squared``, ``n_bins``.
+        and *diagnostics* is a dict with ``alpha``, ``se``, ``r_squared``,
+        ``n_bins``, and ``weighting_scheme`` (``"inverse_variance_proxy"`` when
+        weights are provided, ``"uniform"`` otherwise).
     """
     valid = (np.asarray(b2_h3) > 0) & (np.asarray(b2_h6) > 0)
     n_valid = int(valid.sum())

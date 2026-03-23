@@ -155,6 +155,95 @@ def learn_global_bin_edges(data: pd.DataFrame, base_config: dict[str, Any]) -> d
     return global_edges
 
 
+def learn_supersegment_bin_edges(
+    data: pd.DataFrame,
+    base_config: dict[str, Any],
+    supersegments: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, list[float]]]:
+    """Learn bin edges per reporting supersegment population.
+
+    For each reporting supersegment, filters the booked data to only the
+    segments in that supersegment and learns bin edges from that subpopulation.
+    This allows different supersegments to have bin splits tuned to their
+    own data distribution.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Full pre-loaded and standardized dataset (all segments).
+    base_config : dict
+        Base ``[preprocessing]`` configuration dictionary.
+    supersegments : dict
+        Mapping of supersegment name → config with ``segment_filters``.
+
+    Returns
+    -------
+    dict[str, dict[str, list[float]]]
+        Mapping of supersegment name → {variable name → learned bin edges}.
+    """
+    from src.preprocess_improved import learn_optimization_bins, learn_quantile_bins
+
+    bins_config = base_config.get("bins", {})
+    if not bins_config:
+        return {}
+
+    # Only learn for bins that need it (no fixed bin_edges, have max_bins)
+    learnable = {
+        var_name: bc_raw
+        for var_name, bc_raw in bins_config.items()
+        if not (bc_raw.get("bin_edges") and len(bc_raw["bin_edges"]) >= 2) and bc_raw.get("max_bins") is not None
+    }
+    if not learnable:
+        return {}
+
+    # Basic quality filters (no segment filter yet)
+    quality_mask = (
+        (data["fuera_norma"] == "n")
+        & (data["fraud_flag"] == "n")
+        & (data["nature_holder"] != "legal")
+        & (data["status_name"] == "booked")
+    )
+
+    result: dict[str, dict[str, list[float]]] = {}
+    for ss_name, ss_config in supersegments.items():
+        if not ss_config.get("learn_own_bin_edges", False):
+            continue  # Use global edges (default)
+
+        segment_filters = ss_config.get("segment_filters", [])
+        if not segment_filters:
+            continue
+
+        # Filter to this supersegment's population
+        pattern = "|".join(re.escape(sf) for sf in segment_filters)
+        ss_mask = quality_mask & data["segment_cut_off"].str.contains(pattern, regex=True, na=False)
+        ss_booked = data[ss_mask]
+
+        if len(ss_booked) == 0:
+            logger.warning(f"Supersegment '{ss_name}': no booked records for bin learning")
+            continue
+
+        ss_edges: dict[str, list[float]] = {}
+        for var_name, bc_raw in learnable.items():
+            source_col = bc_raw["source_col"]
+            method = bc_raw.get("method", "quantile")
+            max_bins = bc_raw["max_bins"]
+
+            try:
+                if method == "optimization":
+                    edges = learn_optimization_bins(ss_booked, source_col=source_col, max_bins=max_bins)
+                else:
+                    edges = learn_quantile_bins(ss_booked, source_col=source_col, max_bins=max_bins)
+                ss_edges[var_name] = edges
+                logger.info(f"Supersegment '{ss_name}' bin edges for '{var_name}': {edges}")
+            except (ValueError, KeyError) as e:
+                logger.warning(f"Supersegment '{ss_name}' bin learning failed for '{var_name}': {e}")
+
+        if ss_edges:
+            result[ss_name] = ss_edges
+
+    return result
+
+
 def load_base_config(config_path: str = "config.toml") -> dict[str, Any]:
     """Load the base configuration from config.toml."""
     with open(config_path, "rb") as f:
@@ -195,6 +284,13 @@ def load_supersegments_config(segments_path: str = "segments.toml") -> dict[str,
     return merged
 
 
+def load_reporting_supersegments_config(segments_path: str = "segments.toml") -> dict[str, dict[str, Any]]:
+    """Load only reporting supersegment configurations from segments.toml."""
+    with open(segments_path, "rb") as f:
+        config = tomllib.load(f)
+    return config.get("reporting_supersegments", {})
+
+
 def create_output_directories(base_output_dir: Path) -> dict[str, Path]:
     """Create output directory structure for a segment."""
     dirs = {
@@ -232,6 +328,7 @@ def run_segment_pipeline(
     preloaded_data: pd.DataFrame = None,
     training_only: bool = False,
     global_bin_edges: dict[str, list[float]] | None = None,
+    supersegment_bin_edges: dict[str, dict[str, list[float]]] | None = None,
 ) -> bool:
     """
     Run the pipeline for a single segment.
@@ -251,6 +348,10 @@ def run_segment_pipeline(
         global_bin_edges: Optional pre-learned bin edges from the full dataset.
                          When provided, these are injected into the merged config so
                          that all segments share consistent bin edges.
+        supersegment_bin_edges: Optional per-reporting-supersegment bin edges.
+                               When a segment belongs to a reporting supersegment
+                               that has its own learned edges, those override the
+                               global edges for the matching variables.
 
     Returns:
         True if successful, False otherwise
@@ -273,12 +374,26 @@ def run_segment_pipeline(
     # Merge configurations
     merged_config = merge_configs(base_config, segment_config)
 
-    # Inject globally-learned bin edges so all segments share the same edges.
+    # Inject learned bin edges: start with global, then override with
+    # supersegment-specific edges if this segment belongs to one.
     if global_bin_edges:
         bins_section = merged_config.setdefault("bins", {})
         for var_name, edges in global_bin_edges.items():
             if var_name in bins_section:
                 bins_section[var_name]["bin_edges"] = edges
+
+    if supersegment_bin_edges:
+        reporting_ss = resolve_reporting_supersegment(segment_config)
+        if reporting_ss and reporting_ss in supersegment_bin_edges:
+            ss_edges = supersegment_bin_edges[reporting_ss]
+            bins_section = merged_config.setdefault("bins", {})
+            for var_name, edges in ss_edges.items():
+                if var_name in bins_section:
+                    bins_section[var_name]["bin_edges"] = edges
+                    logger.info(
+                        f"Using supersegment '{reporting_ss}' bin edges for '{var_name}' "
+                        f"(overriding global)"
+                    )
 
     logger.info(f"Segment filter: {merged_config.get('segment_filter')}")
     logger.info(f"Optimum risk: {merged_config.get('optimum_risk')}")
@@ -475,6 +590,7 @@ def run_segments_sequential(
     preloaded_data: pd.DataFrame = None,
     training_only: bool = False,
     global_bin_edges: dict[str, list[float]] | None = None,
+    supersegment_bin_edges: dict[str, dict[str, list[float]]] | None = None,
 ) -> dict[str, bool]:
     """
     Run all segments sequentially, with supersegment support.
@@ -593,6 +709,7 @@ def run_segments_sequential(
                 preloaded_data=preloaded_data,
                 training_only=training_only,
                 global_bin_edges=global_bin_edges,
+                supersegment_bin_edges=supersegment_bin_edges,
             )
             results[segment_name] = success
 
@@ -616,6 +733,7 @@ def run_segments_parallel(
     preloaded_data: pd.DataFrame = None,
     training_only: bool = False,
     global_bin_edges: dict[str, list[float]] | None = None,
+    supersegment_bin_edges: dict[str, dict[str, list[float]]] | None = None,
 ) -> dict[str, bool]:
     """
     Run all segments in parallel, with supersegment support.
@@ -720,6 +838,7 @@ def run_segments_parallel(
                     preloaded_data,
                     training_only,
                     global_bin_edges,
+                    supersegment_bin_edges,
                 )
                 futures[future] = segment_name
 
@@ -1018,8 +1137,16 @@ def main():
     # identical edges (instead of each segment learning from its own filtered
     # subpopulation).
     global_bin_edges: dict[str, list[float]] = {}
+    supersegment_bin_edges: dict[str, dict[str, list[float]]] = {}
     if preloaded_data is not None:
         global_bin_edges = learn_global_bin_edges(preloaded_data, base_config)
+
+        # Learn per-reporting-supersegment bin edges so each supersegment can
+        # have splits tuned to its own population (e.g., different income_bin
+        # edges for "others" vs "known").
+        reporting_ss = load_reporting_supersegments_config(args.segments_config)
+        if reporting_ss:
+            supersegment_bin_edges = learn_supersegment_bin_edges(preloaded_data, base_config, reporting_ss)
 
     # Run segments
     if args.parallel:
@@ -1034,6 +1161,7 @@ def main():
             preloaded_data=preloaded_data,
             training_only=args.training_only,
             global_bin_edges=global_bin_edges,
+            supersegment_bin_edges=supersegment_bin_edges,
         )
     else:
         results = run_segments_sequential(
@@ -1046,6 +1174,7 @@ def main():
             preloaded_data=preloaded_data,
             training_only=args.training_only,
             global_bin_edges=global_bin_edges,
+            supersegment_bin_edges=supersegment_bin_edges,
         )
 
     # Print summary

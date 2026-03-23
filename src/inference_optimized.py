@@ -1623,7 +1623,7 @@ def compute_pre_reject_inference_data(
     data_booked: pd.DataFrame,
     data_demand: pd.DataFrame,
     risk_inference: dict,
-    reg_todu_amt_pile,
+    reg_todu_amt_pile: Any,
     stressor: float,
     *,
     indicators: list[str],
@@ -1639,6 +1639,15 @@ def compute_pre_reject_inference_data(
     computed once then reused across multiple parameter evaluations.
 
     Args:
+        data_booked: Booked-only records for the period.
+        data_demand: Full demand population (booked + rejected).
+        risk_inference: Dict with ``best_model_info``, ``features``, etc.
+        reg_todu_amt_pile: Fitted regression model for exposure prediction.
+        stressor: Global stress multiplier (use 1.0 when per_bin_stress is set).
+        indicators: Indicator columns to aggregate (e.g. todu_30ever_h6).
+        variables: Binning variable names for groupby.
+        annual_coef: Annualization coefficient.
+        multiplier: Risk multiplier (default 7).
         model_variables: Variables the risk model was trained on. When fewer
             than ``variables``, the model predicts using this subset while
             aggregation still groups by all ``variables``.
@@ -1707,16 +1716,16 @@ def compute_pre_reject_inference_data(
 
 
 def run_optimization_pipeline(
-    data_booked,
-    data_demand,
-    risk_inference,
-    reg_todu_amt_pile,
-    stressor,
-    tasa_fin,
+    data_booked: pd.DataFrame,
+    data_demand: pd.DataFrame,
+    risk_inference: dict,
+    reg_todu_amt_pile: Any,
+    stressor: float,
+    tasa_fin: float,
     *,
     indicators: list[str],
     variables: list[str],
-    annual_coef,
+    annual_coef: float,
     b2_output_path: str = "images/b2_ever_h6_vs_octroi_and_risk_score.html",
     reject_inference_method: str = "none",
     reject_uplift_factor: float = 1.5,
@@ -1735,8 +1744,35 @@ def run_optimization_pipeline(
     per_bin_stress: pd.DataFrame | None = None,
     per_bin_tasa_fin: pd.DataFrame | None = None,
 ):
-    """
-    Runs the optimization pipeline: aggregates data, applies risk models, and generates visualizations.
+    """Run the optimization pipeline: aggregate data, apply risk models, reject inference, and generate visualizations.
+
+    Args:
+        data_booked: Booked-only records for the observation period.
+        data_demand: Full demand population (booked + rejected + canceled).
+        risk_inference: Dict with ``best_model_info``, ``features``, ``model_variables``.
+        reg_todu_amt_pile: Fitted regression model for exposure (todu_amt_pile) prediction.
+        stressor: Global stress multiplier (1.0 when per_bin_stress is used).
+        tasa_fin: Global financing rate (fraction of demand that converts).
+        indicators: Indicator columns to aggregate (summed per bin).
+        variables: Binning variable names for the optimization grid.
+        annual_coef: Annualization coefficient for risk scaling.
+        b2_output_path: Path for the risk heatmap HTML output.
+        reject_inference_method: ``"none"`` or ``"parceling"``.
+        reject_uplift_factor: Scaling coefficient for reject-inference multiplier.
+        reject_max_risk_multiplier: Upper cap for per-bin reject multiplier.
+        reject_parceling_method: ``"linear"``, ``"power"``, or ``"sigmoid"``.
+        reject_bayesian_smoothing: Apply Beta-Binomial smoothing to acceptance rates.
+        reject_bayesian_prior_strength: Strength of Bayesian prior for smoothing.
+        reject_enforce_monotonicity: Enforce monotonic reject multipliers across bins.
+        reject_include_all_rejections: Include non-score rejections in acceptance denominator.
+        reject_acceptance_recent_months: If set, compute acceptance rates using only the last N months.
+        reject_acceptance_decay_half_life_months: If set, apply exponential time-decay to acceptance rates.
+        reject_acceptance_date_col: Date column for temporal weighting in acceptance rates.
+        reject_apply_h3_multiplier: Apply reject multiplier to H3 numerator alongside H6.
+        multiplier: Risk multiplier (default 7 for H6).
+        inv_vars: Variables with inverted monotonicity (higher bin = lower risk).
+        per_bin_stress: Per-bin stress factors DataFrame.
+        per_bin_tasa_fin: Per-bin financing rate DataFrame.
     """
     logger.info("Running optimization pipeline...")
 

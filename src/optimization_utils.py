@@ -26,7 +26,10 @@ from .utils import calculate_b2_ever_h6
 
 
 def _progress_iter(iterable, *, desc: str, enabled: bool = True, total: int | None = None):
-    """Wrap an iterable with tqdm progress bar when available/enabled."""
+    """Wrap an iterable with a tqdm progress bar when available and *enabled*.
+
+    Returns the iterable unchanged when *enabled* is False or tqdm is not installed.
+    """
     if not enabled:
         return iterable
     try:
