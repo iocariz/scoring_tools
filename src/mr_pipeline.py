@@ -1019,6 +1019,17 @@ def _assign_tiered_risk(
         pct = n / max(total_booked, 1) * 100
         logger.info(f"  Tier {tier} ({label}): {n:,} accounts ({pct:.1f}%)")
 
+    # Safety net: warn if any booked accounts still have unresolved risk after all tiers
+    booked_mask_final = data_demand_mr["status_name"] == StatusName.BOOKED.value
+    unresolved = booked_mask_final & data_demand_mr["b2_ever_h6_tmp"].isna()
+    n_unresolved = int(unresolved.sum())
+    if n_unresolved > 0:
+        logger.warning(
+            f"TIERED RISK: {n_unresolved} booked accounts remain with NaN risk after all tiers. "
+            f"These will be excluded from risk metrics but counted in production. "
+            f"Consider lowering mr_min_obs_per_bin or checking bin coverage."
+        )
+
     # Clean up temporary actual columns
     data_demand_mr = data_demand_mr.drop(
         columns=["_actual_todu_30ever_h6", "_actual_todu_amt_pile_h6"], errors="ignore"
@@ -1063,9 +1074,19 @@ def process_mr_period(
         # Include h3 columns for complementary monitoring when configured
         if "todu_30ever_h3" in settings.indicators:
             indicators_mr += ["todu_30ever_h3", "todu_amt_pile_h3"]
-        # Ensure merge keys (variables) are included
-        merge_keys = settings.variables
-        mr_cols = settings.keep_vars + indicators_mr + merge_keys
+        # Ensure merge keys (variables) are included.
+        # Cap at 2 variables for MR bin-level comparison to avoid sparse bins
+        # when N>2 (e.g., 3D grid splits observations too thinly for reliable
+        # per-bin MR risk estimation).  The coarser 2D aggregation gives denser
+        # bins; the merge back assigns the same risk to all values of the
+        # additional variable(s) within each 2D cell.
+        merge_keys = settings.variables[:min(len(settings.variables), 2)]
+        if len(merge_keys) < len(settings.variables):
+            logger.info(
+                f"MR analysis using {len(merge_keys)} merge keys {merge_keys} "
+                f"(capped from {len(settings.variables)} optimization variables for denser bins)"
+            )
+        mr_cols = settings.keep_vars + indicators_mr + settings.variables
 
         # Create data_demand_mr (filter by date and select columns)
         data_mr_period = filter_by_date(
@@ -1424,7 +1445,16 @@ def process_mr_period(
                 divisor = merged["oa_amt_sum"].replace(0, np.nan)
                 preds = merged["todu_amt_pile_h6_bin"] * (merged["oa_amt"] / divisor)
 
-                data_demand_mr.loc[booked_mask, "todu_amt_pile_h6"] = preds.fillna(0.0)
+                # Preserve NaN for accounts where exposure prediction failed — downstream
+                # calc_mask (line ~1447) correctly excludes NaN from risk calculation.
+                # Using 0.0 would cause division-by-zero in risk and silently drop accounts.
+                n_na = int(preds.isna().sum())
+                if n_na > 0:
+                    logger.warning(
+                        f"{n_na} booked accounts have NaN todu_amt_pile_h6 prediction "
+                        f"(zero bin production or missing data). These will be excluded from MR risk."
+                    )
+                data_demand_mr.loc[booked_mask, "todu_amt_pile_h6"] = preds
             except (ValueError, KeyError) as e:
                 logger.error(f"Error predicting todu_amt_pile_h6: {e}")
         else:

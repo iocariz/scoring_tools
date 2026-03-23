@@ -698,7 +698,7 @@ def aggregate_metrics(
             decimals=6,
         )
         agg_risk_point = float(agg_risk_point_raw) if pd.notna(agg_risk_point_raw) else 0.0
-        if agg_den:
+        if agg_den and not (isinstance(agg_den, float) and np.isnan(agg_den)):
             combined_risk_var = 0.0
             for segment_ci in segments:
                 risk_width = max(segment_ci["risk_upper"] - segment_ci["risk_lower"], 0.0)

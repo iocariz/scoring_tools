@@ -147,7 +147,7 @@ def generate_audit_table(
     audit_df["passes_cut"] = passes_cut
 
     # Calculate annualization coefficient
-    annual_coef = 12 / n_months if n_months else 1.0
+    annual_coef = 12 / n_months if n_months and n_months > 0 else 1.0
 
     # Vectorized adjusted amount (replaces row-by-row apply)
     if "oa_amt" in audit_df.columns:

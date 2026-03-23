@@ -36,6 +36,29 @@
 - ~~Inconsistent `dayfirst` parsing in `filter_by_date()`~~ — `src/preprocess_improved.py` now parses source values and filter bounds with explicit `dayfirst=False`; ambiguous-date regression added in `tests/test_preprocessing.py`
 - ~~Greedy global production floor enforcement~~ — `src/global_optimizer.py` now prioritizes production growth until `global_production_floor` is met and raises if infeasible; regression coverage added in `tests/test_global_optimizer.py`
 
+### Recently Fixed (deep review audit, 2026-03-23)
+
+**Critical:**
+- ~~`fillna(0.0)` converts NaN exposure to zero in MR pipeline~~ — `mr_pipeline.py:1437` now preserves NaN instead of `fillna(0.0)`; downstream `calc_mask` already handles NaN correctly; added warning log for affected accounts
+
+**High:**
+- ~~Division by zero in financing rate~~ — `models.py:103` now guards `recent_data[OA_AMT].sum()` against zero before division
+- ~~Modified settings lost in `data_manager.py`~~ — `load_and_prepare_data()` now returns `tuple[DataFrame, PreprocessingSettings]` so H3 column cleanup is propagated to caller
+
+**Medium:**
+- ~~Power extrapolation curvature near-zero not validated~~ — `config.py` now enforces `mr_extrapolation_curvature >= 0.3` (matching auto-calibration clip range)
+- ~~Tier 4 accounts can remain with NaN risk~~ — `_assign_tiered_risk` now warns when booked accounts remain with unresolved risk after all tiers
+- ~~NaN check on consolidation denominators~~ — `consolidation.py:701` now explicitly checks for NaN via `isinstance + np.isnan` guard
+- ~~Segment filter defaults to "unknown"~~ — added `@field_validator` in `config.py` that warns when the default "unknown" value is used
+
+**Low:**
+- ~~RI optimizer calibration error returns inf silently~~ — added debug logging in `_compute_calibration_error` for both failure paths (no valid cells, zero weights)
+- ~~Acceptance rate extremes not logged~~ — `apply_parceling_adjustment` now logs bin counts at ≤1% and ≥99% acceptance rate (suppressed in quiet/optimizer mode)
+- ~~MAD-to-zero fallback produces silent no-op~~ — `process_dataset` now logs when all target values are identical and outlier removal is skipped
+- ~~Bootstrap seed upper bound~~ — `utils.py:528` changed from `2**31` to `2**31 - 1` to stay within valid 32-bit signed range
+- ~~SPC single-month data has no anomaly flags~~ — warning message now explicitly states anomaly detection is disabled and all points marked non-anomalous
+- ~~Audit annualization allows negative n_months~~ — `audit.py:150` now checks `n_months > 0` before computing coefficient
+
 ### Recently Fixed (deep review audit, 2026-03-13)
 
 **Critical (round 1):**

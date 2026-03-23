@@ -88,11 +88,13 @@ def _compute_calibration_error(
     # Drop cells where target or predicted risk is undefined
     mask = relative_error.notna() & target_risk.notna() & (target_risk > 0)
     if not mask.any():
+        logger.debug("RI calibration: no valid cells with target_risk > 0; returning inf")
         return np.inf
 
     weights = df.loc[mask, "todu_amt_pile_h6"]
     total_weight = weights.sum()
     if total_weight == 0:
+        logger.debug("RI calibration: all valid cells have zero exposure weight; returning inf")
         return np.inf
 
     return float((weights * relative_error[mask] ** 2).sum() / total_weight)
@@ -125,6 +127,7 @@ def evaluate_ri_params(
         enforce_monotonicity=inputs.enforce_monotonicity,
         inv_vars=inputs.inv_vars,
         apply_h3_multiplier=inputs.apply_h3_multiplier,
+        quiet=True,
     )
 
     # Drop auxiliary columns
@@ -321,7 +324,7 @@ def run_reject_inference_optimization_optuna(
 
     sampler = optuna.samplers.TPESampler(seed=DEFAULT_RANDOM_STATE)
     study = optuna.create_study(direction="minimize", sampler=sampler)
-    study.optimize(objective, n_trials=n_trials)
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
 
     logger.info(f"RI Optuna optimizer: {n_trials} trials completed")
 

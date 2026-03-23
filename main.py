@@ -76,7 +76,7 @@ def main(
 
         # Step 2: Load and prepare data
         try:
-            data = load_and_prepare_data(settings, preloaded_data)
+            data, settings = load_and_prepare_data(settings, preloaded_data)
         except (DataValidationError, FileNotFoundError) as e:
             raise DataLoadError(f"[{segment}] Data error") from e
         except Exception as e:

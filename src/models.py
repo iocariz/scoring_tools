@@ -100,7 +100,8 @@ def calculate_financing_rates(data, date_ini_demand, lm=6):
     # Calculate recent financing rates
     recent_data = relevant_data.loc[relevant_data[Columns.MIS_DATE] >= date_ini_demand]
     recent_booked_data = recent_data.loc[recent_data[Columns.STATUS_NAME] == StatusName.BOOKED.value]
-    financing_rate_UM = recent_booked_data[Columns.OA_AMT].sum() / recent_data[Columns.OA_AMT].sum()
+    recent_total = recent_data[Columns.OA_AMT].sum()
+    financing_rate_UM = recent_booked_data[Columns.OA_AMT].sum() / recent_total if recent_total > 0 else np.nan
 
     # Plotting (use more descriptive labels and better formatting)
     plt.figure(figsize=(10, 6))  # Adjust figure size

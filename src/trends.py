@@ -207,7 +207,10 @@ def detect_trend_changes(
     df = df.dropna(subset=["value"])
 
     if len(df) < window:
-        logger.warning(f"Not enough data points ({len(df)}) for window size {window}")
+        logger.warning(
+            f"Not enough data points ({len(df)}) for SPC window size {window}. "
+            f"Anomaly detection disabled for this metric — all points marked as non-anomalous."
+        )
         df["rolling_mean"] = np.nan
         df["upper_bound"] = np.nan
         df["lower_bound"] = np.nan

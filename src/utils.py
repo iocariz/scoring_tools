@@ -525,7 +525,7 @@ def calculate_bootstrap_intervals(
     # Generate per-iteration seeds for reproducibility
     if random_state is not None:
         rng = np.random.RandomState(random_state)
-        seeds = rng.randint(0, 2**31, size=n_bootstraps)
+        seeds = rng.randint(0, 2**31 - 1, size=n_bootstraps)
     else:
         seeds = [None] * n_bootstraps
 

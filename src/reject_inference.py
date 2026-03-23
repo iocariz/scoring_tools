@@ -183,6 +183,7 @@ def _enforce_multiplier_monotonicity(
     *,
     max_iterations: int = 10,
     tol: float = 1e-6,
+    quiet: bool = False,
 ) -> pd.DataFrame:
     """Enforce monotonicity on reject_risk_multiplier per variable axis.
 
@@ -260,7 +261,8 @@ def _enforce_multiplier_monotonicity(
     if len(variables) >= 2 and len(result) > 1:
         n_violations = _fix_partial_order_violations(result, variables, inv_set)
         if n_violations > 0:
-            logger.warning(
+            log_fn = logger.debug if quiet else logger.warning
+            log_fn(
                 f"Isotonic post-hoc: fixed {n_violations} partial-order violation(s) "
                 f"remaining after alternating projections."
             )
@@ -330,6 +332,7 @@ def apply_parceling_adjustment(
     enforce_monotonicity: bool = False,
     inv_vars: list[str] | None = None,
     apply_h3_multiplier: bool = True,
+    quiet: bool = False,
 ) -> pd.DataFrame:
     """Apply per-bin risk uplift to repesca summary based on acceptance rates.
 
@@ -421,9 +424,19 @@ def apply_parceling_adjustment(
 
     result["reject_risk_multiplier"] = raw_multiplier.clip(lower=1.0, upper=max_risk_multiplier)
 
+    # Log bins with extreme acceptance rates
+    if not quiet:
+        n_zero = int((effective_rate <= 0.01).sum())
+        n_full = int((effective_rate >= 0.99).sum())
+        if n_zero > 0 or n_full > 0:
+            logger.info(
+                f"Acceptance rate extremes: {n_zero} bin(s) at ≤1% (all rejected), "
+                f"{n_full} bin(s) at ≥99% (all accepted)"
+            )
+
     # Enforce monotonicity if requested
     if enforce_monotonicity:
-        result = _enforce_multiplier_monotonicity(result, variables, inv_vars=inv_vars)
+        result = _enforce_multiplier_monotonicity(result, variables, inv_vars=inv_vars, quiet=quiet)
         # Re-clip after isotonic adjustment
         result["reject_risk_multiplier"] = result["reject_risk_multiplier"].clip(lower=1.0, upper=max_risk_multiplier)
 

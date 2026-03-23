@@ -324,6 +324,11 @@ def process_dataset(
             if n_outliers > 0:
                 logger.debug(f"process_dataset: removed {n_outliers} outlier bins (z >= {z_threshold})")
                 processed_data = processed_data[~outlier_mask].copy()
+        else:
+            logger.debug(
+                f"process_dataset: target MAD=0 (all {len(target_vals)} bins have identical target); "
+                f"skipping outlier removal"
+            )
 
     return processed_data
 

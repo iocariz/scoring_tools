@@ -218,6 +218,20 @@ class PreprocessingSettings(BaseModel):
     # -1 indicates descending risk (higher bin index = lower risk)
     directions: dict[str, int] = Field(default_factory=dict)
 
+    @field_validator("segment_filter")
+    @classmethod
+    def validate_segment_filter(cls, v: str) -> str:
+        if v == "unknown":
+            import warnings
+
+            warnings.warn(
+                "segment_filter is set to the default 'unknown'. This may filter out all data. "
+                "Set an explicit segment_filter in your config.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return v
+
     @field_validator("directions")
     @classmethod
     def validate_directions_values(cls, v: dict[str, int]) -> dict[str, int]:
@@ -268,7 +282,7 @@ class PreprocessingSettings(BaseModel):
     use_mr_outcomes: bool = False
     mr_min_obs_per_bin: int = Field(default=30, ge=1)
     mr_extrapolation_method: Literal["linear", "power", "logistic", "auto"] = "linear"
-    mr_extrapolation_curvature: float = Field(default=1.0, gt=0, le=5.0)
+    mr_extrapolation_curvature: float = Field(default=1.0, ge=0.3, le=5.0)
     mr_extrapolation_risk_multiplier: float = Field(default=3.0, gt=0, le=10.0)
     mr_extrapolation_hard_cap: float = Field(default=15.0, gt=0, le=100.0)
     mr_maturity_months: int = Field(
