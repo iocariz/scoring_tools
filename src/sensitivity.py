@@ -54,6 +54,9 @@ def run_sensitivity_analysis(
     baseline_mask: np.ndarray,
     risk_target: float,
     perturbation_levels: list[float] | None = None,
+    max_swapin_production_pct: float | None = None,
+    max_swapin_risk: float | None = None,
+    milp_time_limit: float = 30.0,
 ) -> pd.DataFrame:
     """For each perturbation level, perturb risk, re-solve MILP, compare mask to baseline.
 
@@ -82,7 +85,15 @@ def run_sensitivity_analysis(
     for pct in perturbation_levels:
         perturbed = perturb_risk_summary(data_summary, pct)
         grid = CellGrid.from_summary(perturbed, variables)
-        new_mask = milp_solve_cutoffs(grid, risk_target, inv_vars, multiplier)
+        new_mask = milp_solve_cutoffs(
+            grid,
+            risk_target,
+            inv_vars,
+            multiplier,
+            max_swapin_production_pct=max_swapin_production_pct,
+            max_swapin_risk=max_swapin_risk,
+            time_limit=milp_time_limit,
+        )
 
         if new_mask is None:
             row = {
@@ -143,6 +154,9 @@ def sensitivity_cell_detail(
     baseline_mask: np.ndarray,
     risk_target: float,
     perturbation_levels: list[float] | None = None,
+    max_swapin_production_pct: float | None = None,
+    max_swapin_risk: float | None = None,
+    milp_time_limit: float = 30.0,
 ) -> pd.DataFrame:
     """Per-cell: minimum perturbation that flips its status.
 
@@ -174,7 +188,15 @@ def sensitivity_cell_detail(
     for pct in sorted_levels:
         perturbed = perturb_risk_summary(data_summary, pct)
         grid = CellGrid.from_summary(perturbed, variables)
-        masks_by_level[pct] = milp_solve_cutoffs(grid, risk_target, inv_vars, multiplier)
+        masks_by_level[pct] = milp_solve_cutoffs(
+            grid,
+            risk_target,
+            inv_vars,
+            multiplier,
+            max_swapin_production_pct=max_swapin_production_pct,
+            max_swapin_risk=max_swapin_risk,
+            time_limit=milp_time_limit,
+        )
 
     # Build per-cell results
     rows = []
@@ -252,12 +274,10 @@ def compute_cell_marginal_impact(
             new_tamt = base_tamt + cell_tamt
 
         new_risk = float(calculate_b2_ever_h6(new_t30, new_tamt, multiplier=multiplier, as_percentage=True))
-        if np.isnan(new_risk):
-            new_risk = 0.0
-        safe_base_risk = 0.0 if np.isnan(base_risk) else base_risk
+        safe_base_risk = base_risk
 
         delta_prod = new_prod - base_prod
-        delta_risk = new_risk - safe_base_risk
+        delta_risk = new_risk - safe_base_risk if np.isfinite(new_risk) and np.isfinite(safe_base_risk) else np.nan
 
         # Per-cell risk (for information)
         cell_risk = float(calculate_b2_ever_h6(cell_t30, cell_tamt, multiplier=multiplier, as_percentage=True))

@@ -140,6 +140,22 @@ class GlobalAllocator:
         if not all(col in frontier_df.columns for col in required_cols):
             raise ValueError(f"Frontier for {segment_name} missing required columns: {required_cols}")
 
+        finite_mask = np.isfinite(frontier_df["b2_ever_h6"]) & np.isfinite(frontier_df["oa_amt_h0"])
+        if not finite_mask.all():
+            n_bad = int((~finite_mask).sum())
+            logger.warning(f"Frontier for {segment_name}: dropping {n_bad} row(s) with non-finite risk/production")
+            frontier_df = frontier_df.loc[finite_mask].copy()
+        if frontier_df.empty:
+            raise ValueError(f"Frontier for {segment_name} has no finite points after filtering")
+
+        if frontier_df["sol_fac"].duplicated().any():
+            dup_count = int(frontier_df["sol_fac"].duplicated().sum())
+            logger.warning(
+                f"Frontier for {segment_name}: found {dup_count} duplicate sol_fac value(s); keeping lowest-risk rows"
+            )
+            frontier_df = frontier_df.sort_values(["sol_fac", "b2_ever_h6", "oa_amt_h0"], ascending=[True, True, False])
+            frontier_df = frontier_df.drop_duplicates(subset=["sol_fac"], keep="first")
+
         # Sort by risk ascending
         sorted_df = frontier_df.sort_values("b2_ever_h6").reset_index(drop=True)
 
@@ -439,7 +455,8 @@ class GlobalAllocator:
         # Detect binding constraints (slack < 1e-6)
         binding = []
         if n_ub > 0:
-            ub_values = A_ub.toarray() @ x
+            # Keep diagnostics sparse-safe to avoid dense matrix blow-ups on large frontiers.
+            ub_values = np.asarray(A_ub @ x, dtype=float).ravel()
             for i, label in enumerate(ub_labels):
                 slack = b_ub[i] - ub_values[i]
                 if abs(slack) < 1e-6:

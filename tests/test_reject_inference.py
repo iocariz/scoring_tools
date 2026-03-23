@@ -25,6 +25,14 @@ def _make_demand(rows):
     return pd.DataFrame(rows, columns=["var0", "var1", "status_name", "reject_reason"])
 
 
+def _make_demand_with_dates(rows):
+    """Build a demand DataFrame including `mis_date`.
+
+    rows are tuples: (var0, var1, mis_date, status_name, reject_reason)
+    """
+    return pd.DataFrame(rows, columns=["var0", "var1", "mis_date", "status_name", "reject_reason"])
+
+
 VARIABLES = ["var0", "var1"]
 
 
@@ -166,6 +174,113 @@ class TestBayesianSmoothing:
         assert bin_11["smoothed_acceptance_rate"] > bin_11["acceptance_rate"]
         # Smoothed rate for large bin (2,2) should barely change
         assert bin_22["smoothed_acceptance_rate"] < bin_22["acceptance_rate"]
+
+
+# =============================================================================
+# Time-aware acceptance rate Tests
+# =============================================================================
+
+
+class TestTimeAwareAcceptanceRates:
+    def test_recent_window_filters_acceptance_rates(self):
+        """Recent-window mode should exclude older booked/rejected records."""
+        # max_date is 2024-03-15
+        old_date = pd.Timestamp("2024-01-15")
+        recent_date = pd.Timestamp("2024-03-15")
+
+        demand = _make_demand_with_dates(
+            [
+                # Old bin: 1 booked, 9 rejected → 10% acceptance (should be excluded)
+                *[(1, 1, old_date, "booked", None)] * 1,
+                *[(1, 1, old_date, "rejected", "09-score")] * 9,
+                # Recent bin: 9 booked, 1 rejected → 90% acceptance (should dominate)
+                *[(1, 1, recent_date, "booked", None)] * 9,
+                *[(1, 1, recent_date, "rejected", "09-score")] * 1,
+            ]
+        )
+
+        rates = compute_acceptance_rates(
+            demand,
+            VARIABLES,
+            recent_months=1,
+            decay_half_life_months=None,
+        )
+
+        bin_11 = rates[(rates["var0"] == 1) & (rates["var1"] == 1)].iloc[0]
+        assert bin_11["acceptance_rate"] == pytest.approx(0.9)
+
+    def test_exp_decay_weights_more_recent_records(self):
+        """Exponential decay mode should up-weight recent booked and down-weight older rejects."""
+        old_date = pd.Timestamp("2024-02-15")
+        recent_date = pd.Timestamp("2024-03-15")  # max date anchor
+
+        half_life = 0.5  # months
+        demand = _make_demand_with_dates(
+            [
+                (1, 1, recent_date, "booked", None),
+                (1, 1, old_date, "rejected", "09-score"),
+            ]
+        )
+
+        rates = compute_acceptance_rates(
+            demand,
+            VARIABLES,
+            recent_months=None,
+            decay_half_life_months=half_life,
+        )
+
+        max_date = recent_date
+        age_days = (max_date - old_date).total_seconds() / (3600 * 24)
+        age_months = age_days / 30.437
+        w_old = 2.0 ** (-age_months / half_life)
+        expected = 1.0 / (1.0 + w_old)
+
+        bin_11 = rates[(rates["var0"] == 1) & (rates["var1"] == 1)].iloc[0]
+        assert bin_11["acceptance_rate"] == pytest.approx(expected, rel=1e-3)
+
+    def test_empirical_bayes_adjusts_effective_prior_strength(self):
+        """Empirical-Bayes should adapt prior strength based on cross-bin variance.
+
+        Regression: avoid stale fixed `bayesian_prior_strength` by adapting
+        shrinkage from observed cross-bin acceptance dispersion.
+        """
+        demand = _make_demand(
+            [
+                # Bin (1,1): 4 booked, 6 rejected → 0.4 (small n)
+                *[(1, 1, "booked", None)] * 4,
+                *[(1, 1, "rejected", "09-score")] * 6,
+                # Bin (2,2): 60 booked, 40 rejected → 0.6 (large n)
+                *[(2, 2, "booked", None)] * 60,
+                *[(2, 2, "rejected", "09-score")] * 40,
+            ]
+        )
+
+        bayesian_prior_strength = 10.0
+        rates = compute_acceptance_rates(
+            demand, VARIABLES, bayesian_smoothing=True, bayesian_prior_strength=bayesian_prior_strength
+        )
+        bin_11 = rates[(rates["var0"] == 1) & (rates["var1"] == 1)].iloc[0]
+        bin_22 = rates[(rates["var0"] == 2) & (rates["var1"] == 2)].iloc[0]
+
+        # Baseline "fixed prior" posterior mean using cfg prior_strength.
+        global_rate = (bin_11["n_booked"] + bin_22["n_booked"]) / (
+            bin_11["n_booked"]
+            + bin_11["n_score_rejected"]
+            + bin_22["n_booked"]
+            + bin_22["n_score_rejected"]
+        )
+        alpha_cfg = max(bayesian_prior_strength * global_rate, 0.5)
+        beta_cfg = max(bayesian_prior_strength * (1 - global_rate), 0.5)
+
+        total_11 = float(bin_11["n_booked"] + bin_11["n_score_rejected"])
+        total_22 = float(bin_22["n_booked"] + bin_22["n_score_rejected"])
+        smoothed_cfg_11 = (float(bin_11["n_booked"]) + alpha_cfg) / (total_11 + alpha_cfg + beta_cfg)
+        smoothed_cfg_22 = (float(bin_22["n_booked"]) + alpha_cfg) / (total_22 + alpha_cfg + beta_cfg)
+
+        # Effective prior strength should differ from cfg, producing stronger
+        # shrinkage for the small bin and weaker pull against large bin.
+        assert bin_11["smoothed_acceptance_rate"] > smoothed_cfg_11
+        assert bin_22["smoothed_acceptance_rate"] < smoothed_cfg_22
 
     def test_no_smoothing_no_column(self):
         """Without bayesian_smoothing, no smoothed column should be present."""
@@ -432,6 +547,8 @@ class TestComputeRIConfidence:
         conf = compute_ri_confidence(rates, VARIABLES)
         assert "ri_confidence" in conf.columns
         assert "ri_bin_count" in conf.columns
+        assert "ri_bin_count_effective" in conf.columns
+        assert "ri_bin_count_raw" in conf.columns
         assert "var0" in conf.columns
         assert "var1" in conf.columns
 
@@ -464,6 +581,31 @@ class TestComputeRIConfidence:
         assert (conf["ri_confidence"] >= 0).all()
         assert (conf["ri_confidence"] <= 1).all()
 
+    def test_decay_mode_keeps_raw_and_effective_counts(self):
+        """Decay-weighted rates should preserve both effective and raw sample counts."""
+        old_date = pd.Timestamp("2024-02-15")
+        recent_date = pd.Timestamp("2024-03-15")
+        half_life = 0.5
+        demand = _make_demand_with_dates(
+            [
+                (1, 1, recent_date, "booked", None),
+                (1, 1, old_date, "rejected", "09-score"),
+            ]
+        )
+
+        rates = compute_acceptance_rates(
+            demand,
+            VARIABLES,
+            recent_months=None,
+            decay_half_life_months=half_life,
+        )
+        conf = compute_ri_confidence(rates, VARIABLES)
+        row = conf.iloc[0]
+
+        assert row["ri_bin_count_raw"] == 2
+        assert row["ri_bin_count"] == 2  # backward-compatible raw count
+        assert row["ri_bin_count_effective"] < 2.0
+
     def test_confidence_merged_in_parceling(self):
         """apply_reject_inference with parceling should include confidence columns."""
         repesca = pd.DataFrame({"var0": [1], "var1": [1], "todu_30ever_h6": [100.0], "todu_amt_pile_h6": [500.0]})
@@ -476,6 +618,8 @@ class TestComputeRIConfidence:
         result = apply_reject_inference(repesca, demand, VARIABLES, method="parceling")
         assert "ri_confidence" in result.columns
         assert "ri_bin_count" in result.columns
+        assert "ri_bin_count_effective" in result.columns
+        assert "ri_bin_count_raw" in result.columns
 
 
 # =============================================================================

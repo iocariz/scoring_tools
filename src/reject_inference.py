@@ -29,6 +29,9 @@ def compute_acceptance_rates(
     bayesian_smoothing: bool = False,
     bayesian_prior_strength: float = 10.0,
     include_all_rejections: bool = False,
+    recent_months: int | None = None,
+    decay_half_life_months: float | None = None,
+    date_col: str = "mis_date",
 ) -> pd.DataFrame:
     """Compute per-bin acceptance rates from the demand population.
 
@@ -67,23 +70,108 @@ def compute_acceptance_rates(
     count of **all** rejections.
     When *bayesian_smoothing* is True, also includes ``"smoothed_acceptance_rate"``.
     """
+    if "status_name" not in data_demand.columns:
+        raise ValueError("data_demand must contain 'status_name' column for reject inference.")
+
+    # Time-awareness: either filter to a recent window or apply exponential
+    # time-decay weights (based on `date_col`).
+    # - recent_months (and no decay) uses a hard filter (counts-based).
+    # - decay_half_life_months applies exponential weights (float "effective counts").
+    if recent_months is not None or decay_half_life_months is not None:
+        if date_col not in data_demand.columns:
+            logger.warning(
+                f"Reject inference acceptance-rate time-awareness requested but '{date_col}' column is missing; "
+                "falling back to unweighted acceptance rates."
+            )
+            recent_months = None
+            decay_half_life_months = None
+        else:
+            # Normalize dates for robust comparisons; drop rows with unparseable dates in weighting path.
+            data_demand = data_demand.copy()
+            data_demand[date_col] = pd.to_datetime(data_demand[date_col], errors="coerce")
+            n_invalid_dates = int(data_demand[date_col].isna().sum())
+            if n_invalid_dates > 0 and decay_half_life_months is not None:
+                share = 100.0 * n_invalid_dates / max(len(data_demand), 1)
+                logger.warning(
+                    f"Reject inference decay mode: {n_invalid_dates:,} row(s) ({share:.2f}%) have invalid '{date_col}' "
+                    "and will receive zero weight."
+                )
+            max_date = data_demand[date_col].max()
+            if pd.isna(max_date):
+                logger.warning(
+                    f"Reject inference acceptance-rate time-awareness could not parse '{date_col}'; "
+                    "falling back to unweighted acceptance rates."
+                )
+                recent_months = None
+                decay_half_life_months = None
+            else:
+                # Hard recent window (counts remain integer-like)
+                if recent_months is not None and decay_half_life_months is None:
+                    cutoff = max_date - pd.DateOffset(months=int(recent_months))
+                    data_demand = data_demand.loc[data_demand[date_col] >= cutoff]
+
     booked = data_demand[data_demand["status_name"] == StatusName.BOOKED.value]
 
     if include_all_rejections:
         rejected = data_demand[data_demand["status_name"] == StatusName.REJECTED.value]
-        logger.info("Acceptance rates use ALL rejections in denominator (include_all_rejections=True)")
+        logger.debug("Acceptance rates use ALL rejections in denominator (include_all_rejections=True)")
     else:
         rejected = data_demand[
             (data_demand["status_name"] == StatusName.REJECTED.value)
             & (data_demand["reject_reason"] == RejectReason.SCORE.value)
         ]
 
-    n_booked = booked.groupby(variables).size().reset_index(name="n_booked")
-    n_rejected = rejected.groupby(variables).size().reset_index(name="n_score_rejected")
+    if decay_half_life_months is not None:
+        # Exponential decay weights anchored at the maximum date in the (possibly filtered) dataset.
+        # age_months ~ days/30.437. Effective counts are floats.
+        data_tmp = data_demand[[*variables, "status_name", date_col]].copy()
+        max_date = pd.to_datetime(data_tmp[date_col], errors="coerce").max()
+        if pd.isna(max_date):
+            # Should already be handled above, but keep it safe.
+            logger.warning(
+                f"Reject inference decay weights could not compute max date from '{date_col}'; "
+                "falling back to unweighted acceptance rates."
+            )
+            decay_half_life_months = None
+        else:
+            age_days = (max_date - pd.to_datetime(data_tmp[date_col], errors="coerce")).dt.total_seconds() / (3600 * 24)
+            age_months = age_days / 30.437
+            weights = np.power(2.0, -age_months.to_numpy(dtype=float) / float(decay_half_life_months))
+            data_tmp["__w"] = weights
+
+            booked_w = data_demand.loc[data_demand["status_name"] == StatusName.BOOKED.value, variables].copy()
+            booked_w["__w"] = data_tmp.loc[data_demand["status_name"] == StatusName.BOOKED.value, "__w"].to_numpy()
+            n_booked = booked_w.groupby(variables)["__w"].sum().reset_index(name="n_booked")
+            n_booked_raw = booked_w.groupby(variables).size().reset_index(name="n_booked_raw")
+
+            if include_all_rejections:
+                rejected_w = data_demand.loc[data_demand["status_name"] == StatusName.REJECTED.value, variables].copy()
+                rejected_w["__w"] = data_tmp.loc[data_demand["status_name"] == StatusName.REJECTED.value, "__w"].to_numpy()
+                n_rejected = rejected_w.groupby(variables)["__w"].sum().reset_index(name="n_score_rejected")
+                n_rejected_raw = rejected_w.groupby(variables).size().reset_index(name="n_score_rejected_raw")
+            else:
+                rej_mask = (data_demand["status_name"] == StatusName.REJECTED.value) & (
+                    data_demand["reject_reason"] == RejectReason.SCORE.value
+                )
+                rejected_w = data_demand.loc[rej_mask, variables].copy()
+                rejected_w["__w"] = data_tmp.loc[rej_mask, "__w"].to_numpy()
+                n_rejected = rejected_w.groupby(variables)["__w"].sum().reset_index(name="n_score_rejected")
+                n_rejected_raw = rejected_w.groupby(variables).size().reset_index(name="n_score_rejected_raw")
+    else:
+        # Counts-based acceptance rates (original behavior)
+        n_booked = booked.groupby(variables).size().reset_index(name="n_booked")
+        n_rejected = rejected.groupby(variables).size().reset_index(name="n_score_rejected")
+        n_booked_raw = n_booked.rename(columns={"n_booked": "n_booked_raw"})
+        n_rejected_raw = n_rejected.rename(columns={"n_score_rejected": "n_score_rejected_raw"})
 
     rates = n_booked.merge(n_rejected, on=variables, how="outer").fillna(0)
-    rates["n_booked"] = rates["n_booked"].astype(int)
-    rates["n_score_rejected"] = rates["n_score_rejected"].astype(int)
+    rates = rates.merge(n_booked_raw, on=variables, how="left").merge(n_rejected_raw, on=variables, how="left").fillna(0)
+    if decay_half_life_months is None:
+        # Keep types stable for non-decay mode (tests rely on exact ints).
+        rates["n_booked"] = rates["n_booked"].astype(int)
+        rates["n_score_rejected"] = rates["n_score_rejected"].astype(int)
+    rates["n_booked_raw"] = rates["n_booked_raw"].astype(int)
+    rates["n_score_rejected_raw"] = rates["n_score_rejected_raw"].astype(int)
 
     total = rates["n_booked"] + rates["n_score_rejected"]
     rates["acceptance_rate"] = (rates["n_booked"] / total).where(total > 0, 0.0)
@@ -91,12 +179,41 @@ def compute_acceptance_rates(
     # Bayesian smoothing: Beta-Binomial posterior
     if bayesian_smoothing:
         global_rate = rates["n_booked"].sum() / max(total.sum(), 1)
-        alpha = max(bayesian_prior_strength * global_rate, 0.5)
-        beta = max(bayesian_prior_strength * (1 - global_rate), 0.5)
+        # Empirical-Bayes adjustment:
+        # The configured `bayesian_prior_strength` is treated as a baseline
+        # shrinkage (equivalent sample size). We estimate an additional
+        # empirical shrinkage level from cross-bin variability, and blend the
+        # two to reduce staleness across time/segments.
+        #
+        # This is intentionally conservative and bounded to keep downstream
+        # behavior stable.
+        effective_prior_strength = float(bayesian_prior_strength)
+        p = float(global_rate)
+        if 0.0 < p < 1.0:
+            bins_for_emp = rates.loc[total > 0, "acceptance_rate"]
+            n_i = total.loc[total > 0].astype(float).to_numpy()
+            if len(bins_for_emp) >= 2 and np.all(n_i > 0):
+                sample_var = float(bins_for_emp.var(ddof=1))
+                # Average within-bin (binomial) variance of the acceptance-rate estimator
+                # Var(p_hat_i | p) ~ p(1-p)/n_i.
+                within_var_mean = float((p * (1 - p) / n_i).mean())
+                between_var = sample_var - within_var_mean
+                if np.isfinite(between_var) and between_var > 0:
+                    empirical_strength = (p * (1 - p) / between_var) - 1.0
+                    if np.isfinite(empirical_strength) and empirical_strength > 0:
+                        # Conservative blend keeps configured strength relevant while adapting.
+                        effective_prior_strength = 0.5 * float(bayesian_prior_strength) + 0.5 * float(
+                            empirical_strength
+                        )
+
+        effective_prior_strength = float(np.clip(effective_prior_strength, 0.5, 1000.0))
+        alpha = max(effective_prior_strength * global_rate, 0.5)
+        beta = max(effective_prior_strength * (1 - global_rate), 0.5)
         rates["smoothed_acceptance_rate"] = (rates["n_booked"] + alpha) / (total + alpha + beta)
         logger.debug(
-            f"Bayesian smoothing applied | prior_strength={bayesian_prior_strength} | "
-            f"global_rate={global_rate:.3f} | alpha={alpha:.2f}, beta={beta:.2f}"
+            f"Bayesian smoothing applied | prior_strength(cfg)={bayesian_prior_strength:.3f} | "
+            f"prior_strength(eff)={effective_prior_strength:.3f} | global_rate={global_rate:.3f} | "
+            f"alpha={alpha:.2f}, beta={beta:.2f}"
         )
 
     # Warn about non-score rejections that are excluded from acceptance rate.
@@ -163,15 +280,27 @@ def compute_ri_confidence(
     Returns
     -------
     DataFrame with columns ``[*variables, "ri_confidence", "ri_bin_count"]``.
+    Also includes:
+    - ``ri_bin_count_effective``: float effective count (time-decay aware)
+    - ``ri_bin_count_raw``: integer raw count
     """
-    n_total = acceptance_rates["n_booked"] + acceptance_rates["n_score_rejected"]
-    confidence = 1.0 - np.exp(-n_total / scale)
+    n_total_effective = (acceptance_rates["n_booked"] + acceptance_rates["n_score_rejected"]).astype(float)
+    if {"n_booked_raw", "n_score_rejected_raw"}.issubset(acceptance_rates.columns):
+        n_total_raw = (acceptance_rates["n_booked_raw"] + acceptance_rates["n_score_rejected_raw"]).astype(int)
+    else:
+        n_total_raw = np.round(n_total_effective).astype(int)
+
+    confidence = 1.0 - np.exp(-n_total_effective / scale)
 
     return pd.DataFrame(
         {
             **{v: acceptance_rates[v] for v in variables},
             "ri_confidence": confidence,
-            "ri_bin_count": n_total,
+            # Backward-compatible primary count column remains integer raw counts.
+            "ri_bin_count": n_total_raw,
+            # Additional explicit columns to avoid ambiguity in decay mode.
+            "ri_bin_count_effective": n_total_effective,
+            "ri_bin_count_raw": n_total_raw,
         }
     )
 
@@ -429,7 +558,7 @@ def apply_parceling_adjustment(
         n_zero = int((effective_rate <= 0.01).sum())
         n_full = int((effective_rate >= 0.99).sum())
         if n_zero > 0 or n_full > 0:
-            logger.info(
+            logger.debug(
                 f"Acceptance rate extremes: {n_zero} bin(s) at ≤1% (all rejected), "
                 f"{n_full} bin(s) at ≥99% (all accepted)"
             )
@@ -491,6 +620,9 @@ def apply_reject_inference(
     inv_vars: list[str] | None = None,
     include_all_rejections: bool = False,
     apply_h3_multiplier: bool = False,
+    acceptance_recent_months: int | None = None,
+    acceptance_decay_half_life_months: float | None = None,
+    acceptance_date_col: str = "mis_date",
 ) -> pd.DataFrame:
     """Dispatcher: apply reject-inference adjustment to repesca risk predictions.
 
@@ -546,6 +678,9 @@ def apply_reject_inference(
             bayesian_smoothing=bayesian_smoothing,
             bayesian_prior_strength=bayesian_prior_strength,
             include_all_rejections=include_all_rejections,
+            recent_months=acceptance_recent_months,
+            decay_half_life_months=acceptance_decay_half_life_months,
+            date_col=acceptance_date_col,
         )
 
         result = apply_parceling_adjustment(
@@ -565,6 +700,8 @@ def apply_reject_inference(
         result = result.merge(confidence, on=variables, how="left")
         result["ri_confidence"] = result["ri_confidence"].fillna(0.0)
         result["ri_bin_count"] = result["ri_bin_count"].fillna(0).astype(int)
+        result["ri_bin_count_raw"] = result["ri_bin_count_raw"].fillna(0).astype(int)
+        result["ri_bin_count_effective"] = result["ri_bin_count_effective"].fillna(0.0).astype(float)
 
         return result
 

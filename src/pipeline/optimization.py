@@ -89,6 +89,9 @@ def run_optimization_phase(
         reject_bayesian_prior_strength=settings.reject_bayesian_prior_strength,
         reject_enforce_monotonicity=settings.reject_enforce_monotonicity,
         reject_include_all_rejections=settings.reject_include_all_rejections,
+        reject_acceptance_recent_months=settings.reject_acceptance_recent_months,
+        reject_acceptance_decay_half_life_months=settings.reject_acceptance_decay_half_life_months,
+        reject_acceptance_date_col=settings.reject_acceptance_date_col,
         reject_apply_h3_multiplier=settings.reject_apply_h3_multiplier,
         multiplier=settings.multiplier,
         inv_vars=settings.inv_vars,
@@ -203,6 +206,9 @@ def run_optimization_phase(
             max_swapin_risk=settings.max_swapin_risk,
             multiplier_h3=settings.multiplier_h3,
             milp_time_limit=settings.milp_time_limit,
+            monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
+            monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
+            monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
         )
 
         if pareto_df.empty:
@@ -213,7 +219,14 @@ def run_optimization_phase(
                 from src.optimization_utils import _ga_pareto_fallback
 
                 pareto_df, grid, pareto_masks = _ga_pareto_fallback(
-                    grid, settings.inv_vars, settings.multiplier, settings.indicators, settings.pareto_n_points
+                    grid,
+                    settings.inv_vars,
+                    settings.multiplier,
+                    settings.indicators,
+                    settings.pareto_n_points,
+                    monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
+                    monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
+                    monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
                 )
                 if pareto_df.empty:
                     raise RuntimeError(
@@ -255,6 +268,9 @@ def run_optimization_phase(
                         settings.multiplier,
                         settings.indicators,
                         settings.pareto_n_points,
+                        monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
+                        monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
+                        monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
                     )
                     if pareto_df.empty:
                         raise RuntimeError(
@@ -455,7 +471,7 @@ def run_scenario_analysis(
         mask=selected_mask,
         grid=grid,
     )
-    logger.info(f"[{segment}] Scenario {scenario_name} CI: {ci_data}")
+    logger.debug(f"[{segment}] Scenario {scenario_name} CI: {ci_data}")
 
     summary_table = visualizer.get_summary_table()
 
@@ -695,7 +711,16 @@ def run_sensitivity_phase(
 
         # Get baseline mask from the base scenario's optimal solution
         baseline_mask = milp_solve_cutoffs(
-            grid, settings.optimum_risk, settings.inv_vars, settings.multiplier, time_limit=settings.milp_time_limit
+            grid,
+            settings.optimum_risk,
+            settings.inv_vars,
+            settings.multiplier,
+            max_swapin_production_pct=settings.max_swapin_production_pct,
+            max_swapin_risk=settings.max_swapin_risk,
+            time_limit=settings.milp_time_limit,
+            monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
+            monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
+            monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
         )
         if baseline_mask is None:
             logger.warning(f"[{segment}] Sensitivity: baseline solve infeasible, skipping")
@@ -711,6 +736,9 @@ def run_sensitivity_phase(
             baseline_mask,
             settings.optimum_risk,
             perturbation_levels=settings.sensitivity_levels,
+            max_swapin_production_pct=settings.max_swapin_production_pct,
+            max_swapin_risk=settings.max_swapin_risk,
+            milp_time_limit=settings.milp_time_limit,
         )
         sens_path = output.sensitivity_analysis_csv("_base")
         sens_df.to_csv(sens_path, index=False)
@@ -726,6 +754,9 @@ def run_sensitivity_phase(
             baseline_mask,
             settings.optimum_risk,
             perturbation_levels=settings.sensitivity_levels,
+            max_swapin_production_pct=settings.max_swapin_production_pct,
+            max_swapin_risk=settings.max_swapin_risk,
+            milp_time_limit=settings.milp_time_limit,
         )
         cell_detail_path = output.sensitivity_analysis_csv("_cell_detail")
         cell_detail.to_csv(cell_detail_path, index=False)
@@ -854,6 +885,9 @@ def run_ri_optimizer_phase(
             bayesian_smoothing=settings.reject_bayesian_smoothing,
             bayesian_prior_strength=settings.reject_bayesian_prior_strength,
             include_all_rejections=settings.reject_include_all_rejections,
+            recent_months=settings.reject_acceptance_recent_months,
+            decay_half_life_months=settings.reject_acceptance_decay_half_life_months,
+            date_col=settings.reject_acceptance_date_col,
         )
 
         # Step 4: Build optimizer inputs
@@ -912,6 +946,9 @@ def run_ri_optimizer_phase(
                     bayesian_smoothing=settings.reject_bayesian_smoothing,
                     bayesian_prior_strength=settings.reject_bayesian_prior_strength,
                     include_all_rejections=settings.reject_include_all_rejections,
+                    recent_months=settings.reject_acceptance_recent_months,
+                    decay_half_life_months=settings.reject_acceptance_decay_half_life_months,
+                    date_col=settings.reject_acceptance_date_col,
                 )
                 val_optimizer_inputs = OptimizerInputs(
                     booked_summary=val_booked_summary,
@@ -990,7 +1027,7 @@ def _save_cutoff_summaries(
             logger.debug(f"[{segment}] Cell-level cutoff summaries saved to {output.cutoff_summary_wide_csv}")
             accepted_count = consolidated_cutoffs["accepted"].sum() if "accepted" in consolidated_cutoffs.columns else 0
             total_cells = len(consolidated_cutoffs)
-            logger.info(f"[{segment}] Cell-level cutoff summary: {int(accepted_count)}/{total_cells} cells accepted")
+            logger.debug(f"[{segment}] Cell-level cutoff summary: {int(accepted_count)}/{total_cells} cells accepted")
         else:
             wide_cutoffs = format_cutoff_summary_table(
                 cutoff_summary=consolidated_cutoffs,
@@ -998,4 +1035,4 @@ def _save_cutoff_summaries(
             )
             wide_cutoffs.to_csv(output.cutoff_summary_wide_csv, index=False)
             logger.debug(f"[{segment}] Cutoff summaries saved to {output.cutoff_summary_by_segment_csv}")
-            logger.info(f"[{segment}] Cutoff summary:\n{wide_cutoffs.to_string()}")
+            logger.debug(f"[{segment}] Cutoff summary:\n{wide_cutoffs.to_string()}")

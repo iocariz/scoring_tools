@@ -690,6 +690,15 @@ class TestFitH3ExtrapolationCurve:
         assert "se" in diag
         assert "r_squared" in diag
         assert "n_bins" in diag
+        assert "weighting_scheme" in diag
+
+    def test_variance_aware_weighting_scheme_when_weights_provided(self):
+        """Providing bin exposures should activate inverse-variance proxy weighting."""
+        b2_h3 = np.array([0.4, 0.8, 1.2, 1.6, 2.0, 2.4])
+        b2_h6 = b2_h3 * 1.8
+        weights = np.array([20, 50, 100, 200, 400, 800], dtype=float)
+        _, _, diag = fit_h3_extrapolation_curve(b2_h3, b2_h6, weights=weights)
+        assert diag["weighting_scheme"] == "inverse_variance_proxy"
 
 
 # =============================================================================

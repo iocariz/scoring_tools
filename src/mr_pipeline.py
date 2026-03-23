@@ -87,7 +87,7 @@ def calculate_metrics_from_cuts(
                     )
                     cut_map[bin_val] = np.inf if (inv_vars and var1_col in inv_vars) else -np.inf
 
-            logger.info(f"Optimal Cuts: {cut_map}")
+            logger.debug(f"Optimal Cuts: {cut_map}")
 
             df["cut_limit"] = df[var0_col].map(cut_map)
 
@@ -123,7 +123,7 @@ def calculate_metrics_from_cuts(
         # Actual (All Booked)
         actual_prod, actual_risk, actual_rn, actual_rd, actual_h3, actual_h3_rn, actual_h3_rd = calc_metrics(df, "_boo")
 
-        logger.info(
+        logger.debug(
             f"MR summary diagnostics: n_bins={len(df)}, passes_cut={df['passes_cut'].sum()}/{len(df)}, "
             f"actual: todu_30ever_h6_boo={actual_rn:.4f}, todu_amt_pile_h6_boo={actual_rd:.4f}, "
             f"risk={actual_risk}%"
@@ -210,24 +210,24 @@ def calculate_metrics_from_cuts(
         kept_rd = actual_rd - so_rd
         kept_risk = float(calculate_b2_ever_h6(kept_rn, kept_rd, multiplier=multiplier, as_percentage=True)) if kept_rd > 0 else 0.0
         kept_prod = actual_prod - so_prod
-        logger.info("OPTIMUM DECOMPOSITION:")
-        logger.info(
+        logger.debug("OPTIMUM DECOMPOSITION:")
+        logger.debug(
             f"  Actual:   risk={actual_risk}%  prod={actual_prod:,.0f}  "
             f"rn={actual_rn:.2f}  rd={actual_rd:.2f}"
         )
-        logger.info(
+        logger.debug(
             f"  Swap-out: risk={so_risk}%  prod={so_prod:,.0f} ({so_prod / actual_prod * 100:.1f}% of actual)  "
             f"rn={so_rn:.2f}  rd={so_rd:.2f}"
         )
-        logger.info(
+        logger.debug(
             f"  Kept:     risk={kept_risk:.2f}%  prod={kept_prod:,.0f}  "
             f"rn={kept_rn:.2f}  rd={kept_rd:.2f}"
         )
-        logger.info(
+        logger.debug(
             f"  Swap-in:  risk={si_risk}%  prod={si_prod:,.0f} ({si_prod / actual_prod * 100:.1f}% of actual)  "
             f"rn={si_rn:.2f}  rd={si_rd:.2f}"
         )
-        logger.info(
+        logger.debug(
             f"  Optimum:  risk={opt_risk}%  prod={opt_prod:,.0f}"
         )
         if so_risk is not None and actual_risk is not None and so_risk < actual_risk:
@@ -312,6 +312,7 @@ def _compute_hybrid_mr_risk(
     mr_extrapolation_method: str = "linear",
     mr_extrapolation_curvature: float = 1.0,
     mr_maturity_months: int = 6,
+    maturity_reference_date: pd.Timestamp | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Compute per-bin ``b2_ever_h6_tmp`` using MR outcomes when sufficient, else main-period.
 
@@ -351,23 +352,26 @@ def _compute_hybrid_mr_risk(
     # Only accounts with at least mr_maturity_months of seasoning are included
     # in b2_mr to avoid diluting risk with immature zeros.
     if mr_maturity_months > 0 and "mis_date" in mr_h6_valid.columns:
-        max_date = mr_h6_valid["mis_date"].max()
-        maturity = (max_date.year - mr_h6_valid["mis_date"].dt.year) * 12 + (
-            max_date.month - mr_h6_valid["mis_date"].dt.month
+        if maturity_reference_date is None:
+            reference_date = mr_h6_valid["mis_date"].max()
+        else:
+            reference_date = pd.to_datetime(maturity_reference_date)
+        maturity = (reference_date.year - mr_h6_valid["mis_date"].dt.year) * 12 + (
+            reference_date.month - mr_h6_valid["mis_date"].dt.month
         )
         mature_mask = maturity >= mr_maturity_months
         n_total = len(mr_h6_valid)
         n_mature = mature_mask.sum()
         if n_mature > 0:
-            cutoff_date = max_date - pd.DateOffset(months=mr_maturity_months)
+            cutoff_date = reference_date - pd.DateOffset(months=mr_maturity_months)
             logger.info(
                 f"H6 maturity filter: {n_mature:,}/{n_total:,} accounts with >={mr_maturity_months}mo "
-                f"maturity (booked on or before {cutoff_date.date()}, max_date={max_date.date()})"
+                f"maturity (booked on or before {cutoff_date.date()}, reference_date={reference_date.date()})"
             )
             mr_h6_valid = mr_h6_valid[mature_mask]
         else:
             logger.warning(
-                f"No accounts with >={mr_maturity_months}mo H6 maturity (max_date={max_date.date()}). "
+                f"No accounts with >={mr_maturity_months}mo H6 maturity (reference_date={reference_date.date()}). "
                 f"Falling back to main-period or H3 extrapolation for all bins."
             )
             mr_h6_valid = mr_h6_valid.iloc[:0]  # empty DataFrame, forces fallback
@@ -477,7 +481,7 @@ def _compute_hybrid_mr_risk(
             )
             mr_extrapolation_method = method_auto
             mr_extrapolation_curvature = curvature_auto
-            logger.info(
+            logger.debug(
                 f"Auto-calibrated H3→H6 extrapolation: method={method_auto}, "
                 f"curvature={curvature_auto:.3f} (alpha={fit_diag['alpha']:.3f}, "
                 f"SE={fit_diag['se']:.3f}, R²={fit_diag['r_squared']:.3f}, "
@@ -512,15 +516,15 @@ def _compute_hybrid_mr_risk(
             )
             valid_months = monthly["h6_h3_ratio"].dropna()
 
-            logger.info(
+            logger.debug(
                 f"H6/H3 ratio trend: {len(monthly)} months in main period, "
                 f"{len(valid_months)} with valid ratio"
             )
             if len(valid_months) >= 3:
-                logger.info("H6/H3 RATIO TREND (main period, monthly):")
+                logger.debug("H6/H3 RATIO TREND (main period, monthly):")
                 for period, row in monthly.iterrows():
                     ratio_str = f"{row['h6_h3_ratio']:.2f}" if pd.notna(row["h6_h3_ratio"]) else "—"
-                    logger.info(
+                    logger.debug(
                         f"  {period}:  H6={row['b2_h6'] * 100:.2f}%  "
                         f"H3={row['b2_h3'] * 100:.2f}%  ratio={ratio_str}"
                     )
@@ -536,7 +540,7 @@ def _compute_hybrid_mr_risk(
                 ratios_arr = valid_months.values
                 if pd.notna(overall_b2_h6) and pd.notna(overall_b2_h3) and overall_b2_h3 > 0:
                     overall_ratio = overall_b2_h6 / overall_b2_h3
-                    logger.info(
+                    logger.debug(
                         f"  Overall ratio (Σh6/Σh3): {overall_ratio:.2f}  |  "
                         f"Mean of monthly ratios: {np.mean(ratios_arr):.2f}  |  "
                         f"Median of monthly ratios: {np.median(ratios_arr):.2f}"
@@ -548,7 +552,7 @@ def _compute_hybrid_mr_risk(
                 if len(x) >= 3:
                     slope, intercept = np.polyfit(x, y, 1)
                     pct_change = slope * len(x) / np.mean(y) * 100 if np.mean(y) > 0 else 0.0
-                    logger.info(
+                    logger.debug(
                         f"  Trend: slope={slope:.4f}/month, total change={pct_change:+.1f}% "
                         f"over {len(x)} months (mean monthly ratio={np.mean(y):.2f})"
                     )
@@ -564,9 +568,9 @@ def _compute_hybrid_mr_risk(
                 )
         else:
             missing = [c for c in h3_cols_trend + h6_cols_trend if c not in data_booked.columns]
-            logger.info(f"H6/H3 ratio trend: skipped — missing columns in data_booked: {missing}")
+            logger.debug(f"H6/H3 ratio trend: skipped — missing columns in data_booked: {missing}")
     elif has_h3:
-        logger.info("H6/H3 ratio trend: skipped — mis_date not in data_booked")
+        logger.debug("H6/H3 ratio trend: skipped — mis_date not in data_booked")
     else:
         logger.debug("H6/H3 ratio trend: skipped — no H3 data configured")
 
@@ -628,22 +632,24 @@ def _compute_hybrid_mr_risk(
             weights = combined.loc[ratio_valid, "n_obs_main"].values
             wt_ratio = float(np.average(valid_ratios, weights=weights)) if weights.sum() > 0 else np.nan
 
-            logger.info("H6/H3 RATIO RECONCILIATION (main period):")
-            logger.info("  Per-bin (used for extrapolation):")
-            logger.info(f"    median={per_bin_median:.3f}  mean={per_bin_mean:.3f}  n_bins={len(valid_ratios)}")
-            logger.info(f"    obs-weighted mean={wt_ratio:.3f}")
-            logger.info("  Per-bin individual ratios:")
+            logger.debug("H6/H3 RATIO RECONCILIATION (main period):")
+            logger.debug("  Per-bin (used for extrapolation):")
+            logger.debug(
+                f"    median={per_bin_median:.3f}  mean={per_bin_mean:.3f}  n_bins={len(valid_ratios)}"
+            )
+            logger.debug(f"    obs-weighted mean={wt_ratio:.3f}")
+            logger.debug("  Per-bin individual ratios:")
             valid_positions = np.where(ratio_valid)[0]
             for i, (_idx, row) in enumerate(combined[ratio_valid].iterrows()):
                 keys_str = ", ".join(f"{k}={row[k]}" for k in merge_keys)
                 pos = valid_positions[i]  # position in the full DataFrame
-                logger.info(
+                logger.debug(
                     f"    {keys_str}: b2_main={row['b2_main'] * 100:.2f}%  "
                     f"b2_main_h3={row['b2_main_h3'] * 100:.2f}%  "
                     f"ratio={h6_h3_ratio_raw[pos]:.3f}  n_obs={int(row['n_obs_main'])}"
                 )
-            logger.info(f"  Global (Σb2_main / Σb2_main_h3): {ratio_of_sums:.3f}")
-            logger.info(
+            logger.debug(f"  Global (Σb2_main / Σb2_main_h3): {ratio_of_sums:.3f}")
+            logger.debug(
                 f"  NOTE: extrapolation uses per-bin median ({per_bin_median:.3f}). "
                 f"Monthly trend mean ({np.mean(valid_ratios):.3f}) differs due to "
                 f"aggregation axis (bins vs months) and statistic (median vs mean)."
@@ -771,16 +777,16 @@ def _compute_hybrid_mr_risk(
     def _pct(v):
         return f"{v * 100:.2f}%" if pd.notna(v) else "—"
 
-    logger.info("=" * 110)
-    logger.info("PER-BIN MR RISK DIAGNOSTIC  (all risk values shown as percentages)")
-    logger.info("-" * 110)
+    logger.debug("=" * 110)
+    logger.debug("PER-BIN MR RISK DIAGNOSTIC  (all risk values shown as percentages)")
+    logger.debug("-" * 110)
     header_keys = "  ".join(f"{k:>12}" for k in merge_keys)
     has_ratio_col = "h6_h3_ratio" in combined.columns
-    logger.info(
+    logger.debug(
         f"{header_keys}  {'source':>16}  {'b2_h6_tmp':>10}  {'b2_mr':>10}  "
         f"{'b2_mr_h3':>10}  {'h6/h3':>7}  {'b2_main':>10}  {'prod':>12}  {'wt_contrib':>10}"
     )
-    logger.info("-" * 110)
+    logger.debug("-" * 110)
 
     for _, row in combined.sort_values(merge_keys).iterrows():
         keys_str = "  ".join(f"{row[k]:>12.1f}" if isinstance(row[k], float) else f"{row[k]:>12}" for k in merge_keys)
@@ -788,12 +794,12 @@ def _compute_hybrid_mr_risk(
         risk_tmp = row["b2_ever_h6_tmp"]
         wt_contrib = risk_tmp * 100 * prod / total_prod if total_prod > 0 and pd.notna(risk_tmp) else 0.0
         ratio_val = f"{row['h6_h3_ratio']:.2f}" if has_ratio_col and pd.notna(row.get("h6_h3_ratio")) else "—"
-        logger.info(
+        logger.debug(
             f"{keys_str}  {row['risk_source']:>16}  {_pct(risk_tmp):>10}  {_pct(row.get('b2_mr')):>10}  "
             f"{_pct(row.get('b2_mr_h3')):>10}  {ratio_val:>7}  {_pct(row.get('b2_main')):>10}  "
             f"{prod:>12,.0f}  {wt_contrib:>9.4f}%"
         )
-    logger.info("-" * 110)
+    logger.debug("-" * 110)
 
     # Weighted average risk per source and overall
     if total_prod > 0:
@@ -808,7 +814,7 @@ def _compute_hybrid_mr_risk(
                     if src_prod > 0
                     else 0.0
                 )
-                logger.info(
+                logger.debug(
                     f"  {src:>16}: weighted_risk={src_risk_avg:.2f}%  "
                     f"production={src_prod:,.0f} ({src_prod / total_prod * 100:.1f}%)  "
                     f"bins={src_mask.sum()}"
@@ -822,16 +828,16 @@ def _compute_hybrid_mr_risk(
             / prod_with_risk * 100
             if prod_with_risk > 0 else 0.0
         )
-        logger.info(
+        logger.debug(
             f"  {'OVERALL':>16}: weighted_risk={overall_risk_prod:.2f}% (production-weighted)  "
             f"production={total_prod:,.0f}"
         )
-        logger.info("")
-        logger.info(
+        logger.debug("")
+        logger.debug(
             "  NOTE: The summary table uses multiplier × Σ(todu_30ever_h6) / Σ(todu_amt_pile_h6), "
             "which is exposure-weighted — it will differ from the production-weighted average above."
         )
-    logger.info("=" * 110)
+    logger.debug("=" * 110)
 
     # --- Diagnostic: warn if MR-observed risk is suspiciously low ---
     mr_source_summary = combined["risk_source"].value_counts()
@@ -967,15 +973,20 @@ def _assign_tiered_risk(
             data_demand_mr.loc[has_actual_h6, "_actual_todu_30ever_h6"],
             data_demand_mr.loc[has_actual_h6, "_actual_todu_amt_pile_h6"],
             multiplier=multiplier,
+            decimals=6,
         )
-        data_demand_mr.loc[has_actual_h6, "b2_ever_h6_tmp"] = actual_b2
-        data_demand_mr.loc[has_actual_h6, "todu_30ever_h6"] = data_demand_mr.loc[
-            has_actual_h6, "_actual_todu_30ever_h6"
+        tier1_idx = data_demand_mr.index[has_actual_h6]
+        actual_b2_arr = np.asarray(actual_b2, dtype=float)
+        finite_local = np.isfinite(actual_b2_arr)
+        valid_tier1_idx = tier1_idx[finite_local]
+        data_demand_mr.loc[valid_tier1_idx, "b2_ever_h6_tmp"] = actual_b2_arr[finite_local]
+        data_demand_mr.loc[valid_tier1_idx, "todu_30ever_h6"] = data_demand_mr.loc[
+            valid_tier1_idx, "_actual_todu_30ever_h6"
         ]
-        data_demand_mr.loc[has_actual_h6, "todu_amt_pile_h6"] = data_demand_mr.loc[
-            has_actual_h6, "_actual_todu_amt_pile_h6"
+        data_demand_mr.loc[valid_tier1_idx, "todu_amt_pile_h6"] = data_demand_mr.loc[
+            valid_tier1_idx, "_actual_todu_amt_pile_h6"
         ]
-        data_demand_mr.loc[has_actual_h6, "_mr_tier"] = 1
+        data_demand_mr.loc[valid_tier1_idx, "_mr_tier"] = 1
 
     # --- Tier 2: account-level H3 × bin ratio ---
     has_h3_cols = (
@@ -1006,6 +1017,7 @@ def _assign_tiered_risk(
                 data_demand_mr.loc[h3_eligible, "todu_30ever_h3"],
                 data_demand_mr.loc[h3_eligible, "todu_amt_pile_h3"],
                 multiplier=multiplier_h3,
+                decimals=6,
             )
 
             # Merge bin-level calibration ratio and (optionally) reliability indicators.
@@ -1056,8 +1068,9 @@ def _assign_tiered_risk(
             h6_extrapolated = np.where(can_extrapolate_bin, h6_floored, h6_extrapolated)
 
             tier2_idx = data_demand_mr.index[h3_eligible]
-            valid_idx = tier2_idx[can_extrapolate_bin]
-            data_demand_mr.loc[valid_idx, "b2_ever_h6_tmp"] = h6_extrapolated[can_extrapolate_bin]
+            finite_extrapolated = can_extrapolate_bin & np.isfinite(h6_extrapolated)
+            valid_idx = tier2_idx[finite_extrapolated]
+            data_demand_mr.loc[valid_idx, "b2_ever_h6_tmp"] = h6_extrapolated[finite_extrapolated]
             data_demand_mr.loc[valid_idx, "_mr_tier"] = 2
 
     # --- Tier 3: bin-level main rate (remaining booked with a merge match) ---
@@ -1071,12 +1084,12 @@ def _assign_tiered_risk(
     # --- Log tier distribution ---
     tier_counts = data_demand_mr.loc[booked_mask, "_mr_tier"].value_counts().sort_index()
     total_booked = booked_mask.sum()
-    logger.info("TIERED MR RISK RECONSTRUCTION:")
+    logger.debug("TIERED MR RISK RECONSTRUCTION:")
     tier_labels = {1: "Actual H6", 2: "Account H3→H6", 3: "Bin-level main", 4: "Model fallback"}
     for tier, label in tier_labels.items():
         n = int(tier_counts.get(tier, 0))
         pct = n / max(total_booked, 1) * 100
-        logger.info(f"  Tier {tier} ({label}): {n:,} accounts ({pct:.1f}%)")
+        logger.debug(f"  Tier {tier} ({label}): {n:,} accounts ({pct:.1f}%)")
 
     # Safety net: warn if any booked accounts still have unresolved risk after all tiers
     booked_mask_final = data_demand_mr["status_name"] == StatusName.BOOKED.value
@@ -1179,6 +1192,7 @@ def process_mr_period(
                 mr_extrapolation_method=settings.mr_extrapolation_method,
                 mr_extrapolation_curvature=settings.mr_extrapolation_curvature,
                 mr_maturity_months=settings.mr_maturity_months,
+                maturity_reference_date=settings.get_date("date_fin_book_obs_mr"),
             )
 
             # Save comparison CSV
@@ -1577,6 +1591,8 @@ def process_mr_period(
             reject_bayesian_prior_strength=settings.reject_bayesian_prior_strength,
             reject_enforce_monotonicity=settings.reject_enforce_monotonicity,
             reject_include_all_rejections=settings.reject_include_all_rejections,
+            reject_acceptance_recent_months=settings.reject_acceptance_recent_months,
+            reject_acceptance_decay_half_life_months=settings.reject_acceptance_decay_half_life_months,
             reject_apply_h3_multiplier=settings.reject_apply_h3_multiplier,
             per_bin_stress=None,
             per_bin_tasa_fin=per_bin_tasa_fin,
@@ -1606,7 +1622,12 @@ def process_mr_period(
             if main_bin_agg.duplicated(merge_keys).any():
                 logger.warning("MR recalibration: main_bin_agg has non-unique merge_keys; results may be inconsistent.")
             if mr_bin_b2.duplicated(merge_keys).any():
-                logger.warning("MR recalibration: mr_bin_b2 has non-unique merge_keys; results may be inconsistent.")
+                dup_count = int(mr_bin_b2.duplicated(merge_keys).sum())
+                logger.warning(
+                    "MR recalibration: mr_bin_b2 has non-unique merge_keys; collapsing duplicates "
+                    f"(keys duplicated={dup_count})."
+                )
+                mr_bin_b2 = mr_bin_b2.groupby(merge_keys, as_index=False)["_mr_b2"].mean()
 
             cal_factor_by_bin = main_bin_agg[merge_keys + ["_main_b2"]].merge(
                 mr_bin_b2, on=merge_keys, how="left"
@@ -1616,11 +1637,27 @@ def process_mr_period(
                 lower=0.1, upper=10.0
             ).fillna(1.0)
 
+            n_before_recal_merge = len(data_summary_desagregado_mr)
             data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
                 cal_factor_by_bin[merge_keys + ["_mr_cal_factor"]],
                 on=merge_keys,
                 how="left",
             )
+            if len(data_summary_desagregado_mr) != n_before_recal_merge:
+                logger.error(
+                    "MR recalibration merge: row expansion detected while merging _mr_cal_factor "
+                    f"(before={n_before_recal_merge}, after={len(data_summary_desagregado_mr)}). "
+                    "Collapsing calibration factors by merge_keys and re-merging."
+                )
+                cal_factor_by_bin = (
+                    cal_factor_by_bin.groupby(merge_keys, as_index=False)["_mr_cal_factor"].mean()
+                )
+                data_summary_desagregado_mr = data_summary_desagregado_mr.drop(columns=["_mr_cal_factor"], errors="ignore")
+                data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
+                    cal_factor_by_bin[merge_keys + ["_mr_cal_factor"]],
+                    on=merge_keys,
+                    how="left",
+                )
             data_summary_desagregado_mr["_mr_cal_factor"] = data_summary_desagregado_mr["_mr_cal_factor"].fillna(1.0)
 
             rep_col = "todu_30ever_h6_rep"
@@ -1683,6 +1720,9 @@ def process_mr_period(
                     max_swapin_production_pct=settings.max_swapin_production_pct,
                     max_swapin_risk=settings.max_swapin_risk,
                     time_limit=settings.milp_time_limit,
+                    monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
+                    monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
+                    monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
                 )
 
                 if new_mask is not None:

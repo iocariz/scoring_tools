@@ -43,6 +43,13 @@ sensitivity_levels = [-30, -20, -10, -5, 5, 10, 20, 30]
 #max_swapin_production_pct = 15.0  # Max % of total accepted production from swap-in (0-100). None = no limit.
 #max_swapin_risk = 3.0            # Max b2_ever_h6 (%) for the swap-in population only (0-100). None = no limit.
 
+# Optional uncertainty-aware monotonicity relaxation.
+# Keeps strict monotonicity by default. Enable to relax local adjacency constraints
+# when neighboring cells are both sparse and statistically ambiguous.
+monotonicity_relaxation_enabled = true
+monotonicity_uncertainty_min_exposure = 500.0
+monotonicity_uncertainty_z_threshold = 1.0
+
 # Reject inference (optional) - adjusts predicted risk for score-rejected bins
 # based on per-bin acceptance rates to correct for selection bias.
 reject_inference_method = "parceling"  # "none" (default) or "parceling"
@@ -53,6 +60,7 @@ reject_max_risk_multiplier = 3.0      # upper cap for per-bin multiplier (1.0-10
 #Bayesian smoothing for small bins
 reject_bayesian_smoothing = true
 reject_bayesian_prior_strength = 20.0
+reject_acceptance_decay_half_life_months = 6.0
 
 #Enforce monotone multipliers
 reject_enforce_monotonicity = true

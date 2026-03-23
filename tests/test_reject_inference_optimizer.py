@@ -11,6 +11,7 @@ from src.config import PreprocessingSettings
 from src.reject_inference_optimizer import (
     OptimizerInputs,
     _compute_calibration_error,
+    _select_best,
     evaluate_ri_params,
     run_reject_inference_optimization,
     validate_ri_with_mr,
@@ -317,6 +318,45 @@ class TestCalibrationGamma:
         inputs = _make_optimizer_inputs(calibration_gamma=1.0)
         result = evaluate_ri_params(inputs, uplift_factor=1.5, max_risk_multiplier=3.0, risk_target=20.0)
         assert result["calibration_error"] > 0 or result["calibration_error"] == 0.0
+
+
+class TestCalibrationRobustness:
+    def test_calibration_error_imputes_missing_acceptance_rates(self):
+        merged = pd.DataFrame(
+            {
+                "var0": [1, 2],
+                "var1": [1, 2],
+                "todu_30ever_h6_boo": [1.0, 2.0],
+                "todu_amt_pile_h6_boo": [100.0, 200.0],
+                "todu_30ever_h6": [1.2, 2.2],
+                "todu_amt_pile_h6": [110.0, 220.0],
+            }
+        )
+        acceptance_rates = pd.DataFrame(
+            {
+                "var0": [1],
+                "var1": [1],
+                "acceptance_rate": [0.6],
+            }
+        )
+        err = _compute_calibration_error(merged, acceptance_rates, ["var0", "var1"], multiplier=7.0, calibration_gamma=1.0)
+        assert np.isfinite(err)
+
+    def test_select_best_ignores_non_finite_calibration_error(self):
+        results_df = pd.DataFrame(
+            {
+                "uplift_factor": [0.0, 1.0, 2.0],
+                "max_risk_multiplier": [1.0, 2.0, 3.0],
+                "oa_amt_h0": [1000.0, 900.0, 1100.0],
+                "b2_ever_h6": [1.0, 1.1, 1.2],
+                "feasible": [True, True, True],
+                "calibration_error": [np.inf, 0.3, np.nan],
+            }
+        )
+        out_df, best = _select_best(results_df.copy())
+        assert best
+        assert np.isfinite(best["calibration_error"])
+        assert out_df["is_best"].sum() == 1
 
     def test_lower_gamma_less_aggressive(self):
         """Lower gamma should produce less aggressive calibration targets."""

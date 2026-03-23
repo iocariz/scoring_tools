@@ -69,7 +69,7 @@ def optimal_splits_using_tree(data_frame, numeric_variable, binary_outcome, num_
     return result
 
 
-def calculate_financing_rates(data, date_ini_demand, lm=6):
+def calculate_financing_rates(data, date_ini_demand, lm=6, plot_output_path: str | None = None):
     """
     Calculates financing rates based on given data and displays the results.
 
@@ -81,6 +81,7 @@ def calculate_financing_rates(data, date_ini_demand, lm=6):
             - 'mis_date'
         date_ini_demand (datetime): Start date for analysis.
         lm (int, optional): Number of last months to consider (default=6).
+        plot_output_path (str | None, optional): If provided, save the plot to this path.
 
     Returns:
         float: Selected (mean) financing rate.
@@ -110,7 +111,10 @@ def calculate_financing_rates(data, date_ini_demand, lm=6):
     plt.xlabel("Month")
     plt.grid(axis="y")
     plt.tight_layout()
-    plt.show()
+    # Avoid blocking in headless/CI environments; save optionally and close.
+    if plot_output_path:
+        plt.savefig(plot_output_path, bbox_inches="tight")
+    plt.close()
 
     # Calculate and display results with consistent rounding
     mean_financing_rate = np.round(financing_rate_by_month.tail(lm).mean() * 100, 1)

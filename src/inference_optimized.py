@@ -1704,6 +1704,9 @@ def run_optimization_pipeline(
     reject_bayesian_prior_strength: float = 10.0,
     reject_enforce_monotonicity: bool = False,
     reject_include_all_rejections: bool = False,
+    reject_acceptance_recent_months: int | None = None,
+    reject_acceptance_decay_half_life_months: float | None = None,
+    reject_acceptance_date_col: str = "mis_date",
     reject_apply_h3_multiplier: bool = False,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
     inv_vars: list[str] | None = None,
@@ -1752,6 +1755,9 @@ def run_optimization_pipeline(
             enforce_monotonicity=reject_enforce_monotonicity,
             inv_vars=inv_vars,
             include_all_rejections=reject_include_all_rejections,
+            acceptance_recent_months=reject_acceptance_recent_months,
+            acceptance_decay_half_life_months=reject_acceptance_decay_half_life_months,
+            acceptance_date_col=reject_acceptance_date_col,
             apply_h3_multiplier=reject_apply_h3_multiplier,
         )
         # Drop auxiliary columns before downstream merge

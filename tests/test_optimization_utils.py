@@ -511,6 +511,30 @@ class TestMonotonicityConstraints:
         # Constraint: x[(1,3)] - x[(1,2)] <= 0 → 1 - 0 = 1 > 0 → violation
         assert np.any(violations > 0)
 
+    def test_uncertainty_relaxation_reduces_constraints(self):
+        """Uncertainty-aware mode should drop ambiguous sparse adjacency constraints."""
+        df = _make_summary_2d(2, 2)
+
+        # Force very sparse and near-equal neighboring cells on var1 axis
+        # so they become "ambiguous" under z-threshold logic.
+        df.loc[(df["var0"] == 1) & (df["var1"] == 1), "todu_amt_pile_h6"] = 50.0
+        df.loc[(df["var0"] == 1) & (df["var1"] == 2), "todu_amt_pile_h6"] = 50.0
+        df.loc[(df["var0"] == 1) & (df["var1"] == 1), "todu_30ever_h6"] = 0.50
+        df.loc[(df["var0"] == 1) & (df["var1"] == 2), "todu_30ever_h6"] = 0.51
+
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        A_strict = _build_monotonicity_constraints(grid, inv_vars=[])
+        A_relaxed = _build_monotonicity_constraints(
+            grid,
+            inv_vars=[],
+            relax_on_uncertainty=True,
+            uncertainty_min_exposure=100.0,
+            uncertainty_z_threshold=2.0,
+            multiplier=7.0,
+        )
+
+        assert A_relaxed.shape[0] < A_strict.shape[0]
+
 
 # =============================================================================
 # MILP Solver Tests
@@ -850,6 +874,83 @@ class TestParetoFrontier:
         assert not pareto_df.empty
         assert len(masks) == len(pareto_df)
         assert grid.n_cells == 12
+
+    def test_trace_pareto_filters_nan_risk_solutions(self, monkeypatch):
+        """Pareto sweep must exclude NaN-risk solutions (zero denominator).
+
+        Regression: when accepted bins have sum(todu_amt_pile_h6) == 0,
+        `calculate_b2_ever_h6` returns NaN and can contaminate Pareto/scenario
+        selection. trace_pareto_frontier must filter such solutions.
+        """
+        df = pd.DataFrame(
+            [
+                {
+                    "var0": 1,
+                    "var1": 1,
+                    "todu_30ever_h6": 10.0,
+                    "todu_amt_pile_h6": 0.0,  # <- zero denom => NaN b2_ever_h6
+                    "oa_amt_h0": 100.0,
+                    "todu_30ever_h6_boo": 8.0,
+                    "todu_amt_pile_h6_boo": 0.0,
+                    "oa_amt_h0_boo": 80.0,
+                    "todu_30ever_h6_rep": 2.0,
+                    "todu_amt_pile_h6_rep": 0.0,
+                    "oa_amt_h0_rep": 20.0,
+                },
+                {
+                    "var0": 2,
+                    "var1": 1,
+                    "todu_30ever_h6": 1.0,
+                    "todu_amt_pile_h6": 10.0,  # <- positive denom => finite b2_ever_h6
+                    "oa_amt_h0": 50.0,
+                    "todu_30ever_h6_boo": 0.8,
+                    "todu_amt_pile_h6_boo": 8.0,
+                    "oa_amt_h0_boo": 40.0,
+                    "todu_30ever_h6_rep": 0.2,
+                    "todu_amt_pile_h6_rep": 2.0,
+                    "oa_amt_h0_rep": 10.0,
+                },
+            ]
+        )
+
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        assert grid.n_cells == 2
+        idx_valid = int(np.where(grid.cell_data["todu_amt_pile_h6"].to_numpy() > 0)[0][0])
+        expected_mask = np.zeros(grid.n_cells, dtype=int)
+        expected_mask[idx_valid] = 1
+        mask_nan = np.zeros(grid.n_cells, dtype=int)
+        mask_nan[1 - idx_valid] = 1
+
+        call_state = {"i": 0}
+
+        import src.optimization_utils as optimization_utils_module
+
+        def fake_milp_solve_cutoffs(_grid, target_risk, inv_vars, multiplier, **kwargs):
+            # First call returns the zero-denominator mask (NaN b2_ever_h6),
+            # subsequent calls return the positive-denominator mask.
+            call_state["i"] += 1
+            if call_state["i"] == 1:
+                return mask_nan.copy()
+            return expected_mask.copy()
+
+        monkeypatch.setattr(optimization_utils_module, "milp_solve_cutoffs", fake_milp_solve_cutoffs)
+
+        indicators = ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"]
+        pareto_df, _, pareto_masks = trace_pareto_frontier(
+            data_summary_desagregado=df,
+            variables=["var0", "var1"],
+            inv_vars=[],
+            multiplier=7,
+            indicators=indicators,
+            n_points=2,
+            milp_time_limit=1.0,
+        )
+
+        assert not pareto_df.empty
+        assert pareto_df["b2_ever_h6"].notna().all()
+        assert all(np.isfinite(pareto_df["b2_ever_h6"].to_numpy()))
+        assert len(pareto_masks) == len(pareto_df)
+        assert any(np.array_equal(m, expected_mask) for m in pareto_masks)
 
     def test_pareto_optimal(self):
         """For ascending risk, production should be non-decreasing on the frontier."""

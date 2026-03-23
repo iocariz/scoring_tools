@@ -5,6 +5,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import warnings
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -60,6 +61,15 @@ def two_segment_allocator():
 
 
 class TestExactSolver:
+    def test_load_frontier_filters_non_finite_rows(self):
+        alloc = GlobalAllocator()
+        frontier = _make_frontier([(0, 0.5, 1000), (1, np.nan, 1200), (2, 1.0, np.inf), (3, 1.2, 1500)])
+        alloc.load_frontier("A", frontier)
+        loaded = alloc.frontiers["A"]
+        assert len(loaded) == 2
+        assert np.isfinite(loaded["b2_ever_h6"]).all()
+        assert np.isfinite(loaded["oa_amt_h0"]).all()
+
     def test_two_segments_exact_known_answer(self, two_segment_allocator):
         """With target=1.5%, the optimal is A=2 (1.5%, 2500) + B=1 (1.2%, 3000).
         Weighted risk = (1.5*2500 + 1.2*3000) / (2500+3000) = 7350/5500 ≈ 1.336%

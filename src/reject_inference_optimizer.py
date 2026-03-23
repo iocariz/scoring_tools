@@ -74,6 +74,13 @@ def _compute_calibration_error(
     rate_col = "smoothed_acceptance_rate" if "smoothed_acceptance_rate" in acceptance_rates.columns else "acceptance_rate"
     merge_cols = variables + [rate_col] if rate_col != "acceptance_rate" else variables + ["acceptance_rate"]
     df = merged.merge(acceptance_rates[merge_cols], on=variables, how="left")
+    # Keep calibration objective aligned with runtime RI adjustment behavior:
+    # bins missing in acceptance_rates should receive median fallback instead of
+    # being silently excluded from calibration.
+    fallback_rate = acceptance_rates[rate_col].median() if rate_col in acceptance_rates.columns else np.nan
+    if not np.isfinite(fallback_rate):
+        fallback_rate = 0.5
+    df[rate_col] = df[rate_col].fillna(fallback_rate)
     acc = df[rate_col].clip(lower=0.05)
 
     denom_boo = df["todu_amt_pile_h6_boo"].replace(0, np.nan)
@@ -220,6 +227,12 @@ def _select_best(results_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     feasible = results_df[results_df["feasible"]]
     if feasible.empty:
         logger.warning("RI optimizer: no feasible solution found")
+        results_df["is_best"] = False
+        return results_df, {}
+
+    feasible = feasible[np.isfinite(feasible["calibration_error"])]
+    if feasible.empty:
+        logger.warning("RI optimizer: all feasible solutions have non-finite calibration_error")
         results_df["is_best"] = False
         return results_df, {}
 

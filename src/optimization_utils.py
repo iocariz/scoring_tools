@@ -25,6 +25,18 @@ from .utils import calculate_b2_ever_h6
 # =============================================================================
 
 
+def _progress_iter(iterable, *, desc: str, enabled: bool = True, total: int | None = None):
+    """Wrap an iterable with tqdm progress bar when available/enabled."""
+    if not enabled:
+        return iterable
+    try:
+        from tqdm.auto import tqdm
+
+        return tqdm(iterable, desc=desc, total=total, leave=False)
+    except Exception:
+        return iterable
+
+
 @dataclass
 class CellGrid:
     """N-dimensional bin grid with per-cell KPI data.
@@ -63,7 +75,7 @@ class CellGrid:
 
         n_phantom = int((~observed).sum())
         if n_phantom > 0:
-            logger.info(
+            logger.debug(
                 f"CellGrid: {n_phantom}/{len(all_combos)} cells unobserved in data "
                 f"(will be excluded from optimization)"
             )
@@ -119,7 +131,15 @@ def classify_by_mask(data: pd.DataFrame, mask: np.ndarray, grid: CellGrid) -> pd
 # =============================================================================
 
 
-def _build_monotonicity_constraints(grid: CellGrid, inv_vars: list[str]) -> sparse.csc_matrix:
+def _build_monotonicity_constraints(
+    grid: CellGrid,
+    inv_vars: list[str],
+    *,
+    relax_on_uncertainty: bool = False,
+    uncertainty_min_exposure: float = 0.0,
+    uncertainty_z_threshold: float = 0.0,
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
+) -> sparse.csc_matrix:
     """Build sparse A matrix for monotonicity: A @ x <= 0.
 
     For each dimension d and each pair of adjacent cells along d:
@@ -141,6 +161,29 @@ def _build_monotonicity_constraints(grid: CellGrid, inv_vars: list[str]) -> spar
     """
     rows, cols, vals = [], [], []
     constraint_idx = 0
+
+    # Optional uncertainty-aware relaxation:
+    # Skip adjacency constraints for pairs that are both sparse and statistically
+    # ambiguous (difference smaller than z * pooled standard error), so monotonicity
+    # is less brittle to noisy bins.
+    risk_metric: np.ndarray | None = None
+    risk_se: np.ndarray | None = None
+    exposure: np.ndarray | None = None
+    if relax_on_uncertainty and (
+        uncertainty_min_exposure > 0 or uncertainty_z_threshold > 0
+    ) and "todu_30ever_h6" in grid.cell_data.columns and "todu_amt_pile_h6" in grid.cell_data.columns:
+        t30 = grid.cell_data["todu_30ever_h6"].to_numpy(dtype=float)
+        exposure = grid.cell_data["todu_amt_pile_h6"].to_numpy(dtype=float)
+        safe_exp = np.where(exposure > 0, exposure, np.nan)
+
+        # Base default rate q and risk metric r = multiplier * q
+        q = np.clip(t30 / safe_exp, 0.0, 1.0)
+        risk_metric = multiplier * q
+
+        # Approximate standard error of q with n_eff ~= exposure.
+        n_eff = np.where(exposure > 0, exposure, np.nan)
+        q_se = np.sqrt(np.clip(q * (1.0 - q), 0.0, None) / n_eff)
+        risk_se = multiplier * q_se
 
     for d, var in enumerate(grid.variables):
         n_vals = len(grid.values_per_var[var])
@@ -172,6 +215,18 @@ def _build_monotonicity_constraints(grid: CellGrid, inv_vars: list[str]) -> spar
                 riskier_idx = neighbor_idx
                 safer_idx = flat_idx
 
+            if relax_on_uncertainty and risk_metric is not None and risk_se is not None and exposure is not None:
+                sparse_pair = min(float(exposure[riskier_idx]), float(exposure[safer_idx])) < float(uncertainty_min_exposure)
+                ambiguous_pair = False
+                if uncertainty_z_threshold > 0:
+                    diff = abs(float(risk_metric[riskier_idx]) - float(risk_metric[safer_idx]))
+                    pooled_se = float(np.sqrt(risk_se[riskier_idx] ** 2 + risk_se[safer_idx] ** 2))
+                    ambiguous_pair = np.isfinite(pooled_se) and pooled_se > 0 and diff < float(
+                        uncertainty_z_threshold
+                    ) * pooled_se
+                if sparse_pair and ambiguous_pair:
+                    continue
+
             rows.extend([constraint_idx, constraint_idx])
             cols.extend([riskier_idx, safer_idx])
             vals.extend([1.0, -1.0])
@@ -200,6 +255,9 @@ def milp_solve_cutoffs(
     max_swapin_production_pct: float | None = None,
     max_swapin_risk: float | None = None,
     time_limit: float = 30.0,
+    monotonicity_relaxation_enabled: bool = False,
+    monotonicity_uncertainty_min_exposure: float = 0.0,
+    monotonicity_uncertainty_z_threshold: float = 0.0,
 ) -> np.ndarray | None:
     """Solve single MILP: maximize production subject to risk budget + monotonicity.
 
@@ -235,8 +293,24 @@ def milp_solve_cutoffs(
 
     risk_coeffs = multiplier * todu_30 - (target_risk / 100.0) * todu_amt
 
+    # Denominator guard:
+    # We linearize the ratio constraint, but we still need to prevent solutions
+    # where the accepted population denominator is 0 (i.e. sum(todu_amt*x) = 0),
+    # which would produce NaN risk downstream and can corrupt Pareto/scenario selection.
+    # Expressed as: sum(todu_amt*x) >= exposure_denom_eps
+    # Linear form used: -sum(todu_amt*x) <= -exposure_denom_eps
+    exposure_denom_eps = 1e-9
+    denom_row = sparse.csc_matrix((-todu_amt).reshape(1, -1))
+
     # Monotonicity constraints: A_mono @ x <= 0
-    A_mono = _build_monotonicity_constraints(grid, inv_vars)
+    A_mono = _build_monotonicity_constraints(
+        grid,
+        inv_vars,
+        relax_on_uncertainty=monotonicity_relaxation_enabled,
+        uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
+        uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
+        multiplier=multiplier,
+    )
 
     # Stack risk constraint row on top of monotonicity
     risk_row = sparse.csc_matrix(risk_coeffs.reshape(1, -1))
@@ -259,14 +333,21 @@ def milp_solve_cutoffs(
         swapin_risk_coeffs = multiplier * rep_t30 - (max_swapin_risk / 100.0) * rep_tamt
         extra_rows.append(sparse.csc_matrix(swapin_risk_coeffs.reshape(1, -1)))
 
-    all_rows = [risk_row] + extra_rows
-    if A_mono.shape[0] > 0:
-        all_rows.append(A_mono)
-    A = sparse.vstack(all_rows, format="csc") if len(all_rows) > 1 else all_rows[0]
+    rows: list[sparse.csc_matrix] = [risk_row, denom_row] + extra_rows
 
-    n_constraints = A.shape[0]
-    b_u = np.zeros(n_constraints)
-    b_l = np.full(n_constraints, -np.inf)
+    # Upper bounds for each row block in `rows`.
+    # risk constraint + swap-in constraints are <= 0,
+    # denominator constraint is <= -exposure_denom_eps (due to sign flip).
+    ub: list[float] = [0.0, -exposure_denom_eps] + [0.0] * len(extra_rows)
+
+    if A_mono.shape[0] > 0:
+        rows.append(A_mono)
+        ub.extend([0.0] * A_mono.shape[0])
+
+    A = sparse.vstack(rows, format="csc") if len(rows) > 1 else rows[0]
+
+    b_u = np.array(ub, dtype=float)
+    b_l = np.full_like(b_u, -np.inf, dtype=float)
 
     constraints = LinearConstraint(A, b_l, b_u)
     integrality = np.ones(n)  # all binary
@@ -426,6 +507,10 @@ def trace_pareto_frontier(
     max_swapin_risk: float | None = None,
     multiplier_h3: float | None = None,
     milp_time_limit: float = 30.0,
+    show_progress: bool = True,
+    monotonicity_relaxation_enabled: bool = False,
+    monotonicity_uncertainty_min_exposure: float = 0.0,
+    monotonicity_uncertainty_z_threshold: float = 0.0,
 ) -> tuple[pd.DataFrame, CellGrid, list[np.ndarray]]:
     """Sweep risk targets, solve MILP at each, filter to Pareto-optimal set.
 
@@ -467,7 +552,7 @@ def trace_pareto_frontier(
 
     logger.info(f"MILP Pareto sweep: {n_points} risk targets in [0.01, {max_risk * 1.1:.2f}%]")
 
-    for target in risk_targets:
+    for target in _progress_iter(risk_targets, desc="MILP Pareto sweep", enabled=show_progress, total=len(risk_targets)):
         mask = milp_solve_cutoffs(
             grid,
             target,
@@ -476,6 +561,9 @@ def trace_pareto_frontier(
             max_swapin_production_pct=max_swapin_production_pct,
             max_swapin_risk=max_swapin_risk,
             time_limit=milp_time_limit,
+            monotonicity_relaxation_enabled=monotonicity_relaxation_enabled,
+            monotonicity_uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
+            monotonicity_uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
         )
         if mask is None:
             continue
@@ -491,9 +579,37 @@ def trace_pareto_frontier(
 
     if not solutions:
         logger.warning("No feasible MILP solutions found. Attempting GA fallback...")
-        return _ga_pareto_fallback(grid, inv_vars, multiplier, indicators, n_points)
+        return _ga_pareto_fallback(
+            grid,
+            inv_vars,
+            multiplier,
+            indicators,
+            n_points,
+            show_progress=show_progress,
+            monotonicity_relaxation_enabled=monotonicity_relaxation_enabled,
+            monotonicity_uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
+            monotonicity_uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
+        )
 
     df = pd.DataFrame(solutions)
+
+    # Filter out any NaN/inf-risk solutions before Pareto dominance logic.
+    # `evaluate_solution()` can yield NaN b2_ever_h6 when the accepted-cell
+    # exposure denominator is zero; those should not participate in
+    # sorting/dominance/scenario selection.
+    if "b2_ever_h6" in df.columns:
+        risk_arr = df["b2_ever_h6"].to_numpy(dtype=float, copy=False)
+        prod_arr = df["oa_amt_h0"].to_numpy(dtype=float, copy=False)
+        valid = np.isfinite(risk_arr) & np.isfinite(prod_arr)
+        if not valid.all():
+            n_bad = int((~valid).sum())
+            logger.warning(f"Filtering {n_bad} NaN/inf-risk solution(s) from Pareto sweep.")
+        df = df.loc[valid].reset_index(drop=True)
+        all_masks = [m for m, keep in zip(all_masks, valid) if keep]
+
+    if df.empty:
+        logger.warning("Pareto frontier: all MILP sweep solutions filtered out (NaN/inf risk).")
+        return pd.DataFrame(), grid, []
 
     # Sort by risk, keep track of original indices for mask alignment
     sort_idx = df["b2_ever_h6"].argsort().values
@@ -745,6 +861,10 @@ def _ga_pareto_fallback(
     multiplier: float,
     indicators: list[str],
     n_points: int,
+    show_progress: bool = True,
+    monotonicity_relaxation_enabled: bool = False,
+    monotonicity_uncertainty_min_exposure: float = 0.0,
+    monotonicity_uncertainty_z_threshold: float = 0.0,
 ) -> tuple[pd.DataFrame, CellGrid, list[np.ndarray]]:
     """Fallback GA solver using pymoo. Returns empty DataFrame if pymoo not available."""
     try:
@@ -768,7 +888,14 @@ def _ga_pareto_fallback(
     todu_30 = cell["todu_30ever_h6"].values.astype(float)
     todu_amt = cell["todu_amt_pile_h6"].values.astype(float)
     production = cell["oa_amt_h0"].values.astype(float)
-    A_mono = _build_monotonicity_constraints(grid, inv_vars)
+    A_mono = _build_monotonicity_constraints(
+        grid,
+        inv_vars,
+        relax_on_uncertainty=monotonicity_relaxation_enabled,
+        uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
+        uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
+        multiplier=multiplier,
+    )
 
     all_t30 = todu_30.sum()
     all_tamt = todu_amt.sum()
@@ -780,7 +907,8 @@ def _ga_pareto_fallback(
     all_masks: list[np.ndarray] = []
     seen_masks: set[tuple] = set()
 
-    for target in np.linspace(0.01, max_risk * 1.1, n_points):
+    targets = np.linspace(0.01, max_risk * 1.1, n_points)
+    for target in _progress_iter(targets, desc="GA Pareto fallback", enabled=show_progress, total=len(targets)):
         risk_coeffs = multiplier * todu_30 - (target / 100.0) * todu_amt
 
         # Build upper bounds: phantom cells forced to 0
@@ -828,6 +956,22 @@ def _ga_pareto_fallback(
         return pd.DataFrame(), grid, []
 
     df = pd.DataFrame(solutions)
+
+    # Same safeguard as MILP: drop any NaN/inf-risk individuals before
+    # frontier stage-1/2 filters.
+    if "b2_ever_h6" in df.columns:
+        risk_arr = df["b2_ever_h6"].to_numpy(dtype=float, copy=False)
+        prod_arr = df["oa_amt_h0"].to_numpy(dtype=float, copy=False)
+        valid = np.isfinite(risk_arr) & np.isfinite(prod_arr)
+        if not valid.all():
+            n_bad = int((~valid).sum())
+            logger.warning(f"Filtering {n_bad} NaN/inf-risk solution(s) from GA fallback.")
+        df = df.loc[valid].reset_index(drop=True)
+        all_masks = [m for m, keep in zip(all_masks, valid) if keep]
+
+    if df.empty:
+        logger.warning("GA fallback: all solutions filtered out (NaN/inf risk).")
+        return pd.DataFrame(), grid, []
 
     # Sort by risk ascending
     sort_idx = df["b2_ever_h6"].argsort().values

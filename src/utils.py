@@ -186,22 +186,40 @@ def fit_h3_extrapolation_curve(
 
     log_h3 = np.log(np.asarray(b2_h3)[valid])
     log_h6 = np.log(np.asarray(b2_h6)[valid])
-    w = np.asarray(weights)[valid] if weights is not None else None
+    w_raw = np.asarray(weights)[valid].astype(float) if weights is not None else None
 
-    # np.polyfit(w=w) weights the residual (not squared residual) by w,
-    # so the effective least-squares weight is w^2.  Use w^2 consistently
-    # for all diagnostic statistics (SE, R²) to match the fitted model.
-    if w is not None:
-        eff_w = w ** 2  # effective weights matching np.polyfit's convention
+    # Variance-aware weighting (heteroscedasticity proxy):
+    # For log-risk fits, lower-risk / lower-exposure bins are noisier.
+    # Build an inverse-variance style weight using exposure (weights) and
+    # risk levels from both H3 and H6:
+    #   var_proxy ~ 1/(n*b2_h6) + 1/(n*b2_h3)
+    # then polyfit weight uses inverse std-dev:
+    #   w_fit ~ 1/sqrt(var_proxy)
+    #
+    # If no weights are provided, keep unweighted fit for backward compatibility.
+    if w_raw is not None:
+        b3 = np.asarray(b2_h3)[valid].astype(float)
+        b6 = np.asarray(b2_h6)[valid].astype(float)
+        eps = 1e-12
+        n_eff = np.clip(w_raw, eps, None)
+        b3 = np.clip(b3, eps, None)
+        b6 = np.clip(b6, eps, None)
+        var_proxy = 1.0 / (n_eff * b6) + 1.0 / (n_eff * b3)
+        var_proxy = np.clip(var_proxy, eps, np.nanpercentile(var_proxy, 99.5) if len(var_proxy) > 5 else np.max(var_proxy))
+        w_fit = 1.0 / np.sqrt(var_proxy)
+        eff_w = w_fit**2
+        weighting_scheme = "inverse_variance_proxy"
     else:
+        w_fit = None
         eff_w = np.ones_like(log_h3)
+        weighting_scheme = "uniform"
     x_mean = np.average(log_h3, weights=eff_w)
     ss_x = float(np.sum(eff_w * (log_h3 - x_mean) ** 2))
 
     if not np.isfinite(ss_x) or ss_x <= 1e-10:
         return ("linear", 1.0, {**fallback_diag, "note": "ill_conditioned_design"})
 
-    coeffs = np.polyfit(log_h3, log_h6, 1, w=w)
+    coeffs = np.polyfit(log_h3, log_h6, 1, w=w_fit)
     alpha = float(coeffs[0])
     intercept = float(coeffs[1])
 
@@ -214,7 +232,13 @@ def fit_h3_extrapolation_curve(
     mse = ss_res / max(n_valid - 2, 1)
     se = float(np.sqrt(mse / ss_x)) if ss_x > 0 else float("inf")
 
-    diagnostics = {"alpha": alpha, "se": se, "r_squared": r_squared, "n_bins": n_valid}
+    diagnostics = {
+        "alpha": alpha,
+        "se": se,
+        "r_squared": r_squared,
+        "n_bins": n_valid,
+        "weighting_scheme": weighting_scheme,
+    }
 
     # Decision: if 95% CI includes 1.0, use linear
     if abs(alpha - 1.0) < 2.0 * se:

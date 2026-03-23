@@ -306,6 +306,12 @@ class PreprocessingSettings(BaseModel):
     n_bootstraps: int = Field(
         default=DEFAULT_N_BOOTSTRAPS, ge=100, le=50000, description="Bootstrap replicates for CI estimation"
     )
+    # Uncertainty-aware monotonicity relaxation (optional):
+    # keep strict monotonicity by default; when enabled, skip local adjacency
+    # constraints for pairs that are both sparse and statistically ambiguous.
+    monotonicity_relaxation_enabled: bool = False
+    monotonicity_uncertainty_min_exposure: float = Field(default=0.0, ge=0.0)
+    monotonicity_uncertainty_z_threshold: float = Field(default=1.0, ge=0.0)
 
     # Reject inference settings
     reject_inference_method: Literal["none", "parceling"] = "none"
@@ -316,6 +322,25 @@ class PreprocessingSettings(BaseModel):
     reject_bayesian_prior_strength: float = Field(default=10.0, gt=0, le=1000)
     reject_enforce_monotonicity: bool = False
     reject_include_all_rejections: bool = False
+    # Time-awareness for reject inference acceptance rates (selection bias)
+    # When enabled, acceptance rates are computed on a more recent demand
+    # subset or with exponential time-decay weights based on `mis_date`.
+    reject_acceptance_recent_months: int | None = Field(
+        default=None, ge=1, description="If set, compute RI acceptance rates using only the last N months."
+    )
+    reject_acceptance_decay_half_life_months: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "If set, apply exponential time-decay weights to RI acceptance rates using this half-life (months). "
+            "Takes precedence over reject_acceptance_recent_months."
+        ),
+    )
+    reject_acceptance_date_col: str = Field(
+        default="mis_date",
+        min_length=1,
+        description="Date column used for temporal weighting/windowing in reject inference acceptance-rate estimation.",
+    )
     # Default to False to avoid imposing the (often unstable) booked H6/H3 ratio
     # assumption onto the rejected/re-predicted H3 numerator.
     reject_apply_h3_multiplier: bool = False

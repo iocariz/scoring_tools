@@ -434,7 +434,7 @@ class TestRunOptimizationPhase:
         monkeypatch.setattr(
             optimization_utils_module,
             "_ga_pareto_fallback",
-            lambda grid, inv_vars, multiplier, indicators, n_points: (fake_pareto_df, dummy_grid, fake_masks),
+            lambda grid, inv_vars, multiplier, indicators, n_points, **kwargs: (fake_pareto_df, dummy_grid, fake_masks),
         )
 
         def fake_add_bin_columns(df, pareto_masks, grid, inv_vars):
