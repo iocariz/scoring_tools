@@ -527,6 +527,17 @@ entries above but have residual issues.
 - No vintage-specific weights or cohort-age adjustments
 - Implement cohort-age weights in `learn_optimization_bins()`: scale by months-since-origination
 
+### Bin-edge learning uses pre-relabel “booked” population
+- `src/preprocess_improved.py:_run_data_transformations` learns bin edges using `status_name == BOOKED` from `data_clean`
+- `update_status_and_reject_reason(...)` runs after bin-edge learning and can relabel some records from booked->rejected based on `m_ct_direct*`
+- TODO: ensure bin-edge learning and downstream “booked” label definition are consistent (use the post-update booked mask or recompute booked subset after relabeling)
+
+### `tasa_fin`/stress computed on unfiltered `data_clean` time range
+- `src/pipeline/preprocessing.py` computes transformation rate from `data_clean`
+- `src/plots.py:_prepare_transformation_data` applies the “last n months” cutoff relative to `df[date_col].max()` of the passed dataframe
+- This may include months outside `[date_ini_book_obs, date_fin_book_obs]`
+- TODO: compute `tasa_fin`/stress using date-filtered frames aligned to the configured observation window (main book period)
+
 ---
 
 ## Statistical & Methodological — Medium Priority
@@ -536,6 +547,11 @@ entries above but have residual issues.
 - CV folds from same split are correlated; effective degrees of freedom < k
 - Threshold is overly generous, selecting overly complex models
 - Ref: Breiman et al. (1984); adjust margin for fold correlation
+
+### MILP→Pareto can propagate NaN risk from zero exposure denominators
+- `src/optimization_utils.py:milp_solve_cutoffs` guards global `Σ(todu_amt_pile_h6) == 0`, but not the denominator for the *selected mask*
+- `src/utils.py:calculate_b2_ever_h6` returns NaN when denominator==0; `trace_pareto_frontier` does not explicitly drop NaN-risk solutions
+- TODO: enforce a minimum accepted exposure denominator in MILP (e.g., `Σ(todu_amt_pile_h6*x) >= eps`) and/or filter NaN-risk masks before Pareto dominance + scenario selection
 
 ### Bayesian smoothing Beta prior not justified for acceptance rates
 - `src/reject_inference.py:76-85` — uses Beta-Binomial with `prior_strength=10`
