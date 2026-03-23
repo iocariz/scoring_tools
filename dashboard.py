@@ -30,7 +30,7 @@ import plotly.graph_objects as go
 from dash import Input, Output, State, callback_context, dash_table, dcc, html
 from dash.dash_table.Format import Format, Group, Scheme, Symbol
 from dash.dependencies import MATCH
-from flask import send_from_directory
+from flask import abort, send_from_directory
 from loguru import logger
 
 from src.styles import (
@@ -76,6 +76,20 @@ def get_images_dir(segment: str | None = None) -> Path:
     if (OUTPUT_BASE / "images").exists():
         return OUTPUT_BASE / "images"
     return Path("images")
+
+
+def _is_allowed_static_segment(segment: str) -> bool:
+    """Allowlist segment path used by /static/<segment>/ route."""
+    # Reject obvious traversal/special forms early.
+    if not segment or segment in {".", ".."} or "/" in segment or "\\" in segment or ".." in segment:
+        return False
+
+    # Regular segments discovered from OUTPUT_BASE.
+    if segment in set(get_available_segments()):
+        return True
+
+    # Explicitly allow hidden supersegment artifacts if present.
+    return segment.startswith("_supersegment_") and (OUTPUT_BASE / segment / "images").exists()
 
 
 def get_available_segments() -> list[str]:
@@ -2720,6 +2734,8 @@ def serve_static_root(filename):
 @server.route("/static/<segment>/<path:filename>")
 def serve_static_segment(segment, filename):
     """Serve static HTML files from segment images directory."""
+    if not _is_allowed_static_segment(segment):
+        return abort(404)
     images_dir = get_images_dir(segment)
     return send_from_directory(str(images_dir), filename)
 

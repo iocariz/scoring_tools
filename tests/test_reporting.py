@@ -15,6 +15,7 @@ from src.reporting import (
     ReportSection,
     _build_acceptance_matrices,
     _build_cutoff_comparison_section,
+    _build_cutoff_reference_table,
     _build_portfolio_metric_table,
     _build_portfolio_summary_sections,
     _build_scenario_kpi_table,
@@ -180,6 +181,26 @@ class TestCsvToHtmlTable:
         result = csv_to_html_table(sample_csv, css_class="my-table")
         assert result is not None
         assert "my-table" in result
+
+
+class TestCutoffReferenceEscaping:
+    def test_escapes_untrusted_text_cells(self, tmp_path):
+        path = tmp_path / "cutoff_summary_wide.csv"
+        df = pd.DataFrame(
+            {
+                "segment": ["seg_a"],
+                "scenario": ["base"],
+                "var0": ['<script>alert("x")</script>'],
+                "risk_pct": [1.23],
+                "production": [1000.0],
+            }
+        )
+        df.to_csv(path, index=False)
+
+        html = _build_cutoff_reference_table(path)
+        assert html is not None
+        assert "<script>alert" not in html
+        assert "&lt;script&gt;alert" in html
 
 
 # =============================================================================

@@ -12,6 +12,7 @@ execution and enabling regeneration without re-running the pipeline.
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 import pandas as pd
@@ -236,7 +237,7 @@ def _cutoff_ref_row(
         elif isinstance(val, float):
             cells.append(f'<td class="col-bin">{val:,.2f}</td>')
         else:
-            cells.append(f'<td class="col-bin">{val}</td>')
+            cells.append(f'<td class="col-bin">{escape(str(val))}</td>')
 
     # KPI cells
     ci_lookup = {label: (lo, hi) for lo, hi, label in ci_pairs}
@@ -270,7 +271,14 @@ def _cutoff_ref_row(
                 cells.append('<td class="cell-missing">\u2014</td>')
         else:
             val = row.get(col_key, float("nan"))
-            cells.append(f'<td class="num">{format(val, ",.2f") if pd.notna(val) else "\u2014"}</td>')
+            if pd.notna(val):
+                try:
+                    rendered = format(float(val), ",.2f")
+                except (TypeError, ValueError):
+                    rendered = escape(str(val))
+                cells.append(f'<td class="num">{rendered}</td>')
+            else:
+                cells.append('<td class="num">\u2014</td>')
 
     return f"<tr>{''.join(cells)}</tr>"
 

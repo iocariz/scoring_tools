@@ -56,7 +56,16 @@ def load_segment_constraints(segments_path: str = "segments.toml") -> dict[str, 
 def main():
     parser = argparse.ArgumentParser(description="Global Portfolio Risk Allocation")
     parser.add_argument("--target", type=float, required=True, help="Global risk target (%%)")
-    parser.add_argument("--data-dir", type=str, default="data", help="Directory containing frontier CSVs")
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default="output",
+        help=(
+            "Base directory for segment outputs/frontiers. "
+            "Expected layout: <data-dir>/<segment>/data/efficient_frontier_<scenario>.csv "
+            "(default: output)"
+        ),
+    )
     parser.add_argument("--output", type=str, default="allocation_results.csv", help="Output file path")
     parser.add_argument("--scenario", type=str, default="base", help="Scenario to filter files by (default: base)")
     parser.add_argument(
@@ -90,27 +99,44 @@ def main():
 
     allocator = GlobalAllocator()
 
-    output_base = Path("output")
+    output_base = Path(args.data_dir)
     if not output_base.exists():
-        logger.error("Output directory 'output/' does not exist. Run run_batch.py first.")
+        logger.error(f"Data directory '{output_base}' does not exist. Run run_batch.py first or pass --data-dir.")
         return
 
     segments_found = []
 
+    # 1) Single-segment layout: <data-dir>/data/efficient_frontier_<scenario>.csv
+    single_frontier = output_base / "data" / f"efficient_frontier_{args.scenario}.csv"
+    if single_frontier.exists():
+        logger.info(f"Loading frontier for {output_base.name} from {single_frontier}")
+        try:
+            df = pd.read_csv(single_frontier)
+            allocator.load_frontier(output_base.name, df)
+            segments_found.append(output_base.name)
+        except Exception as e:
+            logger.error(f"Failed to load {single_frontier}: {e}")
+
+    # 2) Multi-segment layout: <data-dir>/<segment>/data/efficient_frontier_<scenario>.csv
     for segment_dir in output_base.iterdir():
-        if segment_dir.is_dir():
-            frontier_path = segment_dir / "data" / f"efficient_frontier_{args.scenario}.csv"
-            if frontier_path.exists():
-                logger.info(f"Loading frontier for {segment_dir.name} from {frontier_path}")
-                try:
-                    df = pd.read_csv(frontier_path)
-                    allocator.load_frontier(segment_dir.name, df)
-                    segments_found.append(segment_dir.name)
-                except Exception as e:
-                    logger.error(f"Failed to load {frontier_path}: {e}")
+        if not segment_dir.is_dir():
+            continue
+        frontier_path = segment_dir / "data" / f"efficient_frontier_{args.scenario}.csv"
+        if not frontier_path.exists():
+            continue
+        logger.info(f"Loading frontier for {segment_dir.name} from {frontier_path}")
+        try:
+            df = pd.read_csv(frontier_path)
+            allocator.load_frontier(segment_dir.name, df)
+            segments_found.append(segment_dir.name)
+        except Exception as e:
+            logger.error(f"Failed to load {frontier_path}: {e}")
 
     if not segments_found:
-        logger.error(f"No efficient frontiers found for scenario '{args.scenario}' in output/*/")
+        logger.error(
+            f"No efficient frontiers found for scenario '{args.scenario}' under '{output_base}'. "
+            "Expected either <data-dir>/data/... (single segment) or <data-dir>/<segment>/data/... (batch)."
+        )
         return
 
     logger.info(f"Starting optimization for global target: {args.target}% across {len(segments_found)} segments")

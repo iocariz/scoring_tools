@@ -31,6 +31,7 @@ from src.constants import (
     DEFAULT_RISK_MULTIPLIER,
     DEFAULT_Z_THRESHOLD,
     Columns,
+    RejectReason,
     StatusName,
     Suffixes,
 )
@@ -1014,33 +1015,37 @@ def _compute_shap_values(
     try:
         import shap
 
+        # Bound SHAP workload for stability on large datasets.
+        max_explain_rows = 500
+        X_explain = X if len(X) <= max_explain_rows else shap.sample(X, max_explain_rows)
+
         if hasattr(model, "coef_"):
             # Linear models: exact and fast
-            explainer = shap.LinearExplainer(model, X)
-            shap_values = explainer.shap_values(X)
+            explainer = shap.LinearExplainer(model, X_explain)
+            shap_values = explainer.shap_values(X_explain)
         elif type(model).__name__ in ("XGBRegressor", "LGBMRegressor"):
             # Tree models: exact and fast
             try:
                 explainer = shap.TreeExplainer(model)
-                shap_values = explainer.shap_values(X)
+                shap_values = explainer.shap_values(X_explain)
             except ValueError as ve:
                 if "could not convert string to float" in str(ve):
                     logger.warning(
                         "XGBoost/SHAP TreeExplainer incompatibility detected. Falling back to KernelExplainer."
                     )
-                    background = shap.sample(X, min(50, len(X)))
+                    background = shap.sample(X_explain, min(50, len(X_explain)))
 
                     def safe_predict_tree(data):
                         return model.predict(pd.DataFrame(data, columns=feature_names))
 
                     explainer = shap.KernelExplainer(safe_predict_tree, background)
-                    shap_values = explainer.shap_values(X, nsamples=50)
+                    shap_values = explainer.shap_values(X_explain, nsamples=50)
                 else:
                     raise
         else:
             # Non-linear models (Hurdle, Tweedie): use sampling-based explainer
             # Use a small background sample for efficiency
-            background = shap.sample(X, min(50, len(X)))
+            background = shap.sample(X_explain, min(50, len(X_explain)))
 
             # KernelExplainer wrapper to ensure input is a DataFrame with correct feature names
             def safe_predict(data):
@@ -1048,10 +1053,10 @@ def _compute_shap_values(
 
             explainer = shap.KernelExplainer(safe_predict, background)
             # Using a very small sample size for KernelExplainer to ensure it finishes quickly and doesn't crash on high dims
-            shap_values = explainer.shap_values(X, nsamples=50)
+            shap_values = explainer.shap_values(X_explain, nsamples=50)
 
         mean_abs_shap = np.abs(shap_values).mean(axis=0)
-        logger.info(f"SHAP values computed: {shap_values.shape}")
+        logger.info(f"SHAP values computed: {shap_values.shape} (explained_rows={len(X_explain)}/{len(X)})")
 
         return {
             "shap_values": shap_values,
@@ -1649,6 +1654,15 @@ def compute_pre_reject_inference_data(
     final_features = risk_inference["features"]
     risk_vars = model_variables or variables
 
+    def _ensure_unique_merge_keys(df: pd.DataFrame, key_cols: list[str], value_cols: list[str], *, name: str) -> pd.DataFrame:
+        if not df.duplicated(key_cols).any():
+            return df
+        dup_count = int(df.duplicated(key_cols).sum())
+        logger.warning(
+            f"{name}: detected non-unique merge keys (duplicates={dup_count}); collapsing by mean over value columns."
+        )
+        return df.groupby(key_cols, as_index=False)[value_cols].mean()
+
     def _aggregate(data, status, reject_reason=None):
         filtered_data = data[data[Columns.STATUS_NAME] == status]
         if reject_reason:
@@ -1663,7 +1677,7 @@ def compute_pre_reject_inference_data(
     booked_summary = _aggregate(data_booked, StatusName.BOOKED.value)
     booked_summary = booked_summary.rename(columns={i: i + Suffixes.BOOKED for i in indicators})
 
-    repesca_summary = _aggregate(data_demand, StatusName.REJECTED.value, "09-score")
+    repesca_summary = _aggregate(data_demand, StatusName.REJECTED.value, RejectReason.SCORE.value)
 
     from src.models import calculate_risk_values
 
@@ -1673,7 +1687,15 @@ def compute_pre_reject_inference_data(
 
     # Apply per-bin stress factors when provided (scalar stressor is 1.0 in this case)
     if per_bin_stress is not None and not per_bin_stress.empty:
-        repesca_summary = repesca_summary.merge(per_bin_stress, on=variables, how="left")
+        per_bin_stress = _ensure_unique_merge_keys(
+            per_bin_stress.copy(), variables, ["stress_factor"], name="per_bin_stress"
+        )
+        n_before = len(repesca_summary)
+        repesca_summary = repesca_summary.merge(per_bin_stress, on=variables, how="left", validate="one_to_one")
+        if len(repesca_summary) != n_before:
+            raise RuntimeError(
+                f"per_bin_stress merge expanded rows unexpectedly (before={n_before}, after={len(repesca_summary)})"
+            )
         global_fallback = per_bin_stress["stress_factor"].median()
         repesca_summary["stress_factor"] = repesca_summary["stress_factor"].fillna(global_fallback)
         repesca_summary["todu_30ever_h6"] *= repesca_summary["stress_factor"]
@@ -1722,6 +1744,15 @@ def run_optimization_pipeline(
 
     INDICADORES = indicators
     VARIABLES = variables
+
+    def _ensure_unique_merge_keys(df: pd.DataFrame, key_cols: list[str], value_cols: list[str], *, name: str) -> pd.DataFrame:
+        if not df.duplicated(key_cols).any():
+            return df
+        dup_count = int(df.duplicated(key_cols).sum())
+        logger.warning(
+            f"{name}: detected non-unique merge keys (duplicates={dup_count}); collapsing by mean over value columns."
+        )
+        return df.groupby(key_cols, as_index=False)[value_cols].mean()
 
     # Compute invariant pre-reject-inference data
     data_sumary_desagregado_booked, data_sumary_desagregado_repesca = compute_pre_reject_inference_data(
@@ -1773,9 +1804,18 @@ def run_optimization_pipeline(
         )
 
     if per_bin_tasa_fin is not None and not per_bin_tasa_fin.empty:
-        data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.merge(
-            per_bin_tasa_fin, on=VARIABLES, how="left"
+        per_bin_tasa_fin = _ensure_unique_merge_keys(
+            per_bin_tasa_fin.copy(), VARIABLES, ["tasa_fin"], name="per_bin_tasa_fin"
         )
+        n_before = len(data_sumary_desagregado_repesca)
+        data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.merge(
+            per_bin_tasa_fin, on=VARIABLES, how="left", validate="one_to_one"
+        )
+        if len(data_sumary_desagregado_repesca) != n_before:
+            raise RuntimeError(
+                "per_bin_tasa_fin merge expanded rows unexpectedly "
+                f"(before={n_before}, after={len(data_sumary_desagregado_repesca)})"
+            )
         data_sumary_desagregado_repesca["tasa_fin"] = data_sumary_desagregado_repesca["tasa_fin"].fillna(tasa_fin)
         for ind in INDICADORES:
             data_sumary_desagregado_repesca[ind] *= data_sumary_desagregado_repesca["tasa_fin"]

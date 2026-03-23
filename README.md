@@ -11,7 +11,7 @@ A credit risk scoring and portfolio optimization pipeline that processes loan ap
 - **Recent Monitoring (MR)**: Validates proposed cutoffs against a holdout recent period.
 - **Stability Analysis**: PSI/CSI drift detection between main and MR periods.
 - **Supersegments**: Trains shared models across related segments, then optimizes individually.
-- **Reject Inference**: Corrects selection bias for score-rejected applications using acceptance-rate-based parceling with three functional forms (linear, power, sigmoid), optional Bayesian smoothing, monotonicity enforcement, per-bin confidence scores, and automated parameter tuning via grid search or Optuna.
+- **Reject Inference**: Corrects selection bias for score-rejected applications using acceptance-rate-based parceling with three functional forms (linear, power, sigmoid), optional Bayesian smoothing, monotonicity enforcement, temporal weighting/windowing, per-bin confidence diagnostics (raw and effective counts), and automated parameter tuning via grid search or Optuna.
 - **Sensitivity Analysis**: Measures cutoff stability under risk perturbations, identifying per-cell flip thresholds.
 - **Marginal Impact**: Analytical O(N) computation of the production and risk impact of flipping each cell's accept/reject status.
 - **Cell-Level Confidence Intervals**: K-fold CV prediction intervals per grid cell, quantifying model uncertainty.
@@ -109,6 +109,8 @@ uv run python run_batch.py [OPTIONS]
 | `--skip-dq-checks` | | Skip data quality checks |
 | `--no-consolidation` | | Skip consolidated report generation |
 | `--consolidate-only` | | Only generate consolidated report (skip segments) |
+| `--training-only` | | Only run data quality + model training (skip optimization/reporting steps) |
+| `--no-report` | | Skip generating HTML reports |
 
 **Examples:**
 
@@ -140,7 +142,7 @@ uv run python run_allocation.py --target TARGET [OPTIONS]
 | Flag | Description |
 |:-----|:------------|
 | `--target FLOAT` | **(Required)** Global risk target in % (e.g., `1.0`) |
-| `--data-dir DIR` | Directory containing frontier CSVs (default: `data`) |
+| `--data-dir DIR` | Base directory for frontier discovery (default: `output`). Supports both `<data-dir>/<segment>/data/efficient_frontier_{scenario}.csv` and single-segment `<data-dir>/data/efficient_frontier_{scenario}.csv` |
 | `--output PATH` | Output CSV file (default: `allocation_results.csv`) |
 | `--scenario NAME` | Scenario to use (default: `base`) |
 | `--method {exact,greedy}` | Optimization method (default: `exact`) |
@@ -271,7 +273,7 @@ For each scenario (pessimistic / base / optimistic):
 
 When `run_sensitivity = true` in configuration, runs after optimization:
 
-1. **Risk perturbation**: Scales the `todu_30ever_h6_rep` column by +/-5%, 10%, 20% and re-solves the MILP at each level.
+1. **Risk perturbation**: Scales the `todu_30ever_h6_rep` column by +/-5%, 10%, 20% and re-solves the MILP at each level (respecting active swap-in constraints and MILP time limit).
 2. **Cell flip thresholds**: For each cell, finds the minimum perturbation that would flip its accept/reject status.
 3. **Marginal impact**: Analytically computes the production and risk change from flipping each individual cell.
 
@@ -443,7 +445,7 @@ All multipliers are floored at 1.0 and capped at `reject_max_risk_multiplier` (d
 
 **Monotonicity Enforcement** (optional, `reject_enforce_monotonicity = true`): Post-processes multipliers using `sklearn.isotonic.IsotonicRegression` to ensure they are non-decreasing along each variable axis (marginal monotonicity). The direction of monotonicity respects each variable's risk ordering. Enforcement operates via alternating projections: for each variable, multipliers are averaged across the other axes, fit with isotonic regression along that variable's sorted bins, and mapped back. Iterates until convergence (max change < 1e-6) or 10 iterations.
 
-**Per-Bin Confidence Scores**: Each bin receives a confidence score: `confidence = 1 - exp(-n_total / 50)`.
+**Per-Bin Confidence Scores**: Each bin receives a confidence score: `confidence = 1 - exp(-n_total_effective / 50)`.
 
 | Total observations | Confidence |
 |---|---|
@@ -453,7 +455,12 @@ All multipliers are floored at 1.0 and capped at `reject_max_risk_multiplier` (d
 | 100 | 0.86 |
 | 200 | 0.98 |
 
-Low-confidence bins (< 0.5, corresponding to < 35 observations) have sparse data. Confidence scores are diagnostic only and dropped before the MILP.
+In outputs, confidence diagnostics include:
+- `ri_bin_count`: raw integer count (booked + rejected) for backward compatibility
+- `ri_bin_count_raw`: explicit raw integer count
+- `ri_bin_count_effective`: time-decay effective sample size (float)
+
+Low-confidence bins (< 0.5) have sparse effective evidence. Confidence diagnostics are auxiliary metadata and are not used as MILP coefficients or constraints.
 
 **Guardrails:**
 
@@ -1033,6 +1040,10 @@ Comfort zone yearly limits (under `[preprocessing.cz_config]`):
 | `reject_bayesian_prior_strength` | float | `10.0` | 0-1000 | Bayesian prior strength (higher = more shrinkage toward global rate). Increase to `50+` for extremely noisy data |
 | `reject_enforce_monotonicity` | bool | `false` | | Isotonic regression on multipliers per variable axis. Enable for noisy segments with non-monotone raw rates |
 | `reject_include_all_rejections` | bool | `false` | | Include policy rejections (`08-other`) in acceptance rate denominator. Usually `false` — only penalize score-based rejections |
+| `reject_acceptance_recent_months` | int | `None` | >= 1 | If set, compute acceptance rates using only the most recent N months |
+| `reject_acceptance_decay_half_life_months` | float | `None` | > 0 | If set, apply exponential time-decay to acceptance-rate counts (takes precedence over recent window) |
+| `reject_acceptance_date_col` | str | `"mis_date"` | non-empty | Date column used for RI temporal windowing/decay weighting |
+| `reject_apply_h3_multiplier` | bool | `false` | | If `true`, applies RI multiplier to H3 numerator as well as H6; default `false` preserves original H3 for extrapolation stability |
 
 **Parceling formulas** (per bin):
 
@@ -1067,6 +1078,9 @@ Selection rule: minimum calibration error among feasible solutions, with ties wi
 | `pareto_n_points` | int | `50` | 5-500 | Number of risk targets in Pareto sweep |
 | `n_bootstraps` | int | `1000` | 100-50000 | Bootstrap replicates for confidence intervals |
 | `cv_folds` | int | `4` | 2-10 | Cross-validation folds for model training |
+| `monotonicity_relaxation_enabled` | bool | `false` | | Enable uncertainty-aware relaxation of local monotonicity constraints in sparse/ambiguous cell adjacencies |
+| `monotonicity_uncertainty_min_exposure` | float | `0.0` | >= 0 | Minimum exposure threshold used by monotonicity relaxation gating |
+| `monotonicity_uncertainty_z_threshold` | float | `1.0` | >= 0 | Z-score ambiguity threshold used by monotonicity relaxation gating |
 
 ##### Swap-In Constraints
 
