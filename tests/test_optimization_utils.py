@@ -11,6 +11,7 @@ from loguru import logger
 from src.optimization_utils import (
     CellGrid,
     _build_monotonicity_constraints,
+    _ga_pareto_fallback,
     _validate_nd_cutoff_structure,
     add_bin_columns,
     classify_by_mask,
@@ -562,6 +563,146 @@ class TestMILPSolver:
         # Should be None or a mask with 0 accepted cells
         if mask is not None:
             assert mask.sum() == 0
+
+    def test_phantom_cells_not_accepted_in_milp(self):
+        """Phantom/unobserved cells must never be accepted by MILP.
+
+        Regression for "phantom cells treated as free rejections" risk:
+        if a CellGrid cell is unobserved, the solver must force x=0.
+        """
+        df = _make_summary_2d(2, 2)
+        df = df.iloc[:-1]  # remove one cell to create exactly one phantom
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+
+        phantom_idxs = np.where(~grid.observed)[0]
+        assert phantom_idxs.size == 1
+        phantom_idx = int(phantom_idxs[0])
+
+        # With a very high risk target, MILP would normally accept all cells
+        # if phantom cells were not properly excluded.
+        mask = milp_solve_cutoffs(grid, target_risk=999.0, inv_vars=[], multiplier=7)
+        assert mask is not None
+        assert mask[phantom_idx] == 0
+        assert mask.sum() <= int(grid.observed.sum())
+
+    def test_phantom_cells_not_accepted_in_pareto_masks(self):
+        """Pareto masks produced from MILP sweep must also exclude phantom cells."""
+        df = _make_summary_2d(2, 2)
+        df = df.iloc[:-1]  # create phantom cell
+
+        indicators = ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"]
+        pareto_df, grid_used, pareto_masks = trace_pareto_frontier(
+            data_summary_desagregado=df,
+            variables=["var0", "var1"],
+            inv_vars=[],
+            multiplier=7,
+            indicators=indicators,
+            n_points=3,
+            milp_time_limit=1.0,
+        )
+
+        assert pareto_masks  # should find at least one feasible mask
+        phantom_idxs = np.where(~grid_used.observed)[0]
+        assert phantom_idxs.size == 1
+        phantom_idx = int(phantom_idxs[0])
+
+        for m in pareto_masks:
+            assert m[phantom_idx] == 0
+
+
+# =============================================================================
+# GA fallback tests (mocked pymoo)
+# =============================================================================
+
+class TestGAFallbackPhantomCells:
+    def test_phantom_cells_not_accepted_in_ga_fallback(self, monkeypatch):
+        """GA fallback must encode phantom/unobserved cells with xu=0.
+
+        `pymoo` is an optional dependency. This test mocks the minimal pymoo
+        surface so we can exercise `_ga_pareto_fallback` and ensure the returned
+        masks never accept phantom cells.
+        """
+        import types
+
+        # --- Dummy pymoo implementation (enough for _ga_pareto_fallback) ---
+        class DummyGA:
+            def __init__(self, pop_size=100):
+                self.pop_size = pop_size
+
+        class DummyProblem:
+            def __init__(self, n_var, n_obj, n_ieq_constr, xl, xu):
+                self.n_var = n_var
+                self.n_obj = n_obj
+                self.n_ieq_constr = n_ieq_constr
+                self.xl = xl
+                self.xu = np.asarray(xu, dtype=float)
+
+        def dummy_get_termination(*args, **kwargs):
+            return ("termination", args, kwargs)
+
+        def dummy_minimize(problem, algorithm, termination, seed=None, verbose=False):
+            # Respect xu bounds by generating X=1 exactly where xu>0.
+            # This simulates an optimizer that never violates variable bounds.
+            X = (np.asarray(problem.xu) > 0).astype(float)
+
+            class Res:
+                pass
+
+            res = Res()
+            res.X = X
+            return res
+
+        # Install dummy modules into sys.modules so the imports succeed.
+        monkeypatch.setitem(sys.modules, "pymoo", types.ModuleType("pymoo"))
+        monkeypatch.setitem(sys.modules, "pymoo.algorithms", types.ModuleType("pymoo.algorithms"))
+        monkeypatch.setitem(sys.modules, "pymoo.algorithms.soo", types.ModuleType("pymoo.algorithms.soo"))
+        monkeypatch.setitem(
+            sys.modules, "pymoo.algorithms.soo.nonconvex", types.ModuleType("pymoo.algorithms.soo.nonconvex")
+        )
+
+        ga_mod = types.ModuleType("pymoo.algorithms.soo.nonconvex.ga")
+        ga_mod.GA = DummyGA
+        monkeypatch.setitem(sys.modules, "pymoo.algorithms.soo.nonconvex.ga", ga_mod)
+
+        core_mod = types.ModuleType("pymoo.core")
+        monkeypatch.setitem(sys.modules, "pymoo.core", core_mod)
+
+        problem_mod = types.ModuleType("pymoo.core.problem")
+        problem_mod.Problem = DummyProblem
+        monkeypatch.setitem(sys.modules, "pymoo.core.problem", problem_mod)
+
+        optimize_mod = types.ModuleType("pymoo.optimize")
+        optimize_mod.minimize = dummy_minimize
+        monkeypatch.setitem(sys.modules, "pymoo.optimize", optimize_mod)
+
+        termination_mod = types.ModuleType("pymoo.termination")
+        termination_mod.get_termination = dummy_get_termination
+        monkeypatch.setitem(sys.modules, "pymoo.termination", termination_mod)
+
+        # --- Build a grid with exactly one phantom/unobserved cell ---
+        df = _make_summary_2d(2, 2)
+        df = df.iloc[:-1]
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+
+        phantom_idxs = np.where(~grid.observed)[0]
+        assert phantom_idxs.size == 1
+
+        indicators = ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"]
+        pareto_df, grid_used, pareto_masks = _ga_pareto_fallback(
+            grid=grid,
+            inv_vars=[],
+            multiplier=7,
+            indicators=indicators,
+            n_points=3,
+        )
+
+        assert pareto_masks  # should find at least one feasible GA mask (mocked)
+        phantom_idxs_used = np.where(~grid_used.observed)[0]
+        assert phantom_idxs_used.size == 1
+        phantom_idx_used = int(phantom_idxs_used[0])
+
+        for m in pareto_masks:
+            assert m[phantom_idx_used] == 0
 
 
 # =============================================================================
