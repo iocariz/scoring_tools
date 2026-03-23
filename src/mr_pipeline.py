@@ -1161,6 +1161,7 @@ def process_mr_period(
         required_agg_cols = merge_keys + ["todu_30ever_h6", "todu_amt_pile_h6"]
 
         comparison_df = None  # set in hybrid path; used by recalibration below
+        recalibration_applied = False
 
         if settings.use_mr_outcomes and _mr_outcomes_available(data_demand_mr):
             # Hybrid mode: use MR observed risk where sufficient, else main-period
@@ -1590,6 +1591,7 @@ def process_mr_period(
         # Fix: scale repesca todu_30ever_h6_rep per bin by (MR rate / main rate),
         # preserving the reject-inference multiplier and stressor proportionally.
         if comparison_df is not None and "b2_ever_h6_tmp" in comparison_df.columns:
+            recalibration_applied = True
             main_bin_agg = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
             main_bin_agg["_main_b2"] = calculate_b2_ever_h6(
                 main_bin_agg["todu_30ever_h6"], main_bin_agg["todu_amt_pile_h6"],
@@ -1656,6 +1658,46 @@ def process_mr_period(
                     data_summary_desagregado_mr[base] = (
                         data_summary_desagregado_mr[boo_col] + data_summary_desagregado_mr[rep_col_name]
                     )
+
+        # ------------------------------------------------------------------
+        # Consistency fix (High severity):
+        # decisions/mask were optimized on the pre-recalibrated MR risk surface
+        # but we report metrics after scaling repesca risk to MR hybrid rates.
+        # Re-optimize the mask on the post-recalibration MR risk surface so
+        # reported metrics are consistent with the cutoffs used.
+        # ------------------------------------------------------------------
+        if recalibration_applied:
+            try:
+                from src.optimization_utils import CellGrid, milp_solve_cutoffs
+
+                target_risk = settings.optimum_risk
+                if optimal_solution_df is not None and not optimal_solution_df.empty and "b2_ever_h6" in optimal_solution_df.columns:
+                    target_risk = float(optimal_solution_df["b2_ever_h6"].iloc[0])
+
+                mr_grid = CellGrid.from_summary(data_summary_desagregado_mr, settings.variables)
+                new_mask = milp_solve_cutoffs(
+                    mr_grid,
+                    target_risk=target_risk,
+                    inv_vars=settings.inv_vars,
+                    multiplier=settings.multiplier,
+                    max_swapin_production_pct=settings.max_swapin_production_pct,
+                    max_swapin_risk=settings.max_swapin_risk,
+                    time_limit=settings.milp_time_limit,
+                )
+
+                if new_mask is not None:
+                    logger.info(
+                        "MR consistency fix: re-optimized acceptance mask after repesca recalibration "
+                        f"(target_risk={target_risk:.3f}%)."
+                    )
+                    mask = new_mask
+                    grid = mr_grid
+                    # calculate_metrics_from_cuts requires optimal_solution_df non-empty
+                    optimal_solution_df = pd.DataFrame({"sol_fac": [0]})
+                else:
+                    logger.warning("MR consistency fix: re-optimization after recalibration infeasible; keeping passed mask/grid.")
+            except Exception as e:
+                logger.warning(f"MR consistency fix failed (non-blocking). Keeping passed mask/grid. Error: {e}")
 
         # --- Diagnostic: booked vs repesca risk after all adjustments ---
         dsm = data_summary_desagregado_mr

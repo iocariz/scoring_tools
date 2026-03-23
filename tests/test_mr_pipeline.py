@@ -1304,6 +1304,189 @@ class TestProcessMRPeriodRegression:
         assert "used_variables" not in captured, "model fallback should not be triggered with 2D merge keys"
         assert captured["imputed_b2"] == pytest.approx(0.7)
 
+    def test_recalibration_reoptimizes_mask_for_consistency(self, monkeypatch, tmp_path):
+        """After repesca recalibration, MR should re-optimize the mask before reporting.
+
+        Regression for the "desynchronized decisions vs reported MR risk surface"
+        issue: process_mr_period recalibrates repesca risk after running the MR
+        optimization pipeline, so we must re-solve the cutoffs on the recalibrated
+        MR risk surface before computing the MR KPIs.
+        """
+
+        class DummyRVModel:
+            def predict(self, X):
+                return np.full(len(X), 100.0)
+
+        class DummyStabilityReport:
+            unstable_vars = []
+
+            def to_dataframe(self):
+                return pd.DataFrame()
+
+        class DummyAlertReport:
+            def to_json(self, path):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("{}")
+
+        captured = {}
+
+        def fake_calculate_metrics_from_cuts(
+            data_summary_desagregado_mr,
+            optimal_solution_df,
+            variables,
+            inv_vars=None,
+            mask=None,
+            grid=None,
+            **kwargs,
+        ):
+            captured["mask"] = mask
+            captured["grid_is_none"] = grid is None
+            return pd.DataFrame([{"Metric": "Optimum selected", "Risk (%)": 0.0, "Production (€)": 0.0}])
+
+        monkeypatch.setattr("src.mr_pipeline.calculate_metrics_from_cuts", fake_calculate_metrics_from_cuts)
+        monkeypatch.setattr("src.mr_pipeline.compare_main_vs_mr", lambda *args, **kwargs: DummyStabilityReport())
+        monkeypatch.setattr("src.mr_pipeline.styles.apply_plotly_style", lambda *args, **kwargs: None)
+        monkeypatch.setattr("src.alerts.generate_drift_alerts", lambda *args, **kwargs: DummyAlertReport())
+        monkeypatch.setattr("src.mr_pipeline.go.Figure.write_html", lambda *args, **kwargs: None)
+
+        merge_keys = ["sc_octroi_new_clus", "new_efx_clus"]
+
+        merge_df = pd.DataFrame(
+            {
+                merge_keys[0]: [1, 2],
+                merge_keys[1]: [1, 1],
+                "b2_ever_h6_tmp": [0.01, 0.02],  # decimals
+            }
+        )
+        comparison_df = pd.DataFrame(
+            {
+                merge_keys[0]: [1, 2],
+                merge_keys[1]: [1, 1],
+                "b2_ever_h6_tmp": [0.01, 0.02],
+                "b2_delta_pct": [0.0, 0.0],
+                "risk_source": ["main", "main"],
+                "fitted_method": ["linear", "linear"],
+                "fitted_curvature": [1.0, 1.0],
+            }
+        )
+
+        monkeypatch.setattr("src.mr_pipeline._compute_hybrid_mr_risk", lambda *args, **kwargs: (merge_df, comparison_df))
+        monkeypatch.setattr(
+            "src.mr_pipeline._assign_tiered_risk",
+            lambda data_demand_mr, *args, **kwargs: data_demand_mr.assign(_mr_tier=3),
+        )
+
+        # Tiny MR surface for CellGrid: 2x2 grid => 4 cells.
+        # (var0,var1) in {(1,1),(1,2),(2,1),(2,2)}
+        mr_surface = pd.DataFrame(
+            {
+                merge_keys[0]: [1, 1, 2, 2],
+                merge_keys[1]: [1, 2, 1, 2],
+                "oa_amt_h0": [1000.0, 500.0, 700.0, 300.0],
+                "todu_30ever_h6": [10.0, 5.0, 20.0, 2.0],
+                "todu_amt_pile_h6": [100.0, 50.0, 200.0, 20.0],
+                "todu_30ever_h6_boo": [4.0, 2.0, 8.0, 1.0],
+                "todu_30ever_h6_rep": [6.0, 3.0, 12.0, 1.0],
+                "todu_amt_pile_h6_boo": [40.0, 20.0, 80.0, 10.0],
+                "todu_amt_pile_h6_rep": [100.0, 50.0, 200.0, 20.0],
+            }
+        )
+
+        monkeypatch.setattr("src.mr_pipeline.run_optimization_pipeline", lambda *args, **kwargs: mr_surface.copy())
+
+        # Force MILP re-solve after recalibration to return a known mask.
+        new_mask = np.array([1, 0, 1, 0], dtype=int)
+        expected_target_risk = 1.0  # from optimal_solution_df["b2_ever_h6"]
+
+        def fake_milp_solve_cutoffs(grid, target_risk, inv_vars, multiplier, **kwargs):
+            captured["milp_target_risk"] = float(target_risk)
+            assert grid.n_cells == 4
+            return new_mask
+
+        from src import optimization_utils as optimization_utils_module
+
+        monkeypatch.setattr(optimization_utils_module, "milp_solve_cutoffs", fake_milp_solve_cutoffs)
+
+        settings = PreprocessingSettings(
+            keep_vars=["mis_date", "status_name", "segment_cut_off", "score_rf", "risk_score_rf"],
+            indicators=["acct_booked_h0", "oa_amt", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"],
+            segment_filter="seg_a",
+            date_ini_book_obs="2024-01-01",
+            date_fin_book_obs="2024-06-30",
+            date_ini_book_obs_mr="2024-07-01",
+            date_fin_book_obs_mr="2024-07-31",
+            variables=merge_keys,
+            inference_variables=merge_keys,
+            octroi_bins=[-float("inf"), 1.5, float("inf")],
+            efx_bins=[-float("inf"), 1.5, float("inf")],
+            use_mr_outcomes=True,
+        )
+
+        data_booked = pd.DataFrame(
+            {
+                "mis_date": pd.to_datetime(["2024-02-15", "2024-03-15"]),
+                "status_name": ["booked", "booked"],
+                "segment_cut_off": ["seg_a", "seg_a"],
+                "score_rf": [300.0, 320.0],
+                "risk_score_rf": [20.0, 25.0],
+                "acct_booked_h0": [1, 1],
+                "oa_amt": [1000.0, 1200.0],
+                "oa_amt_h0": [1000.0, 1200.0],
+                "todu_30ever_h6": [10.0, 20.0],
+                "todu_amt_pile_h6": [100.0, 200.0],
+                merge_keys[0]: [1, 2],
+                merge_keys[1]: [1, 1],
+            }
+        )
+
+        data_clean = pd.concat(
+            [
+                data_booked,
+                pd.DataFrame(
+                    {
+                        "mis_date": pd.to_datetime(["2024-07-15", "2024-07-20"]),
+                        "status_name": ["booked", "booked"],
+                        "segment_cut_off": ["seg_a", "seg_a"],
+                        "score_rf": [305.0, 310.0],
+                        "risk_score_rf": [21.0, 22.0],
+                        "acct_booked_h0": [1, 1],
+                        "oa_amt": [500.0, 600.0],
+                        "oa_amt_h0": [500.0, 600.0],
+                        "todu_30ever_h6": [0.0, 0.0],
+                        "todu_amt_pile_h6": [0.0, 0.0],
+                        merge_keys[0]: [1, 2],
+                        merge_keys[1]: [1, 1],
+                    }
+                ),
+            ],
+            ignore_index=True,
+        )
+
+        output = OutputPaths(base_dir=tmp_path)
+        output.ensure_dirs()
+
+        mask_main = np.array([0, 0, 0, 0], dtype=int)
+
+        process_mr_period(
+            data_clean=data_clean,
+            data_booked=data_booked,
+            settings=settings,
+            risk_inference={"best_model_info": {"model": object()}, "features": [], "model_variables": merge_keys},
+            reg_todu_amt_pile=DummyRVModel(),
+            stress_factor=1.0,
+            tasa_fin=1.0,
+            annual_coef=1.0,
+            optimal_solution_df=pd.DataFrame({"b2_ever_h6": [1.0], "sol_fac": [0]}),
+            file_suffix="",
+            output=output,
+            mask=mask_main,
+            grid=None,
+        )
+
+        assert captured["milp_target_risk"] == pytest.approx(expected_target_risk)
+        assert np.array_equal(captured["mask"], new_mask)
+        assert captured["grid_is_none"] is False
+
     def test_hybrid_mode_model_fallback_infers_risk_nd(self, monkeypatch, tmp_path):
         """In hybrid MR mode with N>2 variables, model_fallback bins should get model-inferred risk."""
 

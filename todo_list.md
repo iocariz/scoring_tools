@@ -2,7 +2,6 @@
 
 ## High
 ### Bug
-- `src/mr_pipeline.py` — `process_mr_period()` recalibrates repesca risk after `run_optimization_pipeline()` by scaling `todu_30ever_h6_rep`. This can desynchronize “optimized MR decisions” from “reported MR risk surface.” Mitigation: either re-run optimization after recalibration or explicitly document that recalibration is report-only.
 ## Medium
 ### Bug / Correctness
 - `src/optimization_utils.py` + `src/utils.py` — MILP risk budgeting guards global denominators in some paths, but NaN risk can still arise when the selected mask yields zero exposure denominators; Pareto dominance/scenario selection may not explicitly filter NaN-risk solutions. Mitigation: enforce an eps constraint on accepted exposure denominators and/or filter NaN-risk solutions before dominance + selection.
