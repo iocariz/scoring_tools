@@ -205,6 +205,38 @@ def calculate_metrics_from_cuts(
         opt_risk_raw = calculate_b2_ever_h6(opt_rn, opt_rd, multiplier=multiplier, as_percentage=True)
         opt_risk = float(opt_risk_raw) if pd.notna(opt_risk_raw) else None
 
+        # --- Optimum decomposition diagnostic ---
+        kept_rn = actual_rn - so_rn
+        kept_rd = actual_rd - so_rd
+        kept_risk = float(calculate_b2_ever_h6(kept_rn, kept_rd, multiplier=multiplier, as_percentage=True)) if kept_rd > 0 else 0.0
+        kept_prod = actual_prod - so_prod
+        logger.info("OPTIMUM DECOMPOSITION:")
+        logger.info(
+            f"  Actual:   risk={actual_risk}%  prod={actual_prod:,.0f}  "
+            f"rn={actual_rn:.2f}  rd={actual_rd:.2f}"
+        )
+        logger.info(
+            f"  Swap-out: risk={so_risk}%  prod={so_prod:,.0f} ({so_prod / actual_prod * 100:.1f}% of actual)  "
+            f"rn={so_rn:.2f}  rd={so_rd:.2f}"
+        )
+        logger.info(
+            f"  Kept:     risk={kept_risk:.2f}%  prod={kept_prod:,.0f}  "
+            f"rn={kept_rn:.2f}  rd={kept_rd:.2f}"
+        )
+        logger.info(
+            f"  Swap-in:  risk={si_risk}%  prod={si_prod:,.0f} ({si_prod / actual_prod * 100:.1f}% of actual)  "
+            f"rn={si_rn:.2f}  rd={si_rd:.2f}"
+        )
+        logger.info(
+            f"  Optimum:  risk={opt_risk}%  prod={opt_prod:,.0f}"
+        )
+        if so_risk is not None and actual_risk is not None and so_risk < actual_risk:
+            logger.warning(
+                f"  RISK INVERSION: swap-out risk ({so_risk:.2f}%) < actual risk ({actual_risk:.2f}%). "
+                f"Main-period cutoffs are rejecting LOW-risk MR bins — the risk ordering "
+                f"has shifted between periods."
+            )
+
         row_opt = {
             "Metric": "Optimum selected",
             "Risk (%)": opt_risk,
@@ -224,6 +256,19 @@ def calculate_metrics_from_cuts(
             row_opt["todu_amt_pile_h3"] = opt_h3_rd
         summary_data.append(row_opt)
 
+        # --- H3 floor enforcement on summary rows ---
+        # H6 risk must always be >= H3 risk (defaults accumulate over longer horizon).
+        if has_h3:
+            for row in summary_data:
+                h6_val = row.get("Risk (%)")
+                h3_val = row.get("Risk H3 (%)")
+                if h6_val is not None and h3_val is not None and h6_val < h3_val:
+                    logger.warning(
+                        f"H3 floor (summary): {row['Metric']} H6 risk ({h6_val:.2f}%) "
+                        f"< H3 risk ({h3_val:.2f}%). Clamping H6 to H3 value."
+                    )
+                    row["Risk (%)"] = h3_val
+
         return pd.DataFrame(summary_data)
 
     except (KeyError, IndexError, ValueError) as e:
@@ -235,6 +280,26 @@ def _mr_outcomes_available(data_demand_mr: pd.DataFrame) -> bool:
     """Check if MR-period outcome columns exist and have non-null data."""
     required = ["todu_30ever_h6", "todu_amt_pile_h6"]
     return all(col in data_demand_mr.columns and data_demand_mr[col].notna().any() for col in required)
+
+
+def _compute_account_maturity(mis_date: pd.Series, reference_date: pd.Timestamp | None = None) -> pd.Series:
+    """Compute per-account maturity in months from ``mis_date``.
+
+    Parameters
+    ----------
+    mis_date : pd.Series
+        Booking date per account (datetime64).
+    reference_date : pd.Timestamp, optional
+        Reference date to compute maturity against.  Defaults to ``max(mis_date)``.
+
+    Returns
+    -------
+    pd.Series
+        Integer maturity in months.  NaN for missing ``mis_date``.
+    """
+    if reference_date is None:
+        reference_date = mis_date.max()
+    return (reference_date.year - mis_date.dt.year) * 12 + (reference_date.month - mis_date.dt.month)
 
 
 def _compute_hybrid_mr_risk(
@@ -636,6 +701,26 @@ def _compute_hybrid_mr_risk(
 
         combined["h6_h3_ratio"] = h6_h3_ratio
 
+        # --- H3 floor enforcement ---
+        # H6 risk must always be >= H3 risk: defaults can only accumulate over
+        # a longer horizon.  Use best available H3 (MR if any data, else main).
+        # Unlike extrapolation (which needs min_obs for reliability), the floor
+        # is valid with any non-NaN H3 observation.
+        h3_floor = combined["b2_mr_h3"].where(combined["b2_mr_h3"].notna(), combined.get("b2_main_h3"))
+        floored_mask = (
+            combined["b2_ever_h6_tmp"].notna()
+            & h3_floor.notna()
+            & (combined["b2_ever_h6_tmp"] < h3_floor)
+        )
+        n_floored = int(floored_mask.sum())
+        if n_floored > 0:
+            shortfall = (h3_floor[floored_mask] - combined.loc[floored_mask, "b2_ever_h6_tmp"]) * 100
+            logger.warning(
+                f"H3 floor: {n_floored} bin(s) had simulated H6 < observed H3. "
+                f"Clamped to H3 value (avg shortfall: {shortfall.mean():.3f}pp)."
+            )
+            combined.loc[floored_mask, "b2_ever_h6_tmp"] = h3_floor[floored_mask]
+
         n_extrapolated = (combined["risk_source"] == "h3_extrapolated").sum()
         n_main = (combined["risk_source"] == "main_imputed").sum()
         n_mr_obs = (combined["risk_source"] == "mr_observed").sum()
@@ -779,6 +864,169 @@ def _compute_hybrid_mr_risk(
     return merge_df, comparison_df
 
 
+def _assign_tiered_risk(
+    data_demand_mr: pd.DataFrame,
+    merge_df: pd.DataFrame,
+    comparison_df: pd.DataFrame | None,
+    merge_keys: list[str],
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
+    multiplier_h3: float | None = None,
+    mr_extrapolation_method: str = "linear",
+    mr_extrapolation_curvature: float = 1.0,
+) -> pd.DataFrame:
+    """Assign per-account tiered MR risk based on maturity.
+
+    Tier 1: >=6 months maturity — use actual H6 outcomes.
+    Tier 2: >=3, <6 months — extrapolate account-level H3 via bin ratio.
+    Tier 3: <3 months — use bin-level main rate (from merge_df).
+    Tier 4: unfilled (no merge match) — handled by model_fallback downstream.
+
+    Parameters
+    ----------
+    data_demand_mr : DataFrame
+        MR demand data.  Must already have ``_actual_todu_30ever_h6`` and
+        ``_actual_todu_amt_pile_h6`` preserved before H6 columns were dropped.
+        Also needs ``b2_ever_h6_tmp`` from merge_df for tier 3/4.
+    merge_df : DataFrame
+        Per-bin ``b2_ever_h6_tmp`` from ``_compute_hybrid_mr_risk``.
+    comparison_df : DataFrame or None
+        Per-bin diagnostic table; must contain ``h6_h3_ratio`` column when
+        Tier 2 is enabled.
+    merge_keys : list[str]
+        Bin variables for merging.
+    multiplier : float
+        Risk multiplier for H6 (default 7).
+    multiplier_h3 : float or None
+        Risk multiplier for H3.  If None, Tier 2 is disabled.
+    mr_extrapolation_method : str
+        Extrapolation method for ``extrapolate_h3_to_h6``.
+    mr_extrapolation_curvature : float
+        Curvature parameter for extrapolation.
+
+    Returns
+    -------
+    DataFrame
+        ``data_demand_mr`` with ``b2_ever_h6_tmp``, ``_mr_tier``, and
+        reconstructed ``todu_30ever_h6`` / ``todu_amt_pile_h6`` for Tier 1.
+    """
+    booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
+
+    # --- Compute maturity ---
+    data_demand_mr["_mr_tier"] = 0  # default: not assigned
+    if "mis_date" in data_demand_mr.columns:
+        maturity = _compute_account_maturity(data_demand_mr["mis_date"])
+    else:
+        maturity = pd.Series(np.nan, index=data_demand_mr.index)
+
+    # --- Tier 1: actual H6 (maturity >= 6) ---
+    has_actual_h6 = (
+        booked_mask
+        & data_demand_mr.get("_actual_todu_30ever_h6", pd.Series(dtype=float)).notna()
+        & data_demand_mr.get("_actual_todu_amt_pile_h6", pd.Series(dtype=float)).notna()
+        & (maturity >= 6)
+    )
+    if has_actual_h6.any():
+        actual_b2 = calculate_b2_ever_h6(
+            data_demand_mr.loc[has_actual_h6, "_actual_todu_30ever_h6"],
+            data_demand_mr.loc[has_actual_h6, "_actual_todu_amt_pile_h6"],
+            multiplier=multiplier,
+        )
+        data_demand_mr.loc[has_actual_h6, "b2_ever_h6_tmp"] = actual_b2
+        data_demand_mr.loc[has_actual_h6, "todu_30ever_h6"] = data_demand_mr.loc[
+            has_actual_h6, "_actual_todu_30ever_h6"
+        ]
+        data_demand_mr.loc[has_actual_h6, "todu_amt_pile_h6"] = data_demand_mr.loc[
+            has_actual_h6, "_actual_todu_amt_pile_h6"
+        ]
+        data_demand_mr.loc[has_actual_h6, "_mr_tier"] = 1
+
+    # --- Tier 2: account-level H3 × bin ratio (maturity >= 3, < 6) ---
+    has_h3_cols = (
+        multiplier_h3 is not None
+        and "todu_30ever_h3" in data_demand_mr.columns
+        and "todu_amt_pile_h3" in data_demand_mr.columns
+        and comparison_df is not None
+        and "h6_h3_ratio" in comparison_df.columns
+    )
+    if has_h3_cols:
+        h3_eligible = (
+            booked_mask
+            & (data_demand_mr["_mr_tier"] == 0)
+            & (maturity >= 3)
+            & data_demand_mr["todu_30ever_h3"].notna()
+            & data_demand_mr["todu_amt_pile_h3"].notna()
+        )
+        if h3_eligible.any():
+            # Account-level H3 risk
+            acct_b2_h3 = calculate_b2_ever_h6(
+                data_demand_mr.loc[h3_eligible, "todu_30ever_h3"],
+                data_demand_mr.loc[h3_eligible, "todu_amt_pile_h3"],
+                multiplier=multiplier_h3,
+            )
+
+            # Merge bin-level h6_h3_ratio
+            ratio_df = comparison_df[merge_keys + ["h6_h3_ratio"]].drop_duplicates(subset=merge_keys)
+            acct_keys = data_demand_mr.loc[h3_eligible, merge_keys].copy()
+            acct_keys = acct_keys.merge(ratio_df, on=merge_keys, how="left")
+            bin_ratio = acct_keys["h6_h3_ratio"].values
+
+            # Also get b2_main_h3 for power extrapolation
+            b2_main_h3_vals = None
+            if "b2_main_h3" in comparison_df.columns:
+                main_h3_df = comparison_df[merge_keys + ["b2_main_h3"]].drop_duplicates(subset=merge_keys)
+                acct_main_h3 = data_demand_mr.loc[h3_eligible, merge_keys].merge(
+                    main_h3_df, on=merge_keys, how="left"
+                )
+                b2_main_h3_vals = acct_main_h3["b2_main_h3"].values
+
+            # Extrapolate H3 → H6 per account
+            h6_extrapolated = extrapolate_h3_to_h6(
+                acct_b2_h3.values,
+                bin_ratio,
+                method=mr_extrapolation_method,
+                curvature=mr_extrapolation_curvature,
+                b2_h3_main=b2_main_h3_vals,
+            )
+
+            # H3 floor: H6 must be >= H3 (delinquencies accumulate)
+            h6_extrapolated = np.maximum(h6_extrapolated, acct_b2_h3.values)
+
+            # Only assign where ratio was available
+            valid_ratio = np.isfinite(bin_ratio)
+            tier2_mask = h3_eligible.copy()
+            tier2_idx = data_demand_mr.index[h3_eligible]
+            tier2_mask.iloc[:] = False
+            tier2_mask.loc[tier2_idx[valid_ratio]] = True
+
+            data_demand_mr.loc[tier2_mask, "b2_ever_h6_tmp"] = h6_extrapolated[valid_ratio]
+            data_demand_mr.loc[tier2_mask, "_mr_tier"] = 2
+
+    # --- Tier 3: bin-level main rate (remaining booked with a merge match) ---
+    tier3_mask = booked_mask & (data_demand_mr["_mr_tier"] == 0) & data_demand_mr["b2_ever_h6_tmp"].notna()
+    data_demand_mr.loc[tier3_mask, "_mr_tier"] = 3
+
+    # --- Tier 4: unfilled (NaN b2_ever_h6_tmp) → model_fallback downstream ---
+    tier4_mask = booked_mask & (data_demand_mr["_mr_tier"] == 0)
+    data_demand_mr.loc[tier4_mask, "_mr_tier"] = 4
+
+    # --- Log tier distribution ---
+    tier_counts = data_demand_mr.loc[booked_mask, "_mr_tier"].value_counts().sort_index()
+    total_booked = booked_mask.sum()
+    logger.info("TIERED MR RISK RECONSTRUCTION:")
+    tier_labels = {1: "Actual H6", 2: "Account H3→H6", 3: "Bin-level main", 4: "Model fallback"}
+    for tier, label in tier_labels.items():
+        n = int(tier_counts.get(tier, 0))
+        pct = n / max(total_booked, 1) * 100
+        logger.info(f"  Tier {tier} ({label}): {n:,} accounts ({pct:.1f}%)")
+
+    # Clean up temporary actual columns
+    data_demand_mr = data_demand_mr.drop(
+        columns=["_actual_todu_30ever_h6", "_actual_todu_amt_pile_h6"], errors="ignore"
+    )
+
+    return data_demand_mr
+
+
 def process_mr_period(
     data_clean: pd.DataFrame,
     data_booked: pd.DataFrame,
@@ -832,6 +1080,8 @@ def process_mr_period(
         # --- Calculate b2_ever_h6_tmp ---
         required_agg_cols = merge_keys + ["todu_30ever_h6", "todu_amt_pile_h6"]
 
+        comparison_df = None  # set in hybrid path; used by recalibration below
+
         if settings.use_mr_outcomes and _mr_outcomes_available(data_demand_mr):
             # Hybrid mode: use MR observed risk where sufficient, else main-period
             logger.info(
@@ -871,13 +1121,36 @@ def process_mr_period(
             logger.info(f"Hybrid risk sources: {mr_source_counts}")
 
             logger.info("Merging b2_ever_h6_tmp into data_demand_mr...")
-            # Drop MR outcome columns to avoid conflicts with downstream todu prediction
+            # Save actual H6 before dropping so Tier 1 (mature accounts) can use them
+            if "todu_30ever_h6" in data_demand_mr.columns:
+                data_demand_mr["_actual_todu_30ever_h6"] = data_demand_mr["todu_30ever_h6"]
+            if "todu_amt_pile_h6" in data_demand_mr.columns:
+                data_demand_mr["_actual_todu_amt_pile_h6"] = data_demand_mr["todu_amt_pile_h6"]
+            # Drop MR outcome columns — todu_amt_pile_h6 is near-zero for immature
+            # accounts (MR period < 6 months) and todu_30ever_h6 must be
+            # reconstructed using mature-only risk rates.  The exposure model
+            # predicts what full-horizon exposure WOULD be based on oa_amt.
             data_demand_mr = data_demand_mr.drop(columns=["todu_30ever_h6", "todu_amt_pile_h6"], errors="ignore")
             data_demand_mr = pd.merge(data_demand_mr, merge_df, on=merge_keys, how="left")
 
             # Keep variable only for booked accounts
             non_booked_mask = data_demand_mr["status_name"] != StatusName.BOOKED.value
             data_demand_mr.loc[non_booked_mask, "b2_ever_h6_tmp"] = np.nan
+
+            # --- Tiered account-level risk reconstruction ---
+            # Use resolved method/curvature from comparison_df (auto → concrete)
+            resolved_method = comparison_df["fitted_method"].iloc[0] if len(comparison_df) > 0 else "linear"
+            resolved_curvature = comparison_df["fitted_curvature"].iloc[0] if len(comparison_df) > 0 else 1.0
+            data_demand_mr = _assign_tiered_risk(
+                data_demand_mr,
+                merge_df,
+                comparison_df,
+                merge_keys,
+                multiplier=settings.multiplier,
+                multiplier_h3=settings.multiplier_h3,
+                mr_extrapolation_method=resolved_method,
+                mr_extrapolation_curvature=resolved_curvature,
+            )
 
             # --- Infer risk for model_fallback bins using trained model ---
             booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
@@ -955,8 +1228,8 @@ def process_mr_period(
                 except (ValueError, KeyError, RuntimeError) as e:
                     logger.error(f"Error inferring b2_ever_h6 for model_fallback bins: {e}")
                     logger.warning(
-                        "model_fallback bins will have NaN risk — downstream aggregation "
-                        "will treat them as zero risk."
+                        "model_fallback bins will have NaN risk — they will be excluded "
+                        "from weighted risk calculations but may affect production totals."
                     )
 
         elif all(col in data_booked.columns for col in required_agg_cols):
@@ -1113,9 +1386,10 @@ def process_mr_period(
             )
 
         # --- Calculate todu_amt_pile_h6 using inference model ---
-        # The inference model (reg_todu_amt_pile) was trained on SUMMED bins.
-        # To avoid multiplying the intercept by the number of loans,
-        # we predict on the sum of oa_amt per bin and pro-rate the result.
+        # Always use the model for MR exposure prediction.  Actual MR
+        # todu_amt_pile_h6 is near-zero for immature accounts (MR window
+        # < 6 months).  The model predicts what full-horizon exposure
+        # WOULD be based on oa_amt.
         logger.info("Calculating todu_amt_pile_h6 for booked accounts in MR period (bin-aggregated)...")
 
         data_demand_mr["todu_amt_pile_h6"] = np.nan
@@ -1123,10 +1397,10 @@ def process_mr_period(
 
         if booked_mask.any():
             try:
-                # 1. Sum oa_amt per bin
+                # The inference model (reg_todu_amt_pile) was trained on SUMMED bins.
+                # Predict on the sum of oa_amt per bin and pro-rate the result.
                 bin_sums = data_demand_mr.loc[booked_mask].groupby(merge_keys)["oa_amt"].sum().reset_index()
 
-                # 2. Predict on bin sums (clip to >= 0: exposure cannot be negative)
                 raw_preds = reg_todu_amt_pile.predict(bin_sums[["oa_amt"]])
                 n_negative = (raw_preds < 0).sum()
                 if n_negative > 0:
@@ -1136,13 +1410,11 @@ def process_mr_period(
                     )
                 bin_sums["todu_amt_pile_h6_bin"] = np.clip(raw_preds, 0, None)
 
-                # 3. Map back to data_demand_mr, pro-rated by oa_amt
                 bin_sums_idx = bin_sums.set_index(merge_keys)
                 merged = data_demand_mr.loc[booked_mask, merge_keys + ["oa_amt"]].join(
                     bin_sums_idx, on=merge_keys, rsuffix="_sum"
                 )
 
-                # Safe division — warn about zero-production bins that cannot be pro-rated
                 zero_prod_bins = bin_sums.loc[bin_sums["oa_amt"] == 0, merge_keys]
                 if len(zero_prod_bins) > 0:
                     logger.warning(
@@ -1175,14 +1447,20 @@ def process_mr_period(
         data_booked_mr = data_demand_mr[data_demand_mr["status_name"] == StatusName.BOOKED.value].copy()
 
         # --- Apply Full Optimization Pipeline to MR Dataset ---
-        logger.info("Applying full optimization pipeline to MR dataset...")
+        # Use neutral stressor (1.0) and no per_bin_stress for MR.
+        # The MR booked risk (_boo) comes from hybrid reconstruction which
+        # already reflects MR conditions.  Applying the main-period stressor
+        # to repesca (_rep) creates an asymmetry where swap-in risk is inflated
+        # relative to booked risk, causing the optimum to paradoxically show
+        # higher risk than actual.
+        logger.info("Applying full optimization pipeline to MR dataset (stressor=1.0)...")
 
         data_summary_desagregado_mr = run_optimization_pipeline(
             data_booked=data_booked_mr,
             data_demand=data_demand_mr,
             risk_inference=risk_inference,
             reg_todu_amt_pile=reg_todu_amt_pile,
-            stressor=stress_factor,
+            stressor=1.0,
             tasa_fin=tasa_fin,
             indicators=settings.indicators,
             variables=settings.variables,
@@ -1196,9 +1474,89 @@ def process_mr_period(
             reject_enforce_monotonicity=settings.reject_enforce_monotonicity,
             reject_include_all_rejections=settings.reject_include_all_rejections,
             reject_apply_h3_multiplier=settings.reject_apply_h3_multiplier,
-            per_bin_stress=per_bin_stress,
+            per_bin_stress=None,
             per_bin_tasa_fin=per_bin_tasa_fin,
         )
+
+        # --- Recalibrate repesca risk to MR level ---
+        # The risk model predicts repesca risk at main-period calibration (~b2_main).
+        # But the MR booked risk uses hybrid rates (~b2_ever_h6_tmp), which may be
+        # lower if MR conditions improved.  Without recalibration, swap-in brings
+        # inflated risk and the optimum paradoxically shows HIGHER risk than actual.
+        #
+        # Fix: scale repesca todu_30ever_h6_rep per bin by (MR rate / main rate),
+        # preserving the reject-inference multiplier and stressor proportionally.
+        if comparison_df is not None and "b2_ever_h6_tmp" in comparison_df.columns:
+            main_bin_agg = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
+            main_bin_agg["_main_b2"] = calculate_b2_ever_h6(
+                main_bin_agg["todu_30ever_h6"], main_bin_agg["todu_amt_pile_h6"],
+                multiplier=settings.multiplier,
+            )
+            mr_bin_b2 = comparison_df[merge_keys + ["b2_ever_h6_tmp"]].rename(
+                columns={"b2_ever_h6_tmp": "_mr_b2"}
+            )
+
+            cal = data_summary_desagregado_mr.merge(
+                main_bin_agg[merge_keys + ["_main_b2"]], on=merge_keys, how="left"
+            ).merge(mr_bin_b2, on=merge_keys, how="left")
+
+            safe_main_b2 = cal["_main_b2"].clip(lower=1e-9)
+            cal_factor = (cal["_mr_b2"] / safe_main_b2).clip(lower=0.1, upper=10.0).fillna(1.0)
+
+            rep_col = "todu_30ever_h6_rep"
+            if rep_col in data_summary_desagregado_mr.columns:
+                before_avg = calculate_b2_ever_h6(
+                    data_summary_desagregado_mr[rep_col].sum(),
+                    data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
+                    multiplier=settings.multiplier, as_percentage=True,
+                )
+                data_summary_desagregado_mr[rep_col] = (
+                    data_summary_desagregado_mr[rep_col] * cal_factor.values
+                )
+                after_avg = calculate_b2_ever_h6(
+                    data_summary_desagregado_mr[rep_col].sum(),
+                    data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
+                    multiplier=settings.multiplier, as_percentage=True,
+                )
+                logger.info(
+                    f"MR repesca recalibration: avg factor={cal_factor.mean():.3f} "
+                    f"(range [{cal_factor.min():.3f}, {cal_factor.max():.3f}]). "
+                    f"Repesca risk: {before_avg:.2f}% → {after_avg:.2f}%"
+                )
+
+            # Also recalibrate H3 repesca if present
+            rep_h3_col = "todu_30ever_h3_rep"
+            if rep_h3_col in data_summary_desagregado_mr.columns:
+                data_summary_desagregado_mr[rep_h3_col] = (
+                    data_summary_desagregado_mr[rep_h3_col] * cal_factor.values
+                )
+
+            # Recompute merged total columns after recalibration
+            for suffix_pair in [("todu_30ever_h6", "_boo", "_rep"), ("todu_30ever_h3", "_boo", "_rep")]:
+                base, boo, rep = suffix_pair
+                boo_col, rep_col_name = base + boo, base + rep
+                if boo_col in data_summary_desagregado_mr.columns and rep_col_name in data_summary_desagregado_mr.columns:
+                    data_summary_desagregado_mr[base] = (
+                        data_summary_desagregado_mr[boo_col] + data_summary_desagregado_mr[rep_col_name]
+                    )
+
+        # --- Diagnostic: booked vs repesca risk after all adjustments ---
+        dsm = data_summary_desagregado_mr
+        if "todu_30ever_h6_boo" in dsm.columns and "todu_30ever_h6_rep" in dsm.columns:
+            boo_b2 = calculate_b2_ever_h6(
+                dsm["todu_30ever_h6_boo"].sum(), dsm["todu_amt_pile_h6_boo"].sum(),
+                multiplier=settings.multiplier, as_percentage=True,
+            )
+            rep_b2 = calculate_b2_ever_h6(
+                dsm["todu_30ever_h6_rep"].sum(), dsm.get("todu_amt_pile_h6_rep", pd.Series([0])).sum(),
+                multiplier=settings.multiplier, as_percentage=True,
+            )
+            logger.info(
+                f"MR risk diagnostic — booked (b2_boo): {boo_b2:.2f}%, "
+                f"repesca (b2_rep after RI+recal): {rep_b2:.2f}%, "
+                f"ratio rep/boo: {rep_b2 / boo_b2:.2f}x" if boo_b2 > 0 else
+                f"MR risk diagnostic — booked (b2_boo): {boo_b2:.2f}%, repesca: {rep_b2:.2f}%"
+            )
 
         # Save MR summary
         summary_path = output.mr_summary_csv(file_suffix)

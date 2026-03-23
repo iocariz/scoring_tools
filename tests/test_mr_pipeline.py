@@ -8,7 +8,14 @@ import pandas as pd
 import pytest
 
 from src.config import BinConfig, OutputPaths, PreprocessingSettings
-from src.mr_pipeline import _compute_hybrid_mr_risk, _mr_outcomes_available, calculate_metrics_from_cuts, process_mr_period
+from src.mr_pipeline import (
+    _assign_tiered_risk,
+    _compute_account_maturity,
+    _compute_hybrid_mr_risk,
+    _mr_outcomes_available,
+    calculate_metrics_from_cuts,
+    process_mr_period,
+)
 from src.utils import calculate_b2_ever_h6
 
 # =============================================================================
@@ -1431,3 +1438,317 @@ class TestProcessMRPeriodRegression:
         assert captured["used_variables"] == ["sc_octroi_new_clus", "new_efx_clus"]
         # The imputed value should be 0.42 (from fake_calculate_B2), not NaN or 0
         assert captured["imputed_b2"] == pytest.approx(0.42)
+
+
+# =============================================================================
+# H3 Floor Enforcement
+# =============================================================================
+
+
+class TestH3FloorEnforcement:
+    """Simulated B2 Ever H6 must always be >= real B2 Ever H3."""
+
+    def test_h3_floor_clamps_low_h6(self):
+        """When main-period H6 < MR H3, H6 should be clamped to H3."""
+        merge_keys = ["bin_a", "bin_b"]
+        # Main period: bin (1,1) has LOW H6 risk (0.5%), bin (2,1) has normal H6 risk (3%)
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1, 1, 2, 2],
+                "bin_b": [1, 1, 1, 1],
+                "todu_30ever_h6": [1.0, 1.0, 6.0, 6.0],
+                "todu_amt_pile_h6": [200.0, 200.0, 200.0, 200.0],
+                "todu_30ever_h3": [3.0, 3.0, 4.0, 4.0],
+                "todu_amt_pile_h3": [200.0, 200.0, 200.0, 200.0],
+                "status_name": ["booked"] * 4,
+            }
+        )
+        # MR period: sparse → forces main_imputed fallback
+        # H3 risk is HIGHER than main H6 for bin (1,1)
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * 5 + [2] * 5,
+                "bin_b": [1] * 10,
+                "todu_30ever_h6": [2.0] * 10,
+                "todu_amt_pile_h6": [100.0] * 10,
+                "todu_30ever_h3": [4.0] * 5 + [3.0] * 5,  # bin (1,1) H3 > main H6
+                "todu_amt_pile_h3": [100.0] * 10,
+                "oa_amt_h0": [1000.0] * 10,
+                "status_name": ["booked"] * 10,
+            }
+        )
+
+        merge_df, comparison_df = _compute_hybrid_mr_risk(
+            data_booked, data_demand_mr, merge_keys, min_obs=30,
+            multiplier=7.0, multiplier_h3=4.0,
+        )
+
+        # For each bin, simulated H6 must be >= best available H3
+        for _, row in comparison_df.iterrows():
+            h6 = row["b2_ever_h6_tmp"]
+            # Best H3: MR H3 if valid, else main H3
+            h3_candidates = [row.get("b2_mr_h3"), row.get("b2_main_h3")]
+            h3_floor = next((v for v in h3_candidates if pd.notna(v)), None)
+            if h3_floor is not None and pd.notna(h6):
+                assert h6 >= h3_floor - 1e-9, (
+                    f"Bin {row[merge_keys].to_dict()}: simulated H6 ({h6:.6f}) "
+                    f"< H3 floor ({h3_floor:.6f})"
+                )
+
+    def test_h3_floor_no_effect_when_h6_already_higher(self):
+        """When H6 is already > H3, no clamping occurs."""
+        merge_keys = ["bin_a"]
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1, 1],
+                "todu_30ever_h6": [10.0, 10.0],
+                "todu_amt_pile_h6": [100.0, 100.0],
+                "todu_30ever_h3": [3.0, 3.0],
+                "todu_amt_pile_h3": [100.0, 100.0],
+                "status_name": ["booked"] * 2,
+            }
+        )
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * 5,
+                "todu_30ever_h6": [5.0] * 5,
+                "todu_amt_pile_h6": [100.0] * 5,
+                "todu_30ever_h3": [2.0] * 5,
+                "todu_amt_pile_h3": [100.0] * 5,
+                "oa_amt_h0": [1000.0] * 5,
+                "status_name": ["booked"] * 5,
+            }
+        )
+
+        merge_df, comparison_df = _compute_hybrid_mr_risk(
+            data_booked, data_demand_mr, merge_keys, min_obs=30,
+            multiplier=7.0, multiplier_h3=4.0,
+        )
+
+        # H6 (main imputed) should be larger than H3 → no clamping
+        row = comparison_df.iloc[0]
+        assert row["b2_ever_h6_tmp"] > row.get("b2_main_h3", 0)
+
+    def test_summary_table_h3_floor(self):
+        """calculate_metrics_from_cuts enforces H6 >= H3 on summary rows."""
+        variables = ["sc_octroi_new_clus", "new_efx_clus"]
+        df = pd.DataFrame(
+            {
+                "sc_octroi_new_clus": [1, 2],
+                "new_efx_clus": [1, 1],
+                # H6 risk numerator/denominator — deliberately low H6
+                "todu_30ever_h6_boo": [1.0, 1.0],
+                "todu_amt_pile_h6_boo": [200.0, 200.0],
+                "oa_amt_h0_boo": [1000.0, 1000.0],
+                "todu_30ever_h6_rep": [0.5, 0.5],
+                "todu_amt_pile_h6_rep": [100.0, 100.0],
+                "oa_amt_h0_rep": [500.0, 500.0],
+                # H3 risk — deliberately higher than H6
+                "todu_30ever_h3_boo": [5.0, 5.0],
+                "todu_amt_pile_h3_boo": [200.0, 200.0],
+                "todu_30ever_h3_rep": [3.0, 3.0],
+                "todu_amt_pile_h3_rep": [100.0, 100.0],
+            }
+        )
+        opt_sol = pd.DataFrame({"sol_fac": [0], 1: [1], 2: [1]})
+        result = calculate_metrics_from_cuts(
+            df, opt_sol, variables,
+            multiplier=7.0, multiplier_h3=4.0,
+        )
+        assert result is not None
+        for _, row in result.iterrows():
+            h6 = row.get("Risk (%)")
+            h3 = row.get("Risk H3 (%)")
+            if pd.notna(h6) and pd.notna(h3):
+                assert h6 >= h3 - 1e-9, (
+                    f"{row['Metric']}: H6 ({h6:.4f}%) < H3 ({h3:.4f}%)"
+                )
+
+
+# =============================================================================
+# Tiered MR Risk Reconstruction Tests
+# =============================================================================
+
+
+class TestTieredReconstruction:
+    """Tests for _assign_tiered_risk and _compute_account_maturity."""
+
+    @pytest.fixture
+    def merge_keys(self):
+        return ["bin_a", "bin_b"]
+
+    @pytest.fixture
+    def merge_df(self):
+        """Per-bin b2_ever_h6_tmp from _compute_hybrid_mr_risk."""
+        return pd.DataFrame({
+            "bin_a": [1, 2],
+            "bin_b": [1, 1],
+            "b2_ever_h6_tmp": [0.05, 0.10],
+        })
+
+    @pytest.fixture
+    def comparison_df_with_ratio(self):
+        """comparison_df with h6_h3_ratio and b2_main_h3 columns."""
+        return pd.DataFrame({
+            "bin_a": [1, 2],
+            "bin_b": [1, 1],
+            "b2_ever_h6_tmp": [0.05, 0.10],
+            "h6_h3_ratio": [2.0, 2.5],
+            "b2_main_h3": [0.025, 0.04],
+            "risk_source": ["h3_extrapolated", "main_imputed"],
+        })
+
+    def test_compute_account_maturity(self):
+        """_compute_account_maturity returns correct month differences."""
+        dates = pd.Series(pd.to_datetime(["2025-01-15", "2025-04-15", "2025-07-15", "2025-10-15"]))
+        ref = pd.Timestamp("2025-10-15")
+        mat = _compute_account_maturity(dates, ref)
+        assert list(mat) == [9, 6, 3, 0]
+
+    def test_compute_account_maturity_default_ref(self):
+        """_compute_account_maturity defaults to max(mis_date) as reference."""
+        dates = pd.Series(pd.to_datetime(["2025-01-15", "2025-06-15"]))
+        mat = _compute_account_maturity(dates)
+        assert list(mat) == [5, 0]
+
+    def test_tier2_uses_account_h3_extrapolation(self, merge_keys, merge_df, comparison_df_with_ratio):
+        """Tier 2 accounts use account-level H3 × bin ratio, not bin-level risk."""
+        # Include a later-dated account so max(mis_date) gives the earlier ones >= 3mo maturity
+        data = pd.DataFrame({
+            "bin_a": [1, 1, 1],
+            "bin_b": [1, 1, 1],
+            "status_name": ["booked", "booked", "booked"],
+            "mis_date": pd.to_datetime(["2025-07-15", "2025-07-15", "2025-10-15"]),
+            "todu_30ever_h3": [3.0, 6.0, 1.0],  # different H3 per account
+            "todu_amt_pile_h3": [100.0, 100.0, 100.0],
+            "b2_ever_h6_tmp": [0.05, 0.05, 0.05],  # bin-level from merge
+            "oa_amt": [1000.0, 1000.0, 1000.0],
+        })
+        # max(mis_date) = 2025-10-15; first two accounts have 3 months maturity → Tier 2
+
+        result = _assign_tiered_risk(
+            data, merge_df, comparison_df_with_ratio, merge_keys,
+            multiplier=7.0, multiplier_h3=4.0,
+        )
+
+        tier2 = result[result["_mr_tier"] == 2]
+        assert len(tier2) == 2
+
+        # Account-level H3 risk (multiplier_h3=4):
+        # b2_h3 = 4 * 3 / 100 = 0.12 for first, 4 * 6 / 100 = 0.24 for second
+        # extrapolate linear: b2_h3 * h6_h3_ratio = 0.12 * 2.0 = 0.24, 0.24 * 2.0 = 0.48
+        # Two accounts should have different risks (not the uniform bin-level 0.05)
+        assert tier2.iloc[0]["b2_ever_h6_tmp"] != tier2.iloc[1]["b2_ever_h6_tmp"]
+        # Tier 2 risk should be H3-extrapolated, not the bin-level 0.05
+        assert tier2.iloc[0]["b2_ever_h6_tmp"] != 0.05
+
+    def test_tier3_uses_bin_level_main_rate(self, merge_keys, merge_df):
+        """Tier 3 accounts (< 3 months) keep the bin-level b2_ever_h6_tmp."""
+        data = pd.DataFrame({
+            "bin_a": [1],
+            "bin_b": [1],
+            "status_name": ["booked"],
+            "mis_date": pd.to_datetime(["2025-09-15"]),  # 1 month maturity
+            "b2_ever_h6_tmp": [0.05],  # from merge_df
+            "oa_amt": [1000.0],
+        })
+
+        result = _assign_tiered_risk(data, merge_df, None, merge_keys, multiplier=7.0)
+
+        assert result.iloc[0]["_mr_tier"] == 3
+        assert result.iloc[0]["b2_ever_h6_tmp"] == 0.05
+
+    def test_h3_floor_enforced_for_tier2(self, merge_keys, merge_df):
+        """Tier 2: extrapolated H6 must be >= account H3 (H3 floor)."""
+        # comparison_df with a very low h6_h3_ratio (0.5 → H6 < H3 before floor)
+        comparison_df = pd.DataFrame({
+            "bin_a": [1],
+            "bin_b": [1],
+            "b2_ever_h6_tmp": [0.05],
+            "h6_h3_ratio": [0.5],  # would make H6 = H3 * 0.5 < H3
+            "b2_main_h3": [0.025],
+            "risk_source": ["h3_extrapolated"],
+        })
+        # Include a later account so max date gives earlier one >= 3mo maturity
+        data = pd.DataFrame({
+            "bin_a": [1, 1],
+            "bin_b": [1, 1],
+            "status_name": ["booked", "booked"],
+            "mis_date": pd.to_datetime(["2025-07-15", "2025-10-15"]),
+            "todu_30ever_h3": [5.0, 1.0],
+            "todu_amt_pile_h3": [100.0, 100.0],
+            "b2_ever_h6_tmp": [0.05, 0.05],
+            "oa_amt": [1000.0, 1000.0],
+        })
+
+        result = _assign_tiered_risk(
+            data, merge_df, comparison_df, merge_keys,
+            multiplier=7.0, multiplier_h3=4.0,
+        )
+
+        tier2 = result[result["_mr_tier"] == 2]
+        assert len(tier2) == 1
+        # b2_h3_account = 4 * 5 / 100 = 0.20
+        # extrapolated = 0.20 * 0.5 = 0.10 < 0.20 → floored to 0.20
+        assert tier2.iloc[0]["b2_ever_h6_tmp"] >= 0.20 - 1e-9
+
+    def test_non_hybrid_mode_tiers_3_and_4_only(self, merge_keys, merge_df):
+        """Without comparison_df (non-hybrid), only tiers 3 and 4 are assigned."""
+        data = pd.DataFrame({
+            "bin_a": [1, 2, 3],
+            "bin_b": [1, 1, 1],
+            "status_name": ["booked", "booked", "booked"],
+            "mis_date": pd.to_datetime(["2025-04-15", "2025-07-15", "2025-09-15"]),
+            "todu_30ever_h3": [5.0, 3.0, 1.0],
+            "todu_amt_pile_h3": [100.0, 100.0, 100.0],
+            "b2_ever_h6_tmp": [0.05, 0.10, np.nan],
+            "oa_amt": [1000.0, 1000.0, 1000.0],
+        })
+
+        result = _assign_tiered_risk(data, merge_df, None, merge_keys, multiplier=7.0)
+
+        # No Tier 1 or 2 (no comparison_df with h6_h3_ratio, no actual H6)
+        assert (result["_mr_tier"].isin([3, 4])).all()
+        # bin 3 has NaN b2_ever_h6_tmp → Tier 4
+        assert result.iloc[2]["_mr_tier"] == 4
+
+    def test_missing_mis_date_graceful_fallback(self, merge_keys, merge_df):
+        """Without mis_date column, all booked → Tier 3 or 4 (no maturity)."""
+        data = pd.DataFrame({
+            "bin_a": [1],
+            "bin_b": [1],
+            "status_name": ["booked"],
+            "b2_ever_h6_tmp": [0.05],
+            "oa_amt": [1000.0],
+        })
+
+        result = _assign_tiered_risk(data, merge_df, None, merge_keys, multiplier=7.0)
+
+        # No mis_date → maturity is NaN → no Tier 1 or 2
+        assert result.iloc[0]["_mr_tier"] == 3
+
+    def test_tier1_uses_actual_h6(self, merge_keys, merge_df):
+        """Tier 1 accounts (>=6 months) use actual H6 outcomes."""
+        # Include a recent account so max(mis_date)=2025-10-15 gives first account 6 months maturity
+        data = pd.DataFrame({
+            "bin_a": [1, 1],
+            "bin_b": [1, 1],
+            "status_name": ["booked", "booked"],
+            "mis_date": pd.to_datetime(["2025-04-15", "2025-10-15"]),
+            "_actual_todu_30ever_h6": [10.0, np.nan],
+            "_actual_todu_amt_pile_h6": [200.0, np.nan],
+            "b2_ever_h6_tmp": [0.05, 0.05],  # bin-level, should be overridden for Tier 1
+            "oa_amt": [1000.0, 1000.0],
+        })
+
+        result = _assign_tiered_risk(data, merge_df, None, merge_keys, multiplier=7.0)
+
+        assert result.iloc[0]["_mr_tier"] == 1
+        # b2 = 7 * 10 / 200 = 0.35
+        expected_b2 = 7.0 * 10.0 / 200.0
+        assert np.isclose(result.iloc[0]["b2_ever_h6_tmp"], expected_b2)
+        # Actual todu columns should be restored
+        assert result.iloc[0]["todu_30ever_h6"] == 10.0
+        assert result.iloc[0]["todu_amt_pile_h6"] == 200.0
+        # Second account (0 months maturity) should NOT be Tier 1
+        assert result.iloc[1]["_mr_tier"] != 1
