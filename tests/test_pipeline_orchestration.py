@@ -387,6 +387,82 @@ class TestRunOptimizationPhase:
         assert captured["trace_pareto_frontier"]["milp_time_limit"] == pytest.approx(12.0)
         assert Path(output.pareto_solutions_csv).exists()
 
+    def test_legacy_enumeration_runtime_error_falls_back_to_ga(self, monkeypatch, tmp_path):
+        """If legacy enumeration would explode, pipeline should try GA instead of crashing."""
+        settings = make_settings(pareto_n_points=5)
+        output = OutputPaths(base_dir=tmp_path)
+        output.ensure_dirs()
+
+        # Minimal base surface for values_per_var (used before the failing enumeration)
+        summary_desagregado = pd.DataFrame(
+            {
+                "sc_octroi_new_clus": [1, 2],
+                "new_efx_clus": [1, 2],
+                "oa_amt_h0": [1200.0, 1800.0],
+                "todu_30ever_h6": [12.0, 18.0],
+                "todu_amt_pile_h6": [120.0, 180.0],
+            }
+        )
+
+        monkeypatch.setattr(
+            optimization_module,
+            "run_optimization_pipeline",
+            lambda **kwargs: summary_desagregado.copy(),
+        )
+
+        # Force Pareto sweep to return nothing → triggers legacy enumeration.
+        dummy_grid = object()
+        monkeypatch.setattr(
+            optimization_module,
+            "trace_pareto_frontier",
+            lambda **kwargs: (pd.DataFrame(), dummy_grid, []),
+        )
+
+        # Legacy enumeration should fail fast.
+        monkeypatch.setattr(
+            optimization_module,
+            "get_fact_sol",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("too many combinations")),
+        )
+
+        # Mock GA fallback and add_bin_columns to avoid depending on pymoo/grid internals.
+        fake_pareto_df = pd.DataFrame({"sol_fac": [0], "oa_amt_h0": [999.0], "b2_ever_h6": [1.23]})
+        fake_masks = [[1, 0]]
+
+        import src.optimization_utils as optimization_utils_module
+
+        monkeypatch.setattr(
+            optimization_utils_module,
+            "_ga_pareto_fallback",
+            lambda grid, inv_vars, multiplier, indicators, n_points: (fake_pareto_df, dummy_grid, fake_masks),
+        )
+
+        def fake_add_bin_columns(df, pareto_masks, grid, inv_vars):
+            out = df.copy()
+            out["1"] = [2.0]  # backward compat column
+            return out
+
+        monkeypatch.setattr(optimization_module, "add_bin_columns", fake_add_bin_columns)
+
+        result = optimization_module.run_optimization_phase(
+            data_booked=pd.DataFrame(),
+            data_demand=pd.DataFrame(),
+            risk_inference={},
+            reg_todu_amt_pile="reg",
+            stress_factor=1.0,
+            tasa_fin=1.0,
+            settings=settings,
+            annual_coef=1.0,
+            output=output,
+        )
+
+        _, data_summary, data_summary_sample_no_opt, _, grid, pareto_masks = result
+        assert data_summary_sample_no_opt.empty
+        assert grid is dummy_grid
+        assert pareto_masks == fake_masks
+        assert "b2_ever_h6" in data_summary.columns
+        assert Path(output.pareto_solutions_csv).exists()
+
 
 class TestPipelineReportingWrappers:
     def test_generate_segment_report_renders_when_sections_exist(self, monkeypatch, tmp_path):

@@ -815,20 +815,19 @@ class TestApplyH3MultiplierFlag:
             }
         )
 
-    def test_h3_multiplier_applied_by_default(self):
-        """Default (apply_h3_multiplier=True): H3 is scaled like H6."""
+    def test_h3_multiplier_not_applied_by_default(self):
+        """Default (apply_h3_multiplier=False): H3 is NOT scaled like H6."""
         repesca = self._make_repesca_with_h3()
         rates = self._make_rates()
         original_h3 = repesca["todu_30ever_h3"].copy()
 
         result = apply_parceling_adjustment(repesca, rates, VARIABLES)
 
-        # H3 should have been modified (multiplied by reject_risk_multiplier)
-        assert not np.allclose(result["todu_30ever_h3"].values, original_h3.values)
-        # H3 and H6 should have the same multiplier
+        # H3 should be unchanged
+        np.testing.assert_array_equal(result["todu_30ever_h3"].values, original_h3.values)
+        # H6 should still be scaled by reject risk multiplier
         h6_ratio = result["todu_30ever_h6"].values / self._make_repesca_with_h3()["todu_30ever_h6"].values
-        h3_ratio = result["todu_30ever_h3"].values / original_h3.values
-        np.testing.assert_array_almost_equal(h6_ratio, h3_ratio)
+        assert not np.allclose(h6_ratio, np.ones_like(h6_ratio))
 
     def test_h3_multiplier_not_applied(self):
         """apply_h3_multiplier=False: H3 is preserved unchanged."""

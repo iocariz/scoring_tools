@@ -885,6 +885,15 @@ def _compute_hybrid_mr_risk(
     comparison_df["fitted_curvature"] = mr_extrapolation_curvature
 
     merge_df = combined[merge_keys + ["b2_ever_h6_tmp"]].copy()
+    if merge_df.duplicated(merge_keys).any():
+        # Safety: outer merges should not expand rows when merge_keys are unique.
+        # If duplicates appear (upstream merge key non-uniqueness), collapse them
+        # deterministically to keep downstream merges row-preserving.
+        logger.warning(
+            "MR hybrid merge: merge_df has non-unique merge_keys; collapsing duplicates "
+            f"(keys duplicated={int(merge_df.duplicated(merge_keys).sum())})."
+        )
+        merge_df = merge_df.groupby(merge_keys, as_index=False)["b2_ever_h6_tmp"].mean()
     return merge_df, comparison_df
 
 
@@ -1197,12 +1206,24 @@ def process_mr_period(
                 data_demand_mr["_actual_todu_30ever_h6"] = data_demand_mr["todu_30ever_h6"]
             if "todu_amt_pile_h6" in data_demand_mr.columns:
                 data_demand_mr["_actual_todu_amt_pile_h6"] = data_demand_mr["todu_amt_pile_h6"]
+            n_before_merge = len(data_demand_mr)
+
             # Drop MR outcome columns — todu_amt_pile_h6 is near-zero for immature
             # accounts (MR period < 6 months) and todu_30ever_h6 must be
             # reconstructed using mature-only risk rates.  The exposure model
             # predicts what full-horizon exposure WOULD be based on oa_amt.
             data_demand_mr = data_demand_mr.drop(columns=["todu_30ever_h6", "todu_amt_pile_h6"], errors="ignore")
             data_demand_mr = pd.merge(data_demand_mr, merge_df, on=merge_keys, how="left")
+            if len(data_demand_mr) != n_before_merge:
+                # High severity guard: if merge_df had non-unique keys, left-merge can
+                # expand rows and silently corrupt downstream counts.
+                logger.error(
+                    "MR hybrid merge: row expansion detected while merging b2_ever_h6_tmp "
+                    f"into data_demand_mr (before={n_before_merge}, after={len(data_demand_mr)}). "
+                    "Collapsing merge_df by merge_keys and re-merging."
+                )
+                merge_df = merge_df.groupby(merge_keys, as_index=False)["b2_ever_h6_tmp"].mean()
+                data_demand_mr = pd.merge(data_demand_mr.drop(columns=["b2_ever_h6_tmp"], errors="ignore"), merge_df, on=merge_keys, how="left")
 
             # Keep variable only for booked accounts
             non_booked_mask = data_demand_mr["status_name"] != StatusName.BOOKED.value

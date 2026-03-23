@@ -224,21 +224,44 @@ def run_optimization_phase(
                 data_summary_sample_no_opt = pd.DataFrame(columns=["oa_amt_h0", "b2_ever_h6"])
             else:
                 logger.warning(f"[{segment}] MILP produced no solutions, falling back to legacy enumeration")
-                df_v = get_fact_sol(values_var0=values_var0, values_var1=values_var1, chunk_size=10000)
-                data_summary = kpi_of_fact_sol(
-                    df_v=df_v,
-                    values_var0=values_var0,
-                    data_sumary_desagregado=data_summary_desagregado,
-                    variables=settings.variables,
-                    indicadores=settings.indicators,
-                    chunk_size=100000,
-                    multiplier=settings.multiplier,
-                    multiplier_h3=settings.multiplier_h3,
-                )
-                data_summary_sample_no_opt = data_summary.sample(min(10000, len(data_summary)))
-                data_summary = get_optimal_solutions(df_v=df_v, data_sumary=data_summary, chunk_size=100000)
-                grid = None
-                pareto_masks = []
+                try:
+                    df_v = get_fact_sol(values_var0=values_var0, values_var1=values_var1, chunk_size=10000)
+                    data_summary = kpi_of_fact_sol(
+                        df_v=df_v,
+                        values_var0=values_var0,
+                        data_sumary_desagregado=data_summary_desagregado,
+                        variables=settings.variables,
+                        indicadores=settings.indicators,
+                        chunk_size=100000,
+                        multiplier=settings.multiplier,
+                        multiplier_h3=settings.multiplier_h3,
+                    )
+                    data_summary_sample_no_opt = data_summary.sample(min(10000, len(data_summary)))
+                    data_summary = get_optimal_solutions(df_v=df_v, data_sumary=data_summary, chunk_size=100000)
+                    grid = None
+                    pareto_masks = []
+                except RuntimeError as e:
+                    # Legacy enumeration can blow up in memory when the grid is large.
+                    # If it fails, fall back to GA-based search (if pymoo is available)
+                    # rather than crashing.
+                    logger.warning(
+                        f"[{segment}] Legacy enumeration failed ({e}). Trying GA fallback instead."
+                    )
+                    from src.optimization_utils import _ga_pareto_fallback
+
+                    pareto_df, grid, pareto_masks = _ga_pareto_fallback(
+                        grid,
+                        settings.inv_vars,
+                        settings.multiplier,
+                        settings.indicators,
+                        settings.pareto_n_points,
+                    )
+                    if pareto_df.empty:
+                        raise RuntimeError(
+                            f"[{segment}] Legacy enumeration failed and GA fallback produced no solutions."
+                        ) from e
+                    data_summary = add_bin_columns(pareto_df, pareto_masks, grid, settings.inv_vars)
+                    data_summary_sample_no_opt = pd.DataFrame(columns=["oa_amt_h0", "b2_ever_h6"])
         else:
             # Add bin columns for 2-var backward compat (cutoff extraction, viz, bootstrap)
             data_summary = add_bin_columns(pareto_df, pareto_masks, grid, settings.inv_vars)

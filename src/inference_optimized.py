@@ -1704,7 +1704,7 @@ def run_optimization_pipeline(
     reject_bayesian_prior_strength: float = 10.0,
     reject_enforce_monotonicity: bool = False,
     reject_include_all_rejections: bool = False,
-    reject_apply_h3_multiplier: bool = True,
+    reject_apply_h3_multiplier: bool = False,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
     inv_vars: list[str] | None = None,
     per_bin_stress: pd.DataFrame | None = None,

@@ -51,7 +51,7 @@ class OptimizerInputs:
     calibration_gamma: float = 1.0
     per_bin_tasa_fin: pd.DataFrame | None = None
     enforce_monotonicity: bool = False
-    apply_h3_multiplier: bool = True
+    apply_h3_multiplier: bool = False
 
 
 def _compute_calibration_error(

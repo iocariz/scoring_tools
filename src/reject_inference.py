@@ -331,7 +331,7 @@ def apply_parceling_adjustment(
     method: Literal["linear", "power", "sigmoid"] = "linear",
     enforce_monotonicity: bool = False,
     inv_vars: list[str] | None = None,
-    apply_h3_multiplier: bool = True,
+    apply_h3_multiplier: bool = False,
     quiet: bool = False,
 ) -> pd.DataFrame:
     """Apply per-bin risk uplift to repesca summary based on acceptance rates.
@@ -490,7 +490,7 @@ def apply_reject_inference(
     enforce_monotonicity: bool = False,
     inv_vars: list[str] | None = None,
     include_all_rejections: bool = False,
-    apply_h3_multiplier: bool = True,
+    apply_h3_multiplier: bool = False,
 ) -> pd.DataFrame:
     """Dispatcher: apply reject-inference adjustment to repesca risk predictions.
 
