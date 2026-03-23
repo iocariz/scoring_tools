@@ -157,8 +157,8 @@ def _generate_regression_variables(variables: list[str]) -> tuple[list[str], dic
         - var_reg: Base feature set
         - feature_sets: Dictionary of named feature sets for comparison
     """
-    if len(variables) == 2:
-        return _generate_regression_variables_2d(variables)
+    # Always use ND path — transform_variables() uses PolynomialFeatures
+    # naming (spaces, not underscores) so variable generation must match.
     return _generate_regression_variables_nd(variables)
 
 
