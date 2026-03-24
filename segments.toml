@@ -110,9 +110,17 @@ optimum_risk = 1.52
 risk_step = 0.1
 reporting_supersegment = "others"  # Grouped in "total" for reporting
 modelling_supersegment = "total"
-reject_uplift_factor = 1.5
-reject_max_risk_multiplier = 3.0
-run_ri_optimizer = false
+
+[segments.new_no_fintonic.fixed_cutoffs]
+sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]   # anchor bin values
+strict_validation = true
+run_all_scenarios = true
+
+# new_efx_clus cutoffs vary by income_bin value (conditioning variable):
+[segments.new_no_fintonic.fixed_cutoffs.new_efx_clus]
+1 = [16, 16, 16, 16, 9, 9, 9, 7, 3, 3]    # when income_bin = 1
+2 = [16, 16, 16, 16, 9, 9, 9, 7, 3, 3]    # when income_bin = 2
+
 
 [segments.open_banking]
 segment_filter = "open_banking"

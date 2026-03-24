@@ -1856,12 +1856,13 @@ class TestValidateNdCutoffStructure:
 
     def test_basic(self):
         """Basic extraction of per-variable cutoff lists."""
-        result, cond_var = _validate_nd_cutoff_structure(
+        result, cond_var, anchor = _validate_nd_cutoff_structure(
             {"var0": [1, 2], "var1": [3, 4], "strict_validation": False},
             ["var0", "var1"],
         )
         assert result == {"var0": [1.0, 2.0], "var1": [3.0, 4.0]}
         assert cond_var is None
+        assert anchor == "var0"
 
     def test_missing_variable_no_dict(self):
         """Missing variable without dict entries raises ValueError."""
@@ -1869,7 +1870,7 @@ class TestValidateNdCutoffStructure:
             _validate_nd_cutoff_structure({"var0": [1]}, ["var0", "var1"])
 
     def test_non_list_raises(self):
-        """Non-list value raises ValueError."""
+        """Non-list/non-dict value raises ValueError."""
         with pytest.raises(ValueError, match="must be a list"):
             _validate_nd_cutoff_structure({"var0": 1.0, "var1": [1]}, ["var0", "var1"])
 
@@ -1883,7 +1884,7 @@ class TestValidateNdCutoffStructure:
 
     def test_dict_entry_matrix(self):
         """Dict entry parsed as matrix cutoffs with conditioning variable detected."""
-        result, cond_var = _validate_nd_cutoff_structure(
+        result, cond_var, anchor = _validate_nd_cutoff_structure(
             {
                 "var0": [1, 2, 3],
                 "var1": {"1": [10, 8, 5], "2": [10, 6, 3]},
@@ -1892,15 +1893,48 @@ class TestValidateNdCutoffStructure:
             ["var0", "var1", "var2"],
         )
         assert cond_var == "var2"
+        assert anchor == "var0"
         assert isinstance(result["var1"], dict)
         assert result["var1"][1.0] == [10.0, 8.0, 5.0]
         assert result["var1"][2.0] == [10.0, 6.0, 3.0]
         # Conditioning var gets sorted union of keys
         assert result["var2"] == [1.0, 2.0]
 
+    def test_dict_var0_auto_anchor(self):
+        """Dict in variables[0] auto-detects a flat-list variable as anchor."""
+        result, cond_var, anchor = _validate_nd_cutoff_structure(
+            {
+                "var0": {"1": [10, 8, 5], "2": [10, 6, 3]},
+                "var1": [1, 2, 3],
+                # var2 missing → conditioning variable
+            },
+            ["var0", "var1", "var2"],
+        )
+        assert anchor == "var1"
+        assert cond_var == "var2"
+        assert isinstance(result["var0"], dict)
+        assert result["var0"][1.0] == [10.0, 8.0, 5.0]
+
+    def test_dict_with_nested_meta_keys(self):
+        """Meta keys inside nested dicts are filtered out."""
+        result, cond_var, anchor = _validate_nd_cutoff_structure(
+            {
+                "var0": {"1": [10, 8], "2": [10, 6], "strict_validation": True, "run_all_scenarios": True},
+                "var1": [1, 2],
+                # var2 missing → conditioning variable
+            },
+            ["var0", "var1", "var2"],
+        )
+        assert anchor == "var1"
+        assert cond_var == "var2"
+        assert isinstance(result["var0"], dict)
+        assert 1.0 in result["var0"]
+        assert 2.0 in result["var0"]
+        assert len(result["var0"]) == 2  # meta keys excluded
+
     def test_mixed_flat_and_dict(self):
         """Mix of flat lists and dict entries with one conditioning variable."""
-        result, cond_var = _validate_nd_cutoff_structure(
+        result, cond_var, anchor = _validate_nd_cutoff_structure(
             {
                 "var0": [1, 2],
                 "var1": {"1": [5, 3], "2": [4, 2]},
@@ -1910,6 +1944,7 @@ class TestValidateNdCutoffStructure:
             ["var0", "var1", "var2", "var3"],
         )
         assert cond_var == "var3"
+        assert anchor == "var0"
         assert isinstance(result["var1"], dict)
         assert result["var2"] == [10.0, 8.0]
         assert result["var3"] == [1.0, 2.0]

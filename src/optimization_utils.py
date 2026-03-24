@@ -1185,26 +1185,29 @@ def create_fixed_cutoff_solution(
 def _validate_nd_cutoff_structure(
     fixed_cutoffs: dict,
     variables: list[str],
-) -> tuple[dict[str, list | dict[float, list]], str | None]:
+) -> tuple[dict[str, list | dict[float, list]], str | None, str]:
     """Extract per-variable cutoff lists from fixed_cutoffs dict.
 
-    Supports two formats for secondary variables:
-    - **Flat list**: paired cutoff per var0 bin (same length as var0).
+    Supports two formats for variables:
+    - **Flat list**: paired cutoff per anchor bin (same length as anchor).
     - **Dict (matrix)**: cutoff schedule keyed by conditioning variable values.
-      Each value list must have the same length as var0. The conditioning
+      Each value list must have the same length as the anchor. The conditioning
       variable is the one variable absent from ``fixed_cutoffs`` whose
       accepted values are the union of dict keys.
 
-    var0 must always be a flat list.
+    The anchor variable (flat list that defines the reference length) is
+    auto-detected as the first variable with a flat list in ``fixed_cutoffs``,
+    regardless of position in ``variables``.
 
-    Skips meta keys like ``strict_validation`` and ``run_all_scenarios``.
+    Skips meta keys like ``strict_validation`` and ``run_all_scenarios``
+    (both at the top level and inside nested dicts).
 
     Args:
         fixed_cutoffs: Raw config dict with variable → cutoff-list or dict mappings.
         variables: Ordered variable names.
 
     Returns:
-        Tuple of (accepted dict, conditioning variable name or None).
+        Tuple of (accepted dict, conditioning variable name or None, anchor variable name).
         The dict maps each variable name to either a list (flat) or
         a dict[float, list] (matrix cutoffs).
 
@@ -1216,39 +1219,52 @@ def _validate_nd_cutoff_structure(
     missing_vars: list[str] = []
     dict_vars: list[str] = []
 
-    # var0 must always be a flat list
-    var0 = variables[0]
-    if var0 not in fixed_cutoffs:
-        raise ValueError(
-            f"fixed_cutoffs must contain var0 '{var0}'. "
-            f"Got keys: {[k for k in fixed_cutoffs if k not in meta_keys]}"
-        )
-    v0_vals = fixed_cutoffs[var0]
-    if not isinstance(v0_vals, (list, tuple)):
-        raise ValueError(f"fixed_cutoffs['{var0}'] (var0) must be a list, got {type(v0_vals).__name__}")
-    accepted[var0] = [float(v) for v in v0_vals]
-    var0_len = len(accepted[var0])
+    # Auto-detect anchor variable: first variable with a flat list
+    anchor_var: str | None = None
+    for var in variables:
+        if var not in fixed_cutoffs:
+            continue
+        vals = fixed_cutoffs[var]
+        if isinstance(vals, (list, tuple)):
+            anchor_var = var
+            break
 
-    # Process secondary variables
-    for var in variables[1:]:
+    if anchor_var is None:
+        raise ValueError(
+            f"At least one variable in fixed_cutoffs must be a flat list to serve as the anchor. "
+            f"Got: {[(v, type(fixed_cutoffs[v]).__name__) for v in variables if v in fixed_cutoffs and v not in meta_keys]}"
+        )
+
+    # Process anchor variable
+    anchor_vals = fixed_cutoffs[anchor_var]
+    accepted[anchor_var] = [float(v) for v in anchor_vals]
+    anchor_len = len(accepted[anchor_var])
+
+    # Process remaining variables
+    for var in variables:
+        if var == anchor_var:
+            continue
         if var not in fixed_cutoffs:
             missing_vars.append(var)
             continue
         vals = fixed_cutoffs[var]
         if isinstance(vals, dict):
             # Matrix cutoffs: keys are conditioning var values, values are cutoff lists
+            # Filter out meta keys that may be nested inside
             converted: dict[float, list] = {}
             for k, v in vals.items():
+                if str(k) in meta_keys:
+                    continue
                 if not isinstance(v, (list, tuple)):
                     raise ValueError(
                         f"fixed_cutoffs['{var}']['{k}'] must be a list, got {type(v).__name__}"
                     )
                 key = float(k)
                 row = [float(x) for x in v]
-                if len(row) != var0_len:
+                if len(row) != anchor_len:
                     raise ValueError(
                         f"fixed_cutoffs['{var}']['{k}'] has length {len(row)}, "
-                        f"expected {var0_len} (same as var0)."
+                        f"expected {anchor_len} (same as anchor '{anchor_var}')."
                     )
                 converted[key] = row
             accepted[var] = converted
@@ -1288,13 +1304,13 @@ def _validate_nd_cutoff_structure(
     # Enforce equal length for flat lists
     for var in variables:
         vals = accepted[var]
-        if isinstance(vals, list) and var != conditioning_var and len(vals) != var0_len:
+        if isinstance(vals, list) and var != conditioning_var and len(vals) != anchor_len:
             raise ValueError(
-                f"fixed_cutoffs['{var}'] has length {len(vals)}, expected {var0_len} (same as var0). "
-                f"All flat cutoff lists must have equal length."
+                f"fixed_cutoffs['{var}'] has length {len(vals)}, expected {anchor_len} "
+                f"(same as anchor '{anchor_var}'). All flat cutoff lists must have equal length."
             )
 
-    return accepted, conditioning_var
+    return accepted, conditioning_var, anchor_var
 
 
 def create_fixed_cutoff_mask(
@@ -1332,14 +1348,14 @@ def create_fixed_cutoff_mask(
         inv_vars = []
 
     # Parse and validate cutoff structure
-    cutoffs, conditioning_var = _validate_nd_cutoff_structure(fixed_cutoffs, variables)
+    cutoffs, conditioning_var, anchor_var = _validate_nd_cutoff_structure(fixed_cutoffs, variables)
 
     # Build grid from data
     grid = CellGrid.from_summary(data_summary_desagregado, variables)
 
-    var0 = variables[0]
+    var0 = anchor_var
     var0_bins = cutoffs[var0]  # always a flat list
-    secondary_vars = variables[1:]
+    secondary_vars = [v for v in variables if v != var0]
 
     # Validate var0 bin values exist in data
     data_bins_var0 = {float(v) for v in grid.values_per_var[var0]}
@@ -1435,12 +1451,13 @@ def create_fixed_cutoff_mask(
     cond_dim = var_dim[conditioning_var] if conditioning_var is not None else None
 
     # Build mask
+    anchor_dim = var_dim[var0]
     mask = np.zeros(grid.n_cells, dtype=int)
     for i, v0_bin in enumerate(var0_bins):
         if v0_bin not in data_bins_var0:
             continue
         for combo, idx in grid.cell_index.items():
-            if float(combo[0]) != v0_bin:
+            if float(combo[anchor_dim]) != v0_bin:
                 continue
             accepted = True
             for var in secondary_vars:
