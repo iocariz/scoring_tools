@@ -206,6 +206,18 @@ def learn_supersegment_bin_edges(
 
     result: dict[str, dict[str, list[float]]] = {}
     for ss_name, ss_config in supersegments.items():
+        # Check for fixed bin_edges first — these take priority over learning.
+        fixed_edges = ss_config.get("bin_edges", {})
+        if fixed_edges:
+            ss_edges: dict[str, list[float]] = {}
+            for var_name, edges in fixed_edges.items():
+                if isinstance(edges, list) and len(edges) >= 2:
+                    ss_edges[var_name] = edges
+                    logger.info(f"Supersegment '{ss_name}' using fixed bin edges for '{var_name}': {edges}")
+            if ss_edges:
+                result[ss_name] = ss_edges
+            continue  # Fixed edges provided — skip learning for this supersegment
+
         if not ss_config.get("learn_own_bin_edges", False):
             continue  # Use global edges (default)
 
@@ -222,7 +234,7 @@ def learn_supersegment_bin_edges(
             logger.warning(f"Supersegment '{ss_name}': no booked records for bin learning")
             continue
 
-        ss_edges: dict[str, list[float]] = {}
+        ss_edges = {}
         for var_name, bc_raw in learnable.items():
             source_col = bc_raw["source_col"]
             method = bc_raw.get("method", "quantile")
@@ -1018,8 +1030,16 @@ def main():
     )
     parser.add_argument("--training-only", action="store_true", help="Only run data quality and training")
     parser.add_argument("--no-report", action="store_true", help="Skip generating HTML reports")
+    parser.add_argument(
+        "--log-file", type=str, default=None, help="Path to write all log output to a file (in addition to console)"
+    )
 
     args = parser.parse_args()
+
+    # Setup global log file if requested
+    global_sink_id = None
+    if args.log_file:
+        global_sink_id = logger.add(args.log_file, rotation="50 MB", level="DEBUG")
 
     # List segments if requested
     if args.list:
@@ -1250,6 +1270,10 @@ def main():
         except Exception as e:
             logger.error(f"Error generating score discriminance report: {e}")
             logger.exception("Full traceback:")
+
+    # Cleanup global log sink
+    if global_sink_id is not None:
+        _safe_remove_sink(global_sink_id)
 
     # Return exit code based on results
     return 0 if all(results.values()) else 1

@@ -682,12 +682,14 @@ todu_30ever_h6 = b2_ever_h6 × todu_amt_pile_h6 / multiplier_h6
 
 The function `calculate_metrics_from_cuts` applies the optimal cutoff solution to MR data and produces:
 
-| Row | Risk | Production | Interpretation |
+| Row | Risk (%) | Production (€) | Interpretation |
 |---|---|---|---|
 | **Actual** (booked) | Observed booked risk | Observed booked production | Current policy baseline |
 | **Swap-in** (repesca accepted) | Repesca risk passing cutoff | Repesca production passing cutoff | Upside from opening cutoffs |
 | **Swap-out** (booked rejected) | Booked risk failing cutoff | Booked production failing cutoff | Downside from tightening cutoffs |
 | **Optimum** | Net after applying cutoff changes | Net production | Expected outcome |
+
+When H3 data is available, each row also includes **Risk H3 (%)** — the observed 3-month risk metric. This provides an early-risk view alongside the standard H6 metric, and appears in both the HTML consolidated report (Segment Comparison — MR Period) and the Excel workbook (RP MR sheets).
 
 #### Comparison Diagnostics
 
@@ -1155,10 +1157,41 @@ Defines segments for batch processing. Each segment can override **any** `config
 
 #### Supersegment Definition
 
+Two supersegment kinds exist with independent semantics:
+
 ```toml
-[supersegments.NAME]
-segment_filters = ["segment_a", "segment_b"]  # Segment filters to combine for shared model training
+# Modelling supersegment — segments share a trained inference model
+[modelling_supersegments.NAME]
+segment_filters = ["segment_a", "segment_b"]
+
+# Reporting supersegment — segments grouped in the consolidated report
+[reporting_supersegments.NAME]
+segment_filters = ["segment_a", "segment_b"]
 ```
+
+| Key | Type | Default | Description |
+|:----|:-----|:--------|:------------|
+| `segment_filters` | list[str] | *(required)* | Segment filter values belonging to this group |
+| `learn_own_bin_edges` | bool | `false` | Learn bin edges from the supersegment's own population instead of using global edges |
+| `bin_edges.<var_name>` | list[float] | `None` | Fixed bin edges for a variable, overriding both global and learned edges. Takes priority over `learn_own_bin_edges` |
+
+**Fixed bin edges example** — force a specific income split for a reporting supersegment:
+
+```toml
+[reporting_supersegments.pl_new]
+segment_filters = ["new_fintonic", "new_no_fintonic_ob"]
+bin_edges.income_bin = [-inf, 1500.0, inf]   # [0, 1500) and [1500, max)
+```
+
+**Learned bin edges example** — learn edges from the supersegment's own population:
+
+```toml
+[reporting_supersegments.pl_new]
+segment_filters = ["new_fintonic", "new_no_fintonic_ob"]
+learn_own_bin_edges = true
+```
+
+For backward compatibility, a plain `[supersegments.NAME]` table is treated as both modelling and reporting.
 
 #### Segment Definition
 
@@ -1174,7 +1207,9 @@ segment_filter = "segment_a"   # (required) Segment regex filter
 | `segment_filter` | str | *(required)* | Segment regex filter value |
 | `optimum_risk` | float | *(from config.toml)* | Per-segment risk appetite |
 | `risk_step` | float | *(from config.toml)* | Per-segment scenario step |
-| `supersegment` | str | `None` | Name of shared model supersegment |
+| `modelling_supersegment` | str | `None` | Name of modelling supersegment (shared model training) |
+| `reporting_supersegment` | str | `None` | Name of reporting supersegment (consolidated report grouping) |
+| `supersegment` | str | `None` | Legacy: sets both modelling + reporting supersegment |
 | `variables` | list[str] | *(from config.toml)* | Override grid variables |
 | `inference_variables` | list[str] | *(from config.toml)* | Override model training variables |
 
@@ -1333,10 +1368,23 @@ new_efx_clus = [5, 6, 8]
 | File | Description |
 |:-----|:------------|
 | `consolidated_risk_production.csv` | Aggregated metrics across all segments |
-| `consolidated_risk_production.html` | Portfolio-level interactive dashboard |
+| `consolidated_risk_production.html` | Portfolio-level interactive dashboard with segment comparison (main + MR periods) |
+| `consolidated_risk_production.xlsx` | Management-ready Excel workbook (see below) |
 | `score_discriminance.csv` | Gini and discriminance metrics per score |
 | `score_discriminance_*.png` | Score discrimination plots |
 | `allocation_results.csv` | Global allocation results (if `run_allocation.py` was run) |
+
+#### Excel Workbook Sheets
+
+| Sheet | Content |
+|:------|:--------|
+| **Executive Summary** | KPI cards (main + MR), base-scenario summary tables, top segment opportunities, acceptance grids |
+| **Portfolio Summary** | TOTAL and supersegment rows across all scenarios and periods |
+| **Segment Detail** | Per-segment rows with actual/optimum production, risk (H6 + H3), rejection rates |
+| **Cutoff Comparison** | Concatenated cutoff data across all segments |
+| **Grid {segment}** | Acceptance/rejection grid per segment with A/R colored cells |
+| **RP {segment}** | Main-period risk production summary (Actual / Swap-in / Swap-out / Optimum / Summary) |
+| **RP MR {segment}** | MR-period risk production summary with observed H6 and H3 risk |
 
 ### Supersegment Outputs (`output/_supersegment_{name}/`)
 
@@ -1407,26 +1455,44 @@ uv run python run_batch.py -s my_segment
 ```toml
 # In segments.toml
 
-# 1. Define the supersegment with all member segment filters
-[supersegments.no_premium]
+# 1. Define modelling supersegment (shared model training)
+[modelling_supersegments.total]
 segment_filters = ["segment_a_filter", "segment_b_filter", "segment_c_filter"]
 
-# 2. Each segment references the supersegment
+# 2. Define reporting supersegments (consolidated report grouping)
+[reporting_supersegments.group_new]
+segment_filters = ["segment_a_filter", "segment_b_filter"]
+bin_edges.income_bin = [-inf, 1500.0, inf]   # fixed bin edges for this group
+
+[reporting_supersegments.group_known]
+segment_filters = ["segment_c_filter"]
+learn_own_bin_edges = true                    # learn from own population
+
+# 3. Each segment references its supersegments independently
 [segments.segment_a]
 segment_filter = "segment_a_filter"
-supersegment = "no_premium"
+modelling_supersegment = "total"
+reporting_supersegment = "group_new"
 optimum_risk = 1.1
 
 [segments.segment_b]
 segment_filter = "segment_b_filter"
-supersegment = "no_premium"
+modelling_supersegment = "total"
+reporting_supersegment = "group_new"
 optimum_risk = 1.3
+
+[segments.segment_c]
+segment_filter = "segment_c_filter"
+modelling_supersegment = "total"
+reporting_supersegment = "group_known"
+optimum_risk = 1.0
 ```
 
 ```bash
 # run_batch.py automatically:
 # 1. Trains model on combined (segment_a + segment_b + segment_c) data
-# 2. Runs optimization per segment with the shared model
+# 2. Applies per-reporting-supersegment bin edges
+# 3. Runs optimization per segment with the shared model
 uv run python run_batch.py
 ```
 

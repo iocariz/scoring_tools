@@ -850,10 +850,33 @@ def update_status_and_reject_reason(data: pd.DataFrame, score_measures: list[str
     return result
 
 
+_pipeline_stdout_sink_id: int | None = None
+
+
 def _configure_pipeline_logging(log_level: str) -> None:
-    """Remove default handler and add configured one."""
-    logger.remove()
-    logger.add(sys.stdout, level=log_level)
+    """Replace the default stderr handler with a stdout handler at the given level.
+
+    Only removes the default sink (id=0) on first call, then tracks and
+    replaces its own stdout sink on subsequent calls.  This avoids
+    stripping file sinks added by callers (e.g. ``--log-file`` or
+    per-segment log files).
+    """
+    global _pipeline_stdout_sink_id
+
+    # First call: remove the default stderr sink
+    try:
+        logger.remove(0)
+    except ValueError:
+        pass
+
+    # Subsequent calls: remove the previous stdout sink we added
+    if _pipeline_stdout_sink_id is not None:
+        try:
+            logger.remove(_pipeline_stdout_sink_id)
+        except ValueError:
+            pass
+
+    _pipeline_stdout_sink_id = logger.add(sys.stdout, level=log_level)
 
 
 def _run_data_transformations(df: pd.DataFrame, settings: "PreprocessingSettings") -> pd.DataFrame:

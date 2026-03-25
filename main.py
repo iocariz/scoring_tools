@@ -371,15 +371,30 @@ Output files:
         help="Skip data quality checks (use with caution).",
     )
 
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Path to write all log output to a file (in addition to console).",
+    )
+
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
 
-    main(
-        config_path=args.config,
-        model_path=args.model_path,
-        training_only=args.training_only,
-        skip_dq_checks=args.skip_dq_checks,
-    )
+    sink_id = None
+    if args.log_file:
+        sink_id = logger.add(args.log_file, rotation="50 MB", level="DEBUG")
+
+    try:
+        main(
+            config_path=args.config,
+            model_path=args.model_path,
+            training_only=args.training_only,
+            skip_dq_checks=args.skip_dq_checks,
+        )
+    finally:
+        if sink_id is not None:
+            logger.remove(sink_id)

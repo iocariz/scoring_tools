@@ -28,6 +28,12 @@ uv run python run_batch.py --consolidate-only    # only generate consolidated re
 uv run python run_batch.py --clean               # clean output dirs before running
 uv run python run_batch.py --no-report           # skip HTML reports
 uv run python run_batch.py --training-only       # only run DQ + training
+uv run python run_batch.py --log-file batch.log  # capture all logs to file
+
+# Analyze logs and suggest config improvements
+uv run python analyze_logs.py batch.log                      # analyze a log file
+uv run python analyze_logs.py output/*/logs/*.log --verbose  # analyze all segment logs
+uv run python analyze_logs.py batch.log -o report.txt        # save report to file
 
 # Run allocation (global MILP across segments)
 uv run python run_allocation.py --target 2.5

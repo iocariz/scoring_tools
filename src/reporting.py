@@ -1017,11 +1017,13 @@ def build_consolidated_report(
 
     # --- Segment Comparison ---
     _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)"]
-    comparison_section = ReportSection(id="segment-comparison", title="Segment Comparison")
+    _exclude_todu_mr = _exclude_todu + ["todu_30ever_h3", "todu_amt_pile_h3"]
+
+    # Main period
+    comparison_section = ReportSection(id="segment-comparison", title="Segment Comparison — Main Period")
     for seg_name in segments:
         seg_dir = output_base / seg_name
         seg_output = OutputPaths(base_dir=seg_dir)
-        # Use base scenario summary
         for suffix in ["_base", ""]:
             tbl = csv_to_html_table(seg_output.risk_production_summary_csv(suffix), exclude_cols=_exclude_todu)
             if tbl:
@@ -1029,6 +1031,19 @@ def build_consolidated_report(
                 break
     if comparison_section.tables:
         sections.append(comparison_section)
+
+    # MR period
+    mr_comparison_section = ReportSection(id="segment-comparison-mr", title="Segment Comparison — MR Period")
+    for seg_name in segments:
+        seg_dir = output_base / seg_name
+        seg_output = OutputPaths(base_dir=seg_dir)
+        for suffix in ["_base", ""]:
+            tbl = csv_to_html_table(seg_output.mr_risk_production_summary_csv(suffix), exclude_cols=_exclude_todu_mr)
+            if tbl:
+                mr_comparison_section.tables.append(f"<h4>{seg_name}</h4>{tbl}")
+                break
+    if mr_comparison_section.tables:
+        sections.append(mr_comparison_section)
 
     # --- Cutoff Comparison ---
     cutoff_section = _build_cutoff_comparison_section(output_base, segments)

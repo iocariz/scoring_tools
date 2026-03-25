@@ -1565,10 +1565,17 @@ def export_consolidated_excel(
     _CLR_SECTION_BG = "EBF5FB"    # Pale blue — section header bg
     _CLR_SECTION_BAR = "2980B9"   # Accent bar
 
+    # Row highlight — RP sheets
+    _CLR_OPTIMUM_BG = "D4EFDF"    # Pale green — Optimum selected row
+    _CLR_OPTIMUM_FG = "1E8449"    # Dark green — Optimum selected text
+    _CLR_SUMMARY_BG = "D6EAF8"    # Pale blue — Summary / delta row
+    _CLR_SUMMARY_FG = "1B4F72"    # Dark blue — Summary text
+
     # Sheet tab colours
     _CLR_TAB_EXEC = "2980B9"
     _CLR_TAB_PORTFOLIO = "1B2A4A"
-    _CLR_TAB_SEGMENT = "AEB6BF"
+    _CLR_TAB_SEGMENT = "5DADE2"
+    _CLR_TAB_SEGMENT_MR = "F39C12"
     _CLR_TAB_CUTOFF = "F39C12"
     _CLR_TAB_GRID = "1ABC9C"
 
@@ -1600,6 +1607,12 @@ def export_consolidated_excel(
     _FILL_REJECT = PatternFill(start_color=_CLR_GRID_REJECT, end_color=_CLR_GRID_REJECT, fill_type="solid")
     _FILL_NA = PatternFill(start_color=_CLR_GRID_NA, end_color=_CLR_GRID_NA, fill_type="solid")
     _FILL_GRID_HEADER = PatternFill(start_color=_CLR_GRID_HDR, end_color=_CLR_GRID_HDR, fill_type="solid")
+    _FILL_OPTIMUM = PatternFill(start_color=_CLR_OPTIMUM_BG, end_color=_CLR_OPTIMUM_BG, fill_type="solid")
+    _FILL_SUMMARY = PatternFill(start_color=_CLR_SUMMARY_BG, end_color=_CLR_SUMMARY_BG, fill_type="solid")
+
+    # Row-highlight fonts
+    _FONT_OPTIMUM = Font(bold=True, color=_CLR_OPTIMUM_FG, size=10, name=_FN)
+    _FONT_SUMMARY = Font(bold=True, color=_CLR_SUMMARY_FG, size=10, name=_FN)
 
     # ----- Borders -----
     _THIN = Side(style="thin", color=_CLR_NEUTRAL)
@@ -1641,7 +1654,7 @@ def export_consolidated_excel(
         "production_delta_pct", "risk_delta_pct", "risk_ci_lower", "risk_ci_upper",
         "actual_rejection_rate_pct", "optimum_rejection_rate_pct",
         "actual_risk_h3_pct", "optimum_risk_h3_pct", "swap_in_risk_h3_pct", "swap_out_risk_h3_pct",
-        "Risk (%)", "Production (%)", "Rejection Rate (%)",
+        "Risk (%)", "Risk H3 (%)", "Production (%)", "Rejection Rate (%)",
     }
     _INTEGER_COLS = {
         "n_segments",
@@ -1681,6 +1694,10 @@ def export_consolidated_excel(
         "total_demand": "Total Demand (€)",
         "actual_rejection_rate_pct": "Actual Rejection Rate (%)",
         "optimum_rejection_rate_pct": "Optimum Rejection Rate (%)",
+        "actual_risk_h3_pct": "Actual Risk H3 (%)",
+        "optimum_risk_h3_pct": "Optimum Risk H3 (%)",
+        "swap_in_risk_h3_pct": "Swap-In Risk H3 (%)",
+        "swap_out_risk_h3_pct": "Swap-Out Risk H3 (%)",
         "production_ci_lower": "Production CI Lower (€)",
         "production_ci_upper": "Production CI Upper (€)",
         "risk_ci_lower": "Risk CI Lower (%)",
@@ -1702,19 +1719,30 @@ def export_consolidated_excel(
 
     def _apply_number_format(cell, col_name):
         if col_name in _CURRENCY_COLS:
-            cell.number_format = "#,##0"
+            cell.number_format = '#,##0 "€"'
         elif col_name in _PCT_COLS:
             cell.number_format = "0.00"
         elif col_name in _INTEGER_COLS:
             cell.number_format = "#,##0"
 
+    def _apply_page_setup(ws):
+        """Set landscape, fit-to-width, hide gridlines."""
+        ws.sheet_view.showGridLines = False
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+
     def _style_table(ws, df_cols, *, header_row=1, highlight_total=True):
         """Apply full dashboard styling to a data table starting at header_row."""
         group_col_idx = None
+        metric_col_idx = None
         n_cols = len(df_cols)
         for col_idx, col_name in enumerate(df_cols, 1):
             if col_name == "group":
                 group_col_idx = col_idx
+            if col_name == "Metric":
+                metric_col_idx = col_idx
             cell = ws.cell(row=header_row, column=col_idx)
             cell.value = _COLUMN_LABELS.get(col_name, col_name)
             cell.font = _FONT_HEADER
@@ -1732,15 +1760,27 @@ def export_consolidated_excel(
         ws.row_dimensions[header_row].height = 28
         delta_col_indices = {ci for ci, cn in enumerate(df_cols, 1) if cn in _DELTA_COLS}
         for r in range(header_row + 1, ws.max_row + 1):
-            ws.row_dimensions[r].height = 20
+            ws.row_dimensions[r].height = 22
             is_total = False
+            is_optimum = False
+            is_summary = False
             if highlight_total and group_col_idx:
                 is_total = str(ws.cell(row=r, column=group_col_idx).value or "").strip().lower().startswith("total")
+            if metric_col_idx:
+                metric_val = str(ws.cell(row=r, column=metric_col_idx).value or "").strip().lower()
+                is_optimum = metric_val.startswith("optimum")
+                is_summary = metric_val == "summary"
             for col_idx in range(1, n_cols + 1):
                 data_cell = ws.cell(row=r, column=col_idx)
                 if is_total:
                     data_cell.fill = _FILL_TOTAL
                     data_cell.font = _FONT_TOTAL
+                elif is_optimum:
+                    data_cell.fill = _FILL_OPTIMUM
+                    data_cell.font = _FONT_OPTIMUM
+                elif is_summary:
+                    data_cell.fill = _FILL_SUMMARY
+                    data_cell.font = _FONT_SUMMARY
                 elif r % 2 == 0:
                     data_cell.fill = _FILL_STRIPE
                 if col_idx in delta_col_indices:
@@ -1750,7 +1790,8 @@ def export_consolidated_excel(
                         is_risk = col_name == "risk_delta_pct"
                         good = val <= 0 if is_risk else val >= 0
                         clr = _CLR_GOOD if good else _CLR_BAD
-                        data_cell.font = Font(bold=is_total, color=clr, size=10, name=_FN)
+                        bold = is_total or is_optimum or is_summary
+                        data_cell.font = Font(bold=bold, color=clr, size=10, name=_FN)
         ws.freeze_panes = ws.cell(row=header_row + 1, column=1).coordinate
         ws.auto_filter.ref = (
             f"{ws.cell(row=header_row, column=1).coordinate}"
@@ -1838,6 +1879,46 @@ def export_consolidated_excel(
         for ci in range(1, len(cols_list) + 1):
             _set_col_width(ws, ci, ws.cell(row=table_row, column=ci).value, ws.max_row)
         return ws.max_row + 2
+
+    def _write_rp_sheet(writer, df_rp, sheet_name, seg_name, period_label, tab_color):
+        """Create a styled RP sheet with title banner, period label, and data table."""
+        # Write data starting at row 4 (leaving room for banner)
+        df_rp.to_excel(writer, sheet_name=sheet_name, index=False, startrow=3)
+        ws = writer.sheets[sheet_name]
+        ws.sheet_properties.tabColor = tab_color
+        ws.sheet_view.showGridLines = False
+        n_cols = max(len(df_rp.columns), 6)
+
+        # Title banner
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_cols)
+        title = ws.cell(row=1, column=1)
+        title.value = f"  {seg_name}"
+        title.font = Font(bold=True, color=_CLR_WHITE, size=14, name=_FN)
+        title.fill = PatternFill(start_color=_CLR_PRIMARY, end_color=_CLR_PRIMARY, fill_type="solid")
+        title.alignment = _ALIGN_LEFT
+        ws.row_dimensions[1].height = 32
+
+        # Period subtitle
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=n_cols)
+        sub = ws.cell(row=2, column=1)
+        sub.value = f"  {period_label}"
+        if "MR" in period_label.upper():
+            sub.font = _FONT_MR_LABEL
+            sub.fill = _FILL_MR
+        else:
+            sub.font = Font(bold=False, color=_CLR_ACCENT, size=11, name=_FN)
+            sub.fill = PatternFill(start_color=_CLR_ACCENT_LIGHT, end_color=_CLR_ACCENT_LIGHT, fill_type="solid")
+        sub.alignment = _ALIGN_LEFT
+        ws.row_dimensions[2].height = 24
+
+        # Thin accent line
+        for c in range(1, n_cols + 1):
+            ws.cell(row=3, column=c).border = Border(top=Side(style="medium", color=_CLR_ACCENT))
+        ws.row_dimensions[3].height = 6
+
+        # Style the data table (header at row 4)
+        _style_table(ws, df_rp.columns, header_row=4, highlight_total=False)
+        _apply_page_setup(ws)
 
     def _write_single_pivot_grid(ws, pivot, col_var, row_var, start_row, col_offset=0):
         """Draw one pivot grid at (start_row, col_offset+1). Returns bottom row used."""
@@ -2361,6 +2442,7 @@ def export_consolidated_excel(
         for c in range(1, 11):
             cur = ws_exec.column_dimensions[get_column_letter(c)].width or 12
             ws_exec.column_dimensions[get_column_letter(c)].width = max(cur, 18)
+        _apply_page_setup(ws_exec)
 
         # =============================================================
         # Sheet 2: Portfolio Summary
@@ -2391,6 +2473,7 @@ def export_consolidated_excel(
             portfolio_df.to_excel(writer, sheet_name="Portfolio Summary", index=False)
             _style_table(writer.sheets["Portfolio Summary"], portfolio_df.columns)
             writer.sheets["Portfolio Summary"].sheet_properties.tabColor = _CLR_TAB_PORTFOLIO
+            _apply_page_setup(writer.sheets["Portfolio Summary"])
 
         # =============================================================
         # Sheet 3: Segment Detail
@@ -2408,6 +2491,8 @@ def export_consolidated_excel(
             "actual_risk_pct",
             "optimum_risk_pct",
             "risk_delta_pct",
+            "actual_risk_h3_pct",
+            "optimum_risk_h3_pct",
             "actual_rejection_rate_pct",
             "optimum_rejection_rate_pct",
             "swap_in_production",
@@ -2418,6 +2503,7 @@ def export_consolidated_excel(
             segment_df.to_excel(writer, sheet_name="Segment Detail", index=False)
             _style_table(writer.sheets["Segment Detail"], segment_df.columns)
             writer.sheets["Segment Detail"].sheet_properties.tabColor = _CLR_TAB_SEGMENT
+            _apply_page_setup(writer.sheets["Segment Detail"])
 
         # =============================================================
         # Sheet 4: Cutoff Comparison (raw data table)
@@ -2427,6 +2513,7 @@ def export_consolidated_excel(
             all_cutoffs.to_excel(writer, sheet_name="Cutoff Comparison", index=False)
             _style_table(writer.sheets["Cutoff Comparison"], all_cutoffs.columns, highlight_total=False)
             writer.sheets["Cutoff Comparison"].sheet_properties.tabColor = _CLR_TAB_CUTOFF
+            _apply_page_setup(writer.sheets["Cutoff Comparison"])
 
         # =============================================================
         # Per-segment acceptance grid sheets
@@ -2455,11 +2542,16 @@ def export_consolidated_excel(
             for scen in ["pessimistic", "base", "optimistic"]:
                 if "scenario" in df_cut.columns and scen in df_cut["scenario"].values:
                     cur_row = _write_acceptance_grid(ws_grid, df_cut, f"{scen.title()}", cur_row, scenario=scen)
+            _apply_page_setup(ws_grid)
 
         # =============================================================
-        # Per-segment RP summary sheets
+        # Per-segment RP summary sheets (Main + MR)
         # =============================================================
+        _rp_exclude_cols = {"todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)"}
+        _rp_exclude_cols_mr = _rp_exclude_cols | {"todu_30ever_h3", "todu_amt_pile_h3"}
+
         for seg_name in segments:
+            # --- Main period ---
             csv_path = output_base / seg_name / "data" / "risk_production_summary_table_base.csv"
             if not csv_path.exists():
                 continue
@@ -2469,10 +2561,25 @@ def export_consolidated_excel(
                 continue
             if df_rp.empty:
                 continue
+            df_rp = df_rp.drop(columns=[c for c in _rp_exclude_cols if c in df_rp.columns])
             sheet_name = f"RP {seg_name}"[:31]
-            df_rp.to_excel(writer, sheet_name=sheet_name, index=False)
-            _style_table(writer.sheets[sheet_name], df_rp.columns, highlight_total=False)
-            writer.sheets[sheet_name].sheet_properties.tabColor = _CLR_TAB_SEGMENT
+            _write_rp_sheet(writer, df_rp, sheet_name, seg_name, "Main Period — Base Scenario", _CLR_TAB_SEGMENT)
+
+            # --- MR period ---
+            mr_csv_path = output_base / seg_name / "data" / "risk_production_summary_table_mr_base.csv"
+            if not mr_csv_path.exists():
+                mr_csv_path = output_base / seg_name / "data" / "risk_production_summary_table_mr.csv"
+            if not mr_csv_path.exists():
+                continue
+            try:
+                df_mr = pd.read_csv(mr_csv_path)
+            except (pd.errors.ParserError, OSError, ValueError):
+                continue
+            if df_mr.empty:
+                continue
+            df_mr = df_mr.drop(columns=[c for c in _rp_exclude_cols_mr if c in df_mr.columns])
+            mr_sheet_name = f"RP MR {seg_name}"[:31]
+            _write_rp_sheet(writer, df_mr, mr_sheet_name, seg_name, "MR Period — Base Scenario", _CLR_TAB_SEGMENT_MR)
 
         # Remove default "Sheet" if auto-created
         if "Sheet" in wb.sheetnames and len(wb.sheetnames) > 1:
