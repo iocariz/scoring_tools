@@ -1,6 +1,7 @@
 import time
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -44,6 +45,7 @@ def run_optimization_phase(
     output: OutputPaths | None = None,
     per_bin_stress: pd.DataFrame | None = None,
     per_bin_tasa_fin: pd.DataFrame | None = None,
+    floor_cells_path: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, list], CellGrid | None, list]:
     """Run the optimization pipeline: generate summary, find optimal cutoffs.
 
@@ -59,6 +61,9 @@ def run_optimization_phase(
         output: Output paths configuration. Defaults to current directory.
         per_bin_stress: Optional per-bin stress factors DataFrame.
         per_bin_tasa_fin: Optional per-bin transformation rate DataFrame.
+        floor_cells_path: Optional path to CSV of accepted cell coordinates
+            from a previous segment. Used for sequential cutoff ordering
+            (cells listed must be accepted in this segment's optimization).
 
     Returns:
         Tuple of (data_summary_desagregado, data_summary, data_summary_sample_no_opt,
@@ -113,7 +118,53 @@ def run_optimization_phase(
     grid = None
     pareto_masks: list = []
 
-    if use_fixed_cutoffs:
+    # Check for baseline mode (show current portfolio as-is, no optimization)
+    if settings.baseline_mode:
+        logger.info(f"[{segment}] Baseline mode: showing current portfolio (no optimization)")
+        grid = CellGrid.from_summary(data_summary_desagregado, settings.variables)
+        accept_all_mask = np.ones(len(grid.cell_data), dtype=int)
+
+        # Build single solution with booked-only metrics (zero repesca/cut)
+        baseline_kpis: dict[str, float] = {"sol_fac": 0}
+        cell = grid.cell_data
+        for ind in settings.indicators:
+            boo_col = f"{ind}_boo"
+            rep_col = f"{ind}_rep"
+            if boo_col in cell.columns:
+                baseline_kpis[boo_col] = float(cell[boo_col].sum())
+                baseline_kpis[ind] = float(cell[boo_col].sum())
+            if rep_col in cell.columns:
+                baseline_kpis[rep_col] = 0.0
+            baseline_kpis[f"{ind}_cut"] = 0.0
+
+        # Compute derived b2 metrics for each suffix group
+        for suffix in ["", "_boo", "_rep", "_cut"]:
+            t30_key = f"todu_30ever_h6{suffix}"
+            tamt_key = f"todu_amt_pile_h6{suffix}"
+            if t30_key in baseline_kpis and tamt_key in baseline_kpis:
+                baseline_kpis[f"b2_ever_h6{suffix}"] = float(
+                    calculate_b2_ever_h6(
+                        baseline_kpis[t30_key], baseline_kpis[tamt_key],
+                        multiplier=settings.multiplier, as_percentage=True,
+                    )
+                )
+            t30_h3 = f"todu_30ever_h3{suffix}"
+            tamt_h3 = f"todu_amt_pile_h3{suffix}"
+            if t30_h3 in baseline_kpis and tamt_h3 in baseline_kpis:
+                baseline_kpis[f"b2_ever_h3{suffix}"] = float(
+                    calculate_b2_ever_h6(
+                        baseline_kpis[t30_h3], baseline_kpis[tamt_h3],
+                        multiplier=settings.multiplier_h3, as_percentage=True,
+                    )
+                )
+
+        pareto_masks = [accept_all_mask]
+        data_summary = pd.DataFrame([baseline_kpis])
+        data_summary = add_bin_columns(data_summary, pareto_masks, grid, settings.inv_vars)
+        data_summary_sample_no_opt = data_summary.copy()
+        data_summary.to_csv(output.pareto_solutions_csv, index=False)
+
+    elif use_fixed_cutoffs:
         logger.info(f"[{segment}] Using fixed cutoffs (skipping optimization)")
         logger.debug(f"[{segment}] Fixed cutoffs: {fixed_cutoffs}")
 
@@ -194,6 +245,34 @@ def run_optimization_phase(
         logger.debug(f"[{segment}] Fixed cutoff solution saved to {output.pareto_solutions_csv}")
 
     else:
+        # Load floor constraint from previous segment (sequential cutoff ordering)
+        floor_fixed_cells = None
+        if floor_cells_path:
+            floor_grid = CellGrid.from_summary(data_summary_desagregado, settings.variables)
+            floor_df = pd.read_csv(floor_cells_path)
+            floor_fixed_cells = {}
+            # Build a float-normalized lookup to handle int/float type mismatches
+            # (e.g., income_bin stored as int in grid but read as float from CSV)
+            normalized_index = {
+                tuple(float(v) for v in coord): idx
+                for coord, idx in floor_grid.cell_index.items()
+            }
+            n_floor_rows = len(floor_df)
+            for _, row in floor_df.iterrows():
+                coord = tuple(float(row[var]) for var in settings.variables)
+                if coord in normalized_index:
+                    floor_fixed_cells[normalized_index[coord]] = 1
+            n_matched = len(floor_fixed_cells)
+            if n_matched < n_floor_rows:
+                logger.warning(
+                    f"[{segment}] Floor constraint: {n_matched}/{n_floor_rows} cells matched "
+                    f"(unmatched cells may be absent from this segment's grid)"
+                )
+            logger.info(
+                f"[{segment}] Floor constraint: {n_matched} cells must be accepted "
+                f"(from {floor_cells_path})"
+            )
+
         # MILP-based Pareto frontier optimization
         pareto_df, grid, pareto_masks = trace_pareto_frontier(
             data_summary_desagregado=data_summary_desagregado,
@@ -209,6 +288,7 @@ def run_optimization_phase(
             monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
             monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
             monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
+            fixed_cells=floor_fixed_cells,
         )
 
         if pareto_df.empty:
@@ -310,7 +390,7 @@ def run_optimization_phase(
     )
 
     elapsed = time.perf_counter() - t0
-    mode = "fixed_cutoffs" if use_fixed_cutoffs else "milp_pareto"
+    mode = "baseline" if settings.baseline_mode else ("fixed_cutoffs" if use_fixed_cutoffs else "milp_pareto")
     b2_min = data_summary["b2_ever_h6"].min() if not data_summary.empty else 0
     b2_max = data_summary["b2_ever_h6"].max() if not data_summary.empty else 0
     grid_desc = "x".join(str(len(values_per_var[v])) for v in settings.variables)
@@ -534,6 +614,16 @@ def run_scenario_analysis(
         except Exception as e:
             logger.warning(f"[{segment}] Acceptance grid plot failed (non-blocking): {e}")
 
+    # Save accepted cell coordinates for sequential cutoff ordering
+    if scenario_name == "base" and grid is not None and selected_mask is not None:
+        accepted_coords = []
+        for coord, idx in grid.cell_index.items():
+            if selected_mask[idx] == 1:
+                accepted_coords.append({var: float(val) for var, val in zip(settings.variables, coord)})
+        if accepted_coords:
+            pd.DataFrame(accepted_coords).to_csv(output.accepted_cells_csv(suffix), index=False)
+            logger.debug(f"[{segment}] Saved {len(accepted_coords)} accepted cells for cutoff ordering")
+
     if scenario_name == "base":
         # Also save as default filenames for backward compatibility
         visualizer.save_html(output.risk_production_visualizer_html())
@@ -639,6 +729,11 @@ def _build_scenario_list(settings: PreprocessingSettings, use_fixed_cutoffs: boo
     base_optimum_risk = settings.optimum_risk
     scenario_step = settings.risk_step
     segment = settings.segment_filter
+
+    if settings.baseline_mode:
+        scenarios = [(base_optimum_risk, "base")]
+        logger.debug(f"[{segment}] Baseline mode: running base scenario only")
+        return scenarios
 
     if use_fixed_cutoffs:
         fixed_cutoffs = settings.fixed_cutoffs or {}

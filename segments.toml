@@ -136,6 +136,7 @@ reporting_supersegment = "pl_known"  # Grouped in "total" for reporting
 modelling_supersegment = "total"
 min_risk = 0.8  # Optional: minimum risk for global allocation
 max_risk = 1.4  # Optional: maximum risk for global allocation
+cutoff_floor_segment = "no_premium_cd"  # Must accept at least what cd accepts (least restrictive)
 
 [segments.no_premium_cd]
 segment_filter = "no_premium_cd"
@@ -143,6 +144,7 @@ optimum_risk = 1.28
 risk_step = 0.1
 reporting_supersegment = "pl_known"  # Grouped in "total" for reporting
 modelling_supersegment = "total"
+cutoff_floor_segment = "no_premium_ef"  # Must accept at least what ef accepts
 
 [segments.no_premium_ef]
 segment_filter = "no_premium_ef"
@@ -150,6 +152,7 @@ optimum_risk = 1.09
 risk_step = 0.1
 reporting_supersegment = "pl_known"  # Grouped in "total" for reporting
 modelling_supersegment = "total"
+# No cutoff_floor_segment — tightest cutoff, optimized first
 
 [segments.premium]
 segment_filter = "premium"
@@ -160,19 +163,9 @@ modelling_supersegment = "total"
 
 [segments.precon]
 segment_filter = "precon"
-optimum_risk = 1.07
-risk_step = 0.1
 reporting_supersegment = "pl_known"  # Grouped in "total" for reporting
 modelling_supersegment = "total"
-
-[segments.precon.fixed_cutoffs]
-sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0] 
-strict_validation = true
-run_all_scenarios = true
-
-[segments.precon.fixed_cutoffs.new_efx_clus]
-1 = [15, 14, 14, 12, 12, 11, 11, 11, 11, 11]    # when income_bin = 1
-2 = [15, 14, 14, 12, 12, 11, 11, 11, 11, 11]   # when income_bin = 2
+baseline_mode = true
 
 
 # Add more segments as needed:

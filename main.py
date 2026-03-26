@@ -40,9 +40,11 @@ def main(
     config_path: str = "config.toml",
     model_path: str | None = None,
     training_only: bool = False,
+    baseline_mode: bool = False,
     skip_dq_checks: bool = False,
     preloaded_data: pd.DataFrame | None = None,
     output: OutputPaths | None = None,
+    floor_cells_path: str | None = None,
 ):
     """
     Load and preprocess SAS data using configuration.
@@ -73,6 +75,8 @@ def main(
             raise ConfigLoadError(f"Error loading configuration from '{config_path}'") from e
 
         segment = settings.segment_filter
+        if baseline_mode:
+            settings.baseline_mode = True
 
         # Step 2: Load and prepare data
         try:
@@ -129,6 +133,7 @@ def main(
             output=output,
             per_bin_stress=per_bin_stress,
             per_bin_tasa_fin=per_bin_tasa_fin,
+            floor_cells_path=floor_cells_path,
         )
 
         # Compute total demand (booked + rejected, excluding canceled)
@@ -141,6 +146,29 @@ def main(
         use_fixed_cutoffs = settings.fixed_cutoffs is not None and len(settings.fixed_cutoffs) > 0
         scenarios = _build_scenario_list(settings, use_fixed_cutoffs)
         annual_coef_mr = _compute_mr_annual_coef(settings)
+
+        # Clean up stale scenario files that won't be regenerated (e.g., baseline
+        # mode only produces "base", but old pessimistic/optimistic files from a
+        # previous run would confuse the consolidated report).
+        active_suffixes = {f"_{name}" for _, name in scenarios}
+        all_suffixes = {"_pessimistic", "_base", "_optimistic"}
+        stale_suffixes = all_suffixes - active_suffixes
+        if stale_suffixes:
+            from pathlib import Path
+
+            for stale in stale_suffixes:
+                for pattern in [
+                    output.risk_production_summary_csv(stale),
+                    output.data_summary_desagregado_csv(stale),
+                    output.optimal_solution_csv(stale),
+                    output.efficient_frontier_csv(stale),
+                    output.risk_production_visualizer_html(stale),
+                    output.mr_risk_production_summary_csv(stale),
+                ]:
+                    p = Path(pattern)
+                    if p.exists():
+                        p.unlink()
+                        logger.debug(f"[{segment}] Removed stale scenario file: {p.name}")
 
         cutoff_summaries = []
         for scenario_risk, scenario_name in scenarios:
@@ -170,30 +198,33 @@ def main(
 
         _save_cutoff_summaries(cutoff_summaries, settings, output=output)
 
-        # Step 6b: Sensitivity analysis (optional, non-blocking)
-        from src.pipeline.optimization import run_sensitivity_phase
+        # Step 6b: Sensitivity analysis (optional, non-blocking, skipped in baseline mode)
+        if not settings.baseline_mode:
+            from src.pipeline.optimization import run_sensitivity_phase
 
-        run_sensitivity_phase(
-            data_summary_desagregado=data_summary_desagregado,
-            data_summary=data_summary,
-            settings=settings,
-            output=output,
-        )
+            run_sensitivity_phase(
+                data_summary_desagregado=data_summary_desagregado,
+                data_summary=data_summary,
+                settings=settings,
+                output=output,
+            )
 
-        # Step 6c: Reject inference parameter optimization (optional, non-blocking)
-        best_ri_params = run_ri_optimizer_phase(
-            data_booked=data_booked,
-            data_demand=data_demand,
-            risk_inference=risk_inference,
-            reg_todu_amt_pile=reg_todu_amt_pile,
-            stress_factor=stress_factor,
-            tasa_fin=tasa_fin,
-            settings=settings,
-            annual_coef=annual_coef,
-            output=output,
-            per_bin_stress=per_bin_stress,
-            per_bin_tasa_fin=per_bin_tasa_fin,
-        )
+        # Step 6c: Reject inference parameter optimization (optional, non-blocking, skipped in baseline mode)
+        best_ri_params = None
+        if not settings.baseline_mode:
+            best_ri_params = run_ri_optimizer_phase(
+                data_booked=data_booked,
+                data_demand=data_demand,
+                risk_inference=risk_inference,
+                reg_todu_amt_pile=reg_todu_amt_pile,
+                stress_factor=stress_factor,
+                tasa_fin=tasa_fin,
+                settings=settings,
+                annual_coef=annual_coef,
+                output=output,
+                per_bin_stress=per_bin_stress,
+                per_bin_tasa_fin=per_bin_tasa_fin,
+            )
 
         # Step 6d: Re-run optimization with tuned RI params if they changed
         if best_ri_params:
@@ -366,6 +397,12 @@ Output files:
     )
 
     parser.add_argument(
+        "--baseline",
+        action="store_true",
+        help="Baseline mode: show current portfolio as-is (no cutoff optimization, no swap-in/swap-out).",
+    )
+
+    parser.add_argument(
         "--skip-dq-checks",
         action="store_true",
         help="Skip data quality checks (use with caution).",
@@ -393,6 +430,7 @@ if __name__ == "__main__":
             config_path=args.config,
             model_path=args.model_path,
             training_only=args.training_only,
+            baseline_mode=args.baseline,
             skip_dq_checks=args.skip_dq_checks,
         )
     finally:

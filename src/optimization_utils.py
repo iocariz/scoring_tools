@@ -514,6 +514,7 @@ def trace_pareto_frontier(
     monotonicity_relaxation_enabled: bool = False,
     monotonicity_uncertainty_min_exposure: float = 0.0,
     monotonicity_uncertainty_z_threshold: float = 0.0,
+    fixed_cells: dict[int, int] | None = None,
 ) -> tuple[pd.DataFrame, CellGrid, list[np.ndarray]]:
     """Sweep risk targets, solve MILP at each, filter to Pareto-optimal set.
 
@@ -524,6 +525,9 @@ def trace_pareto_frontier(
         multiplier: Risk multiplier.
         indicators: Indicator column names.
         n_points: Number of risk targets to sweep.
+        fixed_cells: Optional dict mapping cell flat index to 0/1, pinning
+            cells as rejected (0) or accepted (1). Used for sequential
+            cutoff ordering constraints (floor masks).
 
     Returns:
         Tuple of (pareto_df, grid, masks) where pareto_df has KPI columns for each
@@ -561,6 +565,7 @@ def trace_pareto_frontier(
             target,
             inv_vars,
             multiplier,
+            fixed_cells=fixed_cells,
             max_swapin_production_pct=max_swapin_production_pct,
             max_swapin_risk=max_swapin_risk,
             time_limit=milp_time_limit,

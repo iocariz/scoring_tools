@@ -339,8 +339,10 @@ def run_segment_pipeline(
     skip_dq_checks: bool = False,
     preloaded_data: pd.DataFrame = None,
     training_only: bool = False,
+    baseline_mode: bool = False,
     global_bin_edges: dict[str, list[float]] | None = None,
     supersegment_bin_edges: dict[str, dict[str, list[float]]] | None = None,
+    floor_cells_path: str | None = None,
 ) -> bool:
     """
     Run the pipeline for a single segment.
@@ -357,6 +359,7 @@ def run_segment_pipeline(
         preloaded_data: Optional pre-loaded and standardized DataFrame. If provided,
                        skips loading data from file for faster batch processing.
         training_only: Optional parameter. If True, skipping optimization and scenario generation.
+        baseline_mode: If True, show current portfolio as-is (no cutoff optimization).
         global_bin_edges: Optional pre-learned bin edges from the full dataset.
                          When provided, these are injected into the merged config so
                          that all segments share consistent bin edges.
@@ -364,6 +367,8 @@ def run_segment_pipeline(
                                When a segment belongs to a reporting supersegment
                                that has its own learned edges, those override the
                                global edges for the matching variables.
+        floor_cells_path: Optional path to accepted cells CSV from a previous
+                         segment (sequential cutoff ordering).
 
     Returns:
         True if successful, False otherwise
@@ -426,6 +431,8 @@ def run_segment_pipeline(
                 skip_dq_checks=skip_dq_checks,
                 preloaded_data=preloaded_data,
                 training_only=training_only,
+                baseline_mode=baseline_mode,
+                floor_cells_path=floor_cells_path,
             )
 
         if result is None:
@@ -592,6 +599,52 @@ def _working_directory(path: Path):
         os.chdir(original_cwd)
 
 
+def _topological_sort_segments(
+    segments: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Sort segment names respecting cutoff_floor_segment dependencies.
+
+    Segments with no dependency come first. Segments that depend on another
+    come after their dependency. Raises ValueError on circular dependencies.
+
+    Args:
+        segments: Segment configurations keyed by segment name.
+
+    Returns:
+        Ordered list of segment names.
+    """
+    # Build dependency map: seg_name -> floor_segment_name or None
+    deps: dict[str, str | None] = {}
+    for seg_name, seg_config in segments.items():
+        deps[seg_name] = seg_config.get("cutoff_floor_segment")
+
+    ordered: list[str] = []
+    resolved: set[str] = set()
+    visiting: set[str] = set()
+
+    def _visit(name: str) -> None:
+        if name in resolved:
+            return
+        if name in visiting:
+            raise ValueError(f"Circular cutoff_floor_segment dependency involving '{name}'")
+        if name not in deps:
+            # Dependency references a segment not in the current batch — treat as resolved
+            resolved.add(name)
+            return
+        visiting.add(name)
+        dep = deps[name]
+        if dep is not None:
+            _visit(dep)
+        visiting.discard(name)
+        resolved.add(name)
+        ordered.append(name)
+
+    for seg_name in segments:
+        _visit(seg_name)
+
+    return ordered
+
+
 def run_segments_sequential(
     segments: dict[str, dict[str, Any]],
     base_config: dict[str, Any],
@@ -601,6 +654,7 @@ def run_segments_sequential(
     skip_dq_checks: bool = False,
     preloaded_data: pd.DataFrame = None,
     training_only: bool = False,
+    baseline_mode: bool = False,
     global_bin_edges: dict[str, list[float]] | None = None,
     supersegment_bin_edges: dict[str, dict[str, list[float]]] | None = None,
 ) -> dict[str, bool]:
@@ -687,7 +741,19 @@ def run_segments_sequential(
 
     # Phase 2: Run individual segment optimizations
     # Filter segments that haven't already failed
-    segments_to_run = [(name, config) for name, config in segments.items() if name not in results]
+    failed_segments = set(results.keys())
+    segments_to_run_dict = {name: config for name, config in segments.items() if name not in failed_segments}
+
+    # Sort by cutoff_floor_segment dependencies (topological order)
+    try:
+        ordered_names = _topological_sort_segments(segments_to_run_dict)
+    except ValueError as e:
+        logger.error(f"Segment ordering failed: {e}")
+        for name in segments_to_run_dict:
+            results[name] = False
+        return results
+
+    segments_to_run = [(name, segments_to_run_dict[name]) for name in ordered_names]
 
     if segments_to_run:
         print(f"\n{'=' * 60}")
@@ -711,6 +777,20 @@ def run_segments_sequential(
                 model_path = supersegment_models[modelling_ss]
                 logger.info(f"Using supersegment model: {modelling_ss}")
 
+            # Resolve floor_cells_path from cutoff_floor_segment dependency
+            floor_cells_path = None
+            floor_seg = segment_config.get("cutoff_floor_segment")
+            if floor_seg:
+                floor_path = Path(output_base) / floor_seg / "data" / "accepted_cells_base.csv"
+                if floor_path.exists():
+                    floor_cells_path = str(floor_path.resolve())
+                    logger.info(f"[{segment_name}] Using floor constraint from segment '{floor_seg}'")
+                else:
+                    logger.warning(
+                        f"[{segment_name}] cutoff_floor_segment='{floor_seg}' but "
+                        f"accepted cells file not found: {floor_path}"
+                    )
+
             success = run_segment_pipeline(
                 segment_name,
                 segment_config,
@@ -720,8 +800,10 @@ def run_segments_sequential(
                 skip_dq_checks=skip_dq_checks,
                 preloaded_data=preloaded_data,
                 training_only=training_only,
+                baseline_mode=baseline_mode,
                 global_bin_edges=global_bin_edges,
                 supersegment_bin_edges=supersegment_bin_edges,
+                floor_cells_path=floor_cells_path,
             )
             results[segment_name] = success
 
@@ -744,6 +826,7 @@ def run_segments_parallel(
     skip_dq_checks: bool = False,
     preloaded_data: pd.DataFrame = None,
     training_only: bool = False,
+    baseline_mode: bool = False,
     global_bin_edges: dict[str, list[float]] | None = None,
     supersegment_bin_edges: dict[str, dict[str, list[float]]] | None = None,
 ) -> dict[str, bool]:
@@ -828,14 +911,24 @@ def run_segments_parallel(
     # Phase 2: Run individual segment optimizations IN PARALLEL
     segments_to_run = {name: config for name, config in segments.items() if name not in results}
 
-    if segments_to_run:
+    # Split into unconstrained (can run in parallel) and constrained (need sequential)
+    unconstrained = {n: c for n, c in segments_to_run.items() if not c.get("cutoff_floor_segment")}
+    constrained = {n: c for n, c in segments_to_run.items() if c.get("cutoff_floor_segment")}
+
+    if constrained:
+        logger.info(
+            f"Segments with cutoff_floor_segment will run sequentially after parallel batch: "
+            f"{list(constrained.keys())}"
+        )
+
+    if unconstrained:
         print(f"\n{'=' * 60}")
         print(f"PHASE 2: Running Segment Optimizations (parallel, {max_workers or 'auto'} workers)")
         print(f"{'=' * 60}")
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
-            for segment_name, segment_config in segments_to_run.items():
+            for segment_name, segment_config in unconstrained.items():
                 modelling_ss = resolve_modelling_supersegment(segment_config)
                 model_path = supersegment_models.get(modelling_ss) if modelling_ss else None
 
@@ -849,6 +942,7 @@ def run_segments_parallel(
                     skip_dq_checks,
                     preloaded_data,
                     training_only,
+                    baseline_mode,
                     global_bin_edges,
                     supersegment_bin_edges,
                 )
@@ -874,6 +968,54 @@ def run_segments_parallel(
                     results[segment_name] = False
                     seg_progress.set_postfix_str(f"{segment_name} ✗", refresh=True)
                     logger.error(f"Segment {segment_name} raised exception: {e}")
+
+    # Phase 2b: Run constrained segments sequentially (cutoff_floor_segment)
+    if constrained:
+        try:
+            ordered_constrained = _topological_sort_segments(constrained)
+        except ValueError as e:
+            logger.error(f"Constrained segment ordering failed: {e}")
+            for name in constrained:
+                results[name] = False
+            return results
+
+        print(f"\n{'=' * 60}")
+        print("PHASE 2b: Running Constrained Segments (sequential, cutoff ordering)")
+        print(f"{'=' * 60}")
+
+        for segment_name in ordered_constrained:
+            segment_config = constrained[segment_name]
+            modelling_ss = resolve_modelling_supersegment(segment_config)
+            model_path = supersegment_models.get(modelling_ss) if modelling_ss else None
+
+            floor_cells_path = None
+            floor_seg = segment_config.get("cutoff_floor_segment")
+            if floor_seg:
+                floor_path = Path(output_base) / floor_seg / "data" / "accepted_cells_base.csv"
+                if floor_path.exists():
+                    floor_cells_path = str(floor_path.resolve())
+                    logger.info(f"[{segment_name}] Using floor constraint from segment '{floor_seg}'")
+                else:
+                    logger.warning(
+                        f"[{segment_name}] cutoff_floor_segment='{floor_seg}' but "
+                        f"accepted cells file not found: {floor_path}"
+                    )
+
+            success = run_segment_pipeline(
+                segment_name,
+                segment_config,
+                base_config,
+                output_base,
+                model_path=model_path,
+                skip_dq_checks=skip_dq_checks,
+                preloaded_data=preloaded_data,
+                training_only=training_only,
+                baseline_mode=baseline_mode,
+                global_bin_edges=global_bin_edges,
+                supersegment_bin_edges=supersegment_bin_edges,
+                floor_cells_path=floor_cells_path,
+            )
+            results[segment_name] = success
 
     return results
 
@@ -1029,6 +1171,10 @@ def main():
         "--consolidate-only", action="store_true", help="Only generate consolidated report (skip running segments)"
     )
     parser.add_argument("--training-only", action="store_true", help="Only run data quality and training")
+    parser.add_argument(
+        "--baseline", action="store_true",
+        help="Baseline mode: show current portfolio as-is (no cutoff optimization).",
+    )
     parser.add_argument("--no-report", action="store_true", help="Skip generating HTML reports")
     parser.add_argument(
         "--log-file", type=str, default=None, help="Path to write all log output to a file (in addition to console)"
@@ -1180,6 +1326,7 @@ def main():
             skip_dq_checks=args.skip_dq_checks,
             preloaded_data=preloaded_data,
             training_only=args.training_only,
+            baseline_mode=args.baseline,
             global_bin_edges=global_bin_edges,
             supersegment_bin_edges=supersegment_bin_edges,
         )
@@ -1193,6 +1340,7 @@ def main():
             skip_dq_checks=args.skip_dq_checks,
             preloaded_data=preloaded_data,
             training_only=args.training_only,
+            baseline_mode=args.baseline,
             global_bin_edges=global_bin_edges,
             supersegment_bin_edges=supersegment_bin_edges,
         )

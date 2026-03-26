@@ -147,6 +147,9 @@ class OutputPaths:
 
     # -- bin threshold diagnostics --
 
+    def accepted_cells_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"accepted_cells{suffix}.csv")
+
     def bin_diagnostic_html(self, bin_col: str) -> str:
         return str(self.images_dir / f"bin_diagnostic_{bin_col}.html")
 
@@ -266,6 +269,8 @@ class PreprocessingSettings(BaseModel):
     cz_config: dict[int, Any] = Field(default_factory=dict)
     log_level: str = "INFO"
     fixed_cutoffs: dict[str, Any] | None = None
+    baseline_mode: bool = False
+    cutoff_floor_segment: str | None = None
 
     # Sensitivity analysis
     run_sensitivity: bool = False
