@@ -551,13 +551,29 @@ def trace_pareto_frontier(
     if np.isnan(max_risk) or max_risk <= 0:
         max_risk = 20.0  # fallback
 
-    risk_targets = np.linspace(0.01, max_risk * 1.1, n_points)
+    # When floor constraints are active, compute the floor-only risk as the
+    # sweep lower bound (targets below this are guaranteed infeasible).
+    sweep_min = 0.01
+    if fixed_cells:
+        n_cells = len(grid.cell_data)
+        floor_mask_tmp = np.zeros(n_cells, dtype=bool)
+        for idx in fixed_cells:
+            if fixed_cells[idx] == 1 and 0 <= idx < n_cells:
+                floor_mask_tmp[idx] = True
+        floor_t30 = grid.cell_data.loc[floor_mask_tmp, "todu_30ever_h6"].sum()
+        floor_tamt = grid.cell_data.loc[floor_mask_tmp, "todu_amt_pile_h6"].sum()
+        floor_risk = float(calculate_b2_ever_h6(floor_t30, floor_tamt, multiplier=multiplier, as_percentage=True))
+        if np.isfinite(floor_risk) and floor_risk > sweep_min:
+            sweep_min = floor_risk * 0.95  # start just below floor risk
+            logger.info(f"Floor constraint minimum risk: {floor_risk:.2f}% — sweeping from {sweep_min:.2f}%")
+
+    risk_targets = np.linspace(sweep_min, max_risk * 1.1, n_points)
 
     solutions = []
     all_masks: list[np.ndarray] = []
     seen_masks: set[tuple] = set()
 
-    logger.info(f"MILP Pareto sweep: {n_points} risk targets in [0.01, {max_risk * 1.1:.2f}%]")
+    logger.info(f"MILP Pareto sweep: {n_points} risk targets in [{sweep_min:.2f}, {max_risk * 1.1:.2f}%]")
 
     for target in _progress_iter(risk_targets, desc="MILP Pareto sweep", enabled=show_progress, total=len(risk_targets)):
         mask = milp_solve_cutoffs(
@@ -586,18 +602,65 @@ def trace_pareto_frontier(
         all_masks.append(mask)
 
     if not solutions:
-        logger.warning("No feasible MILP solutions found. Attempting GA fallback...")
-        return _ga_pareto_fallback(
-            grid,
-            inv_vars,
-            multiplier,
-            indicators,
-            n_points,
-            show_progress=show_progress,
-            monotonicity_relaxation_enabled=monotonicity_relaxation_enabled,
-            monotonicity_uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
-            monotonicity_uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
-        )
+        if fixed_cells:
+            # Floor constraint makes all risk targets infeasible. Rather than
+            # falling back to GA (which ignores floor constraints), try a wider
+            # sweep up to the accept-all risk.  If still infeasible, create a
+            # single solution from the floor cells themselves.
+            logger.warning(
+                "MILP sweep infeasible at all targets with floor constraint. "
+                "Trying wider risk range..."
+            )
+            wider_targets = np.linspace(max_risk * 0.5, max_risk * 2.0, n_points)
+            for target in wider_targets:
+                mask = milp_solve_cutoffs(
+                    grid, target, inv_vars, multiplier,
+                    fixed_cells=fixed_cells,
+                    max_swapin_production_pct=max_swapin_production_pct,
+                    max_swapin_risk=max_swapin_risk,
+                    time_limit=milp_time_limit,
+                    monotonicity_relaxation_enabled=monotonicity_relaxation_enabled,
+                    monotonicity_uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
+                    monotonicity_uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
+                )
+                if mask is not None:
+                    mask_key = tuple(mask.tolist())
+                    if mask_key not in seen_masks:
+                        seen_masks.add(mask_key)
+                        kpis = evaluate_solution(mask, grid, indicators, multiplier, multiplier_h3=multiplier_h3)
+                        solutions.append(kpis)
+                        all_masks.append(mask)
+
+            if not solutions:
+                # Last resort: accept exactly the floor cells (+ all cells for
+                # max-risk solution) so the constraint is guaranteed satisfied.
+                logger.warning(
+                    "Floor constraint still infeasible. Creating floor-only solution."
+                )
+                floor_mask = np.zeros(len(grid.cell_data), dtype=int)
+                for idx, val in fixed_cells.items():
+                    floor_mask[idx] = val
+                kpis = evaluate_solution(floor_mask, grid, indicators, multiplier, multiplier_h3=multiplier_h3)
+                solutions.append(kpis)
+                all_masks.append(floor_mask)
+                # Also add accept-all as upper bound
+                all_mask = np.ones(len(grid.cell_data), dtype=int)
+                kpis_all = evaluate_solution(all_mask, grid, indicators, multiplier, multiplier_h3=multiplier_h3)
+                solutions.append(kpis_all)
+                all_masks.append(all_mask)
+        else:
+            logger.warning("No feasible MILP solutions found. Attempting GA fallback...")
+            return _ga_pareto_fallback(
+                grid,
+                inv_vars,
+                multiplier,
+                indicators,
+                n_points,
+                show_progress=show_progress,
+                monotonicity_relaxation_enabled=monotonicity_relaxation_enabled,
+                monotonicity_uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
+                monotonicity_uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
+            )
 
     df = pd.DataFrame(solutions)
 

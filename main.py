@@ -261,6 +261,7 @@ def main(
                     output=output,
                     per_bin_stress=per_bin_stress,
                     per_bin_tasa_fin=per_bin_tasa_fin,
+                    floor_cells_path=floor_cells_path,
                 )
 
                 cutoff_summaries = []
