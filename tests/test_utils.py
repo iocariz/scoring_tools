@@ -175,9 +175,9 @@ class TestB2EverH6Integration:
             }
         )
 
-        result = calculate_b2_ever_h6(data["todu_30ever_h6"], data["todu_amt_pile_h6"])
+        result = calculate_b2_ever_h6(data["todu_30ever_h6"], data["todu_amt_pile_h6"], decimals=2)
 
-        # Expected: 7 * num / den
+        # Expected: 7 * num / den, rounded to 2 decimals (display precision)
         expected = 7 * data["todu_30ever_h6"] / data["todu_amt_pile_h6"]
 
         np.testing.assert_array_almost_equal(result, expected.round(2))

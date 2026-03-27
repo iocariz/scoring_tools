@@ -18,6 +18,7 @@ uv run python main.py --config path/to/config.toml
 uv run python main.py --training-only          # preprocessing + model training only
 uv run python main.py --model-path models/dir  # use pre-trained model
 uv run python main.py --skip-dq-checks         # skip data quality checks
+uv run python main.py --baseline               # baseline: show current portfolio, no optimization
 
 # Run batch (multi-segment, reads config.toml + segments.toml)
 uv run python run_batch.py
@@ -29,6 +30,8 @@ uv run python run_batch.py --clean               # clean output dirs before runn
 uv run python run_batch.py --no-report           # skip HTML reports
 uv run python run_batch.py --training-only       # only run DQ + training
 uv run python run_batch.py --log-file batch.log  # capture all logs to file
+uv run python run_batch.py --baseline           # baseline mode for all segments
+uv run python run_batch.py --cutoff-ordering-mode bottom_up  # sequential cutoff ordering
 
 # Analyze logs and suggest config improvements
 uv run python analyze_logs.py batch.log                      # analyze a log file
@@ -70,7 +73,7 @@ Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `mak
 2. **Data Loading** — `src/data_manager.py` reads SAS files, standardizes columns (H3 columns optional)
 3. **Preprocessing** — `src/pipeline/preprocessing.py` orchestrates DQ checks (`src/data_quality.py`), filtering/binning (`src/preprocess_improved.py`). Bin edge learning supports `"quantile"` (equal-count) and `"optimization"` (production-weighted risk split via `DecisionTreeRegressor`) methods, dispatched by `BinConfig.method`.
 4. **Inference** — `src/pipeline/inference.py` orchestrates model training with CV across feature sets; custom sklearn estimators in `src/estimators.py` (`HurdleRegressor`, `TweedieGLM`). Trains on `inference_variables` (subset of `variables`), decoupled from the optimization grid. Optuna hyperparameter tuning available for tree-based models.
-5. **Optimization** — `src/pipeline/optimization.py` generates all monotonic cutoff combinations, computes KPIs per solution, applies optional reject inference (parceling with linear/power/sigmoid methods, optional Bayesian smoothing), filters to Pareto frontier. Supports swap-in production/risk constraints. Fixed cutoffs and GA fallback are fully supported for N>2 variables.
+5. **Optimization** — `src/pipeline/optimization.py` generates all monotonic cutoff combinations, computes KPIs per solution, applies optional reject inference (parceling with linear/power/sigmoid methods, optional Bayesian smoothing), filters to Pareto frontier. Supports swap-in production/risk constraints, fixed cutoffs, GA fallback for N>2 variables, baseline mode (no optimization), and sequential cutoff ordering across segments (nested mask constraints).
 6. **Scenario Analysis** — selects optimal Pareto points at pessimistic/base/optimistic risk thresholds; bootstrap CI, MR validation (with H3→H6 extrapolation), PSI/CSI stability, audit tables
 7. **Sensitivity Analysis** (optional) — cutoff sensitivity analysis
 8. **RI Optimizer** (optional) — automated reject inference parameter tuning via grid/Optuna search; re-runs optimization if better params found
@@ -119,6 +122,10 @@ Two-tier config: `config.toml` (global defaults) overridden per-segment by `segm
 **Segment constraints** (in `segments.toml`): `min_risk`, `max_risk`, `min_production` (production floor), `locked_sol_fac` (lock to specific frontier point). Supersegments (`[supersegments.*]`) define named groups of segments. Each segment can independently reference a **modelling supersegment** (shared model training) and a **reporting supersegment** (consolidated report grouping) via `modelling_supersegment` and `reporting_supersegment` fields. Legacy `supersegment` field sets both. Resolution: `modelling_supersegment > supersegment > None`, `reporting_supersegment > supersegment > None`.
 
 **Fixed cutoffs:** `fixed_cutoffs` to skip MILP and use predefined cutoff combinations. For 2-var: paired bins/cutoffs lists. For N>2: per-variable lists of accepted bin values (cell accepted iff all coordinates are in their respective accepted lists).
+
+**Baseline mode:** `baseline_mode` (bool, default false) — show current booked portfolio as-is with no cutoff optimization (Optimum = Actual, zero swap-in/swap-out). MR inference still runs to predict risk for immature loans. Only the base scenario is generated; sensitivity and RI optimizer are skipped. Available via config or `--baseline` CLI flag.
+
+**Sequential cutoff ordering:** `cutoff_floor_segment` (per-segment, in `segments.toml`) names the segment whose accepted cells constrain this segment, enforcing nested acceptance masks across segments (e.g., `mask_ef ⊆ mask_cd ⊆ mask_ab`). `cutoff_ordering_mode` (`"bottom_up"` / `"top_down"`, default `"bottom_up"`) controls the optimization direction: bottom-up optimizes the tightest segment first and propagates floor constraints (must-accept); top-down optimizes the least restrictive first and propagates ceiling constraints (must-reject). Segments are automatically topologically sorted by dependency. In parallel mode, constrained segments run sequentially after unconstrained ones complete.
 
 ## Testing
 

@@ -59,11 +59,24 @@ class CellGrid:
     shape: tuple[int, ...] = ()
     observed: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool), repr=False)
 
+    _MAX_GRID_CELLS = 10_000_000  # 10M cells — guard against OOM from high-cardinality grids
+
     @classmethod
     def from_summary(cls, data_summary_desagregado: pd.DataFrame, variables: list[str]) -> "CellGrid":
         """Build grid from aggregated summary data."""
         values_per_var = {var: sorted(data_summary_desagregado[var].unique()) for var in variables}
         shape = tuple(len(values_per_var[v]) for v in variables)
+
+        # Guard against exponential grid explosion (e.g., 5 vars × 100 bins = 10^10 cells)
+        n_total = 1
+        for s in shape:
+            n_total *= s
+        if n_total > cls._MAX_GRID_CELLS:
+            dims = " × ".join(f"{v}({s})" for v, s in zip(variables, shape))
+            raise ValueError(
+                f"Grid size {n_total:,} exceeds maximum {cls._MAX_GRID_CELLS:,} cells. "
+                f"Dimensions: {dims}. Reduce bin counts or number of variables."
+            )
 
         # Build cell_index: tuple of bin values → flat int
         all_combos = list(product(*(values_per_var[v] for v in variables)))
@@ -302,7 +315,8 @@ def milp_solve_cutoffs(
     # which would produce NaN risk downstream and can corrupt Pareto/scenario selection.
     # Expressed as: sum(todu_amt*x) >= exposure_denom_eps
     # Linear form used: -sum(todu_amt*x) <= -exposure_denom_eps
-    exposure_denom_eps = 1e-9
+    # Use 0.1% of total exposure to prevent trivial near-zero-exposure solutions.
+    exposure_denom_eps = max(todu_amt.sum() * 0.001, 1.0)
     denom_row = sparse.csc_matrix((-todu_amt).reshape(1, -1))
 
     # Monotonicity constraints: A_mono @ x <= 0
@@ -1697,14 +1711,22 @@ def kpi_of_fact_sol(
         t30 = f"todu_30ever_h6{metric}"
         tamt = f"todu_amt_pile_h6{metric}"
         if t30 in final_result.columns and tamt in final_result.columns:
-            # calculate_b2_ever_h6 already returns NaN for zero denominators;
-            # fillna(0) at the display boundary is consistent with MILP path.
-            final_result[f"b2_ever_h6{metric}"] = calculate_b2_ever_h6(
+            # calculate_b2_ever_h6 returns NaN for zero denominators.
+            # fillna(0) is required for downstream display (summary table uses max()).
+            b2_col = f"b2_ever_h6{metric}"
+            raw_b2 = calculate_b2_ever_h6(
                 final_result[t30].astype(float),
                 final_result[tamt].astype(float),
                 multiplier=multiplier,
                 as_percentage=True,
-            ).fillna(0)
+            )
+            n_nan = int(raw_b2.isna().sum())
+            if n_nan > 0 and metric in ("", "_boo"):
+                logger.warning(
+                    f"kpi_of_fact_sol: {n_nan} solution(s) have NaN b2_ever_h6{metric} "
+                    f"(zero exposure). Filling with 0 for display."
+                )
+            final_result[b2_col] = raw_b2.fillna(0)
 
     # Compute b2_ever_h3 (complementary metric) when h3 columns are present
     effective_multiplier_h3 = multiplier_h3 if multiplier_h3 is not None else DEFAULT_RISK_MULTIPLIER_H3
@@ -1712,12 +1734,19 @@ def kpi_of_fact_sol(
         t30_h3 = f"todu_30ever_h3{metric}"
         tamt_h3 = f"todu_amt_pile_h3{metric}"
         if t30_h3 in final_result.columns and tamt_h3 in final_result.columns:
-            final_result[f"b2_ever_h3{metric}"] = calculate_b2_ever_h6(
+            raw_b2_h3 = calculate_b2_ever_h6(
                 final_result[t30_h3].astype(float),
                 final_result[tamt_h3].astype(float),
                 multiplier=effective_multiplier_h3,
                 as_percentage=True,
-            ).fillna(0)
+            )
+            n_nan_h3 = int(raw_b2_h3.isna().sum())
+            if n_nan_h3 > 0 and metric in ("", "_boo"):
+                logger.warning(
+                    f"kpi_of_fact_sol: {n_nan_h3} solution(s) have NaN b2_ever_h3{metric} "
+                    f"(zero exposure). Filling with 0 for display."
+                )
+            final_result[f"b2_ever_h3{metric}"] = raw_b2_h3.fillna(0)
 
     return final_result.sort_values(["b2_ever_h6", "oa_amt_h0"])
 

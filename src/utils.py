@@ -46,7 +46,7 @@ def calculate_b2_ever_h6(
     denominator: pd.Series | np.ndarray | float,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
     as_percentage: bool = False,
-    decimals: int = 2,
+    decimals: int = 6,
 ) -> pd.Series | np.ndarray | float:
     """
     Calculate the b2_ever_h6 risk metric.
@@ -58,7 +58,8 @@ def calculate_b2_ever_h6(
         denominator: todu_amt_pile_h6 values
         multiplier: Risk multiplier (default: 7)
         as_percentage: If True, multiply result by 100
-        decimals: Number of decimal places to round to
+        decimals: Number of decimal places to round to (default 6 for
+            intermediate precision; use 2 for final display values)
 
     Returns:
         Calculated b2_ever_h6 values, with division-by-zero handled as NaN.
@@ -137,6 +138,9 @@ def extrapolate_h3_to_h6(
             main_arr = np.asarray(b2_h3_main, dtype=float)
             safe_main = np.where(main_arr > 0, main_arr, np.nan)
             deviation = np.asarray(b2_h3, dtype=float) / safe_main
+            # Clip deviation to [0.01, 100] to prevent extreme extrapolation:
+            # 0.01 lower bound avoids near-zero base causing huge inverse power,
+            # 100 upper bound caps at 100× the main-period risk level.
             power_result = b2_h3 * h6_h3_ratio * np.power(np.clip(deviation, 0.01, 100.0), curvature - 1.0)
             # Fall back to linear for elements where b2_h3_main is NaN/0 (e.g. MR-only bins)
             linear_result = b2_h3 * h6_h3_ratio
@@ -547,6 +551,14 @@ def calculate_bootstrap_intervals(
         Dictionary with lower/upper bounds for production and risk
     """
     logger.info(f"Calculating {confidence_level:.0%} CI with {n_bootstraps} bootstraps...")
+
+    if data_booked.empty:
+        logger.warning("Bootstrap CI: data_booked is empty — returning zero CIs")
+        return {"production_ci_lower": 0.0, "production_ci_upper": 0.0, "risk_ci_lower": 0.0, "risk_ci_upper": 0.0}
+    if len(data_booked) < 10:
+        logger.warning(
+            f"Bootstrap CI: only {len(data_booked)} row(s) in data_booked — CIs may be unreliable"
+        )
 
     # Generate per-iteration seeds for reproducibility
     if random_state is not None:

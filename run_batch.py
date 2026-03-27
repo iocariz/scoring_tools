@@ -343,6 +343,7 @@ def run_segment_pipeline(
     global_bin_edges: dict[str, list[float]] | None = None,
     supersegment_bin_edges: dict[str, dict[str, list[float]]] | None = None,
     floor_cells_path: str | None = None,
+    floor_cells_mode: str = "floor",
 ) -> bool:
     """
     Run the pipeline for a single segment.
@@ -369,6 +370,7 @@ def run_segment_pipeline(
                                global edges for the matching variables.
         floor_cells_path: Optional path to accepted cells CSV from a previous
                          segment (sequential cutoff ordering).
+        floor_cells_mode: ``"floor"`` (bottom-up) or ``"ceiling"`` (top-down).
 
     Returns:
         True if successful, False otherwise
@@ -433,6 +435,7 @@ def run_segment_pipeline(
                 training_only=training_only,
                 baseline_mode=baseline_mode,
                 floor_cells_path=floor_cells_path,
+                floor_cells_mode=floor_cells_mode,
             )
 
         if result is None:
@@ -657,6 +660,7 @@ def run_segments_sequential(
     baseline_mode: bool = False,
     global_bin_edges: dict[str, list[float]] | None = None,
     supersegment_bin_edges: dict[str, dict[str, list[float]]] | None = None,
+    cutoff_ordering_mode: str = "bottom_up",
 ) -> dict[str, bool]:
     """
     Run all segments sequentially, with supersegment support.
@@ -753,11 +757,24 @@ def run_segments_sequential(
             results[name] = False
         return results
 
+    # For top-down mode: reverse order and build reverse dependency map
+    is_top_down = cutoff_ordering_mode == "top_down"
+    if is_top_down:
+        ordered_names = list(reversed(ordered_names))
+        # Reverse deps: for each segment, find who depends on it (is less restrictive)
+        reverse_deps: dict[str, str] = {}
+        for seg_name, seg_config in segments_to_run_dict.items():
+            floor_seg = seg_config.get("cutoff_floor_segment")
+            if floor_seg:
+                reverse_deps[floor_seg] = seg_name
+
     segments_to_run = [(name, segments_to_run_dict[name]) for name in ordered_names]
+    floor_cells_mode = "ceiling" if is_top_down else "floor"
 
     if segments_to_run:
         print(f"\n{'=' * 60}")
-        print("PHASE 2: Running Segment Optimizations")
+        direction = "top-down" if is_top_down else "bottom-up"
+        print(f"PHASE 2: Running Segment Optimizations ({direction})")
         print(f"{'=' * 60}")
 
         seg_progress = tqdm(
@@ -777,17 +794,36 @@ def run_segments_sequential(
                 model_path = supersegment_models[modelling_ss]
                 logger.info(f"Using supersegment model: {modelling_ss}")
 
-            # Resolve floor_cells_path from cutoff_floor_segment dependency
+            # Resolve floor_cells_path based on ordering mode
             floor_cells_path = None
-            floor_seg = segment_config.get("cutoff_floor_segment")
-            if floor_seg:
-                floor_path = Path(output_base) / floor_seg / "data" / "accepted_cells_base.csv"
+            if is_top_down:
+                # Top-down: constraint comes from the LESS restrictive segment
+                # (the segment that lists us as its cutoff_floor_segment)
+                constraint_source = reverse_deps.get(segment_name)
+            else:
+                # Bottom-up: constraint comes from the MORE restrictive segment
+                constraint_source = segment_config.get("cutoff_floor_segment")
+
+            if constraint_source:
+                # Skip segment if its constraint source failed
+                if constraint_source in results and not results[constraint_source]:
+                    logger.error(
+                        f"[{segment_name}] Skipping: constraint source '{constraint_source}' failed"
+                    )
+                    results[segment_name] = False
+                    seg_progress.set_postfix_str(f"{segment_name} ✗ (dep failed)", refresh=True)
+                    continue
+
+                floor_path = Path(output_base) / constraint_source / "data" / "accepted_cells_base.csv"
                 if floor_path.exists():
                     floor_cells_path = str(floor_path.resolve())
-                    logger.info(f"[{segment_name}] Using floor constraint from segment '{floor_seg}'")
+                    logger.info(
+                        f"[{segment_name}] Using {direction} constraint from "
+                        f"segment '{constraint_source}'"
+                    )
                 else:
                     logger.warning(
-                        f"[{segment_name}] cutoff_floor_segment='{floor_seg}' but "
+                        f"[{segment_name}] Constraint source '{constraint_source}' "
                         f"accepted cells file not found: {floor_path}"
                     )
 
@@ -804,6 +840,7 @@ def run_segments_sequential(
                 global_bin_edges=global_bin_edges,
                 supersegment_bin_edges=supersegment_bin_edges,
                 floor_cells_path=floor_cells_path,
+                floor_cells_mode=floor_cells_mode,
             )
             results[segment_name] = success
 
@@ -829,6 +866,7 @@ def run_segments_parallel(
     baseline_mode: bool = False,
     global_bin_edges: dict[str, list[float]] | None = None,
     supersegment_bin_edges: dict[str, dict[str, list[float]]] | None = None,
+    cutoff_ordering_mode: str = "bottom_up",
 ) -> dict[str, bool]:
     """
     Run all segments in parallel, with supersegment support.
@@ -911,9 +949,17 @@ def run_segments_parallel(
     # Phase 2: Run individual segment optimizations IN PARALLEL
     segments_to_run = {name: config for name, config in segments.items() if name not in results}
 
-    # Split into unconstrained (can run in parallel) and constrained (need sequential)
-    unconstrained = {n: c for n, c in segments_to_run.items() if not c.get("cutoff_floor_segment")}
-    constrained = {n: c for n, c in segments_to_run.items() if c.get("cutoff_floor_segment")}
+    # Identify all segments involved in cutoff ordering chains
+    # (both those with cutoff_floor_segment AND those referenced by it)
+    in_chain: set[str] = set()
+    for n, c in segments_to_run.items():
+        floor_seg = c.get("cutoff_floor_segment")
+        if floor_seg:
+            in_chain.add(n)
+            if floor_seg in segments_to_run:
+                in_chain.add(floor_seg)
+    unconstrained = {n: c for n, c in segments_to_run.items() if n not in in_chain}
+    constrained = {n: c for n, c in segments_to_run.items() if n in in_chain}
 
     if constrained:
         logger.info(
@@ -945,6 +991,8 @@ def run_segments_parallel(
                     baseline_mode,
                     global_bin_edges,
                     supersegment_bin_edges,
+                    None,  # floor_cells_path (unconstrained)
+                    "floor",  # floor_cells_mode
                 )
                 futures[future] = segment_name
 
@@ -979,8 +1027,20 @@ def run_segments_parallel(
                 results[name] = False
             return results
 
+        is_top_down = cutoff_ordering_mode == "top_down"
+        if is_top_down:
+            ordered_constrained = list(reversed(ordered_constrained))
+            reverse_deps: dict[str, str] = {}
+            for seg_name, seg_config in constrained.items():
+                floor_seg = seg_config.get("cutoff_floor_segment")
+                if floor_seg:
+                    reverse_deps[floor_seg] = seg_name
+
+        direction = "top-down" if is_top_down else "bottom-up"
+        floor_cells_mode = "ceiling" if is_top_down else "floor"
+
         print(f"\n{'=' * 60}")
-        print("PHASE 2b: Running Constrained Segments (sequential, cutoff ordering)")
+        print(f"PHASE 2b: Running Constrained Segments (sequential, {direction})")
         print(f"{'=' * 60}")
 
         for segment_name in ordered_constrained:
@@ -989,15 +1049,30 @@ def run_segments_parallel(
             model_path = supersegment_models.get(modelling_ss) if modelling_ss else None
 
             floor_cells_path = None
-            floor_seg = segment_config.get("cutoff_floor_segment")
-            if floor_seg:
-                floor_path = Path(output_base) / floor_seg / "data" / "accepted_cells_base.csv"
+            if is_top_down:
+                constraint_source = reverse_deps.get(segment_name)
+            else:
+                constraint_source = segment_config.get("cutoff_floor_segment")
+
+            if constraint_source:
+                # Skip segment if its constraint source failed
+                if constraint_source in results and not results[constraint_source]:
+                    logger.error(
+                        f"[{segment_name}] Skipping: constraint source '{constraint_source}' failed"
+                    )
+                    results[segment_name] = False
+                    continue
+
+                floor_path = Path(output_base) / constraint_source / "data" / "accepted_cells_base.csv"
                 if floor_path.exists():
                     floor_cells_path = str(floor_path.resolve())
-                    logger.info(f"[{segment_name}] Using floor constraint from segment '{floor_seg}'")
+                    logger.info(
+                        f"[{segment_name}] Using {direction} constraint from "
+                        f"segment '{constraint_source}'"
+                    )
                 else:
                     logger.warning(
-                        f"[{segment_name}] cutoff_floor_segment='{floor_seg}' but "
+                        f"[{segment_name}] Constraint source '{constraint_source}' "
                         f"accepted cells file not found: {floor_path}"
                     )
 
@@ -1014,6 +1089,7 @@ def run_segments_parallel(
                 global_bin_edges=global_bin_edges,
                 supersegment_bin_edges=supersegment_bin_edges,
                 floor_cells_path=floor_cells_path,
+                floor_cells_mode=floor_cells_mode,
             )
             results[segment_name] = success
 
@@ -1175,6 +1251,14 @@ def main():
         "--baseline", action="store_true",
         help="Baseline mode: show current portfolio as-is (no cutoff optimization).",
     )
+    parser.add_argument(
+        "--cutoff-ordering-mode",
+        choices=["bottom_up", "top_down"],
+        default=None,
+        help="Cutoff ordering direction: bottom_up (tightest first, floor constraints) "
+        "or top_down (least restrictive first, ceiling constraints). "
+        "Overrides cutoff_ordering_mode in config.toml.",
+    )
     parser.add_argument("--no-report", action="store_true", help="Skip generating HTML reports")
     parser.add_argument(
         "--log-file", type=str, default=None, help="Path to write all log output to a file (in addition to console)"
@@ -1314,6 +1398,9 @@ def main():
         if reporting_ss:
             supersegment_bin_edges = learn_supersegment_bin_edges(preloaded_data, base_config, reporting_ss)
 
+    # Resolve cutoff ordering mode: CLI flag overrides config.toml
+    cutoff_ordering_mode = args.cutoff_ordering_mode or base_config.get("cutoff_ordering_mode", "bottom_up")
+
     # Run segments
     if args.parallel:
         results = run_segments_parallel(
@@ -1329,6 +1416,7 @@ def main():
             baseline_mode=args.baseline,
             global_bin_edges=global_bin_edges,
             supersegment_bin_edges=supersegment_bin_edges,
+            cutoff_ordering_mode=cutoff_ordering_mode,
         )
     else:
         results = run_segments_sequential(
@@ -1343,6 +1431,7 @@ def main():
             baseline_mode=args.baseline,
             global_bin_edges=global_bin_edges,
             supersegment_bin_edges=supersegment_bin_edges,
+            cutoff_ordering_mode=cutoff_ordering_mode,
         )
 
     # Print summary

@@ -271,6 +271,9 @@ class PreprocessingSettings(BaseModel):
     fixed_cutoffs: dict[str, Any] | None = None
     baseline_mode: bool = False
     cutoff_floor_segment: str | None = None
+    # Note: cutoff_ordering_mode is a batch-level setting read from the raw TOML
+    # dict in run_batch.py (not from this model), since it controls cross-segment
+    # orchestration rather than per-segment behavior.
 
     # Sensitivity analysis
     run_sensitivity: bool = False
@@ -475,6 +478,16 @@ class PreprocessingSettings(BaseModel):
                     stacklevel=2,
                 )
 
+        return self
+
+    @model_validator(mode="after")
+    def _validate_baseline_vs_fixed_cutoffs(self) -> "PreprocessingSettings":
+        """Prevent setting both baseline_mode and fixed_cutoffs."""
+        if self.baseline_mode and self.fixed_cutoffs:
+            raise ValueError(
+                "Cannot set both baseline_mode=True and fixed_cutoffs. "
+                "baseline_mode shows the current portfolio; fixed_cutoffs applies explicit cuts."
+            )
         return self
 
     def get_date(self, field: str) -> pd.Timestamp:

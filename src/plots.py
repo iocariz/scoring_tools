@@ -1945,9 +1945,11 @@ def plot_acceptance_grid_nd(
     if "todu_30ever_h6" in cell_df.columns and "todu_amt_pile_h6" in cell_df.columns:
         from .utils import calculate_b2_ever_h6
 
-        cell_df["_b2"] = calculate_b2_ever_h6(
+        raw_b2 = calculate_b2_ever_h6(
             cell_df["todu_30ever_h6"], cell_df["todu_amt_pile_h6"], multiplier=multiplier, as_percentage=True
-        ).fillna(0)
+        )
+        cell_df["_b2_missing"] = raw_b2.isna()
+        cell_df["_b2"] = raw_b2.fillna(0)
     else:
         cell_df["_b2"] = 0.0
 
@@ -1975,11 +1977,15 @@ def plot_acceptance_grid_nd(
     # Compact cell text: production + risk only; ACC/REJ is conveyed by color
     if "oa_amt_h0" in cell_df.columns:
         cell_df["_text"] = cell_df.apply(
-            lambda r: f"{_fmt_production(r['oa_amt_h0'])}<br>{r['_b2']:.1f}%",
+            lambda r: "N/A" if r.get("_b2_missing", False)
+            else f"{_fmt_production(r['oa_amt_h0'])}<br>{r['_b2']:.1f}%",
             axis=1,
         )
     else:
-        cell_df["_text"] = cell_df["_b2"].apply(lambda v: f"{v:.1f}%")
+        cell_df["_text"] = cell_df.apply(
+            lambda r: "N/A" if r.get("_b2_missing", False) else f"{r['_b2']:.1f}%",
+            axis=1,
+        )
 
     # High-contrast discrete colorscale: rejected = muted red, accepted = green
     mask_colorscale = [

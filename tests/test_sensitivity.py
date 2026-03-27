@@ -240,17 +240,19 @@ class TestSolveWithFixedCells:
         """A cell pinned as reject should appear as 0 in the result mask."""
         df = _make_summary_2d(3, 4)
         grid = CellGrid.from_summary(df, ["var0", "var1"])
-        # Pin cell (1, 1) as reject
+        # Pin the riskiest cell (3, 4) as reject — rejecting the safest cell
+        # (1, 1) would force all cells rejected via monotonicity, making it
+        # infeasible with the exposure denominator guard.
         mask, kpis = solve_with_fixed_cells(
             grid,
             target_risk=50.0,
             inv_vars=[],
             multiplier=7,
             indicators=INDICATORS,
-            fixed_rejects=[(1, 1)],
+            fixed_rejects=[(3, 4)],
         )
         assert mask is not None
-        idx = grid.cell_index[(1, 1)]
+        idx = grid.cell_index[(3, 4)]
         assert mask[idx] == 0
 
     def test_fixed_infeasible_returns_none(self):

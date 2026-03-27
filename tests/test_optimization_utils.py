@@ -1130,10 +1130,13 @@ class TestMILPFixedCells:
         """A cell fixed as rejected (0) must appear as 0 in the result."""
         df = _make_summary_2d(3, 4)
         grid = CellGrid.from_summary(df, ["var0", "var1"])
-        # Fix cell (1,1) = index 0 as rejected
-        mask = milp_solve_cutoffs(grid, target_risk=50.0, inv_vars=[], multiplier=7, fixed_cells={0: 0})
+        # Fix the riskiest cell (last index = highest var0, var1) as rejected.
+        # Rejecting the safest cell (index 0) would force all cells rejected
+        # via monotonicity, making the problem infeasible.
+        last_idx = grid.n_cells - 1
+        mask = milp_solve_cutoffs(grid, target_risk=50.0, inv_vars=[], multiplier=7, fixed_cells={last_idx: 0})
         assert mask is not None
-        assert mask[0] == 0
+        assert mask[last_idx] == 0
 
     def test_empty_fixed_cells_same_as_none(self):
         """Empty dict should produce same result as no fixed_cells."""

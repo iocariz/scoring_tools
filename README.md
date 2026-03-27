@@ -19,6 +19,8 @@ A credit risk scoring and portfolio optimization pipeline that processes loan ap
 - **Fixed Cutoffs**: Bypasses optimization to evaluate predefined cutoff configurations. Supports both 2-variable (paired bins/cutoffs) and N>2 (per-variable accepted bin lists).
 - **Swap-In Constraints**: Optional MILP constraints that cap the swap-in (repesca) population's production share and/or risk directly inside the solver, so the Pareto frontier only contains solutions with controlled swap-in exposure.
 - **Fixed-Cell Constraints**: Pin individual cells as forced-accept or forced-reject before re-optimizing.
+- **Baseline Mode**: Show the current booked portfolio as-is (no cutoff optimization). MR inference still runs to predict risk for immature loans. Useful for benchmarking the existing policy before proposing new cutoffs.
+- **Sequential Cutoff Ordering**: Enforce nested acceptance masks across segments (e.g., `mask_ef ⊆ mask_cd ⊆ mask_ab`) via configurable bottom-up (floor) or top-down (ceiling) constraints. Segments are automatically ordered by dependency.
 - **Global Allocation**: Distributes a portfolio-wide risk budget across segments using MILP or greedy solvers.
 - **Score Discriminance**: Gini, lift, precision-recall, ROC analysis, and DeLong pairwise model comparison.
 - **Trend Monitoring**: Monthly metric aggregation with SPC-based anomaly detection.
@@ -68,6 +70,7 @@ uv run python main.py [OPTIONS]
 | `--config PATH` | `-c` | Configuration TOML file (default: `config.toml`) |
 | `--model-path DIR` | `-m` | Pre-trained model directory (skips training) |
 | `--training-only` | `-t` | Run only preprocessing and model training (skip optimization) |
+| `--baseline` | | Baseline mode: show current portfolio as-is (no optimization) |
 | `--skip-dq-checks` | | Skip data quality checks |
 
 **Examples:**
@@ -75,6 +78,9 @@ uv run python main.py [OPTIONS]
 ```bash
 # Default run
 uv run python main.py
+
+# Baseline mode: current portfolio metrics only
+uv run python main.py --baseline
 
 # Use custom config
 uv run python main.py --config configs/segment_a.toml
@@ -110,6 +116,8 @@ uv run python run_batch.py [OPTIONS]
 | `--no-consolidation` | | Skip consolidated report generation |
 | `--consolidate-only` | | Only generate consolidated report (skip segments) |
 | `--training-only` | | Only run data quality + model training (skip optimization/reporting steps) |
+| `--baseline` | | Baseline mode: show current portfolio as-is (no optimization) |
+| `--cutoff-ordering-mode` | | Cutoff ordering direction: `bottom_up` (default) or `top_down` |
 | `--no-report` | | Skip generating HTML reports |
 
 **Examples:**
@@ -922,6 +930,47 @@ Available through:
 - **`solve_with_fixed_cells()`** in `src/optimization_utils.py` for programmatic use.
 - **Pin Mode** in the dashboard Cutoff Explorer: click cells to cycle through unpinned → accept → reject → unpinned, then re-optimize.
 
+### Baseline Mode
+
+Shows the current booked portfolio as-is with no cutoff optimization (Optimum = Actual, zero swap-in/swap-out). MR inference still runs to predict risk for immature loans. Only the base scenario is generated; sensitivity analysis and RI optimizer are skipped. Stale scenario files from previous runs are automatically cleaned up.
+
+```bash
+# Single segment
+uv run python main.py --baseline
+
+# Batch
+uv run python run_batch.py --baseline -s precon
+
+# Or via config.toml / segments.toml
+# baseline_mode = true
+```
+
+### Sequential Cutoff Ordering
+
+Enforces nested acceptance masks across segments so that less restrictive segments always accept a superset of more restrictive segments' cells (e.g., `mask_ef ⊆ mask_cd ⊆ mask_ab`).
+
+**Configuration** in `segments.toml`:
+
+```toml
+[segments.no_premium_ef]
+# No cutoff_floor_segment — tightest cutoff, optimized first (bottom-up)
+
+[segments.no_premium_cd]
+cutoff_floor_segment = "no_premium_ef"  # cd must be less restrictive than ef
+
+[segments.no_premium_ab]
+cutoff_floor_segment = "no_premium_cd"  # ab must be less restrictive than cd
+```
+
+**Ordering modes** (set in `config.toml` or via `--cutoff-ordering-mode`):
+
+| Mode | Order | Constraint | Best when |
+|:-----|:------|:-----------|:----------|
+| `bottom_up` (default) | Tightest first (ef → cd → ab) | Floor: must accept previous segment's cells | Tightest segment has lowest/comparable risk target |
+| `top_down` | Least restrictive first (ab → cd → ef) | Ceiling: can only accept previous segment's cells | Least restrictive segment has highest risk target |
+
+Segments are automatically topologically sorted by dependency. Circular dependencies are detected and rejected. In parallel mode (`--parallel`), constrained segments run sequentially after unconstrained ones complete.
+
 ### Supersegments
 
 When multiple segments share similar populations, a **supersegment** trains a single inference model on their combined data. Each segment then loads the shared model and runs optimization independently with its own `optimum_risk`. This produces more stable models for sparse segments.
@@ -1098,6 +1147,14 @@ Selection rule: minimum calibration error among feasible solutions, with ties wi
 | `run_sensitivity` | bool | `false` | Run sensitivity analysis after optimization. Enable before major strategy deployments |
 | `sensitivity_levels` | list[float] | `[-20, -10, -5, 5, 10, 20]` | Perturbation percentages to evaluate |
 
+##### Baseline Mode & Cutoff Ordering
+
+| Key | Type | Default | Description |
+|:----|:-----|:--------|:------------|
+| `baseline_mode` | bool | `false` | Show current portfolio as-is (no optimization, Optimum = Actual) |
+| `cutoff_floor_segment` | str | `null` | Segment whose accepted cells constrain this segment (sequential ordering) |
+| `cutoff_ordering_mode` | str | `"bottom_up"` | `"bottom_up"` (floor constraints) or `"top_down"` (ceiling constraints) |
+
 ##### Fixed Cutoffs
 
 Skip MILP optimization and apply predefined cutoffs. Set under `[preprocessing.fixed_cutoffs]`.
@@ -1212,6 +1269,8 @@ segment_filter = "segment_a"   # (required) Segment regex filter
 | `supersegment` | str | `None` | Legacy: sets both modelling + reporting supersegment |
 | `variables` | list[str] | *(from config.toml)* | Override grid variables |
 | `inference_variables` | list[str] | *(from config.toml)* | Override model training variables |
+| `baseline_mode` | bool | `false` | Baseline mode for this segment (no optimization) |
+| `cutoff_floor_segment` | str | `None` | Segment whose accepted cells constrain this one (sequential ordering) |
 
 ##### Allocation Constraints (used by `run_allocation.py`)
 

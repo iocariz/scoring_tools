@@ -46,6 +46,7 @@ def run_optimization_phase(
     per_bin_stress: pd.DataFrame | None = None,
     per_bin_tasa_fin: pd.DataFrame | None = None,
     floor_cells_path: str | None = None,
+    floor_cells_mode: str = "floor",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, list], CellGrid | None, list]:
     """Run the optimization pipeline: generate summary, find optimal cutoffs.
 
@@ -62,8 +63,11 @@ def run_optimization_phase(
         per_bin_stress: Optional per-bin stress factors DataFrame.
         per_bin_tasa_fin: Optional per-bin transformation rate DataFrame.
         floor_cells_path: Optional path to CSV of accepted cell coordinates
-            from a previous segment. Used for sequential cutoff ordering
-            (cells listed must be accepted in this segment's optimization).
+            from a previous segment. Used for sequential cutoff ordering.
+        floor_cells_mode: How to interpret the CSV cells:
+            ``"floor"`` (bottom-up) — cells listed must be accepted.
+            ``"ceiling"`` (top-down) — only cells listed may be accepted;
+            all others are forced to rejected.
 
     Returns:
         Tuple of (data_summary_desagregado, data_summary, data_summary_sample_no_opt,
@@ -137,32 +141,46 @@ def run_optimization_phase(
                 baseline_kpis[rep_col] = 0.0
             baseline_kpis[f"{ind}_cut"] = 0.0
 
-        # Compute derived b2 metrics for each suffix group
+        # Compute derived b2 metrics for each suffix group.
+        # For _rep/_cut suffixes both numerator and denominator are 0 by design,
+        # producing NaN from calculate_b2_ever_h6; replace with 0.0 for display.
         for suffix in ["", "_boo", "_rep", "_cut"]:
             t30_key = f"todu_30ever_h6{suffix}"
             tamt_key = f"todu_amt_pile_h6{suffix}"
             if t30_key in baseline_kpis and tamt_key in baseline_kpis:
-                baseline_kpis[f"b2_ever_h6{suffix}"] = float(
+                raw = float(
                     calculate_b2_ever_h6(
                         baseline_kpis[t30_key], baseline_kpis[tamt_key],
                         multiplier=settings.multiplier, as_percentage=True,
                     )
                 )
+                baseline_kpis[f"b2_ever_h6{suffix}"] = 0.0 if np.isnan(raw) else raw
             t30_h3 = f"todu_30ever_h3{suffix}"
             tamt_h3 = f"todu_amt_pile_h3{suffix}"
             if t30_h3 in baseline_kpis and tamt_h3 in baseline_kpis:
-                baseline_kpis[f"b2_ever_h3{suffix}"] = float(
+                raw_h3 = float(
                     calculate_b2_ever_h6(
                         baseline_kpis[t30_h3], baseline_kpis[tamt_h3],
                         multiplier=settings.multiplier_h3, as_percentage=True,
                     )
                 )
+                baseline_kpis[f"b2_ever_h3{suffix}"] = 0.0 if np.isnan(raw_h3) else raw_h3
 
         pareto_masks = [accept_all_mask]
         data_summary = pd.DataFrame([baseline_kpis])
         data_summary = add_bin_columns(data_summary, pareto_masks, grid, settings.inv_vars)
         data_summary_sample_no_opt = data_summary.copy()
         data_summary.to_csv(output.pareto_solutions_csv, index=False)
+
+        # Save accepted cells for sequential cutoff ordering (downstream segments may depend on this)
+        accepted_coords = [
+            {var: float(val) for var, val in zip(settings.variables, coord)}
+            for coord, idx in grid.cell_index.items()
+            if accept_all_mask[idx] == 1
+        ]
+        if accepted_coords:
+            pd.DataFrame(accepted_coords).to_csv(output.accepted_cells_csv("_base"), index=False)
+            logger.debug(f"[{segment}] Baseline: saved {len(accepted_coords)} accepted cells")
 
     elif use_fixed_cutoffs:
         logger.info(f"[{segment}] Using fixed cutoffs (skipping optimization)")
@@ -245,33 +263,58 @@ def run_optimization_phase(
         logger.debug(f"[{segment}] Fixed cutoff solution saved to {output.pareto_solutions_csv}")
 
     else:
-        # Load floor constraint from previous segment (sequential cutoff ordering)
+        # Load constraint from previous segment (sequential cutoff ordering)
         floor_fixed_cells = None
         if floor_cells_path:
             floor_grid = CellGrid.from_summary(data_summary_desagregado, settings.variables)
             floor_df = pd.read_csv(floor_cells_path)
-            floor_fixed_cells = {}
+            # Drop rows with NaN coordinates (would never match any grid cell)
+            n_raw = len(floor_df)
+            floor_df = floor_df.dropna(subset=settings.variables)
+            n_nan_rows = n_raw - len(floor_df)
+            if n_nan_rows > 0:
+                logger.warning(
+                    f"[{segment}] Floor cells CSV: dropped {n_nan_rows} row(s) with NaN coordinates"
+                )
             # Build a float-normalized lookup to handle int/float type mismatches
-            # (e.g., income_bin stored as int in grid but read as float from CSV)
             normalized_index = {
                 tuple(float(v) for v in coord): idx
                 for coord, idx in floor_grid.cell_index.items()
             }
             n_floor_rows = len(floor_df)
-            for _, row in floor_df.iterrows():
-                coord = tuple(float(row[var]) for var in settings.variables)
-                if coord in normalized_index:
-                    floor_fixed_cells[normalized_index[coord]] = 1
-            n_matched = len(floor_fixed_cells)
-            if n_matched < n_floor_rows:
-                logger.warning(
-                    f"[{segment}] Floor constraint: {n_matched}/{n_floor_rows} cells matched "
-                    f"(unmatched cells may be absent from this segment's grid)"
+
+            if floor_cells_mode == "ceiling":
+                # Top-down: cells in CSV are the ALLOWED set; everything else is rejected
+                allowed_indices = set()
+                for _, row in floor_df.iterrows():
+                    coord = tuple(float(row[var]) for var in settings.variables)
+                    if coord in normalized_index:
+                        allowed_indices.add(normalized_index[coord])
+                floor_fixed_cells = {
+                    idx: 0 for idx in range(len(floor_grid.cell_data))
+                    if idx not in allowed_indices
+                }
+                logger.info(
+                    f"[{segment}] Ceiling constraint (top-down): {len(allowed_indices)} cells allowed, "
+                    f"{len(floor_fixed_cells)} cells forced rejected (from {floor_cells_path})"
                 )
-            logger.info(
-                f"[{segment}] Floor constraint: {n_matched} cells must be accepted "
-                f"(from {floor_cells_path})"
-            )
+            else:
+                # Bottom-up: cells in CSV must be accepted (floor)
+                floor_fixed_cells = {}
+                for _, row in floor_df.iterrows():
+                    coord = tuple(float(row[var]) for var in settings.variables)
+                    if coord in normalized_index:
+                        floor_fixed_cells[normalized_index[coord]] = 1
+                n_matched = len(floor_fixed_cells)
+                if n_matched < n_floor_rows:
+                    logger.warning(
+                        f"[{segment}] Floor constraint: {n_matched}/{n_floor_rows} cells matched "
+                        f"(unmatched cells may be absent from this segment's grid)"
+                    )
+                logger.info(
+                    f"[{segment}] Floor constraint (bottom-up): {n_matched} cells must be accepted "
+                    f"(from {floor_cells_path})"
+                )
 
         # MILP-based Pareto frontier optimization
         pareto_df, grid, pareto_masks = trace_pareto_frontier(
@@ -568,6 +611,23 @@ def run_scenario_analysis(
             summary_table.loc[mask_opt, "production_ci_upper"] = ci_data.get("production_ci_upper", 0.0)
             summary_table.loc[mask_opt, "risk_ci_lower"] = ci_data.get("risk_ci_lower", 0.0)
             summary_table.loc[mask_opt, "risk_ci_upper"] = ci_data.get("risk_ci_upper", 0.0)
+
+    # Add swap-in risk adjustment diagnostics to summary table (Swap-in row only)
+    for diag_col, diag_label in [
+        ("ri_multiplier_rep", "ri_multiplier"),
+        ("stress_factor_rep", "stress_factor"),
+    ]:
+        summary_table[f"{diag_label}_min"] = None
+        summary_table[f"{diag_label}_avg"] = None
+        summary_table[f"{diag_label}_max"] = None
+        if diag_col in data_summary_desagregado.columns:
+            vals = data_summary_desagregado[diag_col].dropna()
+            if not vals.empty:
+                mask_swapin = summary_table["Metric"] == "Swap-in"
+                if mask_swapin.any():
+                    summary_table.loc[mask_swapin, f"{diag_label}_min"] = vals.min()
+                    summary_table.loc[mask_swapin, f"{diag_label}_avg"] = vals.mean()
+                    summary_table.loc[mask_swapin, f"{diag_label}_max"] = vals.max()
 
     # Save outputs
     visualizer.save_html(output.risk_production_visualizer_html(suffix))

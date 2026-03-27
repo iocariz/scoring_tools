@@ -128,7 +128,7 @@ def calculate_metrics_from_cuts(
             f"actual: todu_30ever_h6_boo={actual_rn:.4f}, todu_amt_pile_h6_boo={actual_rd:.4f}, "
             f"risk={actual_risk}%"
         )
-        if actual_risk == 0.0 or actual_risk is None:
+        if actual_risk is None or (isinstance(actual_risk, (int, float)) and abs(actual_risk) < 1e-6):
             # Log per-bin _boo values to diagnose zero-risk
             for _, row in df.iterrows():
                 keys_str = ", ".join(f"{k}={row[k]}" for k in variables)
@@ -370,9 +370,10 @@ def _compute_hybrid_mr_risk(
             )
             mr_h6_valid = mr_h6_valid[mature_mask]
         else:
-            logger.warning(
+            logger.error(
                 f"No accounts with >={mr_maturity_months}mo H6 maturity (reference_date={reference_date.date()}). "
-                f"Falling back to main-period or H3 extrapolation for all bins."
+                f"Falling back to main-period or H3 extrapolation for ALL bins. "
+                f"Consider lowering mr_maturity_months or extending the MR window."
             )
             mr_h6_valid = mr_h6_valid.iloc[:0]  # empty DataFrame, forces fallback
 

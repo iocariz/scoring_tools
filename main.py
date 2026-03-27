@@ -45,6 +45,7 @@ def main(
     preloaded_data: pd.DataFrame | None = None,
     output: OutputPaths | None = None,
     floor_cells_path: str | None = None,
+    floor_cells_mode: str = "floor",
 ):
     """
     Load and preprocess SAS data using configuration.
@@ -134,6 +135,7 @@ def main(
             per_bin_stress=per_bin_stress,
             per_bin_tasa_fin=per_bin_tasa_fin,
             floor_cells_path=floor_cells_path,
+            floor_cells_mode=floor_cells_mode,
         )
 
         # Compute total demand (booked + rejected, excluding canceled)
@@ -262,6 +264,7 @@ def main(
                     per_bin_stress=per_bin_stress,
                     per_bin_tasa_fin=per_bin_tasa_fin,
                     floor_cells_path=floor_cells_path,
+                    floor_cells_mode=floor_cells_mode,
                 )
 
                 cutoff_summaries = []

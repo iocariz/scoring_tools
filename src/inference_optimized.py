@@ -1490,8 +1490,12 @@ def todu_average_inference(
         data[mask_booked]
         .groupby(variables, as_index=False)  # as_index=False keeps variables as columns
         .agg(dict.fromkeys(indicators, "sum"))
-        .dropna()
     )
+    n_before_dropna = len(df_grouped)
+    df_grouped = df_grouped.dropna()
+    n_dropped = n_before_dropna - len(df_grouped)
+    if n_dropped > 0:
+        logger.warning(f"Dropped {n_dropped}/{n_before_dropna} bin(s) with NaN in aggregated indicators")
 
     if df_grouped.empty:
         logger.warning("No data found after filtering for 'booked' status.")
@@ -1707,10 +1711,21 @@ def compute_pre_reject_inference_data(
             )
         global_fallback = per_bin_stress["stress_factor"].median()
         repesca_summary["stress_factor"] = repesca_summary["stress_factor"].fillna(global_fallback)
-        repesca_summary["todu_30ever_h6"] *= repesca_summary["stress_factor"]
+        sf = repesca_summary["stress_factor"]
+        logger.info(
+            f"Swap-in per-bin stress: min={sf.min():.4f}, avg={sf.mean():.4f}, "
+            f"max={sf.max():.4f}, bins={len(sf)}"
+        )
+        repesca_summary["todu_30ever_h6"] *= sf
         if "todu_30ever_h3" in repesca_summary.columns:
-            repesca_summary["todu_30ever_h3"] *= repesca_summary["stress_factor"]
-        repesca_summary = repesca_summary.drop(columns=["stress_factor"])
+            repesca_summary["todu_30ever_h3"] *= sf
+        # Keep stress_factor_applied for downstream diagnostics
+        repesca_summary = repesca_summary.rename(columns={"stress_factor": "stress_factor_applied"})
+    else:
+        # Global stressor — tag all bins with the scalar value
+        repesca_summary["stress_factor_applied"] = stressor
+        if abs(stressor - 1.0) > 1e-6:
+            logger.info(f"Swap-in global stress: {stressor:.4f} (applied to all bins)")
 
     return booked_summary, repesca_summary
 
@@ -1827,12 +1842,19 @@ def run_optimization_pipeline(
             acceptance_date_col=reject_acceptance_date_col,
             apply_h3_multiplier=reject_apply_h3_multiplier,
         )
-        # Drop auxiliary columns before downstream merge
+        # Log RI multiplier stats at INFO level for visibility
+        if "reject_risk_multiplier" in data_sumary_desagregado_repesca.columns:
+            ri_mult = data_sumary_desagregado_repesca["reject_risk_multiplier"]
+            logger.info(
+                f"Swap-in RI multiplier: min={ri_mult.min():.3f}, avg={ri_mult.mean():.3f}, "
+                f"max={ri_mult.max():.3f}, bins={len(ri_mult)}"
+            )
+        # Drop auxiliary columns before downstream merge, but keep reject_risk_multiplier
+        # for downstream diagnostics (renamed to _rep suffix with other indicators)
         data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.drop(
             columns=[
                 "acceptance_rate",
                 "smoothed_acceptance_rate",
-                "reject_risk_multiplier",
                 "ri_confidence",
                 "ri_bin_count",
             ],
@@ -1858,14 +1880,22 @@ def run_optimization_pipeline(
         data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.drop(columns=["tasa_fin"])
     else:
         data_sumary_desagregado_repesca[INDICADORES] *= tasa_fin
-    data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.rename(
-        columns={i: i + "_rep" for i in INDICADORES}
-    )
+    rename_map = {i: i + "_rep" for i in INDICADORES}
+    # Preserve diagnostic columns as _rep for downstream reporting
+    if "stress_factor_applied" in data_sumary_desagregado_repesca.columns:
+        rename_map["stress_factor_applied"] = "stress_factor_rep"
+    if "reject_risk_multiplier" in data_sumary_desagregado_repesca.columns:
+        rename_map["reject_risk_multiplier"] = "ri_multiplier_rep"
+    data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.rename(columns=rename_map)
 
     # Merge and adjust indicators
     data_sumary_desagregado = data_sumary_desagregado_booked.merge(
         data_sumary_desagregado_repesca, on=VARIABLES, how="outer"
-    ).fillna(0)
+    )
+    # Fill indicator NaNs with 0, but preserve diagnostic _rep columns (NaN for booked-only rows)
+    diag_cols = {"stress_factor_rep", "ri_multiplier_rep"}
+    fill_cols = [c for c in data_sumary_desagregado.columns if c not in diag_cols]
+    data_sumary_desagregado[fill_cols] = data_sumary_desagregado[fill_cols].fillna(0)
 
     for indicador in INDICADORES:
         data_sumary_desagregado[indicador] = (
