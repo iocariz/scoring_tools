@@ -1704,7 +1704,7 @@ def process_mr_period(
         # Re-optimize the mask on the post-recalibration MR risk surface so
         # reported metrics are consistent with the cutoffs used.
         # ------------------------------------------------------------------
-        if recalibration_applied:
+        if recalibration_applied and not settings.baseline_mode:
             try:
                 from src.optimization_utils import CellGrid, milp_solve_cutoffs
 
@@ -1900,6 +1900,23 @@ def process_mr_period(
             logger.info("Dropping b2_ever_h6_tmp from data_demand_mr and data_booked_mr...")
             data_demand_mr = data_demand_mr.drop(columns=["b2_ever_h6_tmp"], errors="ignore")
             data_booked_mr = data_booked_mr.drop(columns=["b2_ever_h6_tmp"], errors="ignore")
+
+        # --- Baseline mode: zero repesca, accept-all mask, skip swap-in/out ---
+        if settings.baseline_mode:
+            logger.info("MR baseline mode: zeroing swap-in columns and using accept-all mask (Optimum = Actual)")
+            for col in data_summary_desagregado_mr.columns:
+                if col.endswith("_rep"):
+                    data_summary_desagregado_mr[col] = 0
+            # Recompute totals (base = _boo only)
+            for ind in settings.indicators:
+                boo_col = f"{ind}_boo"
+                if boo_col in data_summary_desagregado_mr.columns:
+                    data_summary_desagregado_mr[ind] = data_summary_desagregado_mr[boo_col]
+            # Override mask/grid with accept-all on MR grid so no cells are cut
+            from src.optimization_utils import CellGrid
+            mr_grid = CellGrid.from_summary(data_summary_desagregado_mr, settings.variables)
+            mask = np.ones(len(mr_grid.cell_data), dtype=int)
+            grid = mr_grid
 
         # --- Generate Risk Production Summary Table for MR ---
         logger.info("Generating Risk Production Summary Table for MR period...")
