@@ -143,15 +143,19 @@ uv run python run_batch.py --list
 
 After batch processing, allocates a global risk target across segments by selecting one point from each segment's efficient frontier to maximize total production.
 
+You must pass **at least one** risk target via `--target` and/or `--what-if` (see below).
+
 ```bash
 uv run python run_allocation.py --target TARGET [OPTIONS]
+uv run python run_allocation.py --what-if 2.0,2.5,3.0 [OPTIONS]
 ```
 
 | Flag | Description |
 |:-----|:------------|
-| `--target FLOAT` | **(Required)** Global risk target in % (e.g., `1.0`) |
+| `--target FLOAT` | Global risk target in % (e.g., `1.0`). Optional if `--what-if` is provided. |
+| `--what-if LIST` | Comma-separated extra risk targets in % (e.g., `2.0,2.5,3.0`). Runs one optimization per target and builds a comparison pack. Combine with `--target` to include that target first without duplicating. |
 | `--data-dir DIR` | Base directory for frontier discovery (default: `output`). Supports both `<data-dir>/<segment>/data/efficient_frontier_{scenario}.csv` and single-segment `<data-dir>/data/efficient_frontier_{scenario}.csv` |
-| `--output PATH` | Output CSV file (default: `allocation_results.csv`) |
+| `--output PATH` | Primary output CSV (default: `allocation_results.csv`). The stem controls companion filenames (see **Portfolio-owner outputs**). |
 | `--scenario NAME` | Scenario to use (default: `base`) |
 | `--method {exact,greedy}` | Optimization method (default: `exact`) |
 | `--segments-config PATH` | Segments config file for min/max risk constraints (default: `segments.toml`) |
@@ -163,11 +167,25 @@ uv run python run_allocation.py --target TARGET [OPTIONS]
 - **`exact`** (MILP via `scipy.optimize.milp`): Globally optimal allocation. Falls back to greedy if infeasible.
 - **`greedy`**: Hill-climbing heuristic. Faster but may find local optima; when `--production-floor` is supplied, it still grows production until the floor is met or raises if the floor is infeasible under the target.
 
+**Portfolio-owner outputs** (written next to `--output`, using its stem, e.g. `allocation_results`):
+
+| File | When | Contents |
+|:-----|:-----|:-----------|
+| `<stem>_policy_cutoff_table.csv` | Always | Long-form policy table: per-segment cutoffs (2-var bin → max accepted bin), or mask summary for N-var, plus optional swap-in/out columns from the frontier row. |
+| `<stem>_allocation_narrative.md` | Single target only | Plain-language summary: risk target vs achieved, configured segment limits, and which constraints bind (MILP slack; greedy uses tolerance-based hints). |
+| `<stem>_what_if.csv` | Multiple targets | One row per target: achieved global risk, production, method, binding constraint labels, segment count. |
+| `<stem>_allocation_narratives.md` | Multiple targets | Same narrative style as above, with one section per target. |
+
+The primary `--output` CSV is always the **first** target’s full per-segment frontier row export (`to_full_dataframe()`).
+
 **Examples:**
 
 ```bash
-# Optimal allocation at 1.0% global risk
+# Optimal allocation at 1.0% global risk (writes narrative + policy table)
 uv run python run_allocation.py --target 1.0
+
+# Compare several global risk caps without repeating --target
+uv run python run_allocation.py --what-if 2.0,2.5,3.0 --output allocation_base.csv
 
 # Enforce a minimum global production floor
 uv run python run_allocation.py --target 1.0 --production-floor 50000
@@ -1362,6 +1380,7 @@ new_efx_clus = [5, 6, 8]
 | `audit.py` | Record-level classification (keep/swap-in/swap-out/rejected) |
 | `consolidation.py` | Multi-segment aggregation and consolidated reporting |
 | `global_optimizer.py` | MILP and greedy global portfolio allocation |
+| `portfolio_owner.py` | Policy/cutoff tables and allocation constraint narratives for `run_allocation.py` |
 | `metrics.py` | Gini, lift, precision-recall, ROC, DeLong test |
 | `plots.py` | `RiskProductionVisualizer` and Plotly chart generation |
 | `styles.py` | Consistent plot styling and color palette |
@@ -1431,7 +1450,11 @@ new_efx_clus = [5, 6, 8]
 | `consolidated_risk_production.xlsx` | Management-ready Excel workbook (see below) |
 | `score_discriminance.csv` | Gini and discriminance metrics per score |
 | `score_discriminance_*.png` | Score discrimination plots |
-| `allocation_results.csv` | Global allocation results (if `run_allocation.py` was run) |
+| `allocation_results.csv` | Global allocation: per-segment chosen frontier row (if `run_allocation.py` was run) |
+| `allocation_results_policy_cutoff_table.csv` | Policy/cutoff table for portfolio owners (same stem as `--output`) |
+| `allocation_results_allocation_narrative.md` | Constraint narrative for a single `--target` |
+| `allocation_results_what_if.csv` | Multi-target comparison (when `--what-if` lists several targets) |
+| `allocation_results_allocation_narratives.md` | Multi-target constraint narratives |
 
 #### Excel Workbook Sheets
 
@@ -1471,8 +1494,9 @@ open output/consolidated_risk_production.html
 # 5. (Optional) Run score discriminance analysis
 uv run python run_score_metrics.py
 
-# 6. (Optional) Global risk allocation
+# 6. (Optional) Global risk allocation (policy table + narrative written beside --output)
 uv run python run_allocation.py --target 1.0
+# uv run python run_allocation.py --what-if 1.0,1.5,2.0 --output allocation_results.csv
 
 # 7. (Optional) Launch interactive dashboard
 uv run python dashboard.py
@@ -1593,6 +1617,7 @@ uv run pytest tests/test_utils.py tests/test_mr_pipeline.py -q
 | `test_estimators.py` | `HurdleRegressor`, `TweedieGLM` |
 | `test_optimization_utils.py` | Solution generation, KPI calculation, Pareto |
 | `test_global_optimizer.py` | MILP and greedy allocation |
+| `test_portfolio_owner.py` | Policy/cutoff tables and allocation narratives |
 | `test_mr_pipeline.py` | MR period processing |
 | `test_stability.py` | PSI/CSI calculations |
 | `test_trends.py` | Monthly metrics, anomaly detection |

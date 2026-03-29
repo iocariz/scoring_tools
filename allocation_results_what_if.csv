@@ -1,0 +1,4 @@
+target_risk_pct,achieved_global_risk_pct,global_production_eur,method,feasible,binding_constraints,n_segments
+2.0,1.9998428793363352,479422252.5313495,exact,True,,11
+2.5,2.0663187869364297,482474091.479813,exact,True,,11
+3.0,2.0663187869364297,482474091.479813,exact,True,,11

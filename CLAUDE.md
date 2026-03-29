@@ -40,9 +40,11 @@ uv run python analyze_logs.py batch.log -o report.txt        # save report to fi
 
 # Run allocation (global MILP across segments)
 uv run python run_allocation.py --target 2.5
+uv run python run_allocation.py --what-if 2.0,2.5,3.0
 uv run python run_allocation.py --target 2.5 --method greedy
 uv run python run_allocation.py --target 2.5 --production-floor 1000000
 uv run python run_allocation.py --target 2.5 --lock segment1:3
+# Writes beside `--output`: `<stem>_policy_cutoff_table.csv`, `<stem>_allocation_narrative.md` (single target); multi-target adds `<stem>_what_if.csv`, `<stem>_allocation_narratives.md`
 
 # Generate presentation (.pptx / .pdf)
 uv run python generate_presentation.py

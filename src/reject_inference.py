@@ -591,17 +591,17 @@ def apply_parceling_adjustment(
     result["todu_30ever_h6"] = result["todu_30ever_h6"] * result["reject_risk_multiplier"]
 
     # Optionally apply the same uplift to H3 risk numerator.
-    # When True (default): preserves the observed H6/H3 ratio for downstream
-    # H3→H6 extrapolation — appropriate when the ratio is stable.
-    # When False: keeps H3 original so that extrapolation uses unbiased H3
-    # data — useful when the H6/H3 ratio differs between booked and rejected
-    # populations (e.g., due to cohort maturity or selection effects).
+    # When True: preserves the observed H6/H3 ratio for downstream H3→H6
+    # extrapolation when that ratio is stable.
+    # When False (default): keeps H3 original so extrapolation uses unscaled H3
+    # — useful when the H6/H3 ratio differs between booked and rejected
+    # populations (e.g., cohort maturity or selection effects).
     if "todu_30ever_h3" in result.columns:
         if apply_h3_multiplier:
             result["todu_30ever_h3"] = result["todu_30ever_h3"] * result["reject_risk_multiplier"]
         else:
             logger.debug(
-                "Reject inference: H3 multiplier NOT applied (reject_apply_h3_multiplier=False). "
+                "Reject inference: H3 multiplier NOT applied (apply_h3_multiplier=False). "
                 "H3 risk numerator preserved for unbiased H3→H6 extrapolation."
             )
 
@@ -666,9 +666,10 @@ def apply_reject_inference(
     include_all_rejections:
         If True, include all rejections in acceptance rate denominator.
     apply_h3_multiplier:
-        If True (default), apply the reject risk multiplier to H3 numerator
-        as well as H6, preserving the observed H6/H3 ratio.  Set to False
-        to keep H3 original for unbiased H3→H6 extrapolation.
+        If True, apply the reject risk multiplier to the H3 numerator as well
+        as H6, preserving the observed H6/H3 ratio when that is stable.  Default
+        False: H3 numerator is left unchanged so H3→H6 extrapolation uses
+        unscaled H3 (see ``reject_apply_h3_multiplier`` in config).
 
     Returns
     -------

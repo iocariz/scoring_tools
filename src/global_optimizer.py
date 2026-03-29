@@ -698,6 +698,28 @@ class GlobalAllocator:
 
         final_global_risk = final_risk_num / final_total_prod if final_total_prod > 0 else 0.0
 
+        # Heuristic binding flags (greedy has no dual slacks — tolerance-based only)
+        binding_heuristic: list[str] = []
+        tol = 1e-3
+        if abs(final_global_risk - global_risk_target) < tol:
+            binding_heuristic.append("global_risk")
+        if global_production_floor is not None and abs(final_total_prod - global_production_floor) / max(
+            global_production_floor, 1.0
+        ) < 1e-4:
+            binding_heuristic.append("global_production_floor")
+        if constraints:
+            for seg, sc in constraints.items():
+                if seg not in segment_metrics:
+                    continue
+                r = segment_metrics[seg]["risk"]
+                p = segment_metrics[seg]["production"]
+                if sc.min_risk is not None and abs(r - sc.min_risk) < tol:
+                    binding_heuristic.append(f"{seg}_min_risk")
+                if sc.max_risk is not None and abs(r - sc.max_risk) < tol:
+                    binding_heuristic.append(f"{seg}_max_risk")
+                if sc.min_production is not None and abs(p - sc.min_production) / max(sc.min_production, 1.0) < 1e-4:
+                    binding_heuristic.append(f"{seg}_min_production")
+
         # Warn if global production floor is not met (greedy only grows, so this is informational)
         if global_production_floor is not None and final_total_prod < global_production_floor:
             logger.warning(
@@ -716,4 +738,5 @@ class GlobalAllocator:
             method="greedy",
             target=global_risk_target,
             segment_details=segment_details,
+            binding_constraints=binding_heuristic,
         )
