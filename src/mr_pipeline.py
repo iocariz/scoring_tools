@@ -1127,6 +1127,7 @@ def process_mr_period(
     grid: object | None = None,
     per_bin_stress: pd.DataFrame | None = None,
     per_bin_tasa_fin: pd.DataFrame | None = None,
+    audit_mr_df: pd.DataFrame | None = None,
 ) -> None:
     """
     Process the MR period data: filtering, inference, aggregation, visualization, and summary table.
@@ -1937,6 +1938,11 @@ def process_mr_period(
             multiplier=settings.multiplier,
             total_demand=mr_total_demand,
         )
+
+        if mr_summary_table is not None and audit_mr_df is not None and not audit_mr_df.empty:
+            from src.audit import reconcile_risk_production_summary_with_audit
+
+            mr_summary_table = reconcile_risk_production_summary_with_audit(mr_summary_table, audit_mr_df)
 
         if mr_summary_table is not None:
             mr_summary_path = output.mr_risk_production_summary_csv(file_suffix)

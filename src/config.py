@@ -248,12 +248,33 @@ class PreprocessingSettings(BaseModel):
 
     @field_validator("min_accepted_bin_by_variable")
     @classmethod
-    def validate_min_accepted_bin_values(cls, v: dict[str, float]) -> dict[str, float]:
+    def validate_min_accepted_bin_values(
+        cls, v: dict[str, float | dict[str | int | float, float]]
+    ) -> dict[str, float | dict[str | int | float, float]]:
         for var, threshold in v.items():
             if not isinstance(var, str) or not var:
                 raise ValueError("min_accepted_bin_by_variable keys must be non-empty variable names")
-            if threshold is None:
-                raise ValueError(f"min_accepted_bin_by_variable['{var}'] cannot be null")
+            if isinstance(threshold, dict):
+                if not threshold:
+                    raise ValueError(f"min_accepted_bin_by_variable['{var}'] cannot be an empty dict")
+                for income_bin_value, th in threshold.items():
+                    if th is None:
+                        raise ValueError(
+                            f"min_accepted_bin_by_variable['{var}']['{income_bin_value}'] cannot be null"
+                        )
+                    try:
+                        float(th)
+                    except (TypeError, ValueError) as e:
+                        raise ValueError(
+                            f"min_accepted_bin_by_variable['{var}']['{income_bin_value}'] must be numeric, got {th}"
+                        ) from e
+            else:
+                if threshold is None:
+                    raise ValueError(f"min_accepted_bin_by_variable['{var}'] cannot be null")
+                try:
+                    float(threshold)
+                except (TypeError, ValueError) as e:
+                    raise ValueError(f"min_accepted_bin_by_variable['{var}'] must be numeric, got {threshold}") from e
         return v
 
     # Inversion flags populated during preprocessing based on directions
@@ -282,8 +303,9 @@ class PreprocessingSettings(BaseModel):
     baseline_mode: bool = False
     cutoff_floor_segment: str | None = None
     # Per-variable minimum accepted bin thresholds.
-    # Cells with value < threshold are forced rejected in optimization.
-    min_accepted_bin_by_variable: dict[str, float] = Field(default_factory=dict)
+    # Value can be a scalar (applies to all rows) or an income_bin-keyed map.
+    # Cells with value < resolved threshold are forced rejected in optimization.
+    min_accepted_bin_by_variable: dict[str, float | dict[str | int | float, float]] = Field(default_factory=dict)
     # Note: cutoff_ordering_mode is a batch-level setting read from the raw TOML
     # dict in run_batch.py (not from this model), since it controls cross-segment
     # orchestration rather than per-segment behavior.

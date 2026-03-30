@@ -21,6 +21,7 @@ import plotly.graph_objects as go
 from loguru import logger
 from plotly.subplots import make_subplots
 
+from .audit import audit_production_kpis, reconcile_risk_production_summary_with_audit
 from .constants import DEFAULT_RISK_MULTIPLIER, DEFAULT_RISK_MULTIPLIER_H3
 from .utils import calculate_b2_ever_h6, resolve_reporting_supersegment
 
@@ -582,6 +583,123 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
     return metrics
 
 
+def _segment_audit_csv_path(output_base: Path, seg_name: str, period: str, scenario: str) -> Path:
+    """Resolved audit file for a segment run (matches ``save_audit_tables`` naming)."""
+    data_dir = output_base / seg_name / "data"
+    if period == "mr":
+        return data_dir / f"audit_{scenario}_mr.csv"
+    return data_dir / f"audit_{scenario}.csv"
+
+
+def patch_consolidated_production_from_segment_audits(
+    df: pd.DataFrame,
+    output_base: Path,
+    segments: dict[str, dict[str, Any]],
+) -> pd.DataFrame:
+    """
+    Overwrite production € (and derived deltas / rejection rates / total demand) from loan-level audit CSVs,
+    then re-aggregate supersegment and TOTAL rows so consolidated outputs match ``audit_*.csv`` drill-down.
+    """
+    if df.empty or not segments:
+        return df
+
+    work = df.copy()
+
+    def _apply_kpis(idx: int, kpis: dict[str, float]) -> None:
+        a = kpis["actual"]
+        o = kpis["optimum"]
+        si = kpis["swap_in"]
+        so = kpis["swap_out"]
+        td = kpis["total_demand"]
+        work.loc[idx, "actual_production"] = a
+        work.loc[idx, "optimum_production"] = o
+        work.loc[idx, "swap_in_production"] = si
+        work.loc[idx, "swap_out_production"] = so
+        work.loc[idx, "production_delta"] = o - a
+        work.loc[idx, "production_delta_pct"] = (100.0 * (o - a) / a) if a else 0.0
+        if "total_demand" in work.columns:
+            work.loc[idx, "total_demand"] = td
+        if td > 0:
+            if "actual_rejection_rate_pct" in work.columns:
+                work.loc[idx, "actual_rejection_rate_pct"] = (1.0 - a / td) * 100.0
+            if "optimum_rejection_rate_pct" in work.columns:
+                work.loc[idx, "optimum_rejection_rate_pct"] = (1.0 - o / td) * 100.0
+
+    for seg_name in segments:
+        for scenario in work["scenario"].dropna().unique():
+            sc = str(scenario)
+            for period in ("main", "mr"):
+                path = _segment_audit_csv_path(output_base, seg_name, period, sc)
+                if not path.exists():
+                    continue
+                try:
+                    audit = pd.read_csv(path, skipinitialspace=True)
+                    audit.columns = audit.columns.str.strip()
+                except (pd.errors.ParserError, OSError, ValueError):
+                    continue
+                kpis = audit_production_kpis(audit)
+                mask = (
+                    (work["segments"].astype(str).str.strip() == seg_name)
+                    & (work["period"] == period)
+                    & (work["scenario"] == sc)
+                )
+                hit = work.loc[mask]
+                if hit.empty:
+                    continue
+                _apply_kpis(int(hit.index[0]), kpis)
+
+    def _detail_segment_mask(s: pd.Series) -> pd.Series:
+        g = s.astype(str)
+        return (g != "TOTAL") & ~g.str.startswith("supersegment_")
+
+    # Supersegment rows = sum of member segment rows (disjoint segments)
+    ss_idx = work["group"].astype(str).str.startswith("supersegment_")
+    for idx, row in work.loc[ss_idx].iterrows():
+        members = [x.strip() for x in str(row["segments"]).split(",") if x.strip()]
+        if not members:
+            continue
+        period, scenario = row["period"], str(row["scenario"])
+        sub = work.loc[
+            work["segments"].astype(str).str.strip().isin(members)
+            & (work["period"] == period)
+            & (work["scenario"] == scenario)
+            & _detail_segment_mask(work["group"]),
+        ]
+        if sub.empty:
+            continue
+        td = float(sub["total_demand"].sum()) if "total_demand" in sub.columns else 0.0
+        kpis = {
+            "actual": float(sub["actual_production"].sum()),
+            "optimum": float(sub["optimum_production"].sum()),
+            "swap_in": float(sub["swap_in_production"].sum()),
+            "swap_out": float(sub["swap_out_production"].sum()),
+            "total_demand": td,
+        }
+        _apply_kpis(int(idx), kpis)
+
+    # TOTAL = sum of individual segment rows (same basis as consolidate_segments aggregation)
+    tot_idx = work["group"].astype(str) == "TOTAL"
+    for idx, row in work.loc[tot_idx].iterrows():
+        period, scenario = row["period"], str(row["scenario"])
+        sub = work.loc[
+            _detail_segment_mask(work["group"]) & (work["period"] == period) & (work["scenario"] == scenario)
+        ]
+        if sub.empty:
+            continue
+        td = float(sub["total_demand"].sum()) if "total_demand" in sub.columns else 0.0
+        kpis = {
+            "actual": float(sub["actual_production"].sum()),
+            "optimum": float(sub["optimum_production"].sum()),
+            "swap_in": float(sub["swap_in_production"].sum()),
+            "swap_out": float(sub["swap_out_production"].sum()),
+            "total_demand": td,
+        }
+        _apply_kpis(int(idx), kpis)
+
+    logger.info("Consolidated production metrics patched from segment audit CSVs (where present).")
+    return work
+
+
 def aggregate_metrics(
     metrics_list: list[dict[str, dict[str, float]]],
     multiplier: float = float(DEFAULT_RISK_MULTIPLIER),
@@ -945,6 +1063,7 @@ def consolidate_segments(
                 results.append(total_consolidated.to_dict())
 
     df = pd.DataFrame(results)
+    df = patch_consolidated_production_from_segment_audits(df, output_base, segments)
 
     # Reorder columns for clarity
     column_order = [
@@ -2101,11 +2220,44 @@ def export_consolidated_excel(
                 return "Income Bin 2"
             return f"Income Bin {income_val}"
 
+        audit_path = data_dir / ("audit_base_mr.csv" if period == "mr" else "audit_base.csv")
+        audit_full: pd.DataFrame | None = None
+        if audit_path.exists():
+            try:
+                audit_full = pd.read_csv(audit_path, skipinitialspace=True)
+                audit_full.columns = audit_full.columns.str.strip()
+            except (pd.errors.ParserError, OSError, ValueError):
+                audit_full = None
+
+        def _audit_slice_for_income_bin(audit_df: pd.DataFrame, income_val: Any) -> pd.DataFrame:
+            if "income_bin" not in audit_df.columns:
+                return pd.DataFrame()
+            ib = pd.to_numeric(audit_df["income_bin"], errors="coerce")
+            try:
+                target = float(income_val)
+            except (TypeError, ValueError):
+                return pd.DataFrame()
+            return audit_df.loc[ib == target].copy()
+
+        def _empty_rp_skeleton() -> pd.DataFrame:
+            base = dict.fromkeys(template_cols, np.nan)
+            rows = []
+            for m in ["Actual", "Swap-in", "Swap-out", "Optimum selected", "Summary"]:
+                r = dict(base)
+                r["Metric"] = m
+                rows.append(r)
+            return pd.DataFrame(rows)
+
         out_tables: list[tuple[str, pd.DataFrame]] = []
         # Keep deterministic order with 1 first, then 2.
         income_values = sorted(pd.Series(df_sum["income_bin"]).dropna().unique().tolist(), key=lambda x: float(x))
+        ib_grid = pd.to_numeric(df_sum["income_bin"], errors="coerce")
         for income_val in income_values:
-            df_bin = df_sum[df_sum["income_bin"] == income_val].copy()
+            try:
+                iv = float(income_val)
+            except (TypeError, ValueError):
+                continue
+            df_bin = df_sum.loc[ib_grid == iv].copy()
             if df_bin.empty:
                 continue
             tbl = calculate_metrics_from_cuts(
@@ -2118,12 +2270,34 @@ def export_consolidated_excel(
             if tbl is None or tbl.empty:
                 continue
             tbl = _append_summary_row_if_missing(tbl)
+            # Match main RP sheet: production € from loan-level audit for this income_bin
+            if audit_full is not None and not audit_full.empty:
+                audit_bin = _audit_slice_for_income_bin(audit_full, income_val)
+                if not audit_bin.empty:
+                    tbl = reconcile_risk_production_summary_with_audit(tbl, audit_bin, silent=True)
             # Match the same shape/columns as the total RP table in Excel.
             for c in template_cols:
                 if c not in tbl.columns:
                     tbl[c] = np.nan
             tbl = tbl[template_cols]
             out_tables.append((_income_bin_title(income_val), tbl))
+
+        # Rows with missing or out-of-grid income_bin (audit-only; closes sum vs main RP)
+        if audit_full is not None and "income_bin" in audit_full.columns and income_values:
+            iba = pd.to_numeric(audit_full["income_bin"], errors="coerce")
+            targets = {float(x) for x in income_values}
+            uncovered = iba.isna() | (~iba.isin(list(targets)))
+            if uncovered.any():
+                au_rest = audit_full.loc[uncovered].copy()
+                if not au_rest.empty:
+                    tbl_u = _empty_rp_skeleton()
+                    tbl_u = reconcile_risk_production_summary_with_audit(tbl_u, au_rest, silent=True)
+                    for c in template_cols:
+                        if c not in tbl_u.columns:
+                            tbl_u[c] = np.nan
+                    tbl_u = tbl_u[template_cols]
+                    out_tables.append(("Income bin — unassigned / outside grid bins", tbl_u))
+
         return out_tables
 
     def _write_single_pivot_grid(ws, pivot, col_var, row_var, start_row, col_offset=0):

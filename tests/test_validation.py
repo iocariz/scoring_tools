@@ -103,6 +103,20 @@ class TestPreprocessorSettings:
             PreprocessingSettings(**valid_config_dict)
         assert "min_accepted_bin_by_variable contains variables not present in 'variables'" in str(excinfo.value)
 
+    def test_min_accepted_bin_by_variable_conditional_by_income_bin_valid(self, valid_config_dict):
+        valid_config_dict["variables"] = ["new_efx_clus", "sc_octroi_new_clus", "income_bin"]
+        valid_config_dict["bins"] = {
+            "new_efx_clus": {"source_col": "risk_score_rf", "output_col": "new_efx_clus", "bin_edges": [0, 1, 2]},
+            "sc_octroi_new_clus": {"source_col": "score_rf", "output_col": "sc_octroi_new_clus", "bin_edges": [0, 1, 2]},
+            "income_bin": {"source_col": "income", "output_col": "income_bin", "bin_edges": [0, 1, 2]},
+        }
+        valid_config_dict["min_accepted_bin_by_variable"] = {
+            "new_efx_clus": {"1": 4, "2": 6},
+            "sc_octroi_new_clus": {"1": 7, "2": 8},
+        }
+        settings = PreprocessingSettings(**valid_config_dict)
+        assert isinstance(settings.min_accepted_bin_by_variable["new_efx_clus"], dict)
+
 
 class TestDataValidation:
     """Test data validation functions."""

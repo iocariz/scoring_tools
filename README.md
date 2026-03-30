@@ -1289,7 +1289,25 @@ segment_filter = "segment_a"   # (required) Segment regex filter
 | `inference_variables` | list[str] | *(from config.toml)* | Override model training variables |
 | `baseline_mode` | bool | `false` | Baseline mode for this segment (no optimization) |
 | `cutoff_floor_segment` | str | `None` | Segment whose accepted cells constrain this one (sequential ordering) |
-| `min_accepted_bin_by_variable` | dict[str, float] | `{}` | Force-reject cells where any listed variable is below the configured bin threshold |
+| `min_accepted_bin_by_variable` | dict | `{}` | Force-reject cells where any listed variable is below the configured threshold. Value can be scalar (global) or `income_bin`-keyed map. |
+
+Example (scalar):
+
+```toml
+min_accepted_bin_by_variable = { new_efx_clus = 4, sc_octroi_new_clus = 7 }
+```
+
+Example (conditional by `income_bin`):
+
+```toml
+[segments.my_segment.min_accepted_bin_by_variable.new_efx_clus]
+1 = 4
+2 = 6
+
+[segments.my_segment.min_accepted_bin_by_variable.sc_octroi_new_clus]
+1 = 7
+2 = 8
+```
 
 ##### Allocation Constraints (used by `run_allocation.py`)
 

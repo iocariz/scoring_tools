@@ -5,7 +5,12 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from src.audit import save_audit_tables
+from src.audit import (
+    generate_audit_table,
+    reconcile_risk_production_summary_with_audit,
+    save_audit_tables,
+    validate_audit_against_summary,
+)
 from src.config import OutputPaths, PreprocessingSettings
 from src.inference_optimized import run_optimization_pipeline
 from src.mr_pipeline import process_mr_period
@@ -321,13 +326,35 @@ def run_optimization_phase(
         if settings.min_accepted_bin_by_variable:
             minbin_grid = CellGrid.from_summary(data_summary_desagregado, settings.variables)
             var_pos = {v: i for i, v in enumerate(settings.variables)}
+            income_pos = var_pos.get("income_bin")
             minbin_reject_cells: dict[int, int] = {}
+
+            # Normalize conditional thresholds by variable, keyed by income_bin value.
+            conditional_thresholds: dict[str, dict[float, float]] = {}
+            for var, threshold_cfg in settings.min_accepted_bin_by_variable.items():
+                if isinstance(threshold_cfg, dict):
+                    if income_pos is None:
+                        raise ValueError(
+                            f"[{segment}] Conditional min_accepted_bin_by_variable for '{var}' requires "
+                            "'income_bin' in settings.variables."
+                        )
+                    conditional_thresholds[var] = {float(k): float(v) for k, v in threshold_cfg.items()}
+
             for coord, idx in minbin_grid.cell_index.items():
                 coord_f = tuple(float(v) for v in coord)
-                reject = any(
-                    coord_f[var_pos[var]] < float(threshold)
-                    for var, threshold in settings.min_accepted_bin_by_variable.items()
-                )
+                income_val = coord_f[income_pos] if income_pos is not None else None
+                reject = False
+                for var, threshold_cfg in settings.min_accepted_bin_by_variable.items():
+                    if isinstance(threshold_cfg, dict):
+                        resolved = conditional_thresholds[var].get(float(income_val)) if income_val is not None else None
+                        if resolved is None:
+                            continue
+                        threshold = resolved
+                    else:
+                        threshold = float(threshold_cfg)
+                    if coord_f[var_pos[var]] < threshold:
+                        reject = True
+                        break
                 if reject:
                     minbin_reject_cells[idx] = 0
 
@@ -627,6 +654,58 @@ def run_scenario_analysis(
 
     summary_table = visualizer.get_summary_table()
 
+    # Loan-level audit totals are canonical for production (€): reconcile summary before save
+    data_main_period = filter_by_date(
+        data_clean,
+        "mis_date",
+        settings.date_ini_book_obs,
+        settings.date_fin_book_obs,
+    )
+    if settings.date_ini_book_obs_mr is not None and settings.date_fin_book_obs_mr is not None:
+        data_mr_period = filter_by_date(
+            data_clean,
+            "mis_date",
+            settings.date_ini_book_obs_mr,
+            settings.date_fin_book_obs_mr,
+        )
+    else:
+        data_mr_period = pd.DataFrame(columns=data_clean.columns)
+
+    n_months_main = n_months_main_calc
+    if settings.date_ini_book_obs_mr is not None and settings.date_fin_book_obs_mr is not None:
+        date_ini_mr = settings.get_date("date_ini_book_obs_mr")
+        date_fin_mr = settings.get_date("date_fin_book_obs_mr")
+        n_months_mr = (date_fin_mr.year - date_ini_mr.year) * 12 + (date_fin_mr.month - date_ini_mr.month) + 1
+    else:
+        n_months_mr = None
+
+    audit_main = generate_audit_table(
+        data=data_main_period,
+        optimal_solution_df=opt_sol,
+        variables=settings.variables,
+        financing_rate=tasa_fin,
+        inv_var1=inv_var1,
+        n_months=n_months_main,
+        mask=selected_mask,
+        grid=grid,
+    )
+    if len(data_mr_period) > 0:
+        audit_mr = generate_audit_table(
+            data=data_mr_period,
+            optimal_solution_df=opt_sol,
+            variables=settings.variables,
+            financing_rate=tasa_fin,
+            inv_var1=inv_var1,
+            n_months=n_months_mr,
+            mask=selected_mask,
+            grid=grid,
+        )
+    else:
+        audit_mr = pd.DataFrame()
+
+    summary_table = reconcile_risk_production_summary_with_audit(summary_table, audit_main)
+    validate_audit_against_summary(audit_main, summary_table)
+
     # Add CI columns to summary table (only for Optimum selected row)
     summary_table["production_ci_lower"] = 0.0
     summary_table["production_ci_upper"] = 0.0
@@ -738,6 +817,7 @@ def run_scenario_analysis(
             grid=grid,
             per_bin_stress=per_bin_stress,
             per_bin_tasa_fin=per_bin_tasa_fin,
+            audit_mr_df=audit_mr if len(audit_mr) else None,
         )
 
     # Scenario MR Processing
@@ -757,34 +837,8 @@ def run_scenario_analysis(
         grid=grid,
         per_bin_stress=per_bin_stress,
         per_bin_tasa_fin=per_bin_tasa_fin,
+        audit_mr_df=audit_mr if len(audit_mr) else None,
     )
-
-    # Generate audit tables for this scenario
-    data_main_period = filter_by_date(
-        data_clean,
-        "mis_date",
-        settings.date_ini_book_obs,
-        settings.date_fin_book_obs,
-    )
-    if settings.date_ini_book_obs_mr is not None and settings.date_fin_book_obs_mr is not None:
-        data_mr_period = filter_by_date(
-            data_clean,
-            "mis_date",
-            settings.date_ini_book_obs_mr,
-            settings.date_fin_book_obs_mr,
-        )
-    else:
-        data_mr_period = pd.DataFrame(columns=data_clean.columns)
-
-    # Reuse inv_var1 and n_months_main from earlier in this function
-    n_months_main = n_months_main_calc
-
-    if settings.date_ini_book_obs_mr is not None and settings.date_fin_book_obs_mr is not None:
-        date_ini_mr = settings.get_date("date_ini_book_obs_mr")
-        date_fin_mr = settings.get_date("date_fin_book_obs_mr")
-        n_months_mr = (date_fin_mr.year - date_ini_mr.year) * 12 + (date_fin_mr.month - date_ini_mr.month) + 1
-    else:
-        n_months_mr = None
 
     try:
         save_audit_tables(
@@ -800,6 +854,8 @@ def run_scenario_analysis(
             n_months_mr=n_months_mr,
             mask=selected_mask,
             grid=grid,
+            audit_main=audit_main,
+            audit_mr=audit_mr if len(audit_mr) else None,
         )
     except Exception as e:
         logger.error(f"[{segment}] Audit table generation failed for {scenario_name} (non-blocking): {e}")
