@@ -246,6 +246,16 @@ class PreprocessingSettings(BaseModel):
                 )
         return v
 
+    @field_validator("min_accepted_bin_by_variable")
+    @classmethod
+    def validate_min_accepted_bin_values(cls, v: dict[str, float]) -> dict[str, float]:
+        for var, threshold in v.items():
+            if not isinstance(var, str) or not var:
+                raise ValueError("min_accepted_bin_by_variable keys must be non-empty variable names")
+            if threshold is None:
+                raise ValueError(f"min_accepted_bin_by_variable['{var}'] cannot be null")
+        return v
+
     # Inversion flags populated during preprocessing based on directions
     inv_vars: list[str] = Field(default_factory=list)
 
@@ -271,6 +281,9 @@ class PreprocessingSettings(BaseModel):
     fixed_cutoffs: dict[str, Any] | None = None
     baseline_mode: bool = False
     cutoff_floor_segment: str | None = None
+    # Per-variable minimum accepted bin thresholds.
+    # Cells with value < threshold are forced rejected in optimization.
+    min_accepted_bin_by_variable: dict[str, float] = Field(default_factory=dict)
     # Note: cutoff_ordering_mode is a batch-level setting read from the raw TOML
     # dict in run_batch.py (not from this model), since it controls cross-segment
     # orchestration rather than per-segment behavior.
@@ -548,6 +561,18 @@ class PreprocessingSettings(BaseModel):
         if not set(self.inference_variables).issubset(set(self.variables)):
             extra = set(self.inference_variables) - set(self.variables)
             raise ValueError(f"'inference_variables' must be a subset of 'variables', found extra: {extra}")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_min_accepted_bin_vars(self) -> "PreprocessingSettings":
+        if not self.min_accepted_bin_by_variable:
+            return self
+        unknown = [v for v in self.min_accepted_bin_by_variable if v not in self.variables]
+        if unknown:
+            raise ValueError(
+                "min_accepted_bin_by_variable contains variables not present in 'variables': "
+                f"{unknown}. Allowed: {self.variables}"
+            )
         return self
 
     @classmethod

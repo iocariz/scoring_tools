@@ -92,6 +92,17 @@ class TestPreprocessorSettings:
             PreprocessingSettings(**valid_config_dict)
         assert "mr_min_obs_per_bin" in str(excinfo.value)
 
+    def test_min_accepted_bin_by_variable_valid(self, valid_config_dict):
+        valid_config_dict["min_accepted_bin_by_variable"] = {"v1": 3, "v2": 5}
+        settings = PreprocessingSettings(**valid_config_dict)
+        assert settings.min_accepted_bin_by_variable["v1"] == 3
+
+    def test_min_accepted_bin_by_variable_unknown_var_invalid(self, valid_config_dict):
+        valid_config_dict["min_accepted_bin_by_variable"] = {"unknown_var": 2}
+        with pytest.raises(ValidationError) as excinfo:
+            PreprocessingSettings(**valid_config_dict)
+        assert "min_accepted_bin_by_variable contains variables not present in 'variables'" in str(excinfo.value)
+
 
 class TestDataValidation:
     """Test data validation functions."""

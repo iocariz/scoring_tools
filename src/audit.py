@@ -61,6 +61,8 @@ def generate_audit_table(
             "score_rf",
             var0_col,
             "oa_amt",
+            "todu_30ever_h6",
+            "todu_amt_pile_h6",
         ]
         if var1_col is not None:
             audit_columns.insert(-1, var1_col)
@@ -83,6 +85,7 @@ def generate_audit_table(
         # Create audit DataFrame
         audit_df = data[available_columns].copy()
         audit_df["cut_limit"] = np.nan  # not applicable for N-d
+        audit_df["decision_source"] = "mask"
     else:
         if var1_col is None:
             raise ValueError("2-var cut_map audit path requires at least 2 variables; use mask/grid for 1-var configs")
@@ -110,6 +113,7 @@ def generate_audit_table(
 
         # Add cutoff limit for each record
         audit_df["cut_limit"] = data[var0_col].astype(float).map(cut_map)
+        audit_df["decision_source"] = "cutoff"
 
         # Vectorized classification
         if inv_var1:
@@ -143,6 +147,22 @@ def generate_audit_table(
         if no_cutoff.any():
             logger.warning(f"{no_cutoff.sum()} records had no matching cutoff bin — classified as 'unknown'.")
             audit_df.loc[no_cutoff, "classification"] = "unknown"
+
+    # Human-readable key for the grid cell used in the decision
+    if variables:
+        key_parts = []
+        for v in variables:
+            if v in data.columns:
+                key_parts.append(data[v].astype(str))
+        if key_parts:
+            cell_key = key_parts[0]
+            for part in key_parts[1:]:
+                cell_key = cell_key + "|" + part
+            audit_df["cell_key"] = cell_key
+        else:
+            audit_df["cell_key"] = ""
+    else:
+        audit_df["cell_key"] = ""
 
     audit_df["passes_cut"] = passes_cut
 

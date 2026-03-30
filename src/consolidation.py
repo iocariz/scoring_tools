@@ -1487,7 +1487,7 @@ def generate_consolidation_report(
 
     # Export Excel workbook
     try:
-        xlsx_path = export_consolidated_excel(df, output_base, segments)
+        xlsx_path = export_consolidated_excel(df, output_base, segments, supersegments)
         logger.info(f"Consolidated Excel saved to {xlsx_path}")
     except Exception as e:
         logger.warning(f"Excel export failed: {e}")
@@ -1502,6 +1502,7 @@ def export_consolidated_excel(
     consolidated_df: pd.DataFrame,
     output_base: str | Path,
     segments: dict[str, dict[str, Any]],
+    supersegments: dict[str, dict[str, Any]] | None = None,
 ) -> Path:
     """Export consolidated report data to a management-ready Excel dashboard.
 
@@ -1517,6 +1518,7 @@ def export_consolidated_excel(
         consolidated_df: DataFrame from consolidate_segments()
         output_base: Base output directory (where segment subdirectories live)
         segments: Segment configurations dict
+        supersegments: Reporting supersegment configurations (optional)
 
     Returns:
         Path to the written .xlsx file.
@@ -1527,6 +1529,7 @@ def export_consolidated_excel(
     from openpyxl.utils import get_column_letter
 
     output_base = Path(output_base)
+    supersegments = supersegments or {}
     xlsx_path = output_base / "consolidated_risk_production.xlsx"
 
     # =====================================================================
@@ -1880,9 +1883,11 @@ def export_consolidated_excel(
             _set_col_width(ws, ci, ws.cell(row=table_row, column=ci).value, ws.max_row)
         return ws.max_row + 2
 
-    def _write_rp_sheet(writer, df_rp, sheet_name, seg_name, period_label, tab_color):
-        """Create a styled RP sheet with title banner, period label, and data table."""
-        # Write data starting at row 4 (leaving room for banner)
+    def _write_rp_sheet(writer, df_rp, sheet_name, seg_name, period_label, tab_color, extra_tables=None):
+        """Create a styled RP sheet with title banner, period label, and one or more data tables."""
+        if extra_tables is None:
+            extra_tables = []
+        # Write primary table starting at row 4 (leaving room for banner)
         df_rp.to_excel(writer, sheet_name=sheet_name, index=False, startrow=3)
         ws = writer.sheets[sheet_name]
         ws.sheet_properties.tabColor = tab_color
@@ -1916,9 +1921,210 @@ def export_consolidated_excel(
             ws.cell(row=3, column=c).border = Border(top=Side(style="medium", color=_CLR_ACCENT))
         ws.row_dimensions[3].height = 6
 
-        # Style the data table (header at row 4)
+        # Style the primary data table (header at row 4)
         _style_table(ws, df_rp.columns, header_row=4, highlight_total=False)
+
+        # Optional additional tables (e.g., per-income-bin)
+        next_row = ws.max_row + 2
+        for tbl_title, tbl_df in extra_tables:
+            if tbl_df is None or tbl_df.empty:
+                continue
+            n_tbl_cols = max(len(tbl_df.columns), 6)
+            ws.merge_cells(start_row=next_row, start_column=1, end_row=next_row, end_column=n_tbl_cols)
+            t = ws.cell(row=next_row, column=1)
+            t.value = f"  {tbl_title}"
+            t.font = _FONT_SECTION
+            t.fill = _FILL_SECTION
+            t.alignment = _ALIGN_LEFT
+            t.border = _SECTION_LEFT
+            ws.row_dimensions[next_row].height = 24
+
+            # Header is one row below startrow passed to to_excel
+            tbl_df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=next_row)
+            _style_table(ws, tbl_df.columns, header_row=next_row + 1, highlight_total=False)
+            next_row = ws.max_row + 2
+
         _apply_page_setup(ws)
+
+    def _append_summary_row_if_missing(df_tbl: pd.DataFrame) -> pd.DataFrame:
+        if df_tbl.empty or "Metric" not in df_tbl.columns:
+            return df_tbl
+        if df_tbl["Metric"].astype(str).str.strip().str.lower().eq("summary").any():
+            return df_tbl
+        actual = df_tbl[df_tbl["Metric"] == "Actual"]
+        optimum = df_tbl[df_tbl["Metric"] == "Optimum selected"]
+        if actual.empty or optimum.empty:
+            return df_tbl
+        summary = dict.fromkeys(df_tbl.columns, np.nan)
+        summary["Metric"] = "Summary"
+        for c in ("Risk (%)", "Production (€)", "Production (%)"):
+            if c in df_tbl.columns:
+                a = actual.iloc[0].get(c)
+                o = optimum.iloc[0].get(c)
+                if pd.notna(a) and pd.notna(o):
+                    summary[c] = o - a
+        for c in ("production_ci_lower", "production_ci_upper", "risk_ci_lower", "risk_ci_upper"):
+            if c in df_tbl.columns:
+                summary[c] = 0.0
+        return pd.concat([df_tbl, pd.DataFrame([summary])], ignore_index=True)
+
+    def _build_income_bin_tables(seg_name: str, period: str, template_cols: list[str]) -> list[tuple[str, pd.DataFrame]]:
+        data_dir = output_base / seg_name / "data"
+        accepted_cells_path = data_dir / "accepted_cells_base.csv"
+        if not accepted_cells_path.exists():
+            return []
+        try:
+            variables = list(pd.read_csv(accepted_cells_path, nrows=1).columns)
+        except (pd.errors.ParserError, OSError, ValueError):
+            return []
+        if not variables:
+            return []
+
+        if period == "mr":
+            ds_path = data_dir / "data_summary_desagregado_mr_base.csv"
+            if not ds_path.exists():
+                ds_path = data_dir / "data_summary_desagregado_mr.csv"
+            opt_path = data_dir / "optimal_solution_base.csv"
+        else:
+            ds_path = data_dir / "data_summary_desagregado_base.csv"
+            opt_path = data_dir / "optimal_solution_base.csv"
+        if not ds_path.exists() or not opt_path.exists():
+            return []
+        try:
+            df_sum = pd.read_csv(ds_path)
+            df_opt = pd.read_csv(opt_path)
+        except (pd.errors.ParserError, OSError, ValueError):
+            return []
+        if df_sum.empty or df_opt.empty or "income_bin" not in df_sum.columns:
+            return []
+
+        mask = None
+        grid = None
+        if "acceptance_mask" in df_opt.columns and pd.notna(df_opt.iloc[0].get("acceptance_mask")):
+            try:
+                from src.optimization_utils import CellGrid, decode_mask
+
+                grid = CellGrid.from_summary(df_sum, variables)
+                mask = decode_mask(str(df_opt.iloc[0]["acceptance_mask"]))
+                if len(mask) != len(grid.cell_data):
+                    logger.warning(
+                        f"[{seg_name}] acceptance_mask length ({len(mask)}) does not match grid cells ({len(grid.cell_data)})"
+                    )
+                    mask = None
+                    grid = None
+            except Exception as e:
+                logger.warning(f"[{seg_name}] Could not decode acceptance_mask for income-bin RP tables: {e}")
+                mask = None
+                grid = None
+
+        from src.mr_pipeline import calculate_metrics_from_cuts
+
+        def _extract_binary_income_threshold(bin_edges: Any) -> float | None:
+            if not isinstance(bin_edges, list) or len(bin_edges) < 3:
+                return None
+            finite_edges = []
+            for e in bin_edges:
+                try:
+                    ef = float(e)
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(ef):
+                    finite_edges.append(ef)
+            if len(finite_edges) != 1:
+                return None
+            return float(finite_edges[0])
+
+        def _resolve_income_threshold(seg_name_local: str) -> float | None:
+            # 0) Segment run config snapshot (contains learned/injected edges in batch mode)
+            try:
+                import tomllib
+
+                seg_cfg_path = output_base / seg_name_local / "config_segment.toml"
+                if seg_cfg_path.exists():
+                    cfg = tomllib.loads(seg_cfg_path.read_text(encoding="utf-8"))
+                    prep = cfg.get("preprocessing", cfg)
+                    seg_file_edges = prep.get("bins", {}).get("income_bin", {}).get("bin_edges")
+                    th = _extract_binary_income_threshold(seg_file_edges)
+                    if th is not None:
+                        return th
+            except Exception:
+                pass
+
+            seg_cfg = segments.get(seg_name_local, {})
+            # 1) Segment-level bins override
+            seg_edges = seg_cfg.get("bins", {}).get("income_bin", {}).get("bin_edges")
+            th = _extract_binary_income_threshold(seg_edges)
+            if th is not None:
+                return th
+
+            # 2) Reporting supersegment-level fixed bin edges
+            reporting_ss = seg_cfg.get("reporting_supersegment") or seg_cfg.get("supersegment")
+            if reporting_ss and reporting_ss in supersegments:
+                ss_edges = supersegments[reporting_ss].get("bin_edges", {}).get("income_bin")
+                th = _extract_binary_income_threshold(ss_edges)
+                if th is not None:
+                    return th
+
+            # 3) Global config fallback (config.toml)
+            try:
+                cfg_path = Path("config.toml")
+                if cfg_path.exists():
+                    cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+                    global_edges = (
+                        cfg.get("preprocessing", {})
+                        .get("bins", {})
+                        .get("income_bin", {})
+                        .get("bin_edges")
+                    )
+                    th = _extract_binary_income_threshold(global_edges)
+                    if th is not None:
+                        return th
+            except Exception:
+                pass
+            return None
+
+        income_threshold = _resolve_income_threshold(seg_name)
+
+        def _income_bin_title(income_val: Any) -> str:
+            """Portfolio-owner labels based on configured income_bin threshold."""
+            try:
+                iv = int(float(income_val))
+            except (TypeError, ValueError):
+                return f"Income Bin {income_val}"
+            if iv == 1:
+                if income_threshold is not None:
+                    return f"income_bin >= {income_threshold:,.0f}€"
+                return "Income Bin 1"
+            if iv == 2:
+                if income_threshold is not None:
+                    return f"income_bin < {income_threshold:,.0f}€"
+                return "Income Bin 2"
+            return f"Income Bin {income_val}"
+
+        out_tables: list[tuple[str, pd.DataFrame]] = []
+        # Keep deterministic order with 1 first, then 2.
+        income_values = sorted(pd.Series(df_sum["income_bin"]).dropna().unique().tolist(), key=lambda x: float(x))
+        for income_val in income_values:
+            df_bin = df_sum[df_sum["income_bin"] == income_val].copy()
+            if df_bin.empty:
+                continue
+            tbl = calculate_metrics_from_cuts(
+                data_summary_desagregado=df_bin,
+                optimal_solution_df=df_opt,
+                variables=variables,
+                mask=mask,
+                grid=grid,
+            )
+            if tbl is None or tbl.empty:
+                continue
+            tbl = _append_summary_row_if_missing(tbl)
+            # Match the same shape/columns as the total RP table in Excel.
+            for c in template_cols:
+                if c not in tbl.columns:
+                    tbl[c] = np.nan
+            tbl = tbl[template_cols]
+            out_tables.append((_income_bin_title(income_val), tbl))
+        return out_tables
 
     def _write_single_pivot_grid(ws, pivot, col_var, row_var, start_row, col_offset=0):
         """Draw one pivot grid at (start_row, col_offset+1). Returns bottom row used."""
@@ -2224,7 +2430,7 @@ def export_consolidated_excel(
             return movers
 
         sort_cols = [c for c in ["production_delta", "risk_delta_pct"] if c in movers.columns]
-        ascending = [False if c == "production_delta" else True for c in sort_cols]
+        ascending = [c != "production_delta" for c in sort_cols]
         if sort_cols:
             movers = movers.sort_values(sort_cols, ascending=ascending)
         movers = movers.head(8)
@@ -2562,8 +2768,17 @@ def export_consolidated_excel(
             if df_rp.empty:
                 continue
             df_rp = df_rp.drop(columns=[c for c in _rp_exclude_cols if c in df_rp.columns])
+            rp_extra_tables = _build_income_bin_tables(seg_name, period="main", template_cols=list(df_rp.columns))
             sheet_name = f"RP {seg_name}"[:31]
-            _write_rp_sheet(writer, df_rp, sheet_name, seg_name, "Main Period — Base Scenario", _CLR_TAB_SEGMENT)
+            _write_rp_sheet(
+                writer,
+                df_rp,
+                sheet_name,
+                seg_name,
+                "Main Period — Base Scenario",
+                _CLR_TAB_SEGMENT,
+                extra_tables=rp_extra_tables,
+            )
 
             # --- MR period ---
             mr_csv_path = output_base / seg_name / "data" / "risk_production_summary_table_mr_base.csv"
@@ -2578,8 +2793,17 @@ def export_consolidated_excel(
             if df_mr.empty:
                 continue
             df_mr = df_mr.drop(columns=[c for c in _rp_exclude_cols_mr if c in df_mr.columns])
+            mr_extra_tables = _build_income_bin_tables(seg_name, period="mr", template_cols=list(df_mr.columns))
             mr_sheet_name = f"RP MR {seg_name}"[:31]
-            _write_rp_sheet(writer, df_mr, mr_sheet_name, seg_name, "MR Period — Base Scenario", _CLR_TAB_SEGMENT_MR)
+            _write_rp_sheet(
+                writer,
+                df_mr,
+                mr_sheet_name,
+                seg_name,
+                "MR Period — Base Scenario",
+                _CLR_TAB_SEGMENT_MR,
+                extra_tables=mr_extra_tables,
+            )
 
         # Remove default "Sheet" if auto-created
         if "Sheet" in wb.sheetnames and len(wb.sheetnames) > 1:

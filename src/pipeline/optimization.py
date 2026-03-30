@@ -316,6 +316,35 @@ def run_optimization_phase(
                     f"(from {floor_cells_path})"
                 )
 
+        # Per-segment minimum accepted-bin thresholds:
+        # force reject any cell with variable value below configured threshold.
+        if settings.min_accepted_bin_by_variable:
+            minbin_grid = CellGrid.from_summary(data_summary_desagregado, settings.variables)
+            var_pos = {v: i for i, v in enumerate(settings.variables)}
+            minbin_reject_cells: dict[int, int] = {}
+            for coord, idx in minbin_grid.cell_index.items():
+                coord_f = tuple(float(v) for v in coord)
+                reject = any(
+                    coord_f[var_pos[var]] < float(threshold)
+                    for var, threshold in settings.min_accepted_bin_by_variable.items()
+                )
+                if reject:
+                    minbin_reject_cells[idx] = 0
+
+            if floor_fixed_cells is None:
+                floor_fixed_cells = {}
+            conflicts = [idx for idx, val in minbin_reject_cells.items() if floor_fixed_cells.get(idx) == 1 and val == 0]
+            if conflicts:
+                raise ValueError(
+                    f"[{segment}] min_accepted_bin_by_variable conflicts with must-accept floor constraints "
+                    f"for {len(conflicts)} cell(s). Adjust segment settings."
+                )
+            floor_fixed_cells.update(minbin_reject_cells)
+            logger.info(
+                f"[{segment}] Min-bin constraint: {len(minbin_reject_cells)} cells forced rejected via "
+                f"min_accepted_bin_by_variable={settings.min_accepted_bin_by_variable}"
+            )
+
         # MILP-based Pareto frontier optimization
         pareto_df, grid, pareto_masks = trace_pareto_frontier(
             data_summary_desagregado=data_summary_desagregado,

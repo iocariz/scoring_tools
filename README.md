@@ -1289,6 +1289,7 @@ segment_filter = "segment_a"   # (required) Segment regex filter
 | `inference_variables` | list[str] | *(from config.toml)* | Override model training variables |
 | `baseline_mode` | bool | `false` | Baseline mode for this segment (no optimization) |
 | `cutoff_floor_segment` | str | `None` | Segment whose accepted cells constrain this one (sequential ordering) |
+| `min_accepted_bin_by_variable` | dict[str, float] | `{}` | Force-reject cells where any listed variable is below the configured bin threshold |
 
 ##### Allocation Constraints (used by `run_allocation.py`)
 

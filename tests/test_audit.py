@@ -50,9 +50,12 @@ class TestGenerateAuditTable:
         assert len(audit) == 5
         assert "classification" in audit.columns
         assert "cut_limit" in audit.columns
+        assert "decision_source" in audit.columns
+        assert "cell_key" in audit.columns
         assert "passes_cut" in audit.columns
         assert "reject_reason" in audit.columns
         assert "oa_amt_adjusted" in audit.columns
+        assert audit["decision_source"].eq("cutoff").all()
 
     def test_classifications_correct(self, sample_data, optimal_solution):
         """Test that classifications are correct."""
@@ -145,6 +148,57 @@ class TestGenerateAuditTable:
         assert audit.iloc[2]["cut_limit"] == 6
         assert audit.iloc[3]["cut_limit"] == 6
         assert audit.iloc[4]["cut_limit"] == 6
+
+    def test_cell_key_format(self, sample_data, optimal_solution):
+        """Cell key should include all configured variable coordinates."""
+        variables = ["sc_octroi_new_clus", "new_efx_clus"]
+        audit = generate_audit_table(sample_data, optimal_solution, variables)
+        assert audit.iloc[0]["cell_key"] == "1.0|3"
+
+    def test_nd_mask_decision_source(self):
+        """N-D mask path should label decisions as mask and keep cut_limit blank."""
+        data = pd.DataFrame(
+            {
+                "authorization_id": [1, 2],
+                "status_name": ["booked", "rejected"],
+                "reject_reason": [None, "09-score"],
+                "risk_score_rf": [10, 20],
+                "score_rf": [100, 200],
+                "sc_octroi_new_clus": [1.0, 1.0],
+                "new_efx_clus": [3, 4],
+                "income_bin": [1, 2],
+                "oa_amt": [1000, 2000],
+            }
+        )
+        optimal_solution = pd.DataFrame({"sol_fac": [0], "acceptance_mask": ["1,0"]})
+        variables = ["sc_octroi_new_clus", "new_efx_clus", "income_bin"]
+
+        from src.optimization_utils import CellGrid
+
+        grid_df = pd.DataFrame(
+            {
+                "sc_octroi_new_clus": [1.0, 1.0],
+                "new_efx_clus": [3, 4],
+                "income_bin": [1, 2],
+                "todu_30ever_h6": [0.0, 0.0],
+                "todu_amt_pile_h6": [0.0, 0.0],
+                "oa_amt_h0": [0.0, 0.0],
+            }
+        )
+        grid = CellGrid.from_summary(grid_df, variables)
+        # Full grid has 4 cells (2 efx values x 2 income values) for fixed mask indexing.
+        mask_arr = pd.Series([1, 0, 0, 0]).to_numpy(dtype=int)
+
+        audit = generate_audit_table(
+            data=data,
+            optimal_solution_df=optimal_solution,
+            variables=variables,
+            mask=mask_arr,
+            grid=grid,
+        )
+        assert audit["decision_source"].eq("mask").all()
+        assert audit["cut_limit"].isna().all()
+        assert audit.iloc[0]["cell_key"] == "1.0|3|1"
 
 
 class TestGenerateAuditSummary:
