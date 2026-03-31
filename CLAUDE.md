@@ -19,6 +19,7 @@ uv run python main.py --training-only          # preprocessing + model training 
 uv run python main.py --model-path models/dir  # use pre-trained model
 uv run python main.py --skip-dq-checks         # skip data quality checks
 uv run python main.py --baseline               # baseline: show current portfolio, no optimization
+uv run python main.py --log-file run.log       # capture logs to file
 
 # Run batch (multi-segment, reads config.toml + segments.toml)
 uv run python run_batch.py
@@ -45,6 +46,10 @@ uv run python run_allocation.py --target 2.5 --method greedy
 uv run python run_allocation.py --target 2.5 --production-floor 1000000
 uv run python run_allocation.py --target 2.5 --lock segment1:3
 # Writes beside `--output`: `<stem>_policy_cutoff_table.csv`, `<stem>_allocation_narrative.md` (single target); multi-target adds `<stem>_what_if.csv`, `<stem>_allocation_narratives.md`
+
+# Run selection bias analysis
+uv run python run_selection_bias_analysis.py
+uv run python run_selection_bias_analysis.py --config config.toml --segments-config segments.toml
 
 # Generate presentation (.pptx / .pdf)
 uv run python generate_presentation.py
@@ -91,9 +96,9 @@ Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `mak
   - Models: `estimators.py`, `models.py`, `inference_optimized.py`, `optuna_tuning.py`, `persistence.py`
   - Optimization: `optimization_utils.py`, `global_optimizer.py`
   - Reject inference: `reject_inference.py`, `reject_inference_optimizer.py`
-  - Analysis: `mr_pipeline.py`, `stability.py`, `sensitivity.py`, `trends.py`, `alerts.py`, `audit.py`
-  - Output: `consolidation.py`, `reporting.py`, `plots.py`, `styles.py`, `metrics.py`, `utils.py`
-- Entry points: `main.py` (single segment), `run_batch.py` (multi-segment with global bin learning + supersegment model sharing), `run_allocation.py` (MILP allocation with segment constraints/locking), `generate_presentation.py` (PowerPoint/PDF output), `run_score_metrics.py` (score discriminance), `dashboard.py` / `interactive_allocator.py` (Dash web UIs), `gradio_dashboard.py` (Gradio web UI)
+  - Analysis: `mr_pipeline.py`, `stability.py`, `sensitivity.py`, `trends.py`, `alerts.py`, `audit.py`, `selection_bias.py`, `selection_bias_plots.py`
+  - Output: `consolidation.py`, `reporting.py`, `plots.py`, `styles.py`, `metrics.py`, `utils.py`, `portfolio_owner.py`
+- Entry points: `main.py` (single segment), `run_batch.py` (multi-segment with global bin learning + supersegment model sharing), `run_allocation.py` (MILP allocation with segment constraints/locking), `generate_presentation.py` (PowerPoint/PDF output), `run_score_metrics.py` (score discriminance), `run_selection_bias_analysis.py` (selection bias diagnostics), `dashboard.py` / `interactive_allocator.py` (Dash web UIs), `gradio_dashboard.py` (Gradio web UI)
 
 ### Key Design Patterns
 

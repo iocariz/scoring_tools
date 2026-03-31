@@ -137,6 +137,12 @@ modelling_supersegment = "total"
 min_risk = 0.8  # Optional: minimum risk for global allocation
 max_risk = 1.4  # Optional: maximum risk for global allocation
 cutoff_floor_segment = "no_premium_cd"  # Must accept at least what cd accepts (least restrictive)
+[segments.no_premium_ab.min_accepted_bin_by_variable.new_efx_clus]
+1 = 6
+2 = 4
+[segments.no_premium_ab.min_accepted_bin_by_variable.sc_octroi_new_clus]
+1 = 3
+2 = 2
 
 [segments.no_premium_cd]
 segment_filter = "no_premium_cd"
