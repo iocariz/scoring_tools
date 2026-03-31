@@ -162,8 +162,13 @@ def evaluate_ri_params(
     # Rename with _rep suffix
     repesca = repesca.rename(columns={i: i + "_rep" for i in inputs.indicators})
 
-    # Merge with booked summary
+    # Merge with booked summary (preserve integer dtypes on merge-key columns
+    # that can be upcast to float by NaN introduction during outer merge).
+    var_dtypes = {v: inputs.booked_summary[v].dtype for v in inputs.variables}
     merged = inputs.booked_summary.merge(repesca, on=inputs.variables, how="outer").fillna(0)
+    for v, dt in var_dtypes.items():
+        if merged[v].dtype != dt:
+            merged[v] = merged[v].astype(dt)
 
     # Compute base indicators (sum of _boo + _rep)
     for ind in inputs.indicators:

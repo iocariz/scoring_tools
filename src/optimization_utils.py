@@ -1054,6 +1054,17 @@ def _ga_pareto_fallback(
         df = df.loc[valid].reset_index(drop=True)
         all_masks = [m for m, keep in zip(all_masks, valid) if keep]
 
+    # Exposure floor: mirror the MILP denominator guard — reject solutions
+    # where accepted exposure is below 0.1% of total (same epsilon as MILP).
+    if "todu_amt_pile_h6" in df.columns:
+        exposure_denom_eps = max(todu_amt.sum() * 0.001, 1.0)
+        exposure_ok = df["todu_amt_pile_h6"].to_numpy(dtype=float, copy=False) >= exposure_denom_eps
+        if not exposure_ok.all():
+            n_low = int((~exposure_ok).sum())
+            logger.warning(f"Filtering {n_low} near-zero-exposure solution(s) from GA fallback.")
+            df = df.loc[exposure_ok].reset_index(drop=True)
+            all_masks = [m for m, keep in zip(all_masks, exposure_ok) if keep]
+
     if df.empty:
         logger.warning("GA fallback: all solutions filtered out (NaN/inf risk).")
         return pd.DataFrame(), grid, []
@@ -1626,7 +1637,7 @@ def get_fact_sol(
 
     comb_indices = np.array(
         list(combinations_with_replacement(range(n_values), n_bins)),
-        dtype=np.int16,
+        dtype=np.int32,
     )
     combinations_array = cut_values[comb_indices]
 

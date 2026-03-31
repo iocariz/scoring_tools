@@ -761,12 +761,13 @@ def run_segments_sequential(
     is_top_down = cutoff_ordering_mode == "top_down"
     if is_top_down:
         ordered_names = list(reversed(ordered_names))
-        # Reverse deps: for each segment, find who depends on it (is less restrictive)
-        reverse_deps: dict[str, str] = {}
+        # Reverse deps: for each segment, find all segments that depend on it (are less restrictive).
+        # Multiple segments can share the same cutoff_floor_segment, so map to a list.
+        reverse_deps: dict[str, list[str]] = {}
         for seg_name, seg_config in segments_to_run_dict.items():
             floor_seg = seg_config.get("cutoff_floor_segment")
             if floor_seg:
-                reverse_deps[floor_seg] = seg_name
+                reverse_deps.setdefault(floor_seg, []).append(seg_name)
 
     segments_to_run = [(name, segments_to_run_dict[name]) for name in ordered_names]
     floor_cells_mode = "ceiling" if is_top_down else "floor"
@@ -798,8 +799,17 @@ def run_segments_sequential(
             floor_cells_path = None
             if is_top_down:
                 # Top-down: constraint comes from the LESS restrictive segment
-                # (the segment that lists us as its cutoff_floor_segment)
-                constraint_source = reverse_deps.get(segment_name)
+                # (the segment that lists us as its cutoff_floor_segment).
+                # If multiple segments depend on us, use the first one in
+                # execution order (already processed, most restrictive ceiling).
+                dep_list = reverse_deps.get(segment_name, [])
+                if len(dep_list) > 1:
+                    logger.warning(
+                        f"[{segment_name}] Multiple segments depend on this segment "
+                        f"as cutoff_floor_segment: {dep_list}. Using '{dep_list[0]}' as "
+                        f"ceiling constraint source."
+                    )
+                constraint_source = dep_list[0] if dep_list else None
             else:
                 # Bottom-up: constraint comes from the MORE restrictive segment
                 constraint_source = segment_config.get("cutoff_floor_segment")

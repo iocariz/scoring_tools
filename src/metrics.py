@@ -192,6 +192,12 @@ def calculate_psi_by_period(
     # Create buckets
     if breakpoints is None:
         breakpoints = np.percentile(expected[score_column], np.linspace(0, 100, buckets + 1))
+    # Extend edges to (-inf, +inf) so out-of-range actual values are captured
+    # (mirrors stability.calculate_psi behaviour).
+    breakpoints = list(breakpoints)
+    breakpoints[0] = -np.inf
+    breakpoints[-1] = np.inf
+    breakpoints = np.array(breakpoints)
     buckets = len(breakpoints) - 1
 
     # Calculate bucket counts for expected and actual data
@@ -596,6 +602,9 @@ def _fast_delong(y_true: np.ndarray, scores1: np.ndarray, scores2: np.ndarray) -
     m = positive_mask.sum()  # number of positives
     n = negative_mask.sum()  # number of negatives
 
+    if m < 1 or n < 1:
+        return np.array([np.nan, np.nan]), np.full((2, 2), np.nan)
+
     aucs = []
     structural_components = []
 
@@ -671,6 +680,17 @@ def delong_test(
     scores2_arr = np.asarray(scores2, dtype=float)
 
     aucs, cov = _fast_delong(y_true_arr, scores1_arr, scores2_arr)
+
+    # Single-class subset: AUC is undefined, return non-significant result.
+    if np.any(np.isnan(aucs)):
+        return {
+            "auc1": np.nan,
+            "auc2": np.nan,
+            "z_statistic": 0.0,
+            "p_value": 1.0,
+            "auc_diff": np.nan,
+            "se_diff": np.nan,
+        }
 
     # Variance of the difference: Var(AUC1 - AUC2) = Var(AUC1) + Var(AUC2) - 2*Cov(AUC1, AUC2)
     var_diff = cov[0, 0] + cov[1, 1] - 2 * cov[0, 1]

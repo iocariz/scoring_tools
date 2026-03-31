@@ -175,8 +175,14 @@ def compute_acceptance_rates(
         n_booked_raw = n_booked.rename(columns={"n_booked": "n_booked_raw"})
         n_rejected_raw = n_rejected.rename(columns={"n_score_rejected": "n_score_rejected_raw"})
 
+    # Save original dtypes of merge-key columns before outer merge (NaN introduction can
+    # upcast int → float; we restore after fillna to keep downstream joins stable).
+    var_dtypes = {v: n_booked[v].dtype for v in variables}
     rates = n_booked.merge(n_rejected, on=variables, how="outer").fillna(0)
     rates = rates.merge(n_booked_raw, on=variables, how="left").merge(n_rejected_raw, on=variables, how="left").fillna(0)
+    for v, dt in var_dtypes.items():
+        if rates[v].dtype != dt:
+            rates[v] = rates[v].astype(dt)
     if decay_half_life_months is None:
         # Keep types stable for non-decay mode (tests rely on exact ints).
         rates["n_booked"] = rates["n_booked"].astype(int)

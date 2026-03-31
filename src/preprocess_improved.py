@@ -1140,6 +1140,13 @@ def complete_preprocessing_pipeline(
         data_booked = _filter_booked_for_period(data_clean, settings.date_ini_book_obs, settings.date_fin_book_obs)
         data_demand = _filter_demand_for_period(data_clean, settings.date_ini_book_obs, settings.date_fin_book_obs)
 
+        if data_booked.empty:
+            raise ValueError(
+                f"No booked records found in observation period "
+                f"[{settings.date_ini_book_obs}, {settings.date_fin_book_obs}]. "
+                f"Cannot infer monotonicity or proceed with optimization."
+            )
+
         # Dynamic monotonicity check using the booked population
         _infer_monotonicity(data_booked, settings)
 

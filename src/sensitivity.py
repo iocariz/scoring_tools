@@ -57,6 +57,7 @@ def run_sensitivity_analysis(
     max_swapin_production_pct: float | None = None,
     max_swapin_risk: float | None = None,
     milp_time_limit: float = 30.0,
+    fixed_cells: dict[int, int] | None = None,
 ) -> pd.DataFrame:
     """For each perturbation level, perturb risk, re-solve MILP, compare mask to baseline.
 
@@ -90,6 +91,7 @@ def run_sensitivity_analysis(
             risk_target,
             inv_vars,
             multiplier,
+            fixed_cells=fixed_cells,
             max_swapin_production_pct=max_swapin_production_pct,
             max_swapin_risk=max_swapin_risk,
             time_limit=milp_time_limit,
@@ -157,6 +159,7 @@ def sensitivity_cell_detail(
     max_swapin_production_pct: float | None = None,
     max_swapin_risk: float | None = None,
     milp_time_limit: float = 30.0,
+    fixed_cells: dict[int, int] | None = None,
 ) -> pd.DataFrame:
     """Per-cell: minimum perturbation that flips its status.
 
@@ -193,6 +196,7 @@ def sensitivity_cell_detail(
             risk_target,
             inv_vars,
             multiplier,
+            fixed_cells=fixed_cells,
             max_swapin_production_pct=max_swapin_production_pct,
             max_swapin_risk=max_swapin_risk,
             time_limit=milp_time_limit,

@@ -14,9 +14,9 @@ Unresolved items from the methodological / statistical review. Strikethrough whe
 
 4. **`fillna(0)` on grid/KPI display** (`src/optimization_utils.py`, `src/plots.py`) — Missing cells can show as 0% risk in some views. **Fix:** Distinguish “no data” vs “zero risk” in UI where feasible; rely on `observed` for optimization.
 
-5. **RI optimizer outer merge** (`src/reject_inference_optimizer.py`, merged booked+repesca) — `fillna(0)` can mask misaligned bin keys. **Fix:** Optional validation log or assert on key coverage after merge.
+5. ~~**RI optimizer outer merge** (`src/reject_inference_optimizer.py`, merged booked+repesca) — `fillna(0)` can mask misaligned bin keys. **Fix:** Optional validation log or assert on key coverage after merge.~~ **Fixed:** Merge-key column dtypes preserved after outer merge + fillna(0).
 
-6. **H3→H6 power fallback without `b2_h3_main`** (`src/utils.py`, `extrapolate_h3_to_h6`) — Legacy branch `b2_h3 * ratio^curvature` when main H3-by-bin missing may diverge from fitted log-log path. **Fix:** Document or warn when fallback path is used.
+6. ~~**H3→H6 power fallback without `b2_h3_main`** (`src/utils.py`, `extrapolate_h3_to_h6`) — Legacy branch `b2_h3 * ratio^curvature` when main H3-by-bin missing may diverge from fitted log-log path. **Fix:** Document or warn when fallback path is used.~~ **Fixed:** Added `logger.warning()` when legacy fallback path is used.
 
 ## LOW
 

@@ -314,7 +314,7 @@ class TestRunOptimizationPhase:
             output=output,
         )
 
-        data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var, grid, pareto_masks = result
+        data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var, grid, pareto_masks, _ = result
         assert list(values_per_var["sc_octroi_new_clus"]) == [1, 2]
         assert grid is None
         assert pareto_masks == []
@@ -375,7 +375,7 @@ class TestRunOptimizationPhase:
             output=output,
         )
 
-        _, data_summary, data_summary_sample_no_opt, values_per_var, grid, pareto_masks = result
+        _, data_summary, data_summary_sample_no_opt, values_per_var, grid, pareto_masks, _ = result
         assert list(values_per_var["new_efx_clus"]) == [1, 2]
         assert grid == "grid"
         assert pareto_masks == [[1, 0]]
@@ -456,7 +456,7 @@ class TestRunOptimizationPhase:
             output=output,
         )
 
-        _, data_summary, data_summary_sample_no_opt, _, grid, pareto_masks = result
+        _, data_summary, data_summary_sample_no_opt, _, grid, pareto_masks, _ = result
         assert data_summary_sample_no_opt.empty
         assert grid is dummy_grid
         assert pareto_masks == fake_masks

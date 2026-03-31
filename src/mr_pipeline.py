@@ -390,11 +390,15 @@ def _compute_hybrid_mr_risk(
         mr_prod = mr_booked.groupby(merge_keys)["oa_amt_h0"].sum().reset_index()
         mr_prod = mr_prod.rename(columns={"oa_amt_h0": "mr_production"})
         n_before = len(mr_agg)
+        if mr_agg.duplicated(subset=merge_keys).any():
+            logger.warning("Duplicate merge keys detected in mr_agg before outer merge with mr_prod.")
+        if mr_prod.duplicated(subset=merge_keys).any():
+            logger.warning("Duplicate merge keys detected in mr_prod before outer merge with mr_agg.")
         mr_agg = mr_agg.merge(mr_prod, on=merge_keys, how="outer")
-        if len(mr_agg) > n_before + len(mr_prod):
-            logger.warning(
-                f"MR outer merge expanded rows unexpectedly: {n_before} + {len(mr_prod)} → {len(mr_agg)}. "
-                f"Check merge key uniqueness in mr_agg/mr_prod."
+        if len(mr_agg) > max(n_before, len(mr_prod)):
+            logger.info(
+                f"MR outer merge: {n_before} + {len(mr_prod)} → {len(mr_agg)} "
+                f"(keys not fully overlapping)."
             )
     else:
         mr_agg["mr_production"] = 0.0
@@ -405,11 +409,15 @@ def _compute_hybrid_mr_risk(
     # --- Outer join ---
     n_main = len(main_agg)
     n_mr = len(mr_agg)
+    if main_agg.duplicated(subset=merge_keys).any():
+        logger.warning("Duplicate merge keys detected in main_agg before outer merge with mr_agg.")
+    if mr_agg.duplicated(subset=merge_keys).any():
+        logger.warning("Duplicate merge keys detected in mr_agg before outer merge with main_agg.")
     combined = main_agg.merge(mr_agg, on=merge_keys, how="outer")
-    if len(combined) > n_main + n_mr:
-        logger.warning(
-            f"Main/MR outer merge expanded rows unexpectedly: {n_main} + {n_mr} → {len(combined)}. "
-            f"Check merge key uniqueness."
+    if len(combined) > max(n_main, n_mr):
+        logger.info(
+            f"Main/MR outer merge: {n_main} + {n_mr} → {len(combined)} "
+            f"(keys not fully overlapping)."
         )
 
     # --- H3 aggregation (needed before risk source selection for extrapolation) ---

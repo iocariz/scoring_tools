@@ -52,7 +52,7 @@ def run_optimization_phase(
     per_bin_tasa_fin: pd.DataFrame | None = None,
     floor_cells_path: str | None = None,
     floor_cells_mode: str = "floor",
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, list], CellGrid | None, list]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, list], CellGrid | None, list, dict[int, int] | None]:
     """Run the optimization pipeline: generate summary, find optimal cutoffs.
 
     Args:
@@ -83,6 +83,7 @@ def run_optimization_phase(
 
     t0 = time.perf_counter()
     segment = settings.segment_filter
+    floor_fixed_cells: dict[int, int] | None = None
 
     data_summary_desagregado = run_optimization_pipeline(
         data_booked=data_booked,
@@ -499,7 +500,7 @@ def run_optimization_phase(
         f"b2 range: [{b2_min:.2f}%, {b2_max:.2f}%] | optimum_risk={settings.optimum_risk:.1f}% | {elapsed:.1f}s"
     )
 
-    return data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var, grid, pareto_masks
+    return data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var, grid, pareto_masks, floor_fixed_cells
 
 
 def run_scenario_analysis(
@@ -577,6 +578,12 @@ def run_scenario_analysis(
 
     # Extract optimal solution for CI calculation
     opt_sol = visualizer.get_selected_solution()
+    if opt_sol.empty:
+        logger.warning(
+            f"[{segment}] Scenario {scenario_name} | risk_threshold={current_risk:.1f}% | "
+            "no feasible solution found on Pareto frontier"
+        )
+        return pd.DataFrame()
     selected_b2 = opt_sol.iloc[0].get("b2_ever_h6", float("nan"))
     selected_prod = opt_sol.iloc[0].get("oa_amt_h0", float("nan"))
     logger.info(
@@ -923,6 +930,7 @@ def run_sensitivity_phase(
     data_summary: pd.DataFrame,
     settings: PreprocessingSettings,
     output: OutputPaths | None = None,
+    fixed_cells: dict[int, int] | None = None,
 ) -> None:
     """Run sensitivity analysis on the base scenario (non-blocking).
 
@@ -933,6 +941,7 @@ def run_sensitivity_phase(
         data_summary: Pareto-optimal solutions DataFrame.
         settings: Configuration settings.
         output: Output paths configuration.
+        fixed_cells: Floor/ceiling constraints from sequential cutoff ordering.
     """
     if not settings.run_sensitivity:
         return
@@ -955,6 +964,7 @@ def run_sensitivity_phase(
             settings.optimum_risk,
             settings.inv_vars,
             settings.multiplier,
+            fixed_cells=fixed_cells,
             max_swapin_production_pct=settings.max_swapin_production_pct,
             max_swapin_risk=settings.max_swapin_risk,
             time_limit=settings.milp_time_limit,
@@ -979,6 +989,7 @@ def run_sensitivity_phase(
             max_swapin_production_pct=settings.max_swapin_production_pct,
             max_swapin_risk=settings.max_swapin_risk,
             milp_time_limit=settings.milp_time_limit,
+            fixed_cells=fixed_cells,
         )
         sens_path = output.sensitivity_analysis_csv("_base")
         sens_df.to_csv(sens_path, index=False)
@@ -997,6 +1008,7 @@ def run_sensitivity_phase(
             max_swapin_production_pct=settings.max_swapin_production_pct,
             max_swapin_risk=settings.max_swapin_risk,
             milp_time_limit=settings.milp_time_limit,
+            fixed_cells=fixed_cells,
         )
         cell_detail_path = output.sensitivity_analysis_csv("_cell_detail")
         cell_detail.to_csv(cell_detail_path, index=False)

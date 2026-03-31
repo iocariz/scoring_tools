@@ -2087,6 +2087,30 @@ def export_consolidated_excel(
                 summary[c] = 0.0
         return pd.concat([df_tbl, pd.DataFrame([summary])], ignore_index=True)
 
+    def _load_segment_settings(seg_name_local: str) -> dict[str, Any]:
+        """Load multiplier, multiplier_h3, inv_vars from the segment's saved config."""
+        defaults: dict[str, Any] = {
+            "multiplier": float(DEFAULT_RISK_MULTIPLIER),
+            "multiplier_h3": None,
+            "inv_vars": None,
+        }
+        try:
+            import tomllib
+
+            seg_cfg_path = output_base / seg_name_local / "config_segment.toml"
+            if seg_cfg_path.exists():
+                cfg = tomllib.loads(seg_cfg_path.read_text(encoding="utf-8"))
+                prep = cfg.get("preprocessing", cfg)
+                if "multiplier" in prep:
+                    defaults["multiplier"] = float(prep["multiplier"])
+                if "multiplier_h3" in prep:
+                    defaults["multiplier_h3"] = float(prep["multiplier_h3"])
+                if "inv_vars" in prep:
+                    defaults["inv_vars"] = list(prep["inv_vars"])
+        except Exception:
+            pass
+        return defaults
+
     def _build_income_bin_tables(seg_name: str, period: str, template_cols: list[str]) -> list[tuple[str, pd.DataFrame]]:
         data_dir = output_base / seg_name / "data"
         accepted_cells_path = data_dir / "accepted_cells_base.csv"
@@ -2137,6 +2161,8 @@ def export_consolidated_excel(
                 grid = None
 
         from src.mr_pipeline import calculate_metrics_from_cuts
+
+        seg_settings = _load_segment_settings(seg_name)
 
         def _extract_binary_income_threshold(bin_edges: Any) -> float | None:
             if not isinstance(bin_edges, list) or len(bin_edges) < 3:
@@ -2264,8 +2290,11 @@ def export_consolidated_excel(
                 data_summary_desagregado=df_bin,
                 optimal_solution_df=df_opt,
                 variables=variables,
+                inv_vars=seg_settings["inv_vars"],
                 mask=mask,
                 grid=grid,
+                multiplier=seg_settings["multiplier"],
+                multiplier_h3=seg_settings["multiplier_h3"],
             )
             if tbl is None or tbl.empty:
                 continue

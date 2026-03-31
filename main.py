@@ -122,6 +122,7 @@ def main(
             values_per_var,
             grid,
             pareto_masks,
+            floor_fixed_cells,
         ) = run_optimization_phase(
             data_booked,
             data_demand,
@@ -209,6 +210,7 @@ def main(
                 data_summary=data_summary,
                 settings=settings,
                 output=output,
+                fixed_cells=floor_fixed_cells,
             )
 
         # Step 6c: Reject inference parameter optimization (optional, non-blocking, skipped in baseline mode)
@@ -251,6 +253,7 @@ def main(
                     values_per_var,
                     grid,
                     pareto_masks,
+                    floor_fixed_cells,
                 ) = run_optimization_phase(
                     data_booked,
                     data_demand,

@@ -145,7 +145,13 @@ def extrapolate_h3_to_h6(
             # Fall back to linear for elements where b2_h3_main is NaN/0 (e.g. MR-only bins)
             linear_result = b2_h3 * h6_h3_ratio
             return np.where(np.isfinite(power_result), power_result, linear_result)
-        # Fallback when b2_h3_main not available: apply curvature to ratio (legacy)
+        # Fallback when b2_h3_main not available: apply curvature to ratio (legacy).
+        # This path can diverge from the fitted log-log model used when b2_h3_main
+        # is available — results should be treated as approximate.
+        logger.warning(
+            "H3→H6 power extrapolation: b2_h3_main not available, using legacy "
+            "ratio^curvature fallback (may diverge from fitted log-log model)."
+        )
         return b2_h3 * np.power(h6_h3_ratio, curvature)
     elif method == "logistic":
         # Smoothly caps the scaling for extreme ratios while approaching
