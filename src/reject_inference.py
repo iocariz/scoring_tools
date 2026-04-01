@@ -215,6 +215,12 @@ def compute_acceptance_rates(
                 # Var(p_hat_i | p) ~ p(1-p)/n_i.
                 within_var_mean = float((p * (1 - p) / n_i).mean())
                 between_var = sample_var - within_var_mean
+                if np.isfinite(between_var) and between_var <= 0:
+                    logger.warning(
+                        f"Bayesian smoothing: between-bin variance is non-positive "
+                        f"({between_var:.6f}), data may not support random-effects model. "
+                        f"Using configured prior_strength={bayesian_prior_strength:.1f}."
+                    )
                 if np.isfinite(between_var) and between_var > 0:
                     empirical_strength = (p * (1 - p) / between_var) - 1.0
                     if np.isfinite(empirical_strength) and empirical_strength > 0:

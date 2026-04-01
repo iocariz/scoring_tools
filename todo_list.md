@@ -29,3 +29,31 @@ Unresolved items from the methodological / statistical review. Strikethrough whe
 10. **Global frontier pruning** (`src/global_optimizer.py`) — Assumes risk-sorted frontier input; dominated-point drop is consistent with that.
 
 11. **MILP weighted risk** (`src/global_optimizer.py`) — `Σ p(r−T) ≤ 0` matches production-weighted average risk ≤ target; no change unless definition of “global risk” changes.
+
+## Audit 2025-03-31
+
+### MEDIUM — Bugs
+
+12. **H3→H6 ratio hardcoded threshold** (`src/mr_pipeline.py`, ~597) — Per-bin ratio excludes bins with H3 risk < 0.01 (1%). Low-risk portfolios lose significant bins, forcing fallback imputation. **Fix:** Make threshold relative to global H3 rate or configurable.
+
+### MEDIUM — Statistical
+
+13. **IV unstable with zero-event bins** (`src/metrics.py`, 465–468) — `WOE = ln(perc_good / epsilon)` with epsilon=0.0001 produces extreme values for bins with zero bad accounts, inflating IV. **Fix:** Use Laplace smoothing (add 0.5 to all counts) or collapse zero-event bins.
+
+14. **Bootstrap CIs use simple percentile method** (`src/metrics.py`, 101–102) — For bounded statistics like Gini, percentile CIs can have <95% actual coverage. **Fix:** Consider BCa method, or document as approximate.
+
+15. **Maturity calculation truncates to calendar months** (`src/mr_pipeline.py`, 359–361) — `(year_diff * 12 + month_diff)` creates discontinuities at month boundaries. **Fix:** Use `(reference_date - mis_date).dt.days / 30.437` for fractional months.
+
+### MEDIUM — Performance
+
+16. **O(n²) Pareto dominance check** (`src/optimization_utils.py`, 726–738, duplicated at 1094–1106) — Pairwise loop is redundant for 2D: Stage 1 sort-and-sweep already produces correct frontier. Stage 2 only needed for N>2 objectives. **Fix:** Skip Stage 2 for 2-objective case or replace with vectorized numpy.
+
+### LOW-MEDIUM — Robustness
+
+17. **Missing config cross-validation** (`src/config.py`) — Invalid combinations not caught early: `mr_maturity_months` exceeding data window, `reject_acceptance_decay_half_life_months` without valid date column, `per_bin_tasa_fin=True` with 1 variable. **Fix:** Add `@model_validator(mode=”after”)` checks.
+
+18. **CellGrid constructed repeatedly** (`src/optimization_utils.py`) — `CellGrid.from_summary()` called multiple times with same data during sensitivity analysis. **Fix:** Construct once and pass through.
+
+### LOW — Logging
+
+19. **Warning messages lack actionable context** (multiple files) — Missing bins in parceling, zero-exposure cells in MILP, failed date parsing: all log generic messages without listing which bins/cells/values are affected. **Fix:** Include bin IDs and aggregate stats in warnings.

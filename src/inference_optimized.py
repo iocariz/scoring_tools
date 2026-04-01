@@ -1888,7 +1888,9 @@ def run_optimization_pipeline(
         rename_map["reject_risk_multiplier"] = "ri_multiplier_rep"
     data_sumary_desagregado_repesca = data_sumary_desagregado_repesca.rename(columns=rename_map)
 
-    # Merge and adjust indicators
+    # Merge and adjust indicators (preserve merge-key dtypes that can be
+    # upcast from int → float by NaN introduction during outer merge).
+    var_dtypes = {v: data_sumary_desagregado_booked[v].dtype for v in VARIABLES}
     data_sumary_desagregado = data_sumary_desagregado_booked.merge(
         data_sumary_desagregado_repesca, on=VARIABLES, how="outer"
     )
@@ -1896,6 +1898,9 @@ def run_optimization_pipeline(
     diag_cols = {"stress_factor_rep", "ri_multiplier_rep"}
     fill_cols = [c for c in data_sumary_desagregado.columns if c not in diag_cols]
     data_sumary_desagregado[fill_cols] = data_sumary_desagregado[fill_cols].fillna(0)
+    for v, dt in var_dtypes.items():
+        if data_sumary_desagregado[v].dtype != dt:
+            data_sumary_desagregado[v] = data_sumary_desagregado[v].astype(dt)
 
     for indicador in INDICADORES:
         data_sumary_desagregado[indicador] = (
