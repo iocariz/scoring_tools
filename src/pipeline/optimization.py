@@ -131,46 +131,27 @@ def run_optimization_phase(
     # Check for baseline mode (show current portfolio as-is, no optimization)
     if settings.baseline_mode:
         logger.info(f"[{segment}] Baseline mode: showing current portfolio (no optimization)")
+
+        # Zero out repesca columns in disaggregated data so downstream consumers
+        # (visualizer, summary table, audit) see Optimum = Actual with zero swap-in.
+        for col in data_summary_desagregado.columns:
+            if col.endswith("_rep"):
+                data_summary_desagregado[col] = 0
+        # Recompute base totals (base = _boo + _rep, now _rep is 0 → base = _boo)
+        for ind in settings.indicators:
+            boo_col = f"{ind}_boo"
+            if boo_col in data_summary_desagregado.columns:
+                data_summary_desagregado[ind] = data_summary_desagregado[boo_col]
+
         grid = CellGrid.from_summary(data_summary_desagregado, settings.variables)
         accept_all_mask = np.ones(len(grid.cell_data), dtype=int)
 
-        # Build single solution with booked-only metrics (zero repesca/cut)
-        baseline_kpis: dict[str, float] = {"sol_fac": 0}
-        cell = grid.cell_data
-        for ind in settings.indicators:
-            boo_col = f"{ind}_boo"
-            rep_col = f"{ind}_rep"
-            if boo_col in cell.columns:
-                baseline_kpis[boo_col] = float(cell[boo_col].sum())
-                baseline_kpis[ind] = float(cell[boo_col].sum())
-            if rep_col in cell.columns:
-                baseline_kpis[rep_col] = 0.0
-            baseline_kpis[f"{ind}_cut"] = 0.0
-
-        # Compute derived b2 metrics for each suffix group.
-        # For _rep/_cut suffixes both numerator and denominator are 0 by design,
-        # producing NaN from calculate_b2_ever_h6; replace with 0.0 for display.
-        for suffix in ["", "_boo", "_rep", "_cut"]:
-            t30_key = f"todu_30ever_h6{suffix}"
-            tamt_key = f"todu_amt_pile_h6{suffix}"
-            if t30_key in baseline_kpis and tamt_key in baseline_kpis:
-                raw = float(
-                    calculate_b2_ever_h6(
-                        baseline_kpis[t30_key], baseline_kpis[tamt_key],
-                        multiplier=settings.multiplier, as_percentage=True,
-                    )
-                )
-                baseline_kpis[f"b2_ever_h6{suffix}"] = 0.0 if np.isnan(raw) else raw
-            t30_h3 = f"todu_30ever_h3{suffix}"
-            tamt_h3 = f"todu_amt_pile_h3{suffix}"
-            if t30_h3 in baseline_kpis and tamt_h3 in baseline_kpis:
-                raw_h3 = float(
-                    calculate_b2_ever_h6(
-                        baseline_kpis[t30_h3], baseline_kpis[tamt_h3],
-                        multiplier=settings.multiplier_h3, as_percentage=True,
-                    )
-                )
-                baseline_kpis[f"b2_ever_h3{suffix}"] = 0.0 if np.isnan(raw_h3) else raw_h3
+        # Use evaluate_solution for KPIs — same code path as all other modes
+        baseline_kpis = evaluate_solution(
+            accept_all_mask, grid, settings.indicators,
+            settings.multiplier, multiplier_h3=settings.multiplier_h3,
+        )
+        baseline_kpis["sol_fac"] = 0
 
         pareto_masks = [accept_all_mask]
         data_summary = pd.DataFrame([baseline_kpis])
@@ -710,8 +691,12 @@ def run_scenario_analysis(
     else:
         audit_mr = pd.DataFrame()
 
-    summary_table = reconcile_risk_production_summary_with_audit(summary_table, audit_main)
-    validate_audit_against_summary(audit_main, summary_table)
+    # In baseline mode the accept-all mask makes every rejected applicant look like
+    # swap-in, producing misleading audit classifications.  Skip reconciliation so
+    # the summary table keeps the correct Optimum = Actual / zero-swap values.
+    if not settings.baseline_mode:
+        summary_table = reconcile_risk_production_summary_with_audit(summary_table, audit_main)
+        validate_audit_against_summary(audit_main, summary_table)
 
     # Add CI columns to summary table (only for Optimum selected row)
     summary_table["production_ci_lower"] = 0.0

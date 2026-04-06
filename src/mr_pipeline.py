@@ -1947,7 +1947,7 @@ def process_mr_period(
             total_demand=mr_total_demand,
         )
 
-        if mr_summary_table is not None and audit_mr_df is not None and not audit_mr_df.empty:
+        if mr_summary_table is not None and audit_mr_df is not None and not audit_mr_df.empty and not settings.baseline_mode:
             from src.audit import reconcile_risk_production_summary_with_audit
 
             mr_summary_table = reconcile_risk_production_summary_with_audit(mr_summary_table, audit_mr_df)
