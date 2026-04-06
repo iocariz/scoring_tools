@@ -6,13 +6,15 @@ Unresolved items from the methodological / statistical review. Strikethrough whe
 
 1. ~~**`apply_reject_inference` docstring vs default** (`src/reject_inference.py`, ~668–671) — Docstring said `apply_h3_multiplier` defaulted to **True**; actual default is **`False`**.~~ **Fixed:** Docstring and `apply_parceling_adjustment` comments aligned with `False` default; debug log uses `apply_h3_multiplier`.
 
+26. **MILP Pareto sweep is a discrete approximation** (`src/optimization_utils.py`, `trace_pareto_frontier`) — Frontier is built from MILPs on a linear grid of risk targets (`pareto_n_points`) plus mask dedup. Many Pareto-optimal monotone masks may never appear as optima for any grid target, so `optimum_risk` can map to a **suboptimal** production point. **Fix:** Increase `pareto_n_points`, add local refinement (e.g. binary search on risk target around the scenario), or resolve breakpoints between basis changes where feasible.
+
 ## MEDIUM
 
 2. **Consolidated optimum risk CIs** (`src/consolidation.py`, `aggregate_metrics`) — Pooled risk point is correct from summed numerators/denominators; combined segment CIs use independence + exposure-weighted SE stacking. **Coverage** may differ from nominal 95% for the true pooled portfolio rate. **Fix:** Document as heuristic in reports or refine method (e.g. bootstrap at consolidated level).
 
 3. **Bootstrap CIs for Optimum** (`src/utils.py`, `calculate_bootstrap_intervals`) — Resamples booked only; swap-in/reject model error not in interval. **Fix:** Ensure report text states scope (sampling uncertainty of booked path under fixed cut / fixed repesca production).
 
-4. **`fillna(0)` on grid/KPI display** (`src/optimization_utils.py`, `src/plots.py`) — Missing cells can show as 0% risk in some views. **Fix:** Distinguish “no data” vs “zero risk” in UI where feasible; rely on `observed` for optimization.
+4. **`fillna(0)` on grid/KPI display** (`src/optimization_utils.py`, `src/plots.py`) — Missing cells can show as 0% risk in some views. **Also** (`kpi_of_fact_sol`, `src/optimization_utils.py`): NaN `b2_ever_h6` from zero exposure is filled with **0** for display/downstream — optimistic for ranking and `b2 <= optimum_risk` selection on the legacy 2-var path. **Fix:** Distinguish “no data” vs “zero risk” in UI where feasible; rely on `observed` for optimization; exclude or flag zero-exposure solutions in Pareto/selection instead of treating risk as 0%.
 
 5. ~~**RI optimizer outer merge** (`src/reject_inference_optimizer.py`, merged booked+repesca) — `fillna(0)` can mask misaligned bin keys. **Fix:** Optional validation log or assert on key coverage after merge.~~ **Fixed:** Merge-key column dtypes preserved after outer merge + fillna(0).
 
@@ -42,7 +44,21 @@ Unresolved items from the methodological / statistical review. Strikethrough whe
 
 14. **Bootstrap CIs use simple percentile method** (`src/metrics.py`, 101–102) — For bounded statistics like Gini, percentile CIs can have <95% actual coverage. **Fix:** Consider BCa method, or document as approximate.
 
-15. **Maturity calculation truncates to calendar months** (`src/mr_pipeline.py`, 359–361) — `(year_diff * 12 + month_diff)` creates discontinuities at month boundaries. **Fix:** Use `(reference_date - mis_date).dt.days / 30.437` for fractional months.
+15. ~~**Maturity calculation truncates to calendar months** (`src/mr_pipeline.py`, 359–361) — `(year_diff * 12 + month_diff)` creates discontinuities at month boundaries.~~ **Not an issue:** All input dates use 01/MM/YY format, so the formula produces exact integer months.
+
+### MEDIUM — Methodological
+
+20. **Regression weights not validated** (`src/inference_optimized.py`, 352–356) — `_get_regression_weights` returns raw column values (todu_amt_pile_h6, oa_amt_h0, or n_observations) without checking for non-negativity, zeros, or extreme outliers. Zero weights silently drop samples; no normalization means one high-exposure bin can dominate regularization. **Fix:** Validate non-negativity, clip extremes, normalize to sum=N.
+
+21. **TweedieGLM log(exposure) treated as feature, not GLM offset** (`src/estimators.py`, 289–296) — Exposure is appended as a learned feature via `_add_log_exposure`. In a proper GLM, the offset is not regularized. sklearn's regularization penalizes the exposure coefficient toward zero, biasing exposure-adjusted predictions for small samples. **Fix:** Document as approximate, or use a custom linear predictor with true offset.
+
+22. **Polynomial features on bin indices create multicollinearity** (`src/models.py`, 149–167) — Degree-3 polynomials on bin indices (1,2,3...) produce highly correlated features. Destabilizes Ridge coefficients and makes regularization hyperparameter selection sensitive. **Fix:** Use orthogonal polynomials or normalize indices to [-1, 1] before transformation.
+
+23. **One-SE rule applied three times compounds conservatism** (`src/inference_optimized.py`, 587, 697) — Applied at model type, feature set, and combined selection. Each stage independently favors simpler models; compounding pushes the final model away from best-performing. **Fix:** Consider nested CV or single joint selection.
+
+24. **H3→H6 auto-calibration sample selection bias** (`src/mr_pipeline.py`, 480–502) — Only bins with both main H3 and H6 fit the log-log curve. MR-only or H6-only bins excluded, biasing curvature toward stable bins. **Fix:** Document limitation; consider including MR H3 data in the fit when available.
+
+25. **Parceling exogeneity assumption undocumented** (`src/reject_inference.py`, docstring) — Parceling assumes `Rejection ⊥ Risk | Score`. If manual overrides or policy rules influence rejection beyond the score, the multiplier is biased. **`safe_rate` floor, `max_risk_multiplier` cap, and method choice** (linear/power/sigmoid) further distort tail risk and can move the optimized cutoff. **Fix:** Document the assumption and sensitivity of optimal policy to RI params/caps in the docstring or report.
 
 ### MEDIUM — Performance
 
@@ -57,3 +73,51 @@ Unresolved items from the methodological / statistical review. Strikethrough whe
 ### LOW — Logging
 
 19. **Warning messages lack actionable context** (multiple files) — Missing bins in parceling, zero-exposure cells in MILP, failed date parsing: all log generic messages without listing which bins/cells/values are affected. **Fix:** Include bin IDs and aggregate stats in warnings.
+
+## Cutoff optimality (audit 2026-04-06)
+
+### MEDIUM
+
+27. **Legacy 2-var Pareto dedup by rounded risk** (`src/optimization_utils.py`, `get_optimal_solutions`) — Drops duplicate `b2_ever_h6` after `round(4)`, which can merge distinct frontier points and remove the best production for a tight risk cap. **Fix:** Remove rounding dedup, or dedup only truly identical `(b2, oa)` pairs; keep full Pareto set for selection.
+
+28. **Hard monotonicity in bin space** (`src/optimization_utils.py`, `_build_monotonicity_constraints` + MILP) — Optimum is best **monotone rectangular** policy, not best subset of cells; empirical risk need not be monotone (noise, selection, sparse bins). **Fix:** Document constraint as policy choice; optional sensitivity without monotonicity on small grids.
+
+29. **Objective is production, not economic value** (`src/optimization_utils.py`, `milp_solve_cutoffs`) — Maximizes `oa_amt_h0` subject to risk caps; margins/LGD/pricing by bin are ignored. **Fix:** Document; optional weighted objective if data exists.
+
+### LOW
+
+30. **Scenario row selection assumes sort order** (`src/plots.py`, `_get_selected_solution_row`) — `b2 <= optimum_risk` then `tail(1)` is max production under cap only if `data_summary` is sorted by increasing `b2_ever_h6` (true for default MILP/legacy outputs, fragile if CSV reload/merge reorders rows). **Fix:** Explicit `sort_values(["b2_ever_h6", "oa_amt_h0"])` before filtering and taking max `oa_amt_h0` among feasible rows.
+
+31. **MILP time limit** (`src/optimization_utils.py`, `milp_solve_cutoffs`) — `scipy.optimize.milp` `time_limit` can yield suboptimal or no solution for a target, weakening a frontier point. **Fix:** Log/time budget; retry with higher limit on failure.
+
+32. **GA Pareto fallback is heuristic** (`src/optimization_utils.py`, `_ga_pareto_fallback`) — Does not match exact MILP quality on the discretized grid. **Fix:** Document; prefer MILP when tractable.
+
+33. **N>2 heatmap is a 2D marginal** (`src/plots.py`, `RiskProductionVisualizer`) — Extra dimensions summed for display; overlay is not the full N-D acceptance set. **Fix:** Caption/report text so readers do not equate heatmap with the true policy.
+
+## MR inference — proposed improvements (2026-04-06)
+
+*Complements existing MR items **#12** (low-H3 ratio gate) and **#24** (auto-calibration sample); does not replace them.*
+
+### MEDIUM–HIGH (impact)
+
+34. **Out-of-time calibration of MR hybrid risk** (`src/mr_pipeline.py`, optimization inputs) — After computing `b2_ever_h6_tmp`, fit a calibrator (e.g. isotonic or Platt) on a holdout slice where H6 is mature so predicted rank/probability matches realized defaults. **Fix:** Optional config flag; apply before aggregation into optimization grid.
+
+35. **Reliability-weighted blend instead of hard source switching** (`src/mr_pipeline.py`, `_compute_hybrid_mr_risk`) — Replace pure `np.select` priority with weights `w_mr`, `w_h3`, `w_main` from counts, recency, and fit quality; blend risks to avoid discontinuities at `min_obs` boundaries. **Fix:** Feature-flagged path; keep legacy discrete ladder as default until validated.
+
+36. **Uncertainty-aware cutoff optimization** (`src/optimization_utils.py`, `trace_pareto_frontier` / MILP) — Propagate per-bin uncertainty (e.g. SE from counts or bootstrap) and optimize on conservative risk (`mean + k·SE`) or document chance-style constraints. **Fix:** Extend `CellGrid` / constraint row; config `k` and uncertainty source.
+
+### MEDIUM
+
+37. **Hierarchical shrinkage for sparse bins** (`src/mr_pipeline.py`) — Partial pooling (empirical Bayes or simple James–Stein) for bin-level MR rates or H6/H3 ratios so sparse cells borrow strength from segment/global instead of abrupt median fallback. **Fix:** Complements **#12**; reduces reliance on hard ratio floors alone.
+
+38. **Time-varying H6/H3 mapping** (`src/mr_pipeline.py`) — Monthly H6/H3 trend is logged but ratio used for extrapolation is static; fit ratio as function of cohort month or macro covariates when trend warning fires. **Fix:** Optional model or rolling-window ratio per vintage.
+
+39. **Beyond fixed calendar maturity** (`src/mr_pipeline.py`, `_compute_hybrid_mr_risk`) — Add effective-maturity weights or survival-style censoring instead of only hard drop before `mr_maturity_months` (and fixed 3mo for H3). **Fix:** Configurable strategy; document vs current binary filter.
+
+40. **Model fallback: reduce booked-only bias** (`src/mr_pipeline.py`, `model_fallback` + `calculate_B2`) — Fallback uses model trained on booked; add separate calibration or training weights / reject-aware targets for MR-only bins. **Fix:** Document scope; optional retrain or post-hoc calibration on fallback subset.
+
+41. **Adaptive risk caps for extrapolation / fallback** (`src/config.py`, `mr_pipeline.py`) — Replace or augment fixed `mr_extrapolation_risk_multiplier` and `mr_extrapolation_hard_cap` with data-driven limits (e.g. bin-level percentiles, posterior upper bounds). **Fix:** Config profiles; backward-compatible defaults.
+
+### LOW–MEDIUM
+
+42. **Run-quality gates for MR-heavy outputs** (`main.py` / `pipeline/optimization.py` / reports) — Fail or prominently warn when extrapolated share of MR production, `model_fallback` share, or H6/H3 instability exceeds thresholds (complements **#17** config validation). **Fix:** Thresholds in config; exit code or report banner.
