@@ -1689,10 +1689,38 @@ def process_mr_period(
                     f"Repesca risk: {before_avg:.2f}% → {after_avg:.2f}%"
                 )
 
-            # Also recalibrate H3 repesca if present
+            # Also recalibrate H3 repesca if present — using an H3-specific
+            # calibration factor (b2_mr_h3 / b2_main_h3) rather than the H6 one,
+            # because H3 (early delinquency) and H6 (later defaults) can drift
+            # differently between periods.
             rep_h3_col = "todu_30ever_h3_rep"
             if rep_h3_col in data_summary_desagregado_mr.columns:
-                data_summary_desagregado_mr[rep_h3_col] = data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor"]
+                has_h3_cal = (
+                    comparison_df is not None
+                    and "b2_mr_h3" in comparison_df.columns
+                    and "b2_main_h3" in comparison_df.columns
+                )
+                if has_h3_cal:
+                    h3_cal = comparison_df[merge_keys + ["b2_mr_h3", "b2_main_h3"]].drop_duplicates(subset=merge_keys)
+                    safe_main_h3 = h3_cal["b2_main_h3"].clip(lower=1e-9)
+                    h3_cal["_mr_cal_factor_h3"] = (h3_cal["b2_mr_h3"] / safe_main_h3).clip(
+                        lower=0.1, upper=10.0
+                    ).fillna(1.0)
+                    data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
+                        h3_cal[merge_keys + ["_mr_cal_factor_h3"]], on=merge_keys, how="left",
+                    )
+                    data_summary_desagregado_mr["_mr_cal_factor_h3"] = data_summary_desagregado_mr["_mr_cal_factor_h3"].fillna(1.0)
+                    data_summary_desagregado_mr[rep_h3_col] = data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor_h3"]
+                    logger.info(
+                        f"MR H3 repesca recalibration: avg factor={data_summary_desagregado_mr['_mr_cal_factor_h3'].mean():.3f} "
+                        f"(range [{data_summary_desagregado_mr['_mr_cal_factor_h3'].min():.3f}, "
+                        f"{data_summary_desagregado_mr['_mr_cal_factor_h3'].max():.3f}])"
+                    )
+                    data_summary_desagregado_mr = data_summary_desagregado_mr.drop(columns=["_mr_cal_factor_h3"], errors="ignore")
+                else:
+                    # Fall back to H6 factor when H3 calibration data unavailable
+                    data_summary_desagregado_mr[rep_h3_col] = data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor"]
+                    logger.info("MR H3 repesca recalibration: using H6 factor (H3-specific data unavailable)")
 
             # Drop helper calibration factor column
             data_summary_desagregado_mr = data_summary_desagregado_mr.drop(columns=["_mr_cal_factor"], errors="ignore")
