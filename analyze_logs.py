@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-
 # =============================================================================
 # Data structures
 # =============================================================================
@@ -75,6 +74,27 @@ class MRDecomposition:
 
 
 @dataclass
+class TierDistribution:
+    """Tiered MR risk reconstruction distribution."""
+
+    tier1_actual_h6: int = 0
+    tier2_account_h3: int = 0
+    tier3_bin_main: int = 0
+    tier4_model_fallback: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.tier1_actual_h6 + self.tier2_account_h3 + self.tier3_bin_main + self.tier4_model_fallback
+
+    def pct(self, tier: int) -> float:
+        t = self.total
+        if t == 0:
+            return 0.0
+        counts = [0, self.tier1_actual_h6, self.tier2_account_h3, self.tier3_bin_main, self.tier4_model_fallback]
+        return counts[tier] / t * 100 if 1 <= tier <= 4 else 0.0
+
+
+@dataclass
 class SegmentMetrics:
     """Collected metrics for a single segment."""
 
@@ -112,29 +132,43 @@ class SegmentMetrics:
     pareto_actual_min: float | None = None  # actual min b2 on the frontier
     # MR
     mr_decomposition: MRDecomposition = field(default_factory=MRDecomposition)
+    mr_tiers: TierDistribution = field(default_factory=TierDistribution)
     psi_value: float | None = None
     risk_drift_bins: int = 0
     mr_auto_fallback: bool = False
     h3_floor_bins: int = 0
     h6_h3_ratio_trend_pct: float | None = None
     mr_recal_avg_factor: float | None = None
+    mr_recal_h3_avg_factor: float | None = None
     risk_inversion: bool = False
+    mr_risk_sources: dict[str, int] = field(default_factory=dict)
+    mr_imputed_pct: float | None = None
+    mr_low_risk_warning: bool = False
     # Reject inference
     ri_avg_multiplier: float | None = None
     ri_max_multiplier: float | None = None
+    ri_min_multiplier: float | None = None
     ri_acceptance_rate_mean: float | None = None
     ri_non_score_rejection_bias: bool = False
     ri_no_feasible: bool = False
     ri_validation_failed: bool = False
+    ri_bayesian_smoothing: bool = False
+    ri_negative_between_var: bool = False
     # DQ / binning
     dq_warnings: int = 0
+    dq_failures: int = 0
     n_anomalous_months: int = 0
     drift_alerts: list[str] = field(default_factory=list)
     outliers_dropped: int = 0
     out_of_range_bins: int = 0
     nan_drop_pct: float | None = None
     n_bootstrap: int | None = None
+    monotonicity_directions: dict[str, int] = field(default_factory=dict)
+    baseline_mode: bool = False
     # Timing
+    elapsed_preprocessing: float | None = None
+    elapsed_inference: float | None = None
+    elapsed_optimization: float | None = None
     elapsed_total: float | None = None
     # Raw
     errors: list[str] = field(default_factory=list)
@@ -185,7 +219,7 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
             segments[current_segment] = SegmentMetrics(name=current_segment)
         return segments[current_segment]
 
-    for timestamp, level, module, func, lineno, msg in entries:
+    for _timestamp, level, _module, _func, _lineno, msg in entries:
         # Track current segment
         m = re.match(r"PROCESSING SEGMENT:\s+(\S+)", msg)
         if m:
@@ -213,6 +247,10 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
         if m:
             s.segment_filter = m.group(1)
 
+        # --- Baseline mode ---
+        if "Baseline mode" in msg or "baseline mode" in msg:
+            s.baseline_mode = True
+
         # --- Model performance ---
         m = re.search(r"CV RMSE:\s+([\d.]+)\s*±\s*([\d.]+)", msg)
         if m:
@@ -238,6 +276,12 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
             else:
                 s.model_name = model_str
 
+        # Model loaded from file
+        m = re.search(r"Model loaded.*?(\w+)\s*\|.*?R2=([\d.e+-]+)", msg)
+        if m:
+            s.model_name = s.model_name or m.group(1)
+            s.train_r2 = float(m.group(2))
+
         # --- Data stats ---
         m = re.search(r"Booked valid records:\s+([\d,]+)", msg)
         if m:
@@ -258,17 +302,22 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
         if m and s.n_demand is None:
             s.n_demand = int(m.group(1).replace(",", ""))
 
-        # --- Optimization ---
-        m = re.search(r"Optimization done.*?(\d+)\s+solutions.*?(\d+)x(\d+)(?:x(\d+))?\s+grid.*?b2 range:\s*\[([\d.]+)%?,\s*([\d.]+)%?\].*?optimum_risk=([\d.]+)", msg)
+        # --- Monotonicity ---
+        m = re.search(r"direction.*?(\w+)\s*=\s*(-?\d+)", msg)
         if m:
-            s.pareto_n_solutions = int(m.group(1))
-            dims = f"{m.group(2)}x{m.group(3)}"
-            if m.group(4):
-                dims += f"x{m.group(4)}"
+            s.monotonicity_directions[m.group(1)] = int(m.group(2))
+
+        # --- Optimization ---
+        m = re.search(r"Optimization done.*?mode=(\w+).*?(\d+)\s+solutions.*?(\d+)x(\d+)(?:x(\d+))?\s+grid.*?b2 range:\s*\[([\d.]+)%?,\s*([\d.]+)%?\].*?optimum_risk=([\d.]+)", msg)
+        if m:
+            s.pareto_n_solutions = int(m.group(2))
+            dims = f"{m.group(3)}x{m.group(4)}"
+            if m.group(5):
+                dims += f"x{m.group(5)}"
             s.grid_dims = dims
-            s.b2_range_min = float(m.group(5))
-            s.b2_range_max = float(m.group(6))
-            s.optimum_risk = float(m.group(7))
+            s.b2_range_min = float(m.group(6))
+            s.b2_range_max = float(m.group(7))
+            s.optimum_risk = float(m.group(8))
 
         m = re.search(r"Pareto frontier:\s+(\d+)\s+solutions.*?(\d+)\s+unique", msg)
         if m:
@@ -306,6 +355,12 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
             )
             s.scenarios[scen.name] = scen
 
+        # --- No feasible solution for scenario ---
+        m = re.search(r"Scenario\s+(\w+)\s*\|.*?no feasible solution", msg)
+        if m:
+            scen = ScenarioResult(name=m.group(1), is_fallback=True)
+            s.scenarios[scen.name] = scen
+
         # --- Pareto fallback ---
         m = re.search(r"No Pareto solution with b2_ever_h6 <= ([\d.]+)%.*?Pareto b2 range:\s*\[([\d.]+)%?,\s*([\d.]+)%?\].*?Falling back.*?b2=([\d.]+)%", msg)
         if m:
@@ -340,6 +395,39 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
         if "RISK INVERSION" in msg:
             s.risk_inversion = True
 
+        # --- Risk sources ---
+        m = re.search(r"Risk sources:\s+h3_extrapolated=(\d+),\s*mr_observed=(\d+),\s*main_imputed=(\d+),\s*model_fallback=(\d+)", msg)
+        if m:
+            s.mr_risk_sources = {
+                "h3_extrapolated": int(m.group(1)),
+                "mr_observed": int(m.group(2)),
+                "main_imputed": int(m.group(3)),
+                "model_fallback": int(m.group(4)),
+            }
+
+        # --- Tiered reconstruction ---
+        m = re.search(r"Tier 1 \(Actual H6\):\s+([\d,]+)\s+accounts", msg)
+        if m:
+            s.mr_tiers.tier1_actual_h6 = int(m.group(1).replace(",", ""))
+        m = re.search(r"Tier 2 \(Account H3.H6\):\s+([\d,]+)\s+accounts", msg)
+        if m:
+            s.mr_tiers.tier2_account_h3 = int(m.group(1).replace(",", ""))
+        m = re.search(r"Tier 3 \(Bin-level main\):\s+([\d,]+)\s+accounts", msg)
+        if m:
+            s.mr_tiers.tier3_bin_main = int(m.group(1).replace(",", ""))
+        m = re.search(r"Tier 4 \(Model fallback\):\s+([\d,]+)\s+accounts", msg)
+        if m:
+            s.mr_tiers.tier4_model_fallback = int(m.group(1).replace(",", ""))
+
+        # --- Low MR risk warning ---
+        if "LOW MR RISK" in msg:
+            s.mr_low_risk_warning = True
+
+        # --- Imputation ratio ---
+        m = re.search(r"Imputed accounts:.*?([\d.]+)%\s*\)\s*\|\s*Imputed production:\s*([\d.]+)%", msg)
+        if m:
+            s.mr_imputed_pct = float(m.group(2))
+
         # --- Stability ---
         m = re.search(r"Overall PSI:\s+([\d.]+)", msg)
         if m:
@@ -363,18 +451,29 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
         if m:
             s.mr_recal_avg_factor = float(m.group(1))
 
+        m = re.search(r"MR H3 repesca recalibration:\s+avg factor=([\d.]+)", msg)
+        if m:
+            s.mr_recal_h3_avg_factor = float(m.group(1))
+
         # --- Reject inference ---
         m = re.search(r"Acceptance rates computed.*?mean=([\d.]+)", msg)
         if m:
             s.ri_acceptance_rate_mean = float(m.group(1))
 
-        m = re.search(r"Reject inference \(parceling\).*?avg multiplier=([\d.]+).*?max multiplier=([\d.]+)", msg)
+        m = re.search(r"Swap-in RI multiplier:\s+min=([\d.]+),\s*avg=([\d.]+),\s*max=([\d.]+)", msg)
         if m:
-            s.ri_avg_multiplier = float(m.group(1))
-            s.ri_max_multiplier = float(m.group(2))
+            s.ri_min_multiplier = float(m.group(1))
+            s.ri_avg_multiplier = float(m.group(2))
+            s.ri_max_multiplier = float(m.group(3))
 
         if "Non-score rejections exceed" in msg:
             s.ri_non_score_rejection_bias = True
+
+        if "Bayesian smoothing applied" in msg:
+            s.ri_bayesian_smoothing = True
+
+        if "between-bin variance is non-positive" in msg:
+            s.ri_negative_between_var = True
 
         if "RI optimizer: no feasible solution" in msg or "RI optimizer: all feasible solutions non-finite" in msg:
             s.ri_no_feasible = True
@@ -387,9 +486,10 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
             s.mr_auto_fallback = True
 
         # --- DQ ---
-        m = re.search(r"DQ warnings.*?(\d+)", msg)
+        m = re.search(r"Data Quality:\s+\d+/\d+ passed.*?(\d+)\s+warning.*?(\d+)\s+failure", msg)
         if m:
             s.dq_warnings = int(m.group(1))
+            s.dq_failures = int(m.group(2))
 
         # --- Trend & anomaly ---
         m = re.search(r"anomal(?:ies|ous).*?(\d+)\s+month", msg)
@@ -414,33 +514,42 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
             if s.nan_drop_pct is None or pct > s.nan_drop_pct:
                 s.nan_drop_pct = pct
 
-        # --- Timing ---
+        # --- Timing (phase-level) ---
+        m = re.search(r"Preprocessing done.*?([\d.]+)s", msg)
+        if m:
+            s.elapsed_preprocessing = float(m.group(1))
+
+        m = re.search(r"Inference done.*?([\d.]+)s", msg)
+        if m:
+            s.elapsed_inference = float(m.group(1))
+
+        m = re.search(r"Optimization done.*?([\d.]+)s", msg)
+        if m:
+            s.elapsed_optimization = float(m.group(1))
+
         m = re.search(r"Pipeline complete.*?([\d.]+)\s*(?:s|seconds)", msg)
         if m:
             s.elapsed_total = float(m.group(1))
 
     # Propagate supersegment model metrics to member segments that have R²=0
-    # (they loaded a pre-trained model and inherit the supersegment's metrics).
     for ss_name, ss in segments.items():
         if not ss_name.startswith("_supersegment_"):
             continue
         if ss.train_r2 is None and ss.cv_r2_mean is None:
             continue
-        for seg_name, seg in segments.items():
+        for seg_name, seg_s in segments.items():
             if seg_name.startswith("_supersegment_") or seg_name == "default":
                 continue
-            # If segment has placeholder R²=0 and supersegment has a real one, inherit
-            if seg.cv_r2_mean is not None and seg.cv_r2_mean == 0.0 and seg.cv_r2_std == 0.0:
+            if seg_s.cv_r2_mean is not None and seg_s.cv_r2_mean == 0.0 and seg_s.cv_r2_std == 0.0:
                 if ss.train_r2 is not None:
-                    seg.train_r2 = ss.train_r2
+                    seg_s.train_r2 = ss.train_r2
                 if ss.cv_rmse_mean is not None:
-                    seg.cv_rmse_mean = ss.cv_rmse_mean
-                    seg.cv_rmse_std = ss.cv_rmse_std
+                    seg_s.cv_rmse_mean = ss.cv_rmse_mean
+                    seg_s.cv_rmse_std = ss.cv_rmse_std
                 if ss.model_name:
-                    seg.model_name = seg.model_name or ss.model_name
-                # Clear the placeholder R²
-                seg.cv_r2_mean = None
-                seg.cv_r2_std = None
+                    seg_s.model_name = seg_s.model_name or ss.model_name
+                seg_s.cv_r2_mean = None
+                seg_s.cv_r2_std = None
 
     return segments, raw_errors
 
@@ -456,17 +565,26 @@ def generate_recommendations(segments: dict[str, SegmentMetrics]) -> list[Recomm
 
     for name, s in segments.items():
         if name.startswith("_supersegment_"):
-            continue  # Skip supersegment training entries for per-segment recs
+            continue
         prefix = f"[{name}] " if len(segments) > 1 else ""
 
         # --- Hard errors ---
         for err in s.errors:
-            if "Unexpected segment error" in err:
+            if "Unexpected segment error" in err or "Pipeline returned no result" in err:
                 recs.append(Recommendation(
                     priority="HIGH",
                     category="Error",
                     message=f"{prefix}Pipeline failed: {err[:200]}",
                 ))
+
+        if s.dq_failures > 0:
+            recs.append(Recommendation(
+                priority="HIGH",
+                category="Data Quality",
+                message=f"{prefix}{s.dq_failures} DQ check(s) failed. Pipeline may have skipped this segment.",
+                setting="data source / segment_filter",
+                suggested="Check DQ report output. Use --skip-dq-checks only for debugging.",
+            ))
 
         # --- Model quality ---
         if s.cv_r2_mean is not None and s.cv_r2_mean < 0.1:
@@ -591,6 +709,17 @@ def generate_recommendations(segments: dict[str, SegmentMetrics]) -> list[Recomm
                     suggested="Review if the main-period cutoffs generalize to MR. Consider tightening optimum_risk.",
                 ))
 
+        # No feasible solution for a scenario
+        for scen_name, scen in s.scenarios.items():
+            if scen.is_fallback and scen.selected_b2 is None:
+                recs.append(Recommendation(
+                    priority="HIGH",
+                    category="Optimization",
+                    message=f"{prefix}Scenario '{scen_name}' found no feasible solution on the Pareto frontier.",
+                    setting="optimum_risk / risk_step",
+                    suggested="The risk target for this scenario is likely unreachable. Adjust optimum_risk or risk_step.",
+                ))
+
         # --- Risk inversion ---
         if s.risk_inversion:
             recs.append(Recommendation(
@@ -604,6 +733,42 @@ def generate_recommendations(segments: dict[str, SegmentMetrics]) -> list[Recomm
                 suggested="Investigate population drift. Re-learn bin edges or adjust MR date range.",
             ))
 
+        # --- MR risk sources ---
+        if s.mr_risk_sources:
+            fb = s.mr_risk_sources.get("model_fallback", 0)
+            total = sum(s.mr_risk_sources.values())
+            if total > 0 and fb / total > 0.3:
+                recs.append(Recommendation(
+                    priority="MEDIUM",
+                    category="MR Validation",
+                    message=(
+                        f"{prefix}{fb}/{total} MR bins ({fb / total * 100:.0f}%) use model fallback risk. "
+                        f"MR risk estimates may be unreliable."
+                    ),
+                    setting="mr_min_obs_per_bin / MR date range",
+                    suggested="Lower mr_min_obs_per_bin or extend MR observation window for more data.",
+                ))
+
+        # --- MR imputation ---
+        if s.mr_imputed_pct is not None and s.mr_imputed_pct > 20:
+            recs.append(Recommendation(
+                priority="MEDIUM",
+                category="MR Validation",
+                message=f"{prefix}{s.mr_imputed_pct:.1f}% of MR production comes from model-imputed bins.",
+                setting="bin granularity",
+                suggested="Consider coarser binning (fewer bins) to reduce the number of MR-only cells.",
+            ))
+
+        # --- Low MR risk warning ---
+        if s.mr_low_risk_warning:
+            recs.append(Recommendation(
+                priority="HIGH",
+                category="MR Validation",
+                message=f"{prefix}MR-observed H6 risk is suspiciously low (<10% of main-period risk). Likely immature loan dilution.",
+                setting="mr_maturity_months / mr_min_obs_per_bin",
+                suggested="Increase mr_maturity_months to exclude immature accounts from H6 risk computation.",
+            ))
+
         # --- Reject inference ---
         if s.ri_non_score_rejection_bias:
             recs.append(Recommendation(
@@ -614,13 +779,30 @@ def generate_recommendations(segments: dict[str, SegmentMetrics]) -> list[Recomm
                 suggested="Set reject_include_all_rejections = true to include all rejections in the denominator.",
             ))
 
-        if s.ri_avg_multiplier is not None and s.ri_avg_multiplier > 2.0:
+        if s.ri_avg_multiplier is not None and s.ri_avg_multiplier > 3.0:
             recs.append(Recommendation(
-                priority="LOW",
+                priority="MEDIUM",
                 category="Reject Inference",
                 message=f"{prefix}High average RI multiplier ({s.ri_avg_multiplier:.2f}×). Repesca risk uplift is aggressive.",
                 setting="reject_uplift_factor / reject_parceling_method",
                 suggested="Consider reducing reject_uplift_factor or switching to a milder parceling method ('linear').",
+            ))
+        elif s.ri_avg_multiplier is not None and s.ri_avg_multiplier > 2.0:
+            recs.append(Recommendation(
+                priority="LOW",
+                category="Reject Inference",
+                message=f"{prefix}Moderately high RI multiplier ({s.ri_avg_multiplier:.2f}×).",
+                setting="reject_uplift_factor",
+                suggested="Monitor swap-in actual risk vs predicted risk. If bias emerges, reduce reject_uplift_factor.",
+            ))
+
+        if s.ri_negative_between_var:
+            recs.append(Recommendation(
+                priority="LOW",
+                category="Reject Inference",
+                message=f"{prefix}Bayesian smoothing: between-bin variance was non-positive. Data may not support random-effects model.",
+                setting="reject_bayesian_prior_strength",
+                suggested="The configured prior_strength is being used as fallback. Consider increasing it for more smoothing.",
             ))
 
         if s.ri_no_feasible:
@@ -650,6 +832,29 @@ def generate_recommendations(segments: dict[str, SegmentMetrics]) -> list[Recomm
                 setting="mr_extrapolation_method",
                 suggested="Use mr_extrapolation_method='auto' for data-driven curvature fitting.",
             ))
+
+        if s.h3_floor_bins > 3:
+            recs.append(Recommendation(
+                priority="LOW",
+                category="MR Validation",
+                message=f"{prefix}{s.h3_floor_bins} bin(s) had H6 risk clamped to H3 floor.",
+                setting="mr_extrapolation_curvature",
+                suggested="H3 floor is a safety net. If many bins are floored, the extrapolation may be underestimating H6 risk.",
+            ))
+
+        # --- MR recalibration ---
+        if s.mr_recal_avg_factor is not None:
+            if s.mr_recal_avg_factor < 0.5 or s.mr_recal_avg_factor > 2.0:
+                recs.append(Recommendation(
+                    priority="MEDIUM",
+                    category="MR Validation",
+                    message=(
+                        f"{prefix}MR recalibration factor is extreme (avg={s.mr_recal_avg_factor:.3f}). "
+                        f"Repesca risk was scaled by {'<0.5×' if s.mr_recal_avg_factor < 0.5 else '>2.0×'}."
+                    ),
+                    setting="MR date range / reject_inference parameters",
+                    suggested="Large calibration factors suggest main vs MR risk divergence. Review period selection.",
+                ))
 
         # --- Stability ---
         if s.psi_value is not None:
@@ -791,7 +996,6 @@ def generate_alternative_segments_toml(
                 lines.append(f"[{ss_type}.{ss_name}]")
                 for k, v in ss_cfg.items():
                     if isinstance(v, dict):
-                        # Dotted keys for nested dicts (e.g. bin_edges.income_bin = [...])
                         for sub_k, sub_v in v.items():
                             lines.append(f"{k}.{sub_k} = {_toml_value(sub_v)}")
                     else:
@@ -828,7 +1032,6 @@ def generate_alternative_segments_toml(
         pess = s.scenarios.get("pessimistic")
         opti = s.scenarios.get("optimistic")
         if base and pess and base.selected_b2 == pess.selected_b2 and base.production == pess.production:
-            # Base and pessimistic are identical — risk target is too high
             if base.selected_b2 is not None and s.optimum_risk is not None:
                 gap = s.optimum_risk - base.selected_b2
                 if gap > 0.15:
@@ -873,7 +1076,6 @@ def generate_alternative_segments_toml(
                 else:
                     lines.append(f"risk_step = {v}")
             elif k == "fixed_cutoffs":
-                # Write fixed_cutoffs as sub-table
                 lines.append("")
                 _write_fixed_cutoffs(lines, seg_name, v)
                 continue
@@ -974,7 +1176,7 @@ def format_report(
 
     # --- Per-segment summary ---
     for name, s in sorted(real_segments.items()):
-        lines.append(f"--- {name} ---")
+        lines.append(f"--- {name} {'(BASELINE)' if s.baseline_mode else ''}---")
         parts = []
         if s.segment_filter:
             parts.append(f"Filter: {s.segment_filter}")
@@ -987,10 +1189,14 @@ def format_report(
             if s.cv_r2_std:
                 r2_str += f" ± {s.cv_r2_std:.4f}"
             parts.append(r2_str)
+        if s.train_r2 is not None and s.cv_r2_mean is None:
+            parts.append(f"Train R²: {s.train_r2:.4f}")
         if s.n_booked is not None:
             parts.append(f"Booked: {s.n_booked:,}")
         if s.n_demand is not None:
             parts.append(f"Demand: {s.n_demand:,}")
+        if s.stress_factor is not None:
+            parts.append(f"Stress: {s.stress_factor:.4f}")
         if s.tasa_fin_pct is not None:
             parts.append(f"Tasa fin: {s.tasa_fin_pct:.1f}%")
         if s.grid_dims:
@@ -1008,11 +1214,25 @@ def format_report(
             label = "stable" if s.psi_value < 0.1 else "moderate" if s.psi_value < 0.25 else "UNSTABLE"
             parts.append(f"PSI: {s.psi_value:.4f} ({label})")
         if s.ri_avg_multiplier is not None:
-            parts.append(f"RI multiplier: avg={s.ri_avg_multiplier:.2f}×, max={s.ri_max_multiplier:.2f}×")
+            ri_str = f"RI multiplier: avg={s.ri_avg_multiplier:.2f}×"
+            if s.ri_max_multiplier is not None:
+                ri_str += f", max={s.ri_max_multiplier:.2f}×"
+            parts.append(ri_str)
+        if s.mr_recal_avg_factor is not None:
+            parts.append(f"MR recal factor: {s.mr_recal_avg_factor:.3f}")
         if s.elapsed_total is not None:
             parts.append(f"Time: {s.elapsed_total:.0f}s")
+        elif s.elapsed_preprocessing or s.elapsed_inference or s.elapsed_optimization:
+            phase_parts = []
+            if s.elapsed_preprocessing:
+                phase_parts.append(f"preproc={s.elapsed_preprocessing:.0f}s")
+            if s.elapsed_inference:
+                phase_parts.append(f"infer={s.elapsed_inference:.0f}s")
+            if s.elapsed_optimization:
+                phase_parts.append(f"optim={s.elapsed_optimization:.0f}s")
+            parts.append(f"Time: {', '.join(phase_parts)}")
         if s.errors:
-            parts.append(f"Errors: {len(s.errors)}")
+            parts.append(f"ERRORS: {len(s.errors)}")
 
         for part in parts:
             lines.append(f"  {part}")
@@ -1023,12 +1243,31 @@ def format_report(
             for scen_name in ["pessimistic", "base", "optimistic"]:
                 scen = s.scenarios.get(scen_name)
                 if scen:
-                    flag = " [FALLBACK]" if scen.is_fallback else ""
-                    prod_str = f"€{scen.production:,.0f}" if scen.production else "N/A"
-                    lines.append(
-                        f"    {scen_name:12s}: threshold={scen.risk_threshold:.2f}%  "
-                        f"selected={scen.selected_b2:.2f}%  prod={prod_str}{flag}"
-                    )
+                    if scen.is_fallback and scen.selected_b2 is None:
+                        lines.append(f"    {scen_name:12s}: NO FEASIBLE SOLUTION")
+                    else:
+                        flag = " [FALLBACK]" if scen.is_fallback else ""
+                        prod_str = f"€{scen.production:,.0f}" if scen.production else "N/A"
+                        lines.append(
+                            f"    {scen_name:12s}: threshold={scen.risk_threshold:.2f}%  "
+                            f"selected={scen.selected_b2:.2f}%  prod={prod_str}{flag}"
+                        )
+
+        # MR risk sources
+        if s.mr_risk_sources:
+            lines.append("  MR risk sources:")
+            for src, count in sorted(s.mr_risk_sources.items(), key=lambda x: -x[1]):
+                total = sum(s.mr_risk_sources.values())
+                lines.append(f"    {src}: {count} bins ({count / total * 100:.0f}%)")
+
+        # MR tier distribution
+        if s.mr_tiers.total > 0:
+            t = s.mr_tiers
+            lines.append("  MR tier distribution:")
+            lines.append(f"    Tier 1 (Actual H6):     {t.tier1_actual_h6:>8,} ({t.pct(1):.1f}%)")
+            lines.append(f"    Tier 2 (Account H3→H6): {t.tier2_account_h3:>8,} ({t.pct(2):.1f}%)")
+            lines.append(f"    Tier 3 (Bin-level main): {t.tier3_bin_main:>8,} ({t.pct(3):.1f}%)")
+            lines.append(f"    Tier 4 (Model fallback): {t.tier4_model_fallback:>8,} ({t.pct(4):.1f}%)")
 
         # MR decomposition
         mr = s.mr_decomposition
@@ -1052,7 +1291,7 @@ def format_report(
         lines.append("")
 
         # Header
-        hdr = f"{'Segment':<22s} {'Booked':>8s} {'Target':>7s} {'Sel.b2':>7s} {'Prod(base)':>14s} {'Pareto':>7s} {'PSI':>7s} {'Time':>6s}"
+        hdr = f"{'Segment':<22s} {'Booked':>8s} {'Target':>7s} {'Sel.b2':>7s} {'Prod(base)':>14s} {'Pareto':>7s} {'PSI':>7s} {'RI avg':>7s} {'Time':>6s}"
         lines.append(hdr)
         lines.append("-" * len(hdr))
 
@@ -1064,8 +1303,9 @@ def format_report(
             prod = f"€{base.production:,.0f}" if base and base.production else "?"
             pareto = str(s.pareto_n_solutions) if s.pareto_n_solutions else "?"
             psi = f"{s.psi_value:.4f}" if s.psi_value is not None else "?"
+            ri = f"{s.ri_avg_multiplier:.2f}×" if s.ri_avg_multiplier is not None else "?"
             time_s = f"{s.elapsed_total:.0f}s" if s.elapsed_total else "?"
-            lines.append(f"{name:<22s} {booked:>8s} {target:>7s} {sel_b2:>7s} {prod:>14s} {pareto:>7s} {psi:>7s} {time_s:>6s}")
+            lines.append(f"{name:<22s} {booked:>8s} {target:>7s} {sel_b2:>7s} {prod:>14s} {pareto:>7s} {psi:>7s} {ri:>7s} {time_s:>6s}")
 
         lines.append("")
 
@@ -1081,6 +1321,12 @@ def format_report(
                 issues.append(f"high PSI ({s.psi_value:.3f})")
             if s.n_booked is not None and s.n_booked < 500:
                 issues.append(f"tiny sample ({s.n_booked})")
+            if s.milp_infeasible:
+                issues.append("MILP infeasible")
+            if s.mr_low_risk_warning:
+                issues.append("low MR risk")
+            if s.errors:
+                issues.append(f"{len(s.errors)} error(s)")
             if issues:
                 problem_segments.append((name, issues))
 
