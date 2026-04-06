@@ -625,7 +625,23 @@ def patch_consolidated_production_from_segment_audits(
             if "optimum_rejection_rate_pct" in work.columns:
                 work.loc[idx, "optimum_rejection_rate_pct"] = (1.0 - o / td) * 100.0
 
+    # Detect which segments ran in baseline mode (accept-all mask makes audit
+    # swap-in classifications meaningless — skip audit patching for those).
+    def _is_baseline_segment(seg_name_local: str) -> bool:
+        try:
+            import tomllib
+
+            cfg_path = output_base / seg_name_local / "config_segment.toml"
+            if cfg_path.exists():
+                cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+                return bool(cfg.get("preprocessing", cfg).get("baseline_mode", False))
+        except Exception:
+            pass
+        return False
+
     for seg_name in segments:
+        if _is_baseline_segment(seg_name):
+            continue
         for scenario in work["scenario"].dropna().unique():
             sc = str(scenario)
             for period in ("main", "mr"):
@@ -2088,11 +2104,12 @@ def export_consolidated_excel(
         return pd.concat([df_tbl, pd.DataFrame([summary])], ignore_index=True)
 
     def _load_segment_settings(seg_name_local: str) -> dict[str, Any]:
-        """Load multiplier, multiplier_h3, inv_vars from the segment's saved config."""
+        """Load multiplier, multiplier_h3, inv_vars, baseline_mode from the segment's saved config."""
         defaults: dict[str, Any] = {
             "multiplier": float(DEFAULT_RISK_MULTIPLIER),
             "multiplier_h3": None,
             "inv_vars": None,
+            "baseline_mode": False,
         }
         try:
             import tomllib
@@ -2107,6 +2124,8 @@ def export_consolidated_excel(
                     defaults["multiplier_h3"] = float(prep["multiplier_h3"])
                 if "inv_vars" in prep:
                     defaults["inv_vars"] = list(prep["inv_vars"])
+                if "baseline_mode" in prep:
+                    defaults["baseline_mode"] = bool(prep["baseline_mode"])
         except Exception:
             pass
         return defaults
@@ -2299,8 +2318,10 @@ def export_consolidated_excel(
             if tbl is None or tbl.empty:
                 continue
             tbl = _append_summary_row_if_missing(tbl)
-            # Match main RP sheet: production € from loan-level audit for this income_bin
-            if audit_full is not None and not audit_full.empty:
+            # Match main RP sheet: production € from loan-level audit for this income_bin.
+            # Skip in baseline mode — the accept-all mask makes the audit classify all
+            # rejected applicants as swap-in, which would overwrite the correct zero values.
+            if audit_full is not None and not audit_full.empty and not seg_settings["baseline_mode"]:
                 audit_bin = _audit_slice_for_income_bin(audit_full, income_val)
                 if not audit_bin.empty:
                     tbl = reconcile_risk_production_summary_with_audit(tbl, audit_bin, silent=True)

@@ -41,6 +41,7 @@ def main(
     model_path: str | None = None,
     training_only: bool = False,
     baseline_mode: bool = False,
+    base_scenario_only: bool = False,
     skip_dq_checks: bool = False,
     preloaded_data: pd.DataFrame | None = None,
     output: OutputPaths | None = None,
@@ -78,6 +79,8 @@ def main(
         segment = settings.segment_filter
         if baseline_mode:
             settings.baseline_mode = True
+        if base_scenario_only:
+            settings.base_scenario_only = True
 
         # Step 2: Load and prepare data
         try:
@@ -410,6 +413,12 @@ Output files:
     )
 
     parser.add_argument(
+        "--base-only",
+        action="store_true",
+        help="Run only the base scenario (skip pessimistic and optimistic).",
+    )
+
+    parser.add_argument(
         "--skip-dq-checks",
         action="store_true",
         help="Skip data quality checks (use with caution).",
@@ -438,6 +447,7 @@ if __name__ == "__main__":
             model_path=args.model_path,
             training_only=args.training_only,
             baseline_mode=args.baseline,
+            base_scenario_only=args.base_only,
             skip_dq_checks=args.skip_dq_checks,
         )
     finally:

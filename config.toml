@@ -36,6 +36,7 @@ z_threshold = 3.0
 cv_folds = 3
 run_sensitivity = true
 sensitivity_levels = [-30, -20, -10, -5, 5, 10, 20, 30]
+base_scenario_only = true
 
 
 # Swap-in (repesca) constraints (optional) - limit swap-in exposure inside the MILP solver.
@@ -56,6 +57,7 @@ reject_inference_method = "parceling"  # "none" (default) or "parceling"
 reject_parceling_method = "sigmoid"     # "linear" (default), "power", or "sigmoid"
 reject_uplift_factor = 1.5            # scaling coefficient for reject ratio (0.0-10.0)
 reject_max_risk_multiplier = 3.0      # upper cap for per-bin multiplier (1.0-10.0)
+
 
 #Bayesian smoothing for small bins
 reject_bayesian_smoothing = true

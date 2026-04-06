@@ -301,6 +301,7 @@ class PreprocessingSettings(BaseModel):
     log_level: str = "INFO"
     fixed_cutoffs: dict[str, Any] | None = None
     baseline_mode: bool = False
+    base_scenario_only: bool = False
     cutoff_floor_segment: str | None = None
     # Per-variable minimum accepted bin thresholds.
     # Value can be a scalar (applies to all rows) or an income_bin-keyed map.

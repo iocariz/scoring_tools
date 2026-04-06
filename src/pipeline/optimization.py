@@ -867,9 +867,10 @@ def _build_scenario_list(settings: PreprocessingSettings, use_fixed_cutoffs: boo
     scenario_step = settings.risk_step
     segment = settings.segment_filter
 
-    if settings.baseline_mode:
+    if settings.baseline_mode or settings.base_scenario_only:
         scenarios = [(base_optimum_risk, "base")]
-        logger.debug(f"[{segment}] Baseline mode: running base scenario only")
+        reason = "baseline mode" if settings.baseline_mode else "base_scenario_only"
+        logger.debug(f"[{segment}] {reason}: running base scenario only")
         return scenarios
 
     if use_fixed_cutoffs:
