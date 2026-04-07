@@ -458,13 +458,18 @@ def calc_iv(df: pd.DataFrame, var: str, target: str) -> float:
     if total_bad == 0 or total_good == 0:
         return 0.0
 
-    df_tmp["perc_bad"] = df_tmp["sum"] / total_bad
-    df_tmp["perc_good"] = (df_tmp["count"] - df_tmp["sum"]) / total_good
-    # Apply epsilon only in the log term to avoid log(0) without distorting
-    # the actual distributions (re-normalizing would change IV scale).
-    perc_bad_safe = df_tmp["perc_bad"].where(df_tmp["perc_bad"] > 0, PSI_EPSILON)
-    perc_good_safe = df_tmp["perc_good"].where(df_tmp["perc_good"] > 0, PSI_EPSILON)
-    df_tmp["woe"] = np.log(perc_good_safe / perc_bad_safe)
+    # Laplace smoothing: add 0.5 to bad and good counts per bin to stabilize
+    # WOE for zero-event bins, instead of epsilon substitution which produces
+    # extreme WOE values that inflate IV (#13).
+    n_bins = len(df_tmp)
+    bad_smooth = df_tmp["sum"] + 0.5
+    good_smooth = (df_tmp["count"] - df_tmp["sum"]) + 0.5
+    total_bad_smooth = total_bad + 0.5 * n_bins
+    total_good_smooth = total_good + 0.5 * n_bins
+
+    df_tmp["perc_bad"] = bad_smooth / total_bad_smooth
+    df_tmp["perc_good"] = good_smooth / total_good_smooth
+    df_tmp["woe"] = np.log(df_tmp["perc_good"] / df_tmp["perc_bad"])
     df_tmp["iv"] = (df_tmp["perc_good"] - df_tmp["perc_bad"]) * df_tmp["woe"]
     iv = df_tmp["iv"].sum()
 

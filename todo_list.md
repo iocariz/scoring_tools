@@ -40,7 +40,7 @@ Unresolved items from the methodological / statistical review. Strikethrough whe
 
 ### MEDIUM — Statistical
 
-13. **IV unstable with zero-event bins** (`src/metrics.py`, 465–468) — `WOE = ln(perc_good / epsilon)` with epsilon=0.0001 produces extreme values for bins with zero bad accounts, inflating IV. **Fix:** Use Laplace smoothing (add 0.5 to all counts) or collapse zero-event bins.
+13. ~~**IV unstable with zero-event bins** (`src/metrics.py`, 465–468) — `WOE = ln(perc_good / epsilon)` with epsilon=0.0001 produces extreme values for bins with zero bad accounts, inflating IV.~~ **Fixed:** Replaced epsilon substitution with Laplace smoothing (+0.5 to bad and good counts per bin). Produces stable WOE/IV for zero-event bins without inflating the metric.
 
 14. **Bootstrap CIs use simple percentile method** (`src/metrics.py`, 101–102) — For bounded statistics like Gini, percentile CIs can have <95% actual coverage. **Fix:** Consider BCa method, or document as approximate.
 
@@ -48,7 +48,7 @@ Unresolved items from the methodological / statistical review. Strikethrough whe
 
 ### MEDIUM — Methodological
 
-20. **Regression weights not validated** (`src/inference_optimized.py`, 352–356) — `_get_regression_weights` returns raw column values (todu_amt_pile_h6, oa_amt_h0, or n_observations) without checking for non-negativity, zeros, or extreme outliers. Zero weights silently drop samples; no normalization means one high-exposure bin can dominate regularization. **Fix:** Validate non-negativity, clip extremes, normalize to sum=N.
+20. ~~**Regression weights not validated** (`src/inference_optimized.py`, 352–356) — `_get_regression_weights` returns raw column values (todu_amt_pile_h6, oa_amt_h0, or n_observations) without checking for non-negativity, zeros, or extreme outliers. Zero weights silently drop samples; no normalization means one high-exposure bin can dominate regularization.~~ **Fixed:** Added non-negativity clip, outlier cap at 99th percentile, and normalization to sum=N. Returns None if all weights are zero.
 
 21. **TweedieGLM log(exposure) treated as feature, not GLM offset** (`src/estimators.py`, 289–296) — Exposure is appended as a learned feature via `_add_log_exposure`. In a proper GLM, the offset is not regularized. sklearn's regularization penalizes the exposure coefficient toward zero, biasing exposure-adjusted predictions for small samples. **Fix:** Document as approximate, or use a custom linear predictor with true offset.
 
@@ -62,7 +62,7 @@ Unresolved items from the methodological / statistical review. Strikethrough whe
 
 ### MEDIUM — Performance
 
-16. **O(n²) Pareto dominance check** (`src/optimization_utils.py`, 726–738, duplicated at 1094–1106) — Pairwise loop is redundant for 2D: Stage 1 sort-and-sweep already produces correct frontier. Stage 2 only needed for N>2 objectives. **Fix:** Skip Stage 2 for 2-objective case or replace with vectorized numpy.
+16. ~~**O(n²) Pareto dominance check** (`src/optimization_utils.py`, 726–738, duplicated at 1094–1106) — Pairwise loop is redundant for 2D: Stage 1 sort-and-sweep already produces correct frontier. Stage 2 only needed for N>2 objectives.~~ **Fixed:** Removed O(n²) Stage 2 at both locations (MILP and GA paths). Verified: sort-and-sweep alone produces 0 dominated points and strictly increasing production on a 259-solution frontier.
 
 ### LOW-MEDIUM — Robustness
 

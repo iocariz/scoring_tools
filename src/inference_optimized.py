@@ -352,7 +352,19 @@ def compute_outlier_stats(processed_data: pd.DataFrame, target_var: str) -> tupl
 def _get_regression_weights(processed_data: pd.DataFrame) -> pd.Series | None:
     for col in ("todu_amt_pile_h6", "oa_amt_h0", "n_observations"):
         if col in processed_data.columns:
-            return processed_data[col]
+            w = processed_data[col].copy()
+            # Validate: non-negativity, clip extremes, normalize (#20)
+            w = w.clip(lower=0)
+            if w.sum() == 0:
+                return None
+            # Clip outliers at 99th percentile to prevent one bin from dominating
+            cap = w.quantile(0.99)
+            if cap > 0:
+                w = w.clip(upper=cap)
+            # Normalize so weights sum to N (sklearn expects relative scale)
+            n = len(w)
+            w = w * (n / w.sum())
+            return w
     return None
 
 

@@ -718,29 +718,9 @@ def trace_pareto_frontier(
     else:
         pareto_masks = list(all_masks)
 
-    # Final verification: strictly increasing production along the frontier
-    if len(df) > 1:
-        prod = df["oa_amt_h0"].values
-        risk = df["b2_ever_h6"].values
-        non_dominated = np.ones(len(df), dtype=bool)
-        for i in range(len(df)):
-            if not non_dominated[i]:
-                continue
-            for j in range(i + 1, len(df)):
-                if not non_dominated[j]:
-                    continue
-                # j dominates i if risk[j] <= risk[i] and prod[j] >= prod[i] (with at least one strict)
-                if risk[j] <= risk[i] and prod[j] >= prod[i] and (risk[j] < risk[i] or prod[j] > prod[i]):
-                    non_dominated[i] = False
-                    break
-                # i dominates j
-                if risk[i] <= risk[j] and prod[i] >= prod[j] and (risk[i] < risk[j] or prod[i] > prod[j]):
-                    non_dominated[j] = False
-        if not non_dominated.all():
-            n_dom = (~non_dominated).sum()
-            df = df[non_dominated].reset_index(drop=True)
-            pareto_masks = [m for m, keep in zip(pareto_masks, non_dominated) if keep]
-            logger.info(f"Post-hoc dominance filter removed {n_dom} dominated solution(s)")
+    # Stage 2 pairwise dominance check: skipped for the standard 2-objective
+    # case (risk vs production) where the sort-and-sweep above is exact (#16).
+    # The O(n²) check is only needed if >2 objectives are ever introduced.
 
     # ─────────────────────────────────────────────────────────────────
     # Local refinement: bisect between adjacent frontier points to
@@ -1158,29 +1138,8 @@ def _ga_pareto_fallback(
         df = df.iloc[pareto_keep].reset_index(drop=True)
         all_masks = [all_masks[i] for i in pareto_keep]
 
-    # Stage 2: full pairwise dominance check
-    if len(df) > 1:
-        prod = df["oa_amt_h0"].values
-        risk = df["b2_ever_h6"].values
-        non_dominated = np.ones(len(df), dtype=bool)
-        for i in range(len(df)):
-            if not non_dominated[i]:
-                continue
-            for j in range(i + 1, len(df)):
-                if not non_dominated[j]:
-                    continue
-                # j dominates i
-                if risk[j] <= risk[i] and prod[j] >= prod[i] and (risk[j] < risk[i] or prod[j] > prod[i]):
-                    non_dominated[i] = False
-                    break
-                # i dominates j
-                if risk[i] <= risk[j] and prod[i] >= prod[j] and (risk[i] < risk[j] or prod[i] > prod[j]):
-                    non_dominated[j] = False
-        if not non_dominated.all():
-            n_dom = (~non_dominated).sum()
-            df = df[non_dominated].reset_index(drop=True)
-            all_masks = [m for m, keep in zip(all_masks, non_dominated) if keep]
-            logger.debug(f"GA dominance filter removed {n_dom} dominated solution(s)")
+    # Stage 2 pairwise dominance: skipped for 2-objective case — sort-and-sweep
+    # above is exact for (risk, production) Pareto (#16).
 
     logger.info(f"GA Pareto frontier: {len(df)} solutions")
     return df, grid, all_masks
