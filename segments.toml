@@ -71,7 +71,6 @@ reporting_supersegment = "pl_new"
 modelling_supersegment = "total"
 min_risk = 0.8  # Optional: minimum risk for global allocation
 max_risk = 1.3  # Optional: maximum risk for global allocation
-stress_mode = "global"
 
 [segments.no_premium_ab]
 segment_filter = "no_premium_ab"

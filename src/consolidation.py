@@ -1660,6 +1660,7 @@ def export_consolidated_excel(
     """
     from datetime import date
 
+    from openpyxl.chart import BarChart, Reference
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
@@ -2018,8 +2019,11 @@ def export_consolidated_excel(
             _set_col_width(ws, ci, ws.cell(row=table_row, column=ci).value, ws.max_row)
         return ws.max_row + 2
 
-    def _write_rp_sheet(writer, df_rp, sheet_name, seg_name, period_label, tab_color, extra_tables=None):
-        """Create a styled RP sheet with title banner, period label, and one or more data tables."""
+    def _write_rp_sheet(
+        writer, df_rp, sheet_name, seg_name, period_label, tab_color,
+        extra_tables=None, classification_grid=None, is_mr=False,
+    ):
+        """Create a styled RP sheet with title banner, period label, data tables, and classification grid."""
         if extra_tables is None:
             extra_tables = []
         # Write primary table starting at row 4 (leaving room for banner)
@@ -2078,6 +2082,10 @@ def export_consolidated_excel(
             tbl_df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=next_row)
             _style_table(ws, tbl_df.columns, header_row=next_row + 1, highlight_total=False)
             next_row = ws.max_row + 2
+
+        # Classification grid with charts (volume & risk by income bin)
+        if classification_grid:
+            next_row = _write_classification_grid(ws, classification_grid, next_row, is_mr=is_mr)
 
         _apply_page_setup(ws)
 
@@ -2355,6 +2363,471 @@ def export_consolidated_excel(
                     out_tables.append(("Income bin — unassigned / outside grid bins", tbl_u))
 
         return out_tables
+
+    def _build_classification_grid(
+        seg_name: str,
+        period: str,
+        variables: list[str],
+        multiplier: float,
+        multiplier_h3: float | None,
+        inv_vars: list[str] | None,
+        income_threshold: float | None,
+    ) -> list[dict] | None:
+        """Build volume/risk breakdown by income_bin and classification (keep/swap-in/swap-out).
+
+        Returns a list of dicts, one per row, with keys:
+            category, income_bin, income_label, volume, risk, count
+        or None if data is unavailable.
+        """
+        data_dir = output_base / seg_name / "data"
+        if period == "mr":
+            ds_path = data_dir / "data_summary_desagregado_mr_base.csv"
+            if not ds_path.exists():
+                ds_path = data_dir / "data_summary_desagregado_mr.csv"
+            opt_path = data_dir / "optimal_solution_mr_base.csv"
+            if not opt_path.exists():
+                opt_path = data_dir / "optimal_solution_mr.csv"
+            if not opt_path.exists():
+                opt_path = data_dir / "optimal_solution_base.csv"
+        else:
+            ds_path = data_dir / "data_summary_desagregado_base.csv"
+            opt_path = data_dir / "optimal_solution_base.csv"
+        if not ds_path.exists() or not opt_path.exists():
+            return None
+        try:
+            df_sum = pd.read_csv(ds_path)
+            df_opt = pd.read_csv(opt_path)
+        except (pd.errors.ParserError, OSError, ValueError):
+            return None
+        if df_sum.empty or df_opt.empty or "income_bin" not in df_sum.columns:
+            return None
+
+        # Determine passes_cut via mask or cut_map
+        mask = None
+        grid = None
+        if "acceptance_mask" in df_opt.columns and pd.notna(df_opt.iloc[0].get("acceptance_mask")):
+            try:
+                from src.optimization_utils import CellGrid, decode_mask
+                grid = CellGrid.from_summary(df_sum, variables)
+                mask = decode_mask(str(df_opt.iloc[0]["acceptance_mask"]))
+                if len(mask) != len(grid.cell_data):
+                    mask = None
+                    grid = None
+            except Exception:
+                mask = None
+                grid = None
+        if mask is not None and grid is not None:
+            from src.optimization_utils import classify_by_mask
+            df_sum["passes_cut"] = classify_by_mask(df_sum, mask, grid)
+        else:
+            # 2-var fallback
+            var0 = variables[0]
+            var1 = variables[1] if len(variables) > 1 else None
+            if var1 is None:
+                return None
+            opt_row = df_opt.iloc[0]
+            cut_map = {}
+            for bv in sorted(df_sum[var0].unique()):
+                for key in [bv, str(bv), str(float(bv))]:
+                    if key in df_opt.columns:
+                        cut_map[bv] = opt_row[key]
+                        break
+                else:
+                    cut_map[bv] = np.inf if (inv_vars and var1 in inv_vars) else -np.inf
+            df_sum["cut_limit"] = df_sum[var0].map(cut_map)
+            if inv_vars and var1 in inv_vars:
+                df_sum["passes_cut"] = df_sum[var1] >= df_sum["cut_limit"]
+            else:
+                df_sum["passes_cut"] = df_sum[var1] <= df_sum["cut_limit"]
+
+        is_mr = period == "mr"
+        ib_vals = sorted(pd.to_numeric(df_sum["income_bin"], errors="coerce").dropna().unique())
+
+        def _ib_label(iv: float) -> str:
+            try:
+                iv_int = int(iv)
+            except (TypeError, ValueError):
+                return f"Bin {iv}"
+            if income_threshold is not None:
+                if iv_int == 1:
+                    return f"≤ {income_threshold:,.0f}€"
+                if iv_int == 2:
+                    return f"> {income_threshold:,.0f}€"
+            return f"Bin {iv_int}"
+
+        rows: list[dict] = []
+        ib_col = pd.to_numeric(df_sum["income_bin"], errors="coerce")
+        for iv in ib_vals:
+            sub = df_sum.loc[ib_col == iv]
+            label = _ib_label(iv)
+            for cat, filt_col, suffix in [
+                ("Keep", sub[sub["passes_cut"]], "_boo"),
+                ("Swap-out", sub[~sub["passes_cut"]], "_boo"),
+                ("Swap-in", sub[sub["passes_cut"]], "_rep"),
+            ]:
+                filt = filt_col
+                vol = filt[f"oa_amt_h0{suffix}"].sum() if f"oa_amt_h0{suffix}" in filt.columns else 0
+                cnt = filt[f"acct_booked_h0{suffix}"].sum() if f"acct_booked_h0{suffix}" in filt.columns else 0
+                risk = None
+                if not is_mr:
+                    rn = filt[f"todu_30ever_h6{suffix}"].sum() if f"todu_30ever_h6{suffix}" in filt.columns else 0
+                    rd = filt[f"todu_amt_pile_h6{suffix}"].sum() if f"todu_amt_pile_h6{suffix}" in filt.columns else 0
+                    if rd > 0:
+                        risk_raw = calculate_b2_ever_h6(rn, rd, multiplier=multiplier, as_percentage=True, decimals=4)
+                        risk = float(risk_raw) if pd.notna(risk_raw) else None
+                rows.append({
+                    "category": cat,
+                    "income_bin": iv,
+                    "income_label": label,
+                    "volume": float(vol),
+                    "risk": risk,
+                    "count": int(cnt),
+                })
+            # Optimum = Keep + Swap-in
+            keep_row = next(r for r in rows if r["category"] == "Keep" and r["income_bin"] == iv)
+            si_row = next(r for r in rows if r["category"] == "Swap-in" and r["income_bin"] == iv)
+            opt_vol = keep_row["volume"] + si_row["volume"]
+            opt_cnt = keep_row["count"] + si_row["count"]
+            opt_risk = None
+            if not is_mr:
+                sub_pass = sub[sub["passes_cut"]]
+                o_rn = (
+                    sub_pass["todu_30ever_h6_boo"].sum() + sub_pass["todu_30ever_h6_rep"].sum()
+                    if "todu_30ever_h6_boo" in sub_pass.columns
+                    else 0
+                )
+                o_rd = (
+                    sub_pass["todu_amt_pile_h6_boo"].sum() + sub_pass["todu_amt_pile_h6_rep"].sum()
+                    if "todu_amt_pile_h6_boo" in sub_pass.columns
+                    else 0
+                )
+                if o_rd > 0:
+                    opt_raw = calculate_b2_ever_h6(o_rn, o_rd, multiplier=multiplier, as_percentage=True, decimals=4)
+                    opt_risk = float(opt_raw) if pd.notna(opt_raw) else None
+            rows.append({
+                "category": "Optimum",
+                "income_bin": iv,
+                "income_label": label,
+                "volume": opt_vol,
+                "risk": opt_risk,
+                "count": opt_cnt,
+            })
+        return rows if rows else None
+
+    def _write_classification_grid(ws, grid_data, start_row, is_mr=False):
+        """Write the classification-by-income-bin grid table and charts.
+
+        Returns the next free row below all content.
+        """
+        if not grid_data:
+            return start_row
+
+        # Gather income bin labels (ordered)
+        seen = {}
+        for r in grid_data:
+            if r["income_bin"] not in seen:
+                seen[r["income_bin"]] = r["income_label"]
+        ib_order = list(seen.keys())
+        ib_labels = list(seen.values())
+        n_ib = len(ib_order)
+
+        categories = ["Keep", "Swap-in", "Swap-out", "Optimum"]
+        has_risk = not is_mr
+
+        # Columns per income bin: Volume, Risk (if main), Count
+        cols_per_ib = 3 if has_risk else 2
+        total_data_cols = n_ib * cols_per_ib + cols_per_ib  # + Total column group
+        total_cols = 1 + total_data_cols  # Category column + data
+
+        # ── Section header ──
+        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=total_cols)
+        hdr = ws.cell(row=start_row, column=1)
+        hdr.value = "  Volume & Risk by Income Bin" if has_risk else "  Volume by Income Bin"
+        hdr.font = _FONT_SECTION
+        hdr.fill = _FILL_SECTION
+        hdr.alignment = _ALIGN_LEFT
+        hdr.border = _SECTION_LEFT
+        ws.row_dimensions[start_row].height = 28
+
+        # ── Row 1: Income bin group headers (merged) ──
+        r1 = start_row + 1
+        ws.cell(row=r1, column=1).fill = _FILL_HEADER
+        ws.cell(row=r1, column=1).border = _BORDER_HEADER
+        col = 2
+        for i, lbl in enumerate(ib_labels + ["Total"]):
+            end_col = col + cols_per_ib - 1
+            ws.merge_cells(start_row=r1, start_column=col, end_row=r1, end_column=end_col)
+            c = ws.cell(row=r1, column=col)
+            c.value = lbl
+            c.font = _FONT_HEADER
+            c.fill = _FILL_HEADER
+            c.alignment = _ALIGN_CENTER
+            c.border = _BORDER_HEADER
+            for cc in range(col, end_col + 1):
+                ws.cell(row=r1, column=cc).fill = _FILL_HEADER
+                ws.cell(row=r1, column=cc).border = _BORDER_HEADER
+            col = end_col + 1
+        ws.row_dimensions[r1].height = 24
+
+        # ── Row 2: Sub-headers (Volume / Risk / Count) ──
+        r2 = start_row + 2
+        cat_hdr = ws.cell(row=r2, column=1)
+        cat_hdr.value = "Category"
+        cat_hdr.font = _FONT_HEADER
+        cat_hdr.fill = PatternFill(start_color=_CLR_PRIMARY_LIGHT, end_color=_CLR_PRIMARY_LIGHT, fill_type="solid")
+        cat_hdr.alignment = _ALIGN_CENTER
+        cat_hdr.border = _BORDER_HEADER
+        col = 2
+        sub_headers = ["Volume (€)", "Risk (%)", "# Loans"] if has_risk else ["Volume (€)", "# Loans"]
+        for _ in range(n_ib + 1):  # each income bin + Total
+            for sh in sub_headers:
+                c = ws.cell(row=r2, column=col)
+                c.value = sh
+                c.font = _FONT_HEADER
+                c.fill = PatternFill(start_color=_CLR_PRIMARY_LIGHT, end_color=_CLR_PRIMARY_LIGHT, fill_type="solid")
+                c.alignment = _ALIGN_CENTER
+                c.border = _BORDER_HEADER
+                col += 1
+        ws.row_dimensions[r2].height = 22
+
+        # ── Data rows ──
+        # Build lookup: (category, income_bin) -> row data
+        lookup = {(r["category"], r["income_bin"]): r for r in grid_data}
+        data_start_row = start_row + 3
+        for ci, cat in enumerate(categories):
+            r = data_start_row + ci
+            ws.row_dimensions[r].height = 22
+            cat_cell = ws.cell(row=r, column=1)
+            cat_cell.value = cat
+            is_opt = cat == "Optimum"
+            cat_cell.font = _FONT_OPTIMUM if is_opt else _FONT_DATA
+            cat_cell.fill = _FILL_OPTIMUM if is_opt else (_FILL_STRIPE if ci % 2 == 1 else PatternFill())
+            cat_cell.alignment = _ALIGN_LEFT
+            cat_cell.border = _BORDER_ALL
+
+            col = 2
+            total_vol, total_cnt = 0.0, 0
+            total_rn, total_rd = 0.0, 0.0
+
+            for ib in ib_order:
+                d = lookup.get((cat, ib), {"volume": 0, "risk": None, "count": 0})
+                vol = d["volume"]
+                risk = d["risk"]
+                cnt = d["count"]
+                total_vol += vol
+                total_cnt += cnt
+
+                # For totals risk recalculation — accumulate raw numerator/denominator
+                # We stored risk as percentage, but to get a proper weighted total we
+                # need to re-derive from todu sums.  However we only stored the final
+                # risk.  Instead we'll just use the lookup data that was computed with
+                # the correct formula (it aggregates at the per-ib level).
+                # We'll compute total risk separately below.
+
+                # Volume cell
+                vc = ws.cell(row=r, column=col)
+                vc.value = vol
+                vc.number_format = '#,##0 "€"'
+                vc.font = _FONT_OPTIMUM if is_opt else _FONT_DATA
+                vc.fill = _FILL_OPTIMUM if is_opt else (_FILL_STRIPE if ci % 2 == 1 else PatternFill())
+                vc.alignment = _ALIGN_RIGHT
+                vc.border = _BORDER_ALL
+                col += 1
+
+                if has_risk:
+                    rc = ws.cell(row=r, column=col)
+                    rc.value = risk if risk is not None else ""
+                    if isinstance(rc.value, float):
+                        rc.number_format = "0.00"
+                    rc.font = _FONT_OPTIMUM if is_opt else _FONT_DATA
+                    rc.fill = _FILL_OPTIMUM if is_opt else (_FILL_STRIPE if ci % 2 == 1 else PatternFill())
+                    rc.alignment = _ALIGN_RIGHT
+                    rc.border = _BORDER_ALL
+                    col += 1
+
+                cc = ws.cell(row=r, column=col)
+                cc.value = cnt
+                cc.number_format = "#,##0"
+                cc.font = _FONT_OPTIMUM if is_opt else _FONT_DATA
+                cc.fill = _FILL_OPTIMUM if is_opt else (_FILL_STRIPE if ci % 2 == 1 else PatternFill())
+                cc.alignment = _ALIGN_RIGHT
+                cc.border = _BORDER_ALL
+                col += 1
+
+            # Total column group
+            vc = ws.cell(row=r, column=col)
+            vc.value = total_vol
+            vc.number_format = '#,##0 "€"'
+            vc.font = _FONT_TOTAL
+            vc.fill = _FILL_TOTAL
+            vc.alignment = _ALIGN_RIGHT
+            vc.border = _BORDER_ALL
+            col += 1
+
+            if has_risk:
+                # Total risk: find all rows for this category across income bins
+                # and sum todu values for proper weighted average
+                total_risk = None
+                cat_rows = [lookup.get((cat, ib), {}) for ib in ib_order]
+                # We don't have raw todu here; use weighted average by volume as approximation
+                weighted_sum = sum(
+                    (cr.get("risk", 0) or 0) * (cr.get("volume", 0) or 0) for cr in cat_rows
+                )
+                if total_vol > 0 and any(cr.get("risk") is not None for cr in cat_rows):
+                    total_risk = weighted_sum / total_vol
+                rc = ws.cell(row=r, column=col)
+                rc.value = total_risk if total_risk is not None else ""
+                if isinstance(rc.value, float):
+                    rc.number_format = "0.00"
+                rc.font = _FONT_TOTAL
+                rc.fill = _FILL_TOTAL
+                rc.alignment = _ALIGN_RIGHT
+                rc.border = _BORDER_ALL
+                col += 1
+
+            cc = ws.cell(row=r, column=col)
+            cc.value = total_cnt
+            cc.number_format = "#,##0"
+            cc.font = _FONT_TOTAL
+            cc.fill = _FILL_TOTAL
+            cc.alignment = _ALIGN_RIGHT
+            cc.border = _BORDER_ALL
+
+        # Set column widths
+        ws.column_dimensions[get_column_letter(1)].width = 12
+        for c in range(2, total_cols + 1):
+            ws.column_dimensions[get_column_letter(c)].width = 14
+
+        chart_anchor_row = data_start_row + len(categories) + 2
+
+        # Chart colours: Keep=teal, Swap-in=cerulean, Swap-out=warm red
+        _CHART_COLORS = {"Keep": "1ABC9C", "Swap-in": "2980B9", "Swap-out": "E74C3C"}
+        chart_cats = ["Keep", "Swap-in", "Swap-out"]
+
+        # ── Chart data block ──
+        # Transposed layout: income bins on X-axis, categories as series (legend)
+        #
+        #   col 1        | col 2  | col 3    | col 4
+        #   Income Bin   | Keep   | Swap-in  | Swap-out      ← header (series titles)
+        #   ≤ 2,000€     | vol    | vol      | vol           ← data rows
+        #   > 2,000€     | vol    | vol      | vol
+        #
+        chart_data_row = chart_anchor_row
+        n_cats = len(chart_cats)
+
+        # Volume data block
+        ws.cell(row=chart_data_row, column=1).value = "Income Bin"
+        for ci, cat in enumerate(chart_cats):
+            ws.cell(row=chart_data_row, column=2 + ci).value = cat
+        for i, ib in enumerate(ib_order):
+            r = chart_data_row + 1 + i
+            ws.cell(row=r, column=1).value = ib_labels[i]
+            for ci, cat in enumerate(chart_cats):
+                d = lookup.get((cat, ib), {"volume": 0})
+                ws.cell(row=r, column=2 + ci).value = d["volume"]
+
+        # Hide chart data (tiny white-on-white text)
+        vol_block_end = chart_data_row + n_ib
+        for rr in range(chart_data_row, vol_block_end + 1):
+            for cc in range(1, 2 + n_cats):
+                ws.cell(row=rr, column=cc).font = Font(size=1, color="F8F9FA", name=_FN)
+
+        # ── Volume bar chart ──
+        from openpyxl.chart.label import DataLabelList
+
+        chart = BarChart()
+        chart.type = "col"
+        chart.grouping = "clustered"
+        chart.title = "Production Volume by Income Bin"
+        chart.y_axis.title = "Volume (€)"
+        chart.y_axis.numFmt = '#,##0'
+        chart.y_axis.delete = False
+        chart.x_axis.delete = False
+        chart.x_axis.tickLblPos = "low"
+        chart.style = 10
+        chart.width = 22
+        chart.height = 14
+        chart.legend.position = "b"
+        chart.gapWidth = 80  # tighter bar groups
+
+        data_ref = Reference(ws, min_col=2, max_col=1 + n_cats,
+                             min_row=chart_data_row, max_row=vol_block_end)
+        cats_ref = Reference(ws, min_col=1,
+                             min_row=chart_data_row + 1, max_row=vol_block_end)
+        chart.add_data(data_ref, titles_from_data=True)
+        chart.set_categories(cats_ref)
+        chart.shape = 4
+        for si, series in enumerate(chart.series):
+            cat_name = chart_cats[si] if si < n_cats else ""
+            clr = _CHART_COLORS.get(cat_name, "AEB6BF")
+            series.graphicalProperties.solidFill = clr
+            series.graphicalProperties.line.solidFill = clr
+            # Data labels showing series name on each bar
+            series.dLbls = DataLabelList()
+            series.dLbls.showSerName = True
+            series.dLbls.showVal = False
+            series.dLbls.showCatName = False
+
+        vol_chart_row = vol_block_end + 2
+        ws.add_chart(chart, f"A{vol_chart_row}")
+
+        # ── Risk bar chart (main period only) ──
+        if has_risk:
+            risk_data_row = vol_block_end + 1
+            ws.cell(row=risk_data_row, column=1).value = "Income Bin"
+            for ci, cat in enumerate(chart_cats):
+                ws.cell(row=risk_data_row, column=2 + ci).value = cat
+            for i, ib in enumerate(ib_order):
+                r = risk_data_row + 1 + i
+                ws.cell(row=r, column=1).value = ib_labels[i]
+                for ci, cat in enumerate(chart_cats):
+                    d = lookup.get((cat, ib), {"risk": None})
+                    ws.cell(row=r, column=2 + ci).value = d.get("risk") or 0
+            risk_block_end = risk_data_row + n_ib
+            for rr in range(risk_data_row, risk_block_end + 1):
+                for cc in range(1, 2 + n_cats):
+                    ws.cell(row=rr, column=cc).font = Font(size=1, color="F8F9FA", name=_FN)
+
+            risk_chart = BarChart()
+            risk_chart.type = "col"
+            risk_chart.grouping = "clustered"
+            risk_chart.title = "Risk (%) by Income Bin"
+            risk_chart.y_axis.title = "Risk (%)"
+            risk_chart.y_axis.numFmt = '0.00'
+            risk_chart.y_axis.delete = False
+            risk_chart.x_axis.delete = False
+            risk_chart.x_axis.tickLblPos = "low"
+            risk_chart.style = 10
+            risk_chart.width = 22
+            risk_chart.height = 14
+            risk_chart.legend.position = "b"
+            risk_chart.gapWidth = 80
+
+            risk_data_ref = Reference(ws, min_col=2, max_col=1 + n_cats,
+                                      min_row=risk_data_row, max_row=risk_block_end)
+            risk_cats_ref = Reference(ws, min_col=1,
+                                      min_row=risk_data_row + 1, max_row=risk_block_end)
+            risk_chart.add_data(risk_data_ref, titles_from_data=True)
+            risk_chart.set_categories(risk_cats_ref)
+            risk_chart.shape = 4
+            for si, series in enumerate(risk_chart.series):
+                cat_name = chart_cats[si] if si < n_cats else ""
+                clr = _CHART_COLORS.get(cat_name, "AEB6BF")
+                series.graphicalProperties.solidFill = clr
+                series.graphicalProperties.line.solidFill = clr
+                # Data labels showing series name + value on each bar
+                series.dLbls = DataLabelList()
+                series.dLbls.showSerName = True
+                series.dLbls.showVal = True
+                series.dLbls.showCatName = False
+                series.dLbls.numFmt = '0.00"%"'
+
+            # Place risk chart to the right of volume chart
+            risk_col_letter = get_column_letter(total_cols + 2)
+            ws.add_chart(risk_chart, f"{risk_col_letter}{vol_chart_row}")
+
+        # Return next free row (below charts — each chart ~20 rows tall)
+        return vol_chart_row + 20
 
     def _write_single_pivot_grid(ws, pivot, col_var, row_var, start_row, col_offset=0):
         """Draw one pivot grid at (start_row, col_offset+1). Returns bottom row used."""
@@ -2987,6 +3460,65 @@ def export_consolidated_excel(
         _rp_exclude_cols_mr = _rp_exclude_cols | {"todu_30ever_h3", "todu_amt_pile_h3"}
 
         for seg_name in segments:
+            seg_settings = _load_segment_settings(seg_name)
+
+            # Resolve variables list — fall back to global config
+            seg_vars = seg_settings.get("inv_vars") or None
+            try:
+                import tomllib as _tomllib
+                _seg_cfg_path = output_base / seg_name / "config_segment.toml"
+                if _seg_cfg_path.exists():
+                    _scfg = _tomllib.loads(_seg_cfg_path.read_text(encoding="utf-8"))
+                    _prep = _scfg.get("preprocessing", _scfg)
+                    seg_vars_full = _prep.get("variables") or _prep.get("inference_variables")
+                    if seg_vars_full:
+                        seg_vars_full = list(seg_vars_full)
+                    else:
+                        seg_vars_full = None
+                else:
+                    seg_vars_full = None
+            except Exception:
+                seg_vars_full = None
+            # Fall back to global variables from segments.toml / config.toml
+            if not seg_vars_full:
+                seg_cfg = segments.get(seg_name, {})
+                seg_vars_full = seg_cfg.get("variables")
+            if not seg_vars_full:
+                try:
+                    import tomllib as _tomllib
+                    _gcfg_path = Path("config.toml")
+                    if _gcfg_path.exists():
+                        _gcfg = _tomllib.loads(_gcfg_path.read_text(encoding="utf-8"))
+                        seg_vars_full = _gcfg.get("preprocessing", {}).get("variables")
+                except Exception:
+                    pass
+            if not seg_vars_full:
+                seg_vars_full = ["new_efx_clus", "sc_octroi_new_clus", "income_bin"]
+
+            # Resolve income threshold for labels
+            _income_th = None
+            try:
+                import tomllib as _tomllib
+                _seg_cfg_path2 = output_base / seg_name / "config_segment.toml"
+                if _seg_cfg_path2.exists():
+                    _scfg2 = _tomllib.loads(_seg_cfg_path2.read_text(encoding="utf-8"))
+                    _edges = _scfg2.get("preprocessing", _scfg2).get("bins", {}).get("income_bin", {}).get("bin_edges")
+                    if _edges and isinstance(_edges, list) and len(_edges) >= 3:
+                        finite = [float(e) for e in _edges if np.isfinite(float(e))]
+                        if len(finite) == 1:
+                            _income_th = finite[0]
+            except Exception:
+                pass
+            if _income_th is None:
+                # Try reporting supersegment edges
+                _rs = segments.get(seg_name, {}).get("reporting_supersegment") or segments.get(seg_name, {}).get("supersegment")
+                if _rs and _rs in supersegments:
+                    _edges = supersegments[_rs].get("bin_edges", {}).get("income_bin")
+                    if _edges and isinstance(_edges, list) and len(_edges) >= 3:
+                        finite = [float(e) for e in _edges if np.isfinite(float(e))]
+                        if len(finite) == 1:
+                            _income_th = finite[0]
+
             # --- Main period ---
             csv_path = output_base / seg_name / "data" / "risk_production_summary_table_base.csv"
             if not csv_path.exists():
@@ -2999,6 +3531,16 @@ def export_consolidated_excel(
                 continue
             df_rp = df_rp.drop(columns=[c for c in _rp_exclude_cols if c in df_rp.columns])
             rp_extra_tables = _build_income_bin_tables(seg_name, period="main", template_cols=list(df_rp.columns))
+
+            # Build classification grid for main period
+            main_grid = _build_classification_grid(
+                seg_name, period="main", variables=seg_vars_full,
+                multiplier=seg_settings["multiplier"],
+                multiplier_h3=seg_settings.get("multiplier_h3"),
+                inv_vars=seg_settings.get("inv_vars"),
+                income_threshold=_income_th,
+            )
+
             sheet_name = f"RP {seg_name}"[:31]
             _write_rp_sheet(
                 writer,
@@ -3008,6 +3550,8 @@ def export_consolidated_excel(
                 "Main Period — Base Scenario",
                 _CLR_TAB_SEGMENT,
                 extra_tables=rp_extra_tables,
+                classification_grid=main_grid,
+                is_mr=False,
             )
 
             # --- MR period ---
@@ -3024,6 +3568,16 @@ def export_consolidated_excel(
                 continue
             df_mr = df_mr.drop(columns=[c for c in _rp_exclude_cols_mr if c in df_mr.columns])
             mr_extra_tables = _build_income_bin_tables(seg_name, period="mr", template_cols=list(df_mr.columns))
+
+            # Build classification grid for MR period (volumes only)
+            mr_grid = _build_classification_grid(
+                seg_name, period="mr", variables=seg_vars_full,
+                multiplier=seg_settings["multiplier"],
+                multiplier_h3=seg_settings.get("multiplier_h3"),
+                inv_vars=seg_settings.get("inv_vars"),
+                income_threshold=_income_th,
+            )
+
             mr_sheet_name = f"RP MR {seg_name}"[:31]
             _write_rp_sheet(
                 writer,
@@ -3033,6 +3587,8 @@ def export_consolidated_excel(
                 "MR Period — Base Scenario",
                 _CLR_TAB_SEGMENT_MR,
                 extra_tables=mr_extra_tables,
+                classification_grid=mr_grid,
+                is_mr=True,
             )
 
         # Remove default "Sheet" if auto-created
