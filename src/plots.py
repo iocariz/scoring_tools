@@ -733,8 +733,14 @@ class RiskProductionVisualizer:
                 # Fallback if sol_fac is not index/column (it really should be there)
                 pass
 
-        b2_col = self.data_summary["b2_ever_h6"]
-        data_filtered = self.data_summary[b2_col <= self.optimum_risk]
+        # Exclude NaN-risk solutions (zero-exposure cells, not "zero risk")
+        valid = self.data_summary["b2_ever_h6"].notna()
+        candidates = self.data_summary[valid]
+        if candidates.empty:
+            candidates = self.data_summary
+
+        b2_col = candidates["b2_ever_h6"]
+        data_filtered = candidates[b2_col <= self.optimum_risk]
         if data_filtered.empty:
             min_b2 = b2_col.min()
             max_b2 = b2_col.max()
@@ -744,9 +750,12 @@ class RiskProductionVisualizer:
                 f"Falling back to minimum-risk solution (b2={min_b2:.2f}%). "
                 f"Consider increasing optimum_risk in config.toml."
             )
-            data_filtered = self.data_summary.sort_values("b2_ever_h6").head(1)
+            data_filtered = candidates.sort_values("b2_ever_h6").head(1)
         else:
-            data_filtered = data_filtered.tail(1)
+            # Explicitly select max production under risk cap (#30)
+            data_filtered = data_filtered.sort_values(
+                ["b2_ever_h6", "oa_amt_h0"]
+            ).tail(1)
         return data_filtered
 
     def _apply_static_update(self):

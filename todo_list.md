@@ -14,7 +14,7 @@ Unresolved items from the methodological / statistical review. Strikethrough whe
 
 3. **Bootstrap CIs for Optimum** (`src/utils.py`, `calculate_bootstrap_intervals`) — Resamples booked only; swap-in/reject model error not in interval. **Fix:** Ensure report text states scope (sampling uncertainty of booked path under fixed cut / fixed repesca production).
 
-4. **`fillna(0)` on grid/KPI display** (`src/optimization_utils.py`, `src/plots.py`) — Missing cells can show as 0% risk in some views. **Also** (`kpi_of_fact_sol`, `src/optimization_utils.py`): NaN `b2_ever_h6` from zero exposure is filled with **0** for display/downstream — optimistic for ranking and `b2 <= optimum_risk` selection on the legacy 2-var path. **Fix:** Distinguish “no data” vs “zero risk” in UI where feasible; rely on `observed` for optimization; exclude or flag zero-exposure solutions in Pareto/selection instead of treating risk as 0%.
+4. ~~**`fillna(0)` on grid/KPI display** (`src/optimization_utils.py`, `src/plots.py`) — Missing cells can show as 0% risk in some views. **Also** (`kpi_of_fact_sol`, `src/optimization_utils.py`): NaN `b2_ever_h6` from zero exposure is filled with **0** for display/downstream — optimistic for ranking and `b2 <= optimum_risk` selection on the legacy 2-var path.~~ **Fixed:** `kpi_of_fact_sol` now preserves NaN in base `b2_ever_h6` (used for ranking/selection); only suffixed display columns (_cut/_rep/_boo) are fillna(0). `get_optimal_solutions` filters NaN/inf-risk solutions before Pareto ranking (matching the MILP path). `_get_selected_solution_row` excludes NaN-risk solutions and uses explicit `sort_values` + `tail(1)` for robust max-production selection (also fixes #30).
 
 5. ~~**RI optimizer outer merge** (`src/reject_inference_optimizer.py`, merged booked+repesca) — `fillna(0)` can mask misaligned bin keys. **Fix:** Optional validation log or assert on key coverage after merge.~~ **Fixed:** Merge-key column dtypes preserved after outer merge + fillna(0).
 
@@ -86,7 +86,7 @@ Unresolved items from the methodological / statistical review. Strikethrough whe
 
 ### LOW
 
-30. **Scenario row selection assumes sort order** (`src/plots.py`, `_get_selected_solution_row`) — `b2 <= optimum_risk` then `tail(1)` is max production under cap only if `data_summary` is sorted by increasing `b2_ever_h6` (true for default MILP/legacy outputs, fragile if CSV reload/merge reorders rows). **Fix:** Explicit `sort_values(["b2_ever_h6", "oa_amt_h0"])` before filtering and taking max `oa_amt_h0` among feasible rows.
+30. ~~**Scenario row selection assumes sort order** (`src/plots.py`, `_get_selected_solution_row`) — `b2 <= optimum_risk` then `tail(1)` is max production under cap only if `data_summary` is sorted by increasing `b2_ever_h6` (true for default MILP/legacy outputs, fragile if CSV reload/merge reorders rows).~~ **Fixed:** as part of #4 — explicit `sort_values(["b2_ever_h6", "oa_amt_h0"]).tail(1)` now used.
 
 31. **MILP time limit** (`src/optimization_utils.py`, `milp_solve_cutoffs`) — `scipy.optimize.milp` `time_limit` can yield suboptimal or no solution for a target, weakening a frontier point. **Fix:** Log/time budget; retry with higher limit on failure.
 

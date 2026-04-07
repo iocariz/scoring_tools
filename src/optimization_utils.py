@@ -1794,8 +1794,6 @@ def kpi_of_fact_sol(
         t30 = f"todu_30ever_h6{metric}"
         tamt = f"todu_amt_pile_h6{metric}"
         if t30 in final_result.columns and tamt in final_result.columns:
-            # calculate_b2_ever_h6 returns NaN for zero denominators.
-            # fillna(0) is required for downstream display (summary table uses max()).
             b2_col = f"b2_ever_h6{metric}"
             raw_b2 = calculate_b2_ever_h6(
                 final_result[t30].astype(float),
@@ -1807,9 +1805,15 @@ def kpi_of_fact_sol(
             if n_nan > 0 and metric in ("", "_boo"):
                 logger.warning(
                     f"kpi_of_fact_sol: {n_nan} solution(s) have NaN b2_ever_h6{metric} "
-                    f"(zero exposure). Filling with 0 for display."
+                    f"(zero exposure). These will be excluded from Pareto selection."
                 )
-            final_result[b2_col] = raw_b2.fillna(0)
+            # Base b2_ever_h6 (no suffix): keep NaN so zero-exposure solutions
+            # are excluded from ranking/selection instead of appearing as 0% risk.
+            # Suffixed columns (_cut, _rep, _boo) are display-only: fill with 0.
+            if metric == "":
+                final_result[b2_col] = raw_b2
+            else:
+                final_result[b2_col] = raw_b2.fillna(0)
 
     # Compute b2_ever_h3 (complementary metric) when h3 columns are present
     effective_multiplier_h3 = multiplier_h3 if multiplier_h3 is not None else DEFAULT_RISK_MULTIPLIER_H3
@@ -1827,9 +1831,12 @@ def kpi_of_fact_sol(
             if n_nan_h3 > 0 and metric in ("", "_boo"):
                 logger.warning(
                     f"kpi_of_fact_sol: {n_nan_h3} solution(s) have NaN b2_ever_h3{metric} "
-                    f"(zero exposure). Filling with 0 for display."
+                    f"(zero exposure). These will be excluded from Pareto selection."
                 )
-            final_result[f"b2_ever_h3{metric}"] = raw_b2_h3.fillna(0)
+            if metric == "":
+                final_result[f"b2_ever_h3{metric}"] = raw_b2_h3
+            else:
+                final_result[f"b2_ever_h3{metric}"] = raw_b2_h3.fillna(0)
 
     return final_result.sort_values(["b2_ever_h6", "oa_amt_h0"])
 
@@ -1845,10 +1852,22 @@ def get_optimal_solutions(df_v: pd.DataFrame, data_sumary: pd.DataFrame, chunk_s
 
     logger.info("--Getting optimal solutions")
 
+    # Filter out solutions with NaN/inf risk (zero-exposure cells) before
+    # Pareto ranking — these are "no data", not "zero risk" (#4).
+    valid_risk = np.isfinite(data_sumary["b2_ever_h6"]) & np.isfinite(data_sumary["oa_amt_h0"])
+    n_invalid = int((~valid_risk).sum())
+    if n_invalid > 0:
+        logger.warning(
+            f"get_optimal_solutions: filtering {n_invalid} solution(s) with NaN/inf risk "
+            f"(zero exposure) before Pareto ranking."
+        )
+        data_sumary = data_sumary[valid_risk].copy()
+
     data_sumary = data_sumary.sort_values(by=["b2_ever_h6", "oa_amt_h0"])
-    data_sumary["_b2_rounded"] = data_sumary["b2_ever_h6"].round(4)
-    data_sumary = data_sumary.drop_duplicates(subset=["_b2_rounded"], keep="last")
-    data_sumary = data_sumary.drop(columns=["_b2_rounded"])
+    # Dedup by exact (risk, production) pairs only — rounding dedup removed
+    # because it merged distinct frontier points and discarded better
+    # production for tight risk caps (#27).
+    data_sumary = data_sumary.drop_duplicates(subset=["b2_ever_h6", "oa_amt_h0"], keep="last")
 
     cummax = data_sumary["oa_amt_h0"].cummax()
     pareto_mask = data_sumary["oa_amt_h0"] >= cummax
