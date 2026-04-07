@@ -2263,11 +2263,11 @@ def export_consolidated_excel(
                 return f"Income Bin {income_val}"
             if iv == 1:
                 if income_threshold is not None:
-                    return f"income_bin >= {income_threshold:,.0f}€"
+                    return f"income_bin <= {income_threshold:,.0f}€"
                 return "Income Bin 1"
             if iv == 2:
                 if income_threshold is not None:
-                    return f"income_bin < {income_threshold:,.0f}€"
+                    return f"income_bin > {income_threshold:,.0f}€"
                 return "Income Bin 2"
             return f"Income Bin {income_val}"
 
