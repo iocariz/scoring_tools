@@ -37,6 +37,7 @@ import pandas as pd
 from loguru import logger
 from tqdm import tqdm
 
+from src.config import OutputPaths
 from src.consolidation import generate_consolidation_report
 from src.utils import resolve_modelling_supersegment, resolve_reporting_supersegment
 
@@ -1283,6 +1284,21 @@ def main():
     parser.add_argument(
         "--log-file", type=str, default=None, help="Path to write all log output to a file (in addition to console)"
     )
+    parser.add_argument(
+        "--resimulate",
+        type=str,
+        nargs="*",
+        default=None,
+        metavar="RISK_OR_FILE",
+        help=(
+            "Resimulation mode: skip data loading/preprocessing/training/optimization, "
+            "load artifacts from a previous full run, and re-run scenario analysis with "
+            "new risk targets. Accepts either:\n"
+            "  (a) One or more risk values applied to all segments: --resimulate 0.8 1.2 1.6\n"
+            "  (b) A TOML file with per-segment targets: --resimulate scenarios.toml\n"
+            "TOML format:  no_premium_cd = [0.8, 1.2, 1.6]  or  no_premium_cd = 1.4"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -1377,6 +1393,111 @@ def main():
             logger.error(f"Error generating consolidated report: {e}")
             logger.exception("Full traceback:")
             return 1
+
+    # Handle resimulation mode
+    if args.resimulate is not None:
+        from main import run_resimulation
+
+        # Parse risk targets: either a TOML file or inline float values
+        # Result: per_segment_risks = {seg_name: [risk1, risk2, ...]} or None for global
+        per_segment_risks: dict[str, list[float]] | None = None
+        global_risks: list[float] | None = None
+
+        if len(args.resimulate) == 1 and args.resimulate[0].endswith(".toml"):
+            # TOML file with per-segment targets
+            toml_path = args.resimulate[0]
+            if not Path(toml_path).exists():
+                print(f"Error: resimulation TOML file not found: {toml_path}")
+                return 1
+            resim_config = tomllib.loads(Path(toml_path).read_text(encoding="utf-8"))
+            per_segment_risks = {}
+            for seg_name, val in resim_config.items():
+                if isinstance(val, (int, float)):
+                    per_segment_risks[seg_name] = [float(val)]
+                elif isinstance(val, list):
+                    per_segment_risks[seg_name] = [float(v) for v in val]
+                else:
+                    logger.warning(f"Skipping invalid entry in resimulation TOML: {seg_name} = {val}")
+            print(f"\n{'=' * 60}")
+            print(f"Resimulation Mode — per-segment targets from {toml_path}")
+            for sn, rv in per_segment_risks.items():
+                print(f"  {sn}: {rv}")
+            print(f"{'=' * 60}")
+        elif len(args.resimulate) == 0:
+            print("Error: --resimulate requires risk values or a TOML file path")
+            return 1
+        else:
+            # Inline float values applied to all segments
+            try:
+                global_risks = [float(v) for v in args.resimulate]
+            except ValueError:
+                print(f"Error: --resimulate values must be numbers or a .toml file path, got: {args.resimulate}")
+                return 1
+            print(f"\n{'=' * 60}")
+            print(f"Resimulation Mode — risk targets: {global_risks}")
+            print(f"{'=' * 60}")
+
+        failed_segments = []
+        segments_to_run = list(per_segment_risks.keys()) if per_segment_risks else list(segments.keys())
+        for seg_name in segments_to_run:
+            if seg_name not in segments:
+                logger.warning(f"[{seg_name}] Not in segments.toml, skipping")
+                failed_segments.append(seg_name)
+                continue
+            seg_output_dir = Path(args.output) / seg_name
+            if not seg_output_dir.exists():
+                logger.warning(f"[{seg_name}] No output directory found, skipping resimulation")
+                failed_segments.append(seg_name)
+                continue
+            seg_config_path = seg_output_dir / "config_segment.toml"
+            if not seg_config_path.exists():
+                logger.warning(f"[{seg_name}] No config_segment.toml found, skipping")
+                failed_segments.append(seg_name)
+                continue
+
+            risk_values = per_segment_risks[seg_name] if per_segment_risks else global_risks
+
+            # Skip segments whose requested risk matches the original optimum_risk
+            # (no point re-running if nothing changed — avoids MR drift from code updates).
+            if per_segment_risks:
+                try:
+                    _seg_cfg = tomllib.loads(seg_config_path.read_text(encoding="utf-8"))
+                    _orig_risk = _seg_cfg.get("preprocessing", _seg_cfg).get("optimum_risk")
+                    if _orig_risk is not None and risk_values == [float(_orig_risk)]:
+                        logger.info(f"[{seg_name}] Risk unchanged ({risk_values[0]}), skipping resimulation")
+                        continue
+                except Exception:
+                    pass  # proceed with resimulation if config can't be read
+
+            try:
+                seg_output = OutputPaths(base_dir=seg_output_dir)
+                run_resimulation(
+                    config_path=str(seg_config_path),
+                    resimulate_risk=risk_values,
+                    output=seg_output,
+                )
+            except Exception as e:
+                logger.error(f"[{seg_name}] Resimulation failed: {e}")
+                failed_segments.append(seg_name)
+
+        # Generate consolidated report
+        try:
+            consolidated_df, _ = generate_consolidation_report(
+                output_base=args.output,
+                segments=segments,
+                supersegments=all_supersegments,
+                output_path=args.output,
+                multiplier=base_config.get("multiplier", 7),
+                multiplier_h3=base_config.get("multiplier_h3", 4),
+            )
+        except Exception as e:
+            logger.error(f"Consolidation failed: {e}")
+
+        if failed_segments:
+            print(f"\nFailed segments: {failed_segments}")
+            return 1
+        print(f"\nResimulation complete for {len(segments_to_run)} segment(s)")
+        return 0
 
     print(f"\nProcessing {len(segments)} segment(s): {list(segments.keys())}")
     if used_supersegments:

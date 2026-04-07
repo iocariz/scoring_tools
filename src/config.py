@@ -156,6 +156,28 @@ class OutputPaths:
     def bin_diagnostic_html(self, bin_col: str) -> str:
         return str(self.images_dir / f"bin_diagnostic_{bin_col}.html")
 
+    # -- resimulation artifacts --
+
+    @property
+    def data_clean_parquet(self) -> str:
+        return str(self.data_dir / "data_clean.parquet")
+
+    @property
+    def data_booked_parquet(self) -> str:
+        return str(self.data_dir / "data_booked.parquet")
+
+    @property
+    def resimulation_meta_json(self) -> str:
+        return str(self.data_dir / "resimulation_meta.json")
+
+    @property
+    def per_bin_stress_csv(self) -> str:
+        return str(self.data_dir / "per_bin_stress.csv")
+
+    @property
+    def per_bin_tasa_fin_csv(self) -> str:
+        return str(self.data_dir / "per_bin_tasa_fin.csv")
+
     # -- inference_optimized (main-period visualization) --
 
     @property

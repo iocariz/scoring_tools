@@ -148,9 +148,6 @@ reporting_supersegment = "pl_known_premium_precon"
 modelling_supersegment = "total"
 baseline_mode = true
 
-
-
-
 # Add more segments as needed:
 # [segments.another_segment]
 # segment_filter = "your_segment_filter_value"

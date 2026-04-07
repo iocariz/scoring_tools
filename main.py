@@ -1,6 +1,10 @@
 import argparse
+import hashlib
+import json
 import time
+from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 from pydantic import ValidationError
@@ -36,6 +40,217 @@ class InferencePhaseError(PipelineExecutionError):
     """Raised when inference phase fails."""
 
 
+def _config_hash(settings) -> str:
+    """Compute a short hash of key config fields for staleness detection."""
+    key_fields = f"{settings.variables}|{settings.multiplier}|{settings.data_path}"
+    return hashlib.md5(key_fields.encode()).hexdigest()[:12]
+
+
+def _save_resimulation_artifacts(
+    output: OutputPaths,
+    data_clean: pd.DataFrame,
+    data_booked: pd.DataFrame,
+    stress_factor: float,
+    tasa_fin: float,
+    annual_coef: float,
+    settings,
+    per_bin_stress: pd.DataFrame | None = None,
+    per_bin_tasa_fin: pd.DataFrame | None = None,
+) -> None:
+    """Save artifacts needed for resimulation mode."""
+    data_clean.to_parquet(output.data_clean_parquet, index=False)
+    data_booked.to_parquet(output.data_booked_parquet, index=False)
+    meta = {
+        "stress_factor": stress_factor,
+        "tasa_fin": tasa_fin,
+        "annual_coef": annual_coef,
+        "config_hash": _config_hash(settings),
+    }
+    Path(output.resimulation_meta_json).write_text(json.dumps(meta, indent=2))
+    if per_bin_stress is not None and not per_bin_stress.empty:
+        per_bin_stress.to_csv(output.per_bin_stress_csv, index=False)
+    if per_bin_tasa_fin is not None and not per_bin_tasa_fin.empty:
+        per_bin_tasa_fin.to_csv(output.per_bin_tasa_fin_csv, index=False)
+    logger.debug(f"Resimulation artifacts saved to {output.data_dir}")
+
+
+def _build_resimulation_scenarios(risk_values: list[float]) -> list[tuple[float, str]]:
+    """Build scenario list from user-provided risk values."""
+    risk_values = sorted(risk_values)
+    if len(risk_values) == 1:
+        return [(risk_values[0], "base")]
+    if len(risk_values) == 3:
+        return [
+            (risk_values[0], "pessimistic"),
+            (risk_values[1], "base"),
+            (risk_values[2], "optimistic"),
+        ]
+    return [(r, f"target_{r:.2f}") for r in risk_values]
+
+
+def run_resimulation(
+    config_path: str,
+    resimulate_risk: list[float],
+    output: OutputPaths | None = None,
+) -> None:
+    """Re-run scenario analysis with different risk targets using saved artifacts.
+
+    Skips data loading, preprocessing, training, and optimization — loads all
+    required artifacts from a previous full run.
+    """
+    t0 = time.perf_counter()
+
+    if output is None:
+        # Infer output directory from config path: if it's config_segment.toml
+        # inside an output dir, use that dir as base.
+        config_dir = Path(config_path).resolve().parent
+        if (config_dir / "data").exists() and (config_dir / "models").exists():
+            output = OutputPaths(base_dir=config_dir)
+        else:
+            output = OutputPaths()
+
+    # 1. Load config
+    settings, date_ini, date_fin, annual_coef = load_and_validate_config(config_path)
+    segment = settings.segment_filter
+
+    # 2. Validate required artifacts
+    required_files = {
+        "data_clean.parquet": output.data_clean_parquet,
+        "data_booked.parquet": output.data_booked_parquet,
+        "resimulation_meta.json": output.resimulation_meta_json,
+        "pareto_optimal_solutions.csv": output.pareto_solutions_csv,
+        "data_summary_desagregado_base.csv": output.data_summary_desagregado_csv("_base"),
+    }
+    missing = [name for name, path in required_files.items() if not Path(path).exists()]
+    if missing:
+        logger.error(
+            f"[{segment}] Resimulation requires a previous full run. Missing: {', '.join(missing)}. "
+            "Run the full pipeline first."
+        )
+        return
+
+    # 3. Load saved scalars
+    meta = json.loads(Path(output.resimulation_meta_json).read_text())
+    stress_factor = meta["stress_factor"]
+    tasa_fin = meta["tasa_fin"]
+    annual_coef = meta.get("annual_coef", annual_coef)
+
+    # Staleness check
+    current_hash = _config_hash(settings)
+    if meta.get("config_hash") and meta["config_hash"] != current_hash:
+        logger.warning(
+            f"[{segment}] Config has changed since the last full run (hash mismatch). "
+            "Resimulation uses the saved Pareto frontier — results may not reflect config changes. "
+            "Run a full pipeline to regenerate artifacts."
+        )
+
+    # 4. Load data artifacts
+    logger.info(f"[{segment}] Resimulation: loading artifacts...")
+    data_clean = pd.read_parquet(output.data_clean_parquet)
+    data_booked = pd.read_parquet(output.data_booked_parquet)
+    data_summary = pd.read_csv(output.pareto_solutions_csv)
+    data_summary_desagregado = pd.read_csv(output.data_summary_desagregado_csv("_base"))
+
+    per_bin_stress = None
+    if Path(output.per_bin_stress_csv).exists():
+        per_bin_stress = pd.read_csv(output.per_bin_stress_csv)
+    per_bin_tasa_fin = None
+    if Path(output.per_bin_tasa_fin_csv).exists():
+        per_bin_tasa_fin = pd.read_csv(output.per_bin_tasa_fin_csv)
+
+    # 5. Reconstruct grid + masks
+    from src.optimization_utils import CellGrid, decode_mask
+
+    grid = CellGrid.from_summary(data_summary_desagregado, settings.variables)
+    pareto_masks = []
+    if "acceptance_mask" in data_summary.columns:
+        for _, row in data_summary.iterrows():
+            mask_str = row.get("acceptance_mask")
+            if pd.notna(mask_str):
+                pareto_masks.append(decode_mask(str(mask_str)))
+
+    values_per_var = {var: sorted(data_summary_desagregado[var].unique()) for var in settings.variables}
+
+    # 6. Load model (fast — just loads from disk)
+    # Search: segment models dir first, then supersegment dirs
+    model_dirs = sorted(Path(output.models_dir).glob("model_*"), reverse=True)
+    if not model_dirs:
+        # Search supersegment model directories (e.g., output/_supersegment_total/models/model_*)
+        output_root = output.base_dir.parent
+        for ss_dir in sorted(output_root.glob("_supersegment_*/models/model_*"), reverse=True):
+            model_dirs.append(ss_dir)
+    if model_dirs:
+        model_path = str(model_dirs[0])
+    else:
+        logger.error(f"[{segment}] No model directory found in {output.models_dir} or supersegment dirs")
+        return
+    risk_inference, reg_todu_amt_pile = run_inference_phase(data_clean, settings, model_path, output=output)
+
+    # 7. Compute total_demand from data_clean
+    from src.preprocess_improved import filter_by_date
+
+    data_demand_period = filter_by_date(data_clean, "mis_date", settings.date_ini_book_obs, settings.date_fin_book_obs)
+    if "status_name" in data_demand_period.columns and "oa_amt_h0" in data_demand_period.columns:
+        total_demand = data_demand_period.loc[
+            data_demand_period["status_name"] != "canceled", "oa_amt_h0"
+        ].sum()
+    else:
+        total_demand = data_demand_period["oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_period.columns else 0.0
+
+    # 8. Build scenarios and run
+    scenarios = _build_resimulation_scenarios(resimulate_risk)
+    annual_coef_mr = _compute_mr_annual_coef(settings)
+    data_summary_sample_no_opt = pd.DataFrame(columns=["oa_amt_h0", "b2_ever_h6"])
+
+    logger.info(
+        f"[{segment}] Resimulation: {len(scenarios)} scenario(s) — "
+        + ", ".join(f"{name}={risk:.2f}%" for risk, name in scenarios)
+    )
+
+    cutoff_summaries = []
+    for scenario_risk, scenario_name in scenarios:
+        summary = run_scenario_analysis(
+            scenario_risk,
+            scenario_name,
+            data_summary=data_summary,
+            data_summary_desagregado=data_summary_desagregado,
+            data_summary_sample_no_opt=data_summary_sample_no_opt,
+            data_clean=data_clean,
+            data_booked=data_booked,
+            settings=settings,
+            risk_inference=risk_inference,
+            reg_todu_amt_pile=reg_todu_amt_pile,
+            stress_factor=stress_factor,
+            tasa_fin=tasa_fin,
+            annual_coef_mr=annual_coef_mr,
+            values_per_var=values_per_var,
+            grid=grid,
+            pareto_masks=pareto_masks,
+            output=output,
+            total_demand=total_demand,
+            per_bin_stress=per_bin_stress,
+            per_bin_tasa_fin=per_bin_tasa_fin,
+        )
+        cutoff_summaries.append(summary)
+
+    _save_cutoff_summaries(cutoff_summaries, settings, output=output)
+
+    # Generate HTML report
+    try:
+        from src.pipeline.reporting import generate_segment_report
+
+        report_path = generate_segment_report(
+            settings=settings, output=output, scenarios=[name for _, name in scenarios]
+        )
+        if report_path:
+            logger.info(f"[{segment}] Report generated: {report_path}")
+    except Exception as e:
+        logger.warning(f"[{segment}] Report generation failed (non-blocking): {e}")
+
+    elapsed = time.perf_counter() - t0
+    logger.info(f"[{segment}] Resimulation complete | {len(scenarios)} scenarios | {elapsed:.1f}s total")
+
+
 def main(
     config_path: str = "config.toml",
     model_path: str | None = None,
@@ -47,6 +262,7 @@ def main(
     output: OutputPaths | None = None,
     floor_cells_path: str | None = None,
     floor_cells_mode: str = "floor",
+    resimulate_risk: list[float] | None = None,
 ):
     """
     Load and preprocess SAS data using configuration.
@@ -82,6 +298,15 @@ def main(
         if base_scenario_only:
             settings.base_scenario_only = True
 
+        # Resimulation mode: skip phases 2-5, load artifacts, run scenarios only
+        if resimulate_risk:
+            # Let run_resimulation infer output dir from config path unless
+            # an explicit output was provided by the caller (e.g., run_batch.py).
+            import pathlib
+            resim_output = output if output.base_dir != pathlib.Path(".") else None
+            run_resimulation(config_path, resimulate_risk, output=resim_output)
+            return None
+
         # Step 2: Load and prepare data
         try:
             data, settings = load_and_prepare_data(settings, preloaded_data)
@@ -101,6 +326,15 @@ def main(
         tasa_fin = prep.tasa_fin
         per_bin_stress = prep.per_bin_stress
         per_bin_tasa_fin = prep.per_bin_tasa_fin
+
+        # Save resimulation artifacts (parquet + scalars) for future --resimulate runs
+        try:
+            _save_resimulation_artifacts(
+                output, data_clean, data_booked, stress_factor, tasa_fin, annual_coef,
+                settings, per_bin_stress, per_bin_tasa_fin,
+            )
+        except Exception as e:
+            logger.warning(f"[{segment}] Failed to save resimulation artifacts (non-blocking): {e}")
 
         # Step 4: Risk inference (model training or loading)
         try:
@@ -431,6 +665,21 @@ Output files:
         help="Path to write all log output to a file (in addition to console).",
     )
 
+    parser.add_argument(
+        "--resimulate",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="RISK",
+        help=(
+            "Resimulation mode: skip data loading/preprocessing/training/optimization, "
+            "load artifacts from a previous run, and re-run scenario analysis with the "
+            "specified optimum_risk value(s). "
+            "1 value → base only; 3 values → pessimistic/base/optimistic; "
+            "N values → target_X.XX. Example: --resimulate 0.8 0.96 1.2"
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -449,6 +698,7 @@ if __name__ == "__main__":
             baseline_mode=args.baseline,
             base_scenario_only=args.base_only,
             skip_dq_checks=args.skip_dq_checks,
+            resimulate_risk=args.resimulate,
         )
     finally:
         if sink_id is not None:

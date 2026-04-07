@@ -34,6 +34,13 @@ uv run python run_batch.py --log-file batch.log  # capture all logs to file
 uv run python run_batch.py --baseline           # baseline mode for all segments
 uv run python run_batch.py --cutoff-ordering-mode bottom_up  # sequential cutoff ordering
 
+# Resimulation (re-run scenarios with different risk targets, no re-training/optimization)
+uv run python main.py --config output/segment/config_segment.toml --resimulate 0.8 1.2 1.6
+uv run python run_batch.py --resimulate 0.8 1.2 1.6           # all segments, same targets
+uv run python run_batch.py --resimulate 1.0 -s no_premium_cd  # single segment
+uv run python run_batch.py --resimulate scenarios.toml         # per-segment targets from TOML
+# scenarios.toml format:  no_premium_cd = [0.8, 1.2, 1.6]  or  no_premium_cd = 1.4
+
 # Analyze logs and suggest config improvements
 uv run python analyze_logs.py batch.log                      # analyze a log file
 uv run python analyze_logs.py output/*/logs/*.log --verbose  # analyze all segment logs

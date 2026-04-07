@@ -1,0 +1,17 @@
+# Resimulation scenarios — per-segment risk targets
+# Usage: uv run python run_batch.py --resimulate scenarios_example.toml
+#
+# Each segment gets its own optimum_risk value(s):
+#   - Single value: runs as "base" scenario only
+#   - Three values: runs as pessimistic / base / optimistic (sorted ascending)
+#   - N values: runs as target_X.XX for each
+#
+# Segments not listed here are skipped.
+
+conso_known = [0.96]
+no_premium_ab = [1.4]
+no_premium_cd = [1.40]
+no_premium_ef = [1.40]
+premium = [1.2]
+new_nofintonic_ob = [1.14]
+
