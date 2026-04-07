@@ -6,7 +6,7 @@ Unresolved items from the methodological / statistical review. Strikethrough whe
 
 1. ~~**`apply_reject_inference` docstring vs default** (`src/reject_inference.py`, ~668–671) — Docstring said `apply_h3_multiplier` defaulted to **True**; actual default is **`False`**.~~ **Fixed:** Docstring and `apply_parceling_adjustment` comments aligned with `False` default; debug log uses `apply_h3_multiplier`.
 
-26. **MILP Pareto sweep is a discrete approximation** (`src/optimization_utils.py`, `trace_pareto_frontier`) — Frontier is built from MILPs on a linear grid of risk targets (`pareto_n_points`) plus mask dedup. Many Pareto-optimal monotone masks may never appear as optima for any grid target, so `optimum_risk` can map to a **suboptimal** production point. **Fix:** Increase `pareto_n_points`, add local refinement (e.g. binary search on risk target around the scenario), or resolve breakpoints between basis changes where feasible.
+26. ~~**MILP Pareto sweep is a discrete approximation** (`src/optimization_utils.py`, `trace_pareto_frontier`) — Frontier is built from MILPs on a linear grid of risk targets (`pareto_n_points`) plus mask dedup. Many Pareto-optimal monotone masks may never appear as optima for any grid target, so `optimum_risk` can map to a **suboptimal** production point.~~ **Fixed:** Added iterative bisection refinement (up to 3 rounds) after the linear sweep. Between each pair of adjacent Pareto points with risk gap > 0.02 pp, a midpoint MILP solve discovers missed masks. On `no_premium_cd` this grew the frontier from 72→254 solutions and recovered +782K€ (+1.6%) production at the same risk cap.
 
 ## MEDIUM
 

@@ -742,7 +742,79 @@ def trace_pareto_frontier(
             pareto_masks = [m for m, keep in zip(pareto_masks, non_dominated) if keep]
             logger.info(f"Post-hoc dominance filter removed {n_dom} dominated solution(s)")
 
-    logger.info(f"Pareto frontier: {len(df)} solutions (from {len(solutions)} unique MILP solves)")
+    # ─────────────────────────────────────────────────────────────────
+    # Local refinement: bisect between adjacent frontier points to
+    # discover Pareto-optimal masks the linear grid missed (#26).
+    # Each bisection solves one MILP at the midpoint risk; new unique
+    # masks trigger further bisection on the new sub-intervals.
+    # ─────────────────────────────────────────────────────────────────
+    MAX_REFINE_ROUNDS = 3       # outer passes over the frontier
+    MIN_RISK_GAP = 0.02         # skip intervals narrower than 0.02 pp
+
+    n_refined = 0
+    for _round in range(MAX_REFINE_ROUNDS):
+        risk_vals = df["b2_ever_h6"].values
+        if len(risk_vals) < 2:
+            break
+        midpoints = []
+        for i in range(len(risk_vals) - 1):
+            gap = risk_vals[i + 1] - risk_vals[i]
+            if gap > MIN_RISK_GAP:
+                midpoints.append((risk_vals[i] + risk_vals[i + 1]) / 2.0)
+        if not midpoints:
+            break
+
+        found_new = False
+        for mid_target in midpoints:
+            mask = milp_solve_cutoffs(
+                grid, mid_target, inv_vars, multiplier,
+                fixed_cells=fixed_cells,
+                max_swapin_production_pct=max_swapin_production_pct,
+                max_swapin_risk=max_swapin_risk,
+                time_limit=milp_time_limit,
+                monotonicity_relaxation_enabled=monotonicity_relaxation_enabled,
+                monotonicity_uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
+                monotonicity_uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
+            )
+            if mask is None:
+                continue
+            mask_key = tuple(mask.tolist())
+            if mask_key in seen_masks:
+                continue
+            seen_masks.add(mask_key)
+            kpis = evaluate_solution(mask, grid, indicators, multiplier, multiplier_h3=multiplier_h3)
+            risk_v = kpis.get("b2_ever_h6")
+            prod_v = kpis.get("oa_amt_h0")
+            if risk_v is None or prod_v is None or not np.isfinite(risk_v) or not np.isfinite(prod_v):
+                continue
+            # Insert into df + masks
+            new_row = pd.DataFrame([kpis])
+            df = pd.concat([df, new_row], ignore_index=True)
+            pareto_masks.append(mask)
+            found_new = True
+            n_refined += 1
+
+        if not found_new:
+            break
+
+        # Re-sort and re-filter after each refinement round
+        sort_idx = df["b2_ever_h6"].argsort().values
+        df = df.iloc[sort_idx].reset_index(drop=True)
+        pareto_masks = [pareto_masks[i] for i in sort_idx]
+        prev_max = float("-inf")
+        keep = []
+        for i, prod in enumerate(df["oa_amt_h0"].values):
+            if prod > prev_max:
+                keep.append(i)
+                prev_max = prod
+        if len(keep) < len(df):
+            df = df.iloc[keep].reset_index(drop=True)
+            pareto_masks = [pareto_masks[i] for i in keep]
+
+    if n_refined:
+        logger.info(f"Pareto refinement: {n_refined} new solution(s) discovered via bisection")
+
+    logger.info(f"Pareto frontier: {len(df)} solutions (from {len(solutions) + n_refined} unique MILP solves)")
 
     return df, grid, pareto_masks
 
