@@ -2375,12 +2375,34 @@ def export_consolidated_excel(
     ) -> list[dict] | None:
         """Build volume/risk breakdown by income_bin and classification (keep/swap-in/swap-out).
 
+        Uses audit data for volumes and counts (matching the RP summary tables which are
+        reconciled against the audit), and desagregado data for risk calculations.
+
         Returns a list of dicts, one per row, with keys:
             category, income_bin, income_label, volume, risk, count
         or None if data is unavailable.
         """
         data_dir = output_base / seg_name / "data"
-        if period == "mr":
+        is_mr = period == "mr"
+
+        # ── Load audit file (source of truth for volumes/counts) ──
+        audit_path = data_dir / ("audit_base_mr.csv" if is_mr else "audit_base.csv")
+        if not audit_path.exists():
+            return None
+        try:
+            audit = pd.read_csv(audit_path, skipinitialspace=True)
+            audit.columns = audit.columns.str.strip()
+        except (pd.errors.ParserError, OSError, ValueError):
+            return None
+        if audit.empty or "classification" not in audit.columns or "income_bin" not in audit.columns:
+            return None
+
+        amt_col = "oa_amt_adjusted" if "oa_amt_adjusted" in audit.columns else "oa_amt_h0"
+        if amt_col not in audit.columns:
+            return None
+
+        # ── Load desagregado for risk (grid-level todu values) ──
+        if is_mr:
             ds_path = data_dir / "data_summary_desagregado_mr_base.csv"
             if not ds_path.exists():
                 ds_path = data_dir / "data_summary_desagregado_mr.csv"
@@ -2392,56 +2414,60 @@ def export_consolidated_excel(
         else:
             ds_path = data_dir / "data_summary_desagregado_base.csv"
             opt_path = data_dir / "optimal_solution_base.csv"
-        if not ds_path.exists() or not opt_path.exists():
-            return None
-        try:
-            df_sum = pd.read_csv(ds_path)
-            df_opt = pd.read_csv(opt_path)
-        except (pd.errors.ParserError, OSError, ValueError):
-            return None
-        if df_sum.empty or df_opt.empty or "income_bin" not in df_sum.columns:
-            return None
 
-        # Determine passes_cut via mask or cut_map
-        mask = None
-        grid = None
-        if "acceptance_mask" in df_opt.columns and pd.notna(df_opt.iloc[0].get("acceptance_mask")):
+        # Risk from desagregado (optional — volumes work without it)
+        df_sum = None
+        if not is_mr and ds_path.exists() and opt_path.exists():
             try:
-                from src.optimization_utils import CellGrid, decode_mask
-                grid = CellGrid.from_summary(df_sum, variables)
-                mask = decode_mask(str(df_opt.iloc[0]["acceptance_mask"]))
-                if len(mask) != len(grid.cell_data):
-                    mask = None
-                    grid = None
-            except Exception:
-                mask = None
-                grid = None
-        if mask is not None and grid is not None:
-            from src.optimization_utils import classify_by_mask
-            df_sum["passes_cut"] = classify_by_mask(df_sum, mask, grid)
-        else:
-            # 2-var fallback
-            var0 = variables[0]
-            var1 = variables[1] if len(variables) > 1 else None
-            if var1 is None:
-                return None
-            opt_row = df_opt.iloc[0]
-            cut_map = {}
-            for bv in sorted(df_sum[var0].unique()):
-                for key in [bv, str(bv), str(float(bv))]:
-                    if key in df_opt.columns:
-                        cut_map[bv] = opt_row[key]
-                        break
+                df_sum = pd.read_csv(ds_path)
+                df_opt = pd.read_csv(opt_path)
+                if df_sum.empty or df_opt.empty or "income_bin" not in df_sum.columns:
+                    df_sum = None
                 else:
-                    cut_map[bv] = np.inf if (inv_vars and var1 in inv_vars) else -np.inf
-            df_sum["cut_limit"] = df_sum[var0].map(cut_map)
-            if inv_vars and var1 in inv_vars:
-                df_sum["passes_cut"] = df_sum[var1] >= df_sum["cut_limit"]
-            else:
-                df_sum["passes_cut"] = df_sum[var1] <= df_sum["cut_limit"]
+                    # Determine passes_cut
+                    _mask = None
+                    _grid = None
+                    if "acceptance_mask" in df_opt.columns and pd.notna(df_opt.iloc[0].get("acceptance_mask")):
+                        try:
+                            from src.optimization_utils import CellGrid, decode_mask
+                            _grid = CellGrid.from_summary(df_sum, variables)
+                            _mask = decode_mask(str(df_opt.iloc[0]["acceptance_mask"]))
+                            if len(_mask) != len(_grid.cell_data):
+                                _mask = None
+                                _grid = None
+                        except Exception:
+                            _mask = None
+                            _grid = None
+                    if _mask is not None and _grid is not None:
+                        from src.optimization_utils import classify_by_mask
+                        df_sum["passes_cut"] = classify_by_mask(df_sum, _mask, _grid)
+                    else:
+                        var0 = variables[0]
+                        var1 = variables[1] if len(variables) > 1 else None
+                        if var1 is not None:
+                            opt_row = df_opt.iloc[0]
+                            cut_map = {}
+                            for bv in sorted(df_sum[var0].unique()):
+                                for key in [bv, str(bv), str(float(bv))]:
+                                    if key in df_opt.columns:
+                                        cut_map[bv] = opt_row[key]
+                                        break
+                                else:
+                                    cut_map[bv] = np.inf if (inv_vars and var1 in inv_vars) else -np.inf
+                            df_sum["cut_limit"] = df_sum[var0].map(cut_map)
+                            if inv_vars and var1 in inv_vars:
+                                df_sum["passes_cut"] = df_sum[var1] >= df_sum["cut_limit"]
+                            else:
+                                df_sum["passes_cut"] = df_sum[var1] <= df_sum["cut_limit"]
+                        else:
+                            df_sum = None
+            except Exception:
+                df_sum = None
 
-        is_mr = period == "mr"
-        ib_vals = sorted(pd.to_numeric(df_sum["income_bin"], errors="coerce").dropna().unique())
+        # ── Income bin labels ──
+        ib_vals = sorted(pd.to_numeric(audit["income_bin"], errors="coerce").dropna().unique())
+        if not ib_vals:
+            return None
 
         def _ib_label(iv: float) -> str:
             try:
@@ -2455,62 +2481,76 @@ def export_consolidated_excel(
                     return f"> {income_threshold:,.0f}€"
             return f"Bin {iv_int}"
 
-        rows: list[dict] = []
-        ib_col = pd.to_numeric(df_sum["income_bin"], errors="coerce")
-        for iv in ib_vals:
-            sub = df_sum.loc[ib_col == iv]
-            label = _ib_label(iv)
-            for cat, filt_col, suffix in [
-                ("Keep", sub[sub["passes_cut"]], "_boo"),
-                ("Swap-out", sub[~sub["passes_cut"]], "_boo"),
-                ("Swap-in", sub[sub["passes_cut"]], "_rep"),
-            ]:
-                filt = filt_col
-                vol = filt[f"oa_amt_h0{suffix}"].sum() if f"oa_amt_h0{suffix}" in filt.columns else 0
-                cnt = filt[f"acct_booked_h0{suffix}"].sum() if f"acct_booked_h0{suffix}" in filt.columns else 0
-                risk = None
-                if not is_mr:
-                    rn = filt[f"todu_30ever_h6{suffix}"].sum() if f"todu_30ever_h6{suffix}" in filt.columns else 0
-                    rd = filt[f"todu_amt_pile_h6{suffix}"].sum() if f"todu_amt_pile_h6{suffix}" in filt.columns else 0
+        # ── Compute risk per (income_bin, category) from desagregado ──
+        risk_lookup: dict[tuple[float, str], float | None] = {}
+        if df_sum is not None and "passes_cut" in df_sum.columns:
+            ib_col_ds = pd.to_numeric(df_sum["income_bin"], errors="coerce")
+            for iv in ib_vals:
+                sub = df_sum.loc[ib_col_ds == iv]
+                for cat, filt, suffix in [
+                    ("Keep", sub[sub["passes_cut"]], "_boo"),
+                    ("Swap-out", sub[~sub["passes_cut"]], "_boo"),
+                    ("Swap-in", sub[sub["passes_cut"]], "_rep"),
+                ]:
+                    rn_col = f"todu_30ever_h6{suffix}"
+                    rd_col = f"todu_amt_pile_h6{suffix}"
+                    rn = filt[rn_col].sum() if rn_col in filt.columns else 0
+                    rd = filt[rd_col].sum() if rd_col in filt.columns else 0
+                    risk = None
                     if rd > 0:
-                        risk_raw = calculate_b2_ever_h6(rn, rd, multiplier=multiplier, as_percentage=True, decimals=4)
-                        risk = float(risk_raw) if pd.notna(risk_raw) else None
-                rows.append({
-                    "category": cat,
-                    "income_bin": iv,
-                    "income_label": label,
-                    "volume": float(vol),
-                    "risk": risk,
-                    "count": int(cnt),
-                })
-            # Optimum = Keep + Swap-in
-            keep_row = next(r for r in rows if r["category"] == "Keep" and r["income_bin"] == iv)
-            si_row = next(r for r in rows if r["category"] == "Swap-in" and r["income_bin"] == iv)
-            opt_vol = keep_row["volume"] + si_row["volume"]
-            opt_cnt = keep_row["count"] + si_row["count"]
-            opt_risk = None
-            if not is_mr:
+                        r_raw = calculate_b2_ever_h6(rn, rd, multiplier=multiplier, as_percentage=True, decimals=4)
+                        risk = float(r_raw) if pd.notna(r_raw) else None
+                    risk_lookup[(iv, cat)] = risk
+                # Optimum risk = combined kept_boo + swap_in_rep
                 sub_pass = sub[sub["passes_cut"]]
                 o_rn = (
-                    sub_pass["todu_30ever_h6_boo"].sum() + sub_pass["todu_30ever_h6_rep"].sum()
-                    if "todu_30ever_h6_boo" in sub_pass.columns
-                    else 0
+                    (sub_pass["todu_30ever_h6_boo"].sum() if "todu_30ever_h6_boo" in sub_pass.columns else 0)
+                    + (sub_pass["todu_30ever_h6_rep"].sum() if "todu_30ever_h6_rep" in sub_pass.columns else 0)
                 )
                 o_rd = (
-                    sub_pass["todu_amt_pile_h6_boo"].sum() + sub_pass["todu_amt_pile_h6_rep"].sum()
-                    if "todu_amt_pile_h6_boo" in sub_pass.columns
-                    else 0
+                    (sub_pass["todu_amt_pile_h6_boo"].sum() if "todu_amt_pile_h6_boo" in sub_pass.columns else 0)
+                    + (sub_pass["todu_amt_pile_h6_rep"].sum() if "todu_amt_pile_h6_rep" in sub_pass.columns else 0)
                 )
+                opt_risk = None
                 if o_rd > 0:
-                    opt_raw = calculate_b2_ever_h6(o_rn, o_rd, multiplier=multiplier, as_percentage=True, decimals=4)
-                    opt_risk = float(opt_raw) if pd.notna(opt_raw) else None
+                    or_raw = calculate_b2_ever_h6(o_rn, o_rd, multiplier=multiplier, as_percentage=True, decimals=4)
+                    opt_risk = float(or_raw) if pd.notna(or_raw) else None
+                risk_lookup[(iv, "Optimum")] = opt_risk
+
+        # ── Build grid rows from audit (volumes/counts) + risk lookup ──
+        cls_col = audit["classification"].astype(str).str.strip()
+        ib_col_a = pd.to_numeric(audit["income_bin"], errors="coerce")
+        # Map audit classification names to grid categories
+        cat_map = {"keep": "Keep", "swap_in": "Swap-in", "swap_out": "Swap-out"}
+
+        rows: list[dict] = []
+        for iv in ib_vals:
+            label = _ib_label(iv)
+            ib_mask = ib_col_a == iv
+            for audit_cls, grid_cat in cat_map.items():
+                cls_mask = cls_col == audit_cls
+                subset = audit.loc[ib_mask & cls_mask]
+                vol = float(subset[amt_col].sum()) if not subset.empty else 0.0
+                cnt = len(subset)
+                risk = risk_lookup.get((iv, grid_cat))
+                rows.append({
+                    "category": grid_cat,
+                    "income_bin": iv,
+                    "income_label": label,
+                    "volume": vol,
+                    "risk": risk,
+                    "count": cnt,
+                })
+            # Optimum = Keep + Swap-in
+            keep_r = next(r for r in rows if r["category"] == "Keep" and r["income_bin"] == iv)
+            si_r = next(r for r in rows if r["category"] == "Swap-in" and r["income_bin"] == iv)
             rows.append({
                 "category": "Optimum",
                 "income_bin": iv,
                 "income_label": label,
-                "volume": opt_vol,
-                "risk": opt_risk,
-                "count": opt_cnt,
+                "volume": keep_r["volume"] + si_r["volume"],
+                "risk": risk_lookup.get((iv, "Optimum")),
+                "count": keep_r["count"] + si_r["count"],
             })
         return rows if rows else None
 
