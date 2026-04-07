@@ -2100,7 +2100,7 @@ def export_consolidated_excel(
                     summary[c] = o - a
         for c in ("production_ci_lower", "production_ci_upper", "risk_ci_lower", "risk_ci_upper"):
             if c in df_tbl.columns:
-                summary[c] = 0.0
+                summary[c] = np.nan
         return pd.concat([df_tbl, pd.DataFrame([summary])], ignore_index=True)
 
     def _load_segment_settings(seg_name_local: str) -> dict[str, Any]:
@@ -2146,7 +2146,13 @@ def export_consolidated_excel(
             ds_path = data_dir / "data_summary_desagregado_mr_base.csv"
             if not ds_path.exists():
                 ds_path = data_dir / "data_summary_desagregado_mr.csv"
-            opt_path = data_dir / "optimal_solution_base.csv"
+            # Use MR-specific optimal solution (has re-optimized mask after recalibration);
+            # fall back to main-period if MR-specific doesn't exist (pre-fix runs).
+            opt_path = data_dir / "optimal_solution_mr_base.csv"
+            if not opt_path.exists():
+                opt_path = data_dir / "optimal_solution_mr.csv"
+            if not opt_path.exists():
+                opt_path = data_dir / "optimal_solution_base.csv"
         else:
             ds_path = data_dir / "data_summary_desagregado_base.csv"
             opt_path = data_dir / "optimal_solution_base.csv"

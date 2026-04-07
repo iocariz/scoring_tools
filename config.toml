@@ -17,14 +17,18 @@ date_fin_book_obs = "2025-05-01"
 date_ini_book_obs_mr = "2025-06-01"
 date_fin_book_obs_mr = "2026-02-01"
 
+cutoff_ordering_mode = "bottom_up"
+
 score_measures = [
     "m_ct_direct_sc_nov23",
     "m_ct_direct_sc_jan23",
     "m_ct_direct_sc_conso25",
     "m_ct_direct_sc_precon25",
     "m_ct_direct_sc_fintonic25",
-    "m_ct_direct_sc_direct25"
-]
+    "m_ct_direct_sc_direct25",
+    "m_ct_direct_sc_openb",
+    "m_ct_direct_sc_openb2"]
+
 log_level = "INFO"
 data_path = "data/demanda_direct_out.sas7bdat"
 n_months = 12
@@ -33,11 +37,12 @@ inference_variables = ['new_efx_clus','sc_octroi_new_clus']
 multiplier = 7  
 multiplier_h3 = 4
 z_threshold = 3.0
-cv_folds = 3
+cv_folds = 4
 run_sensitivity = true
 sensitivity_levels = [-30, -20, -10, -5, 5, 10, 20, 30]
 base_scenario_only = true
 
+pareto_n_points  = 100
 
 # Swap-in (repesca) constraints (optional) - limit swap-in exposure inside the MILP solver.
 # Without these, the optimizer can accept high-risk repesca cells freely as long as overall risk is under budget.
@@ -54,10 +59,9 @@ monotonicity_uncertainty_z_threshold = 1.0
 # Reject inference (optional) - adjusts predicted risk for score-rejected bins
 # based on per-bin acceptance rates to correct for selection bias.
 reject_inference_method = "parceling"  # "none" (default) or "parceling"
-reject_parceling_method = "sigmoid"     # "linear" (default), "power", or "sigmoid"
+reject_parceling_method = "linear"     # "linear" (default), "power", or "sigmoid"
 reject_uplift_factor = 1.5            # scaling coefficient for reject ratio (0.0-10.0)
 reject_max_risk_multiplier = 3.0      # upper cap for per-bin multiplier (1.0-10.0)
-
 
 #Bayesian smoothing for small bins
 reject_bayesian_smoothing = true
@@ -94,9 +98,6 @@ mr_min_obs_per_bin = 15
 mr_maturity_months = 6                  # Min months since booking for H6 maturity (0 to disable)
 mr_extrapolation_risk_multiplier = 3.0  # Relative ceiling: cap risk at this multiple of the segment's maximum observed risk
 mr_extrapolation_hard_cap = 15.0        # Absolute ceiling: ensure risk never goes above this percentage
-
-cutoff_ordering_mode = "bottom_up"
-
 # Fixed cutoffs (optional) - uncomment to skip optimization and use predefined cutoffs
 # When set, the optimization step is skipped and these cutoffs are applied directly.
 # Supports both 2-variable (paired bins/cutoffs) and N>2 (per-variable accepted bin lists).

@@ -21,158 +21,135 @@
 #   reporting:  reporting_supersegment > supersegment > None (standalone)
 
 
-
 [modelling_supersegments.total]
-segment_filters = [
-    "no_premium_ab",
-    "no_premium_cd",
-    "no_premium_ef",
-    "premium",
-    "precon",
-    "new_fintonic",
-    "new_no_fintonic_ob",
-    "conso_no_premium_ac",
-    "conso_no_premium_df",
-    "conso_premium"
-]
+segment_filters = ["no_premium_ab", "no_premium_cd", "no_premium_ef", "premium", "new_nofintonic_ob", "conso_known", "precon", "conso_new"]
 
 [reporting_supersegments.pl_new]
-segment_filters = [
-    "new_fintonic",
-    "new_no_fintonic_ob",
-]
-# Fixed bin edges: [0, 1500] and [1500, max] for income_bin
+segment_filters = ["new_nofintonic_ob"]
 bin_edges.income_bin = [-inf, 1750.0, inf]
 
-[reporting_supersegments.pl_known]
-# List of segment_filter values that belong to this group
-segment_filters = [
-    "no_premium_ab",
-    "no_premium_cd",
-    "no_premium_ef",
-    "premium",
-    "precon"
-]
+[reporting_supersegments.pl_known_no_premium]
+segment_filters = ["no_premium_ab", "no_premium_cd", "no_premium_ef"]
+bin_edges.income_bin = [-inf, 2000.0, inf]
+
+[reporting_supersegments.pl_known_premium_precon]
+segment_filters = ["premium", "precon"]
+bin_edges.income_bin = [-inf, 2000.0, inf]
 
 [reporting_supersegments.consolidation]
-# List of segment_filter values that belong to this group
-segment_filters = [
-    "conso_new",
-    "conso_known_ac",
-    "conso_known_df",
-    "conso_premium"
-]
+segment_filters = ["conso_known","conso_new"]
+bin_edges.income_bin = [-inf, 2000.0, inf]
 
-# =============================================================================
-# SEGMENTS
-# =============================================================================
-
-[segments.conso_known_ac]
-segment_filter = "conso_no_premium_ac"
-optimum_risk = 1.30
+[segments.conso_known]
+segment_filter = "conso_known"
+optimum_risk = 0.96  # CHANGED (was 1.3)
 risk_step = 0.1
-reporting_supersegment = "consolidation"  # Grouped in "total" for reporting
+reporting_supersegment = "consolidation"
 modelling_supersegment = "total"
+min_risk = 0.7  # Optional: minimum risk for global allocation
+max_risk = 1.4  # Optional: maximum risk for global allocation
 
-[segments.conso_known_df]
-segment_filter = "conso_no_premium_df"
-optimum_risk = 1.30
-risk_step = 0.1
-reporting_supersegment = "consolidation"  # Grouped in "total" for reporting
-modelling_supersegment = "total"
+[segments.conso_known.min_accepted_bin_by_variable.new_efx_clus]
+1 = 4
+2 = 2
+
+[segments.conso_known.min_accepted_bin_by_variable.sc_octroi_new_clus]
+1 = 2
+2 = 1
 
 [segments.conso_new]
 segment_filter = "conso_new"
-optimum_risk = 1.30
-risk_step = 0.1
-reporting_supersegment = "consolidation"  # Grouped in "total" for reporting
+reporting_supersegment = "consolidation"
 modelling_supersegment = "total"
-baseline_mode = true    
+baseline_mode = true
 
-# [segments.conso_new.fixed_cutoffs]
-# sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0] 
-# strict_validation = true
-# run_all_scenarios = true
-
-# [segments.conso_new.fixed_cutoffs.new_efx_clus]
-# 1 = [16, 16, 16, 16, 9, 9, 9, 7, 3, 3]    # when income_bin = 1
-# 2 = [16, 16, 16, 16, 9, 9, 9, 7, 3, 3]    # when income_bin = 2
-
-[segments.conso_premium]
-segment_filter = "conso_premium"
-optimum_risk = 0.44
+[segments.new_nofintonic_ob]
+segment_filter = "new_nofintonic_ob"
+optimum_risk = 1.14  # CHANGED (was 1.1)
 risk_step = 0.1
-reporting_supersegment = "consolidation"  # Grouped in "total" for reporting
+reporting_supersegment = "pl_new"
 modelling_supersegment = "total"
-
-
-[segments.new_fintonic]
-segment_filter = "new_fintonic"
-optimum_risk = 1.02
-risk_step = 0.1
-reporting_supersegment = "pl_new"  # Grouped in "total" for reporting
-modelling_supersegment = "total"
-
-[segments.new_fintonic.fixed_cutoffs]
-sc_octroi_new_clus = [1.0, 2.0, 3.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0] 
-strict_validation = true
-run_all_scenarios = true
-
-[segments.new_fintonic.fixed_cutoffs.new_efx_clus]
-1 = [16, 16, 16, 9, 9, 9, 7, 3, 3]    # when income_bin = 1
-2 = [16, 16, 16, 9, 9, 9, 7, 3, 3]    # when income_bin = 2
-
-[segments.new_no_fintonic_ob]
-segment_filter = "new_no_fintonic_ob"
-optimum_risk = 1.1
-risk_step = 0.1
-reporting_supersegment = "pl_new"  # Grouped in "total" for reporting
-modelling_supersegment = "total"
+min_risk = 0.8  # Optional: minimum risk for global allocation
+max_risk = 1.3  # Optional: maximum risk for global allocation
+stress_mode = "global"
 
 [segments.no_premium_ab]
 segment_filter = "no_premium_ab"
-optimum_risk = 1.0
+optimum_risk = 1.25
 risk_step = 0.1
-reporting_supersegment = "pl_known"  # Grouped in "total" for reporting
+reporting_supersegment = "pl_known_no_premium"
 modelling_supersegment = "total"
-min_risk = 0.8  # Optional: minimum risk for global allocation
-max_risk = 1.4  # Optional: maximum risk for global allocation
+min_risk = 0.8
+max_risk = 1.4
 cutoff_floor_segment = "no_premium_cd"  # Must accept at least what cd accepts (least restrictive)
+
 [segments.no_premium_ab.min_accepted_bin_by_variable.new_efx_clus]
-1 = 6
-2 = 4
-[segments.no_premium_ab.min_accepted_bin_by_variable.sc_octroi_new_clus]
-1 = 3
+1 = 4
 2 = 2
+
+[segments.no_premium_ab.min_accepted_bin_by_variable.sc_octroi_new_clus]
+1 = 2
+2 = 1
 
 [segments.no_premium_cd]
 segment_filter = "no_premium_cd"
-optimum_risk = 1.28
+optimum_risk = 1.40
 risk_step = 0.1
-reporting_supersegment = "pl_known"  # Grouped in "total" for reporting
+reporting_supersegment = "pl_known_no_premium"
 modelling_supersegment = "total"
+min_risk = 0.8
+max_risk = 1.6
 cutoff_floor_segment = "no_premium_ef"  # Must accept at least what ef accepts
+
+[segments.no_premium_cd.min_accepted_bin_by_variable.new_efx_clus]
+1 = 4
+2 = 2
+
+[segments.no_premium_cd.min_accepted_bin_by_variable.sc_octroi_new_clus]
+1 = 2
+2 = 1
 
 [segments.no_premium_ef]
 segment_filter = "no_premium_ef"
-optimum_risk = 1.09
+optimum_risk = 1.40  # CHANGED (was 1.09)
 risk_step = 0.1
-reporting_supersegment = "pl_known"  # Grouped in "total" for reporting
+reporting_supersegment = "pl_known_no_premium"
 modelling_supersegment = "total"
-# No cutoff_floor_segment — tightest cutoff, optimized first
+min_risk = 0.8
+max_risk = 1.5
+
+[segments.no_premium_ef.min_accepted_bin_by_variable.new_efx_clus]
+1 = 4
+2 = 2
+
+[segments.no_premium_ef.min_accepted_bin_by_variable.sc_octroi_new_clus]
+1 = 2
+2 = 1
 
 [segments.premium]
 segment_filter = "premium"
-optimum_risk = 1.47
+optimum_risk = 1.2
 risk_step = 0.1
-reporting_supersegment = "pl_known"  # Grouped in "total" for reporting
+reporting_supersegment = "pl_known_premium_precon"
 modelling_supersegment = "total"
+min_risk = 0.8
+max_risk = 1.4
+
+[segments.premium.min_accepted_bin_by_variable.new_efx_clus]
+1 = 4
+2 = 2
+
+[segments.premium.min_accepted_bin_by_variable.sc_octroi_new_clus]
+1 = 2
+2 = 1
 
 [segments.precon]
 segment_filter = "precon"
-reporting_supersegment = "pl_known"  # Grouped in "total" for reporting
+reporting_supersegment = "pl_known_premium_precon"
 modelling_supersegment = "total"
 baseline_mode = true
+
+
 
 
 # Add more segments as needed:

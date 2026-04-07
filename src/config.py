@@ -98,6 +98,9 @@ class OutputPaths:
     def mr_b2_visualization_html(self, suffix: str = "") -> str:
         return str(self.images_dir / f"b2_ever_h6_vs_octroi_and_risk_score_mr{suffix}.html")
 
+    def mr_optimal_solution_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"optimal_solution_mr{suffix}.csv")
+
     def mr_risk_production_summary_csv(self, suffix: str = "") -> str:
         return str(self.data_dir / f"risk_production_summary_table_mr{suffix}.csv")
 

@@ -698,11 +698,11 @@ def run_scenario_analysis(
         summary_table = reconcile_risk_production_summary_with_audit(summary_table, audit_main)
         validate_audit_against_summary(audit_main, summary_table)
 
-    # Add CI columns to summary table (only for Optimum selected row)
-    summary_table["production_ci_lower"] = 0.0
-    summary_table["production_ci_upper"] = 0.0
-    summary_table["risk_ci_lower"] = 0.0
-    summary_table["risk_ci_upper"] = 0.0
+    # Add CI columns to summary table (only for Optimum selected row; others stay NaN)
+    summary_table["production_ci_lower"] = np.nan
+    summary_table["production_ci_upper"] = np.nan
+    summary_table["risk_ci_lower"] = np.nan
+    summary_table["risk_ci_upper"] = np.nan
 
     if ci_data:
         mask_opt = summary_table["Metric"] == "Optimum selected"

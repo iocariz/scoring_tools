@@ -484,7 +484,7 @@ class RiskProductionVisualizer:
         self.actual_todu_30 = tudu_30_ever
         self.actual_todu_amt = tudu_amt_pile
 
-        self.B2_0 = calculate_b2_ever_h6(tudu_30_ever, tudu_amt_pile, multiplier=self.multiplier, decimals=2)
+        self.B2_0 = calculate_b2_ever_h6(tudu_30_ever, tudu_amt_pile, multiplier=self.multiplier, as_percentage=True, decimals=2)
 
         # Calculate OA_0
         self.OA_0 = self.data_summary_disaggregated["oa_amt_h0_boo"].sum()

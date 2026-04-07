@@ -1980,6 +1980,19 @@ def process_mr_period(
 
             mr_summary_table = reconcile_risk_production_summary_with_audit(mr_summary_table, audit_mr_df)
 
+        # Save MR-period optimal solution so consolidated per-income-bin tables
+        # use the correct (possibly re-optimized) mask, not the main-period one.
+        if mask is not None and grid is not None:
+            from src.optimization_utils import CellGrid
+
+            mr_opt_data: dict[str, Any] = {"sol_fac": 0}
+            if isinstance(grid, CellGrid):
+                mr_opt_data["acceptance_mask"] = ",".join(str(int(v)) for v in mask)
+            mr_opt_df = pd.DataFrame([mr_opt_data])
+            mr_opt_path = output.mr_optimal_solution_csv(file_suffix)
+            mr_opt_df.to_csv(mr_opt_path, index=False)
+            logger.debug(f"MR optimal solution saved to {mr_opt_path}")
+
         if mr_summary_table is not None:
             mr_summary_path = output.mr_risk_production_summary_csv(file_suffix)
             mr_summary_table.to_csv(mr_summary_path, index=False)
