@@ -589,12 +589,22 @@ def _compute_hybrid_mr_risk(
 
     if has_h3:
         # H3→H6 ratio from main-period (fully mature) data
-        # Guard: both b2_main and b2_main_h3 must be valid and > 0 for a meaningful ratio
+        # Guard: both b2_main and b2_main_h3 must be valid and > threshold for
+        # a meaningful ratio.  Threshold is relative to the segment's median H3
+        # rate (10% of median, floored at 0.001) so low-risk portfolios don't
+        # lose most bins to the filter (#12).
+        h3_vals = combined["b2_main_h3"].dropna()
+        h3_vals_pos = h3_vals[h3_vals > 0]
+        if len(h3_vals_pos) > 0:
+            h3_ratio_threshold = max(float(h3_vals_pos.median()) * 0.1, 0.001)
+        else:
+            h3_ratio_threshold = 0.001
+        logger.debug(f"H3 ratio threshold: {h3_ratio_threshold:.4f} (10% of median H3 rate)")
         ratio_valid = (
             combined["b2_main"].notna()
             & (combined["b2_main"] > 0)
             & combined["b2_main_h3"].notna()
-            & (combined["b2_main_h3"].abs() > 0.01)
+            & (combined["b2_main_h3"].abs() > h3_ratio_threshold)
             & (combined["n_obs_main"].fillna(0) >= min_obs)
         )
         h6_h3_ratio_raw = np.where(ratio_valid, combined["b2_main"] / combined["b2_main_h3"], np.nan)

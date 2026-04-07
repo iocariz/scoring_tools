@@ -36,7 +36,7 @@ Unresolved items from the methodological / statistical review. Strikethrough whe
 
 ### MEDIUM — Bugs
 
-12. **H3→H6 ratio hardcoded threshold** (`src/mr_pipeline.py`, ~597) — Per-bin ratio excludes bins with H3 risk < 0.01 (1%). Low-risk portfolios lose significant bins, forcing fallback imputation. **Fix:** Make threshold relative to global H3 rate or configurable.
+12. ~~**H3→H6 ratio hardcoded threshold** (`src/mr_pipeline.py`, ~597) — Per-bin ratio excludes bins with H3 risk < 0.01 (1%). Low-risk portfolios lose significant bins, forcing fallback imputation.~~ **Fixed:** Threshold is now relative to the segment's median H3 rate (10% of median, floored at 0.001). Low-risk portfolios retain most bins for ratio calibration instead of falling back to imputation.
 
 ### MEDIUM — Statistical
 
@@ -78,7 +78,7 @@ Unresolved items from the methodological / statistical review. Strikethrough whe
 
 ### MEDIUM
 
-27. **Legacy 2-var Pareto dedup by rounded risk** (`src/optimization_utils.py`, `get_optimal_solutions`) — Drops duplicate `b2_ever_h6` after `round(4)`, which can merge distinct frontier points and remove the best production for a tight risk cap. **Fix:** Remove rounding dedup, or dedup only truly identical `(b2, oa)` pairs; keep full Pareto set for selection.
+27. ~~**Legacy 2-var Pareto dedup by rounded risk** (`src/optimization_utils.py`, `get_optimal_solutions`) — Drops duplicate `b2_ever_h6` after `round(4)`, which can merge distinct frontier points and remove the best production for a tight risk cap.~~ **Fixed:** Replaced `round(4)` dedup with exact `(b2_ever_h6, oa_amt_h0)` dedup. The Pareto cummax filter already removes dominated points, so rounding-based dedup was both redundant and destructive.
 
 28. **Hard monotonicity in bin space** (`src/optimization_utils.py`, `_build_monotonicity_constraints` + MILP) — Optimum is best **monotone rectangular** policy, not best subset of cells; empirical risk need not be monotone (noise, selection, sparse bins). **Fix:** Document constraint as policy choice; optional sensitivity without monotonicity on small grids.
 
