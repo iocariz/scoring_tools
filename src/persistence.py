@@ -2,12 +2,32 @@
 Model persistence utilities for saving and loading trained models.
 
 This module provides functions for:
-- Saving models with comprehensive metadata
-- Loading models for prediction
+- Saving models with comprehensive metadata (plus a SHA-256 integrity sidecar)
+- Loading models for prediction, with mandatory integrity + trusted-path checks
 - Making predictions on new data
+
+Security model
+--------------
+`joblib.load` is equivalent to `pickle.load` — a crafted file executes
+arbitrary Python on load (RCE).  To mitigate:
+
+1. Every `.pkl`/`.joblib` file saved through this module gets a sibling
+   ``<file>.sha256`` written atomically alongside it.  The sidecar is a
+   single line: the hex SHA-256 digest of the pickle bytes.
+2. Every load through this module refuses to proceed unless the sidecar
+   exists, is well-formed, and its digest matches the file's actual
+   digest on disk.
+3. Every load additionally refuses paths that do not resolve under one
+   of the trusted model roots (default: ``<cwd>/models``; override via
+   the ``SCORING_TRUSTED_MODEL_ROOTS`` env var, colon-separated).
+
+Existing pre-R0 models have no sidecar and will refuse to load.  Run
+``scripts/sign_existing_models.py`` once to sign trusted artifacts.
 """
 
+import hashlib
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +38,118 @@ import pandas as pd
 from loguru import logger
 
 from src.estimators import HurdleRegressor
+
+# ---------------------------------------------------------------------------
+# Integrity helpers (todo #44 — pickle RCE mitigation)
+# ---------------------------------------------------------------------------
+
+SIDE_CAR_SUFFIX = ".sha256"
+_TRUSTED_ROOTS_ENV = "SCORING_TRUSTED_MODEL_ROOTS"
+
+
+class ModelIntegrityError(RuntimeError):
+    """Raised when a pickle file fails integrity or trusted-path checks."""
+
+
+def _compute_sha256(path: Path, chunk_size: int = 1 << 20) -> str:
+    """Return the hex SHA-256 digest of *path*'s contents."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _trusted_roots() -> list[Path]:
+    """Resolve the list of directories from which pickle loads are allowed.
+
+    If ``SCORING_TRUSTED_MODEL_ROOTS`` is set (colon-separated paths), that
+    is the authoritative list.  Otherwise default to ``<cwd>/models``.
+    All returned paths are fully resolved (symlinks followed).
+    """
+    env_val = os.environ.get(_TRUSTED_ROOTS_ENV)
+    if env_val:
+        roots = [Path(p).expanduser().resolve() for p in env_val.split(":") if p]
+    else:
+        roots = [(Path.cwd() / "models").resolve()]
+    return roots
+
+
+def write_integrity_sidecar(pkl_path: str | Path) -> Path:
+    """Compute SHA-256 of *pkl_path* and write ``<pkl_path>.sha256`` beside it.
+
+    Written atomically: digest goes to a ``.tmp`` file then ``os.replace``
+    moves it into place.  Returns the sidecar path.  Raises if the pickle
+    itself does not exist.
+    """
+    pkl = Path(pkl_path).resolve()
+    if not pkl.is_file():
+        raise ModelIntegrityError(f"cannot sign non-existent file: {pkl}")
+    digest = _compute_sha256(pkl)
+    sidecar = pkl.with_name(pkl.name + SIDE_CAR_SUFFIX)
+    tmp = sidecar.with_name(sidecar.name + ".tmp")
+    tmp.write_text(digest + "\n", encoding="ascii")
+    os.replace(tmp, sidecar)
+    return sidecar
+
+
+def _verify_integrity_sidecar(pkl_path: Path) -> None:
+    """Raise `ModelIntegrityError` if the sidecar is missing/malformed/mismatched."""
+    sidecar = pkl_path.with_name(pkl_path.name + SIDE_CAR_SUFFIX)
+    if not sidecar.is_file():
+        raise ModelIntegrityError(
+            f"refusing to load {pkl_path}: integrity sidecar {sidecar.name} is missing. "
+            f"Run scripts/sign_existing_models.py on trusted artifacts."
+        )
+    expected = sidecar.read_text(encoding="ascii").strip().split()
+    if not expected or len(expected[0]) != 64 or not all(c in "0123456789abcdef" for c in expected[0].lower()):
+        raise ModelIntegrityError(
+            f"refusing to load {pkl_path}: sidecar {sidecar.name} is malformed "
+            f"(expected a 64-char hex SHA-256 digest)."
+        )
+    actual = _compute_sha256(pkl_path)
+    if actual.lower() != expected[0].lower():
+        raise ModelIntegrityError(
+            f"refusing to load {pkl_path}: SHA-256 mismatch "
+            f"(sidecar={expected[0][:16]}..., actual={actual[:16]}...). "
+            f"Pickle may have been tampered with."
+        )
+
+
+def _verify_trusted_path(pkl_path: Path) -> Path:
+    """Resolve *pkl_path* and require it to live under a trusted root.
+
+    Returns the resolved path on success.  Raises `ModelIntegrityError`
+    otherwise.  Resolution follows symlinks, so a symlink escaping the
+    trusted root is caught.
+    """
+    resolved = pkl_path.resolve()
+    roots = _trusted_roots()
+    for root in roots:
+        try:
+            resolved.relative_to(root)
+            return resolved
+        except ValueError:
+            continue
+    roots_display = ", ".join(str(r) for r in roots)
+    raise ModelIntegrityError(
+        f"refusing to load {pkl_path}: resolved path {resolved} is not under any "
+        f"trusted root ({roots_display}). Set {_TRUSTED_ROOTS_ENV} to extend the "
+        f"allowlist if this path is legitimate."
+    )
+
+
+def safe_joblib_load(pkl_path: str | Path) -> Any:
+    """Load a pickle with trusted-path + SHA-256 integrity enforcement.
+
+    This is the **only** sanctioned way to read pickle files produced by
+    this project.  Direct `joblib.load` / `pickle.load` on user-influenced
+    paths is forbidden because a crafted file executes arbitrary code.
+    """
+    pkl = Path(pkl_path)
+    resolved = _verify_trusted_path(pkl)
+    _verify_integrity_sidecar(resolved)
+    return joblib.load(resolved)
 
 
 def save_model_with_metadata(model, features: list[str], metadata: dict, base_path: str = "models") -> str:
@@ -44,9 +176,10 @@ def save_model_with_metadata(model, features: list[str], metadata: dict, base_pa
     version_path = base_path / f"model_{timestamp}"
     version_path.mkdir(exist_ok=True)
 
-    # Save model
+    # Save model and write integrity sidecar
     model_path = version_path / "model.pkl"
     joblib.dump(model, model_path, compress=3)  # Add compression
+    write_integrity_sidecar(model_path)
 
     # Collect environment info for reproducibility
     import importlib.metadata
@@ -179,8 +312,8 @@ def load_model_for_prediction(model_path: str) -> tuple[Any, dict, list[str]]:
     """
     model_dir = Path(model_path)
 
-    # Load model
-    model = joblib.load(model_dir / "model.pkl")
+    # Load model (enforces SHA-256 sidecar + trusted-root allowlist; todo #44)
+    model = safe_joblib_load(model_dir / "model.pkl")
 
     # Load metadata
     with open(model_dir / "metadata.json") as f:
