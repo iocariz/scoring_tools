@@ -2,13 +2,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-import joblib
 import pandas as pd
 from loguru import logger
 
 from src.config import OutputPaths, PreprocessingSettings
 from src.inference_optimized import inference_pipeline, todu_average_inference
-from src.persistence import load_model_for_prediction
+from src.persistence import load_model_for_prediction, safe_joblib_load
 
 
 def run_inference_phase(
@@ -65,7 +64,8 @@ def run_inference_phase(
             # Also check parent's parent (models/ directory)
             todu_model_path = Path(model_path).parent.parent / "todu_model.joblib"
         if todu_model_path.exists():
-            reg_todu_amt_pile = joblib.load(todu_model_path)
+            # safe_joblib_load enforces SHA-256 sidecar + trusted-root allowlist (todo #44)
+            reg_todu_amt_pile = safe_joblib_load(todu_model_path)
             logger.debug(f"[{segment}] Loaded todu model from {todu_model_path}")
         else:
             # Fallback: train todu model on current segment data

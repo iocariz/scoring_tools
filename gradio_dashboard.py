@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 
@@ -1114,4 +1115,15 @@ if __name__ == "__main__":
     CURRENT_SEGMENT = args.segment
 
     app = create_app()
-    app.launch(server_port=args.port, share=args.share)
+    # --share tunnels the dashboard to a public gradio.live URL with no auth.
+    # Refuse unless GRADIO_SHARE_ALLOWED=1 is explicitly set.
+    share_requested = bool(args.share)
+    share_allowed = os.environ.get("GRADIO_SHARE_ALLOWED") == "1"
+    if share_requested and not share_allowed:
+        print(
+            "WARNING: --share requested but GRADIO_SHARE_ALLOWED=1 is not set. "
+            "Refusing to create a public tunnel (portfolio KPIs would be exposed). "
+            "Set GRADIO_SHARE_ALLOWED=1 to override."
+        )
+    effective_share = share_requested and share_allowed
+    app.launch(server_port=args.port, share=effective_share)

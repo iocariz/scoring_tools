@@ -1562,6 +1562,10 @@ def todu_average_inference(
     if model_output_path:
         try:
             joblib.dump(model, model_output_path)
+            # SHA-256 integrity sidecar (todo #44) — consumed by safe_joblib_load
+            from src.persistence import write_integrity_sidecar
+
+            write_integrity_sidecar(model_output_path)
             logger.info(f"Trained model saved successfully to: {model_output_path}")
         except OSError as e:
             logger.error(f"Failed to save model to {model_output_path}: {e}")

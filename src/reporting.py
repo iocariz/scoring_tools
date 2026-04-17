@@ -16,7 +16,7 @@ from html import escape
 from pathlib import Path
 
 import pandas as pd
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from loguru import logger
 
 from .config import OutputPaths, PreprocessingSettings
@@ -1074,9 +1074,18 @@ def render_report(
 
     Returns the path of the written file.
     """
+    # Auto-escape all template interpolations by default.  Pre-built HTML
+    # fragments (Plotly divs, KPI tables, matrices) are explicitly marked
+    # `| safe` in the templates; any string that reaches the template
+    # without that marker is escaped.
+    #
+    # NOTE: helpers in this module that construct HTML strings (e.g.
+    # `_build_cutoff_reference_table`, `csv_to_html_table`) must themselves
+    # escape any user-influenced value they interpolate — `| safe` in the
+    # template opts those strings out of Jinja's protection.
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATE_DIR)),
-        autoescape=False,  # HTML content already escaped / trusted
+        autoescape=select_autoescape(["html", "htm"]),
     )
     template = env.get_template(template_name)
 

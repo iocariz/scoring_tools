@@ -47,9 +47,10 @@ def log_dataframe_stats(df: pd.DataFrame, name: str) -> None:
     memory_mb = df.memory_usage(deep=True).sum() / 1024**2
     logger.info(f"{name} memory usage: {memory_mb:.2f} MB")
 
-    # Log a few sample rows if dataframe is not empty
+    # Structural summary only — never log row-level data (PII risk in --log-file)
     if not df.empty:
-        logger.debug(f"{name} first rows:\n{df.head(3)}")
+        dtype_summary = df.dtypes.value_counts().to_dict()
+        logger.debug(f"{name} shape: {df.shape}, dtype counts: {dtype_summary}")
 
 
 def validate_dataframe_columns(df: pd.DataFrame, required_columns: list[str], operation: str) -> None:

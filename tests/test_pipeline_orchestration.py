@@ -189,7 +189,9 @@ class TestRunInferencePhase:
                 ["f1", "f2"],
             ),
         )
-        monkeypatch.setattr(inference_module.joblib, "load", lambda path: loaded_todu_model)
+        # After R0 (#44) the pipeline uses safe_joblib_load, not raw joblib.load,
+        # to enforce SHA-256 + trusted-path checks. Patch the safe wrapper directly.
+        monkeypatch.setattr(inference_module, "safe_joblib_load", lambda path: loaded_todu_model)
 
         def fail_todu_average(*args, **kwargs):
             raise AssertionError("Fallback TODU model training should not run when a saved model exists")

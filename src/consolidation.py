@@ -636,7 +636,11 @@ def patch_consolidated_production_from_segment_audits(
                 cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
                 return bool(cfg.get("preprocessing", cfg).get("baseline_mode", False))
         except Exception:
-            pass
+            logger.warning(
+                f"_is_baseline_segment: failed to read config for '{seg_name_local}'; "
+                f"treating as non-baseline",
+                exc_info=True,
+            )
         return False
 
     for seg_name in segments:
@@ -2135,7 +2139,11 @@ def export_consolidated_excel(
                 if "baseline_mode" in prep:
                     defaults["baseline_mode"] = bool(prep["baseline_mode"])
         except Exception:
-            pass
+            logger.warning(
+                f"_get_segment_defaults: failed to read segment config for '{seg_name_local}'; "
+                f"using global defaults",
+                exc_info=True,
+            )
         return defaults
 
     def _build_income_bin_tables(seg_name: str, period: str, template_cols: list[str]) -> list[tuple[str, pd.DataFrame]]:
@@ -2226,7 +2234,11 @@ def export_consolidated_excel(
                     if th is not None:
                         return th
             except Exception:
-                pass
+                logger.warning(
+                    f"_resolve_income_threshold: failed to read segment-file edges for "
+                    f"'{seg_name_local}'; falling back to segments.toml",
+                    exc_info=True,
+                )
 
             seg_cfg = segments.get(seg_name_local, {})
             # 1) Segment-level bins override
@@ -2258,7 +2270,11 @@ def export_consolidated_excel(
                     if th is not None:
                         return th
             except Exception:
-                pass
+                logger.warning(
+                    f"_resolve_income_threshold: failed to read global config.toml edges for "
+                    f"'{seg_name_local}'; no threshold will be resolved",
+                    exc_info=True,
+                )
             return None
 
         income_threshold = _resolve_income_threshold(seg_name)
@@ -2436,6 +2452,12 @@ def export_consolidated_excel(
                                 _mask = None
                                 _grid = None
                         except Exception:
+                            logger.warning(
+                                "Failed to decode acceptance_mask or construct CellGrid; "
+                                "falling back to legacy 2-var cut_map path. Downstream audit "
+                                "tables may use a different cutoff interpretation.",
+                                exc_info=True,
+                            )
                             _mask = None
                             _grid = None
                     if _mask is not None and _grid is not None:
@@ -2462,6 +2484,11 @@ def export_consolidated_excel(
                         else:
                             df_sum = None
             except Exception:
+                logger.warning(
+                    "Failed to construct audit summary (passes_cut / cut_map); "
+                    "audit tab for this segment/scenario will be skipped.",
+                    exc_info=True,
+                )
                 df_sum = None
 
         # ── Income bin labels ──
@@ -3518,6 +3545,11 @@ def export_consolidated_excel(
                 else:
                     seg_vars_full = None
             except Exception:
+                logger.warning(
+                    f"Failed to read variables from segment config for '{seg_name}'; "
+                    f"will fall back to segments.toml / config.toml",
+                    exc_info=True,
+                )
                 seg_vars_full = None
             # Fall back to global variables from segments.toml / config.toml
             if not seg_vars_full:
@@ -3531,7 +3563,11 @@ def export_consolidated_excel(
                         _gcfg = _tomllib.loads(_gcfg_path.read_text(encoding="utf-8"))
                         seg_vars_full = _gcfg.get("preprocessing", {}).get("variables")
                 except Exception:
-                    pass
+                    logger.warning(
+                        f"Failed to read variables from global config.toml for '{seg_name}'; "
+                        f"will use hardcoded default list",
+                        exc_info=True,
+                    )
             if not seg_vars_full:
                 seg_vars_full = ["new_efx_clus", "sc_octroi_new_clus", "income_bin"]
 
@@ -3548,7 +3584,11 @@ def export_consolidated_excel(
                         if len(finite) == 1:
                             _income_th = finite[0]
             except Exception:
-                pass
+                logger.warning(
+                    f"Failed to resolve income threshold from segment config for '{seg_name}'; "
+                    f"will try reporting supersegment edges next",
+                    exc_info=True,
+                )
             if _income_th is None:
                 # Try reporting supersegment edges
                 _rs = segments.get(seg_name, {}).get("reporting_supersegment") or segments.get(seg_name, {}).get("supersegment")
