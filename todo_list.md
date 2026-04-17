@@ -26,6 +26,8 @@ Unresolved items from the methodological, statistical, and code review. Organize
 
 51. **No lockfile committed** (`pyproject.toml`) — Only lower-version bounds; `uv.lock` not in git. `pip install` silently picks up CVE-laden transitive bumps. **Fix:** Commit `uv.lock`, run `uv lock --check` in CI.
 
+88. **HTML-building helpers interpolate user-influenced values without escaping** (`src/reporting.py`, `_build_cutoff_reference_table` 134–310, `_build_scenario_kpi_table` 341, `_build_acceptance_matrices` 408, `csv_to_html_table` 83) — Jinja2 `autoescape` is now enabled (#43 fixed), but these helpers emit pre-built HTML strings that are then marked `| safe` in the template. They interpolate scenario names, CSV column labels, and cell values directly via f-strings (e.g. `f'<span class="badge">{scenario.title()}</span>'`). A malicious value in `segments.toml` or an upstream CSV still becomes stored XSS through this path. **Fix:** escape every user-influenced interpolation inside these helpers using `html.escape()` (already imported); add unit tests with malicious inputs as regression guards.
+
 ### LOW
 
 76. **Path-traversal test coverage gap** (`tests/test_dashboard_security.py`) — Tests literal `../etc`, `a/../../b`, `..\windows`; no URL-encoded (`..%2Fetc`), null-byte, or UNC variants. Flask normalizes most before routing, but the gap leaves regressions undetected.
