@@ -46,6 +46,12 @@ from src.estimators import HurdleRegressor
 SIDE_CAR_SUFFIX = ".sha256"
 _TRUSTED_ROOTS_ENV = "SCORING_TRUSTED_MODEL_ROOTS"
 
+# Capture the project root at module import time, BEFORE run_batch.py's
+# per-segment os.chdir moves cwd around (todo #67).  This gives default
+# trusted roots a stable anchor instead of "whatever directory happens to
+# be current when the load fires".
+_INITIAL_CWD = Path.cwd().resolve()
+
 
 class ModelIntegrityError(RuntimeError):
     """Raised when a pickle file fails integrity or trusted-path checks."""
@@ -64,15 +70,28 @@ def _trusted_roots() -> list[Path]:
     """Resolve the list of directories from which pickle loads are allowed.
 
     If ``SCORING_TRUSTED_MODEL_ROOTS`` is set (colon-separated paths), that
-    is the authoritative list.  Otherwise default to ``<cwd>/models``.
+    is the authoritative list.  Otherwise default to the project's two
+    pipeline-managed locations, anchored at the initial cwd (before any
+    per-segment ``os.chdir``):
+
+    - ``<project>/models``  — explicit save target from ``save_model_with_metadata``
+    - ``<project>/output``  — per-segment and supersegment artifact tree
+                              (``output/<segment>/models/...`` and
+                              ``output/_supersegment_<ss>/models/...``)
+
+    Both subtrees are entirely pipeline-generated, so widening the default
+    to cover them does not loosen protection against user-supplied
+    ``--model-path=/tmp/evil.pkl`` style attacks.
+
     All returned paths are fully resolved (symlinks followed).
     """
     env_val = os.environ.get(_TRUSTED_ROOTS_ENV)
     if env_val:
-        roots = [Path(p).expanduser().resolve() for p in env_val.split(":") if p]
-    else:
-        roots = [(Path.cwd() / "models").resolve()]
-    return roots
+        return [Path(p).expanduser().resolve() for p in env_val.split(":") if p]
+    return [
+        (_INITIAL_CWD / "models").resolve(),
+        (_INITIAL_CWD / "output").resolve(),
+    ]
 
 
 def write_integrity_sidecar(pkl_path: str | Path) -> Path:

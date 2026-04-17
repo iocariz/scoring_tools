@@ -420,3 +420,43 @@ class TestPickleIntegrity:
         monkeypatch.setenv("SCORING_TRUSTED_MODEL_ROOTS", str(trusted_elsewhere.resolve()))
         with pytest.raises(ModelIntegrityError, match="is not under any trusted root"):
             load_model_for_prediction(model_dir)
+
+    def test_default_roots_cover_output_supersegment_tree(
+        self, tmp_path, fitted_linear_model, sample_features, sample_metadata, monkeypatch
+    ):
+        """run_batch saves shared models under output/_supersegment_*/models/ and
+        loads them from a segment's working directory. The default allowlist must
+        cover that cross-directory access. Regression test for the post-R0
+        allowlist fix."""
+        import src.persistence as persistence
+
+        model, _, _ = fitted_linear_model
+
+        # Simulate the project layout: output/_supersegment_total/models/... and
+        # output/no_premium_ef/ as the per-segment working directory.
+        project_root = tmp_path / "project"
+        (project_root / "output").mkdir(parents=True)
+        segment_cwd = project_root / "output" / "no_premium_ef"
+        segment_cwd.mkdir()
+
+        # Pin the initial-cwd anchor to our simulated project root (the real one
+        # captured at import time was the pytest tmp cwd for the test runner).
+        monkeypatch.setattr(persistence, "_INITIAL_CWD", project_root.resolve())
+        # Clear any env-var override so we exercise the default trusted roots.
+        monkeypatch.delenv("SCORING_TRUSTED_MODEL_ROOTS", raising=False)
+
+        supersegment_models = project_root / "output" / "_supersegment_total" / "models"
+        model_dir = save_model_with_metadata(
+            model=model,
+            features=sample_features,
+            metadata=sample_metadata,
+            base_path=str(supersegment_models),
+        )
+
+        # Change cwd to mimic run_batch's per-segment os.chdir.
+        monkeypatch.chdir(segment_cwd)
+
+        # Load succeeds: the default allowlist now includes <initial_cwd>/output.
+        loaded_model, metadata, features = load_model_for_prediction(model_dir)
+        assert hasattr(loaded_model, "predict")
+        assert features == sample_features
