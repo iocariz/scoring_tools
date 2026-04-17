@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -4394,4 +4395,14 @@ if __name__ == "__main__":
         else:
             logger.warning("No data found. Run 'uv run python main.py' or 'uv run python run_batch.py' first.")
 
-    app.run(debug=args.debug, port=args.port)
+    # debug=True enables Werkzeug's interactive console (RCE vector if network-accessible).
+    # Refuse the flag unless DASHBOARD_DEBUG_ALLOWED=1 is explicitly set in the environment.
+    debug_requested = bool(args.debug)
+    debug_allowed = os.environ.get("DASHBOARD_DEBUG_ALLOWED") == "1"
+    if debug_requested and not debug_allowed:
+        logger.warning(
+            "--debug requested but DASHBOARD_DEBUG_ALLOWED=1 is not set; "
+            "refusing to enable Werkzeug debug console (RCE risk)."
+        )
+    effective_debug = debug_requested and debug_allowed
+    app.run(debug=effective_debug, port=args.port)
