@@ -2724,20 +2724,59 @@ app = dash.Dash(
 server = app.server
 
 
+# Extensions allowed on the /static/* routes. Pipeline-generated artifacts
+# are restricted to Plotly HTML, image exports, and CSV lookups. Anything
+# else (pickles, configs, logs) is refused to limit accidental exposure if
+# a sensitive file ever lands in the images/ dir. (todo #46)
+_ALLOWED_STATIC_EXTENSIONS = frozenset({".html", ".htm", ".png", ".svg", ".jpg", ".jpeg", ".csv"})
+
+
+def _is_allowed_static_filename(filename: str) -> bool:
+    """Return True if *filename* has an allowlisted extension (case-insensitive).
+
+    Rejects empty names and names without a suffix.
+    """
+    if not filename:
+        return False
+    return Path(filename).suffix.lower() in _ALLOWED_STATIC_EXTENSIONS
+
+
 # Serve static files from images directory (supports both single and batch modes)
+#
+# NOTE: Flask's default `static` endpoint registers `/static/<path:filename>`
+# at app-creation time and wins the URL-dispatch race because it was
+# registered first. The route below is therefore effectively unreachable
+# today — single-segment dashboards use the segment-scoped route just
+# below. We keep the hardening anyway as defense-in-depth (extension
+# allowlist + path resolution) so that if the default static handler is
+# ever disabled or the URL scheme changes, this route stays safe by
+# construction. (todo #46)
 @server.route("/static/<path:filename>")
 def serve_static_root(filename):
-    """Serve static HTML files from root images directory."""
-    images_dir = get_images_dir(None)
+    """Serve static HTML/image/CSV files from the root images directory.
+
+    Security (todo #46):
+      - Resolves images_dir to an absolute path so the effective base does
+        not depend on cwd.
+      - Refuses filenames whose extension is not in
+        ``_ALLOWED_STATIC_EXTENSIONS``.
+      - Delegates path-traversal rejection to Flask's send_from_directory,
+        which uses werkzeug.safe_join under the hood.
+    """
+    if not _is_allowed_static_filename(filename):
+        return abort(404)
+    images_dir = get_images_dir(None).resolve()
     return send_from_directory(str(images_dir), filename)
 
 
 @server.route("/static/<segment>/<path:filename>")
 def serve_static_segment(segment, filename):
-    """Serve static HTML files from segment images directory."""
+    """Serve static HTML/image/CSV files from a segment's images directory."""
     if not _is_allowed_static_segment(segment):
         return abort(404)
-    images_dir = get_images_dir(segment)
+    if not _is_allowed_static_filename(filename):
+        return abort(404)
+    images_dir = get_images_dir(segment).resolve()
     return send_from_directory(str(images_dir), filename)
 
 
