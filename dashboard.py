@@ -18,7 +18,6 @@ Usage:
 import argparse
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +33,27 @@ from dash.dependencies import MATCH
 from flask import abort, send_from_directory
 from loguru import logger
 
+from src.dashboard_data import (
+    SCENARIO_ORDER,
+)
+from src.dashboard_data import (
+    get_available_segments as _shared_get_available_segments,
+)
+from src.dashboard_data import (
+    get_data_dir as _shared_get_data_dir,
+)
+from src.dashboard_data import (
+    get_images_dir as _shared_get_images_dir,
+)
+from src.dashboard_data import (
+    get_scenarios as _shared_get_scenarios,
+)
+from src.dashboard_data import (
+    parse_coefficients as _shared_parse_coefficients,
+)
+from src.dashboard_data import (
+    resolve_supersegment as _shared_resolve_supersegment,
+)
 from src.styles import (
     COLOR_BAD,
     COLOR_GOOD,
@@ -44,9 +64,6 @@ from src.styles import (
     apply_plotly_style,
 )
 from src.utils import calculate_b2_ever_h6
-
-# --- Constants ---
-SCENARIO_ORDER: dict[str, int] = {"pessimistic": 0, "base": 1, "optimistic": 2}
 
 IFRAME_STYLE: dict[str, Any] = {"width": "100%", "height": "800px", "border": "none", "marginBottom": "20px"}
 
@@ -61,22 +78,19 @@ CURRENT_SEGMENT: str | None = None
 
 
 def get_data_dir(segment: str | None = None) -> Path:
-    """Get the data directory for a segment."""
-    if segment:
-        return OUTPUT_BASE / segment / "data"
-    # Check if we're in batch mode (output/ structure) or single mode
-    if (OUTPUT_BASE / "data").exists():
-        return OUTPUT_BASE / "data"
-    return Path("data")
+    """Get the data directory for a segment.
+
+    Thin wrapper around :func:`src.dashboard_data.get_data_dir` bound to
+    this module's ``OUTPUT_BASE`` (set at startup from CLI args). Logic
+    lives in ``src/dashboard_data.py`` so ``gradio_dashboard.py`` and
+    future dashboards share it — see todo #64.
+    """
+    return _shared_get_data_dir(OUTPUT_BASE, segment)
 
 
 def get_images_dir(segment: str | None = None) -> Path:
-    """Get the images directory for a segment."""
-    if segment:
-        return OUTPUT_BASE / segment / "images"
-    if (OUTPUT_BASE / "images").exists():
-        return OUTPUT_BASE / "images"
-    return Path("images")
+    """Get the images directory for a segment (shared; see get_data_dir)."""
+    return _shared_get_images_dir(OUTPUT_BASE, segment)
 
 
 def _is_allowed_static_segment(segment: str) -> bool:
@@ -94,65 +108,18 @@ def _is_allowed_static_segment(segment: str) -> bool:
 
 
 def get_available_segments() -> list[str]:
-    """Get list of available segments from output directory."""
-    segments = []
-
-    if not OUTPUT_BASE.exists():
-        return segments
-
-    for item in OUTPUT_BASE.iterdir():
-        if item.is_dir() and not item.name.startswith(("_", ".")):
-            # Check if it has data subdirectory (valid segment output)
-            if (item / "data").exists():
-                segments.append(item.name)
-
-    return sorted(segments)
+    """Get list of available segments from output directory (shared helper)."""
+    return _shared_get_available_segments(OUTPUT_BASE)
 
 
 def get_scenarios(segment: str | None = None) -> list[str]:
+    """Parse available scenarios from data directory (shared helper).
+
+    Scenarios are named ``pessimistic`` / ``base`` / ``optimistic``, or
+    numeric (legacy). Returned list is ordered per
+    :data:`src.dashboard_data.SCENARIO_ORDER`.
     """
-    Parse available scenarios from data directory.
-
-    Scenarios are named: pessimistic, base, optimistic
-    - pessimistic: optimum - step (more conservative)
-    - base: optimum risk threshold
-    - optimistic: optimum + step (more aggressive)
-
-    Returns:
-        List of scenario names sorted by order (pessimistic, base, optimistic).
-    """
-    data_dir = get_data_dir(segment)
-
-    if not data_dir.exists():
-        return []
-
-    files = list(data_dir.glob("risk_production_summary_table_*.csv"))
-    scenarios: list[str] = []
-
-    for f in files:
-        filename = f.name
-
-        # Skip MR files for this discovery (they are secondary)
-        if "_mr" in filename:
-            continue
-
-        # Match new named format: risk_production_summary_table_pessimistic.csv
-        match = re.search(r"risk_production_summary_table_(pessimistic|base|optimistic)\.csv", filename)
-        if match:
-            scenarios.append(match.group(1))
-            continue
-
-        # Match legacy numeric format: risk_production_summary_table_1.0.csv
-        match = re.search(r"risk_production_summary_table_(\d+\.\d+)\.csv", filename)
-        if match:
-            scenarios.append(match.group(1))
-
-    # Also check for base file without suffix
-    if (data_dir / "risk_production_summary_table.csv").exists() and "base" not in scenarios:
-        scenarios.append("base")
-
-    # Sort by scenario order (pessimistic, base, optimistic) then alphabetically for others
-    return sorted(scenarios, key=lambda x: (SCENARIO_ORDER.get(x, 99), x))
+    return _shared_get_scenarios(OUTPUT_BASE, segment)
 
 
 def get_scenario_paths(scenario: str, segment: str | None = None) -> dict[str, Any]:
@@ -231,18 +198,12 @@ def file_exists_for_viz(viz_path: str, segment: str | None = None) -> bool:
 
 
 def _resolve_supersegment(segment: str | None) -> str | None:
-    """Look up the supersegment name for *segment* from ``segments.toml``."""
-    if not segment:
-        return None
-    try:
-        import tomllib
+    """Look up the supersegment name for *segment* (shared helper).
 
-        with open("segments.toml", "rb") as f:
-            seg_config = tomllib.load(f).get("segments", {})
-            cfg = seg_config.get(segment, {})
-            return cfg.get("modelling_supersegment") or cfg.get("supersegment")
-    except Exception:
-        return None
+    Wraps :func:`src.dashboard_data.resolve_supersegment` with
+    ``OUTPUT_BASE`` as the secondary lookup root.
+    """
+    return _shared_resolve_supersegment(segment, output_base=OUTPUT_BASE)
 
 
 def get_shap_images_dir(segment: str | None = None) -> Path:
@@ -927,40 +888,8 @@ def get_latest_model(segment: str | None = None) -> dict | None:
 
 
 def parse_coefficients(model_dir: str) -> list[dict[str, Any]]:
-    """Parse model_summary.txt for feature coefficients."""
-    summary_path = Path(model_dir) / "model_summary.txt"
-    if not summary_path.exists():
-        return []
-
-    coefficients = []
-    in_coef_section = False
-    try:
-        text = summary_path.read_text()
-        for line in text.splitlines():
-            line = line.strip()
-            if "MODEL COEFFICIENTS" in line:
-                in_coef_section = True
-                continue
-            if in_coef_section:
-                if line.startswith("---") or not line:
-                    continue
-                # New section starts
-                if line.isupper() and ":" not in line:
-                    break
-                # Parse "feature_name: value"
-                if ":" in line:
-                    parts = line.rsplit(":", 1)
-                    if len(parts) == 2:
-                        try:
-                            name = parts[0].strip()
-                            value = float(parts[1].strip())
-                            coefficients.append({"feature": name, "coefficient": value})
-                        except ValueError:
-                            continue
-    except Exception as e:
-        logger.warning(f"Error parsing coefficients from {summary_path}: {e}")
-
-    return coefficients
+    """Parse model_summary.txt for feature coefficients (shared helper)."""
+    return _shared_parse_coefficients(model_dir)
 
 
 def create_model_details_content(segment: str | None = None) -> html.Div:

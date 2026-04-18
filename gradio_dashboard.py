@@ -13,7 +13,6 @@ Usage:
 import argparse
 import json
 import os
-import re
 from pathlib import Path
 
 import gradio as gr
@@ -23,6 +22,30 @@ import plotly.express as px
 import plotly.graph_objects as go
 from loguru import logger
 
+from src.dashboard_data import (
+    SCENARIO_ORDER,
+)
+from src.dashboard_data import (
+    get_available_segments as _shared_get_available_segments,
+)
+from src.dashboard_data import (
+    get_data_dir as _shared_get_data_dir,
+)
+from src.dashboard_data import (
+    get_images_dir as _shared_get_images_dir,
+)
+from src.dashboard_data import (
+    get_models_dir as _shared_get_models_dir,
+)
+from src.dashboard_data import (
+    get_scenario_paths as _shared_get_scenario_paths,
+)
+from src.dashboard_data import (
+    get_scenarios as _shared_get_scenarios,
+)
+from src.dashboard_data import (
+    resolve_supersegment as _shared_resolve_supersegment,
+)
 from src.styles import (
     COLOR_BAD,
     COLOR_GOOD,
@@ -39,111 +62,39 @@ from src.styles import (
 OUTPUT_BASE: Path = Path(".")
 CURRENT_SEGMENT: str | None = None
 
-SCENARIO_ORDER: dict[str, int] = {"pessimistic": 0, "base": 1, "optimistic": 2}
-
 # ---------------------------------------------------------------------------
-# Path helpers (mirrors dashboard.py patterns)
+# Path helpers — thin wrappers around src/dashboard_data.py (R2 todo #64).
+# Logic lives in the shared module; these keep the module-level OUTPUT_BASE
+# convention so existing call sites inside this file stay unchanged.
 # ---------------------------------------------------------------------------
 
 
 def get_data_dir(segment: str | None = None) -> Path:
-    if segment:
-        return OUTPUT_BASE / segment / "data"
-    if (OUTPUT_BASE / "data").exists():
-        return OUTPUT_BASE / "data"
-    return Path("data")
+    return _shared_get_data_dir(OUTPUT_BASE, segment)
 
 
 def get_images_dir(segment: str | None = None) -> Path:
-    if segment:
-        return OUTPUT_BASE / segment / "images"
-    if (OUTPUT_BASE / "images").exists():
-        return OUTPUT_BASE / "images"
-    return Path("images")
+    return _shared_get_images_dir(OUTPUT_BASE, segment)
 
 
 def get_available_segments() -> list[str]:
-    if not OUTPUT_BASE.exists():
-        return []
-    return sorted(
-        d.name
-        for d in OUTPUT_BASE.iterdir()
-        if d.is_dir() and not d.name.startswith(("_", ".")) and (d / "data").exists()
-    )
+    return _shared_get_available_segments(OUTPUT_BASE)
 
 
 def _resolve_supersegment(segment: str) -> str | None:
-    for toml_path in [Path("segments.toml"), OUTPUT_BASE / "segments.toml"]:
-        if toml_path.exists():
-            try:
-                import tomllib
-
-                with open(toml_path, "rb") as f:
-                    data = tomllib.load(f)
-                for name, cfg in data.get("segments", {}).items():
-                    if name == segment:
-                        return cfg.get("modelling_supersegment") or cfg.get("supersegment")
-            except Exception:
-                pass
-    return None
+    return _shared_resolve_supersegment(segment, output_base=OUTPUT_BASE)
 
 
 def get_models_dir(segment: str | None = None) -> Path:
-    if segment:
-        direct = OUTPUT_BASE / segment / "models"
-        if direct.exists() and any(direct.iterdir()):
-            return direct
-        superseg = _resolve_supersegment(segment)
-        if superseg:
-            models_dir = OUTPUT_BASE / f"_supersegment_{superseg}" / "models"
-            if models_dir.exists():
-                return models_dir
-        return direct
-    if (OUTPUT_BASE / "models").exists():
-        return OUTPUT_BASE / "models"
-    return Path("models")
+    return _shared_get_models_dir(OUTPUT_BASE, segment)
 
 
 def get_scenarios(segment: str | None = None) -> list[str]:
-    data_dir = get_data_dir(segment)
-    if not data_dir.exists():
-        return []
-    scenarios: list[str] = []
-    for f in data_dir.glob("risk_production_summary_table_*.csv"):
-        if "_mr" in f.name:
-            continue
-        m = re.search(r"risk_production_summary_table_(pessimistic|base|optimistic)\.csv", f.name)
-        if m:
-            scenarios.append(m.group(1))
-            continue
-        m = re.search(r"risk_production_summary_table_(\d+\.\d+)\.csv", f.name)
-        if m:
-            scenarios.append(m.group(1))
-    if (data_dir / "risk_production_summary_table.csv").exists() and "base" not in scenarios:
-        scenarios.append("base")
-    return sorted(scenarios, key=lambda x: (SCENARIO_ORDER.get(x, 99), x))
+    return _shared_get_scenarios(OUTPUT_BASE, segment)
 
 
 def get_scenario_paths(scenario: str, segment: str | None = None) -> dict:
-    data_dir = get_data_dir(segment)
-    suffix = f"_{scenario}"
-    paths = {
-        "main_csv": data_dir / f"risk_production_summary_table{suffix}.csv",
-        "mr_csv": data_dir / f"risk_production_summary_table_mr{suffix}.csv",
-        "cutoffs": data_dir / f"optimal_solution{suffix}.csv",
-        "summary_data": data_dir / f"data_summary_desagregado{suffix}.csv",
-    }
-    if scenario == "base":
-        fallbacks = {
-            "main_csv": data_dir / "risk_production_summary_table.csv",
-            "mr_csv": data_dir / "risk_production_summary_table_mr.csv",
-            "cutoffs": data_dir / "optimal_solution.csv",
-            "summary_data": data_dir / "data_summary_desagregado.csv",
-        }
-        for key in paths:
-            if not paths[key].exists() and fallbacks[key].exists():
-                paths[key] = fallbacks[key]
-    return paths
+    return _shared_get_scenario_paths(OUTPUT_BASE, scenario, segment)
 
 
 # ---------------------------------------------------------------------------
@@ -625,29 +576,10 @@ def get_latest_model(segment: str | None = None) -> dict | None:
 
 
 def parse_coefficients(model_dir: str) -> list[dict]:
-    summary_path = Path(model_dir) / "model_summary.txt"
-    if not summary_path.exists():
-        return []
-    coefficients = []
-    in_section = False
-    for line in summary_path.read_text().splitlines():
-        line = line.strip()
-        if "MODEL COEFFICIENTS" in line:
-            in_section = True
-            continue
-        if in_section:
-            if line.startswith("---") or not line:
-                continue
-            if line.isupper() and ":" not in line:
-                break
-            if ":" in line:
-                parts = line.rsplit(":", 1)
-                if len(parts) == 2:
-                    try:
-                        coefficients.append({"feature": parts[0].strip(), "coefficient": float(parts[1].strip())})
-                    except ValueError:
-                        continue
-    return coefficients
+    """Parse model_summary.txt for feature coefficients — shared helper (#64)."""
+    from src.dashboard_data import parse_coefficients as _shared
+
+    return _shared(model_dir)
 
 
 def build_model_tab(segment: str | None) -> tuple:
