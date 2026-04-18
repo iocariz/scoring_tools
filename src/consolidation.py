@@ -2751,6 +2751,276 @@ def _empty_rp_skeleton(template_cols: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# =============================================================================
+# Pivot-grid writer (R2b-ii todo #57 step 8)
+# =============================================================================
+
+
+def _write_single_pivot_grid(ws, pivot, col_var, row_var, start_row, col_offset=0):
+    """Draw one pivot grid at (start_row, col_offset+1). Returns bottom row used."""
+    c0 = col_offset + 1
+
+    # Corner label
+    corner = ws.cell(row=start_row, column=c0)
+    corner.value = f"{row_var} \\ {col_var}"
+    corner.font = _FONT_GRID_LABEL
+    corner.fill = _FILL_GRID_HEADER
+    corner.alignment = _ALIGN_CENTER
+    corner.border = _BORDER_GRID
+    ws.column_dimensions[_get_column_letter(c0)].width = max(
+        ws.column_dimensions[_get_column_letter(c0)].width or 8, len(str(corner.value)) + 4
+    )
+    ws.row_dimensions[start_row].height = 26
+
+    # Column headers
+    for ci, col_val in enumerate(pivot.columns, c0 + 1):
+        c = ws.cell(row=start_row, column=ci)
+        c.value = col_val
+        c.font = _FONT_GRID_HEADER
+        c.fill = _FILL_GRID_HEADER
+        c.alignment = _ALIGN_CENTER
+        c.border = _BORDER_GRID
+        ws.column_dimensions[_get_column_letter(ci)].width = max(
+            ws.column_dimensions[_get_column_letter(ci)].width or 0, 7
+        )
+
+    # Data rows
+    for ri, idx_val in enumerate(pivot.index, start_row + 1):
+        rh = ws.cell(row=ri, column=c0)
+        rh.value = idx_val
+        rh.font = _FONT_GRID_HEADER
+        rh.fill = _FILL_GRID_HEADER
+        rh.alignment = _ALIGN_CENTER
+        rh.border = _BORDER_GRID
+        ws.row_dimensions[ri].height = 26
+
+        for ci, col_val in enumerate(pivot.columns, c0 + 1):
+            cell = ws.cell(row=ri, column=ci)
+            val = pivot.loc[idx_val, col_val]
+            if pd.isna(val):
+                cell.fill = _FILL_NA
+                cell.value = "—"
+                cell.font = Font(bold=False, color=_CLR_NEUTRAL_MID, size=10, name=_FN)
+            elif val == 1:
+                cell.fill = _FILL_ACCEPT
+                cell.value = "A"
+                cell.font = _FONT_GRID_CELL
+            else:
+                cell.fill = _FILL_REJECT
+                cell.value = "R"
+                cell.font = _FONT_GRID_CELL
+            cell.alignment = _ALIGN_CENTER
+            cell.border = _BORDER_GRID
+
+    return start_row + len(pivot.index)
+
+
+# =============================================================================
+# Acceptance grid writers (R2b-ii todo #57 step 9)
+# =============================================================================
+
+
+def _write_acceptance_strip_1d(ws, cutoff_df, seg_name, start_row, scenario="base"):
+    """Draw a horizontal 1D acceptance strip on *ws* starting at *start_row*.
+
+    For single-variable optimization, shows each bin as a colored cell (green=A, red=R)
+    in a horizontal row, with a summary header and legend.
+    Returns next free row.
+    """
+    variable_cols = [c for c in cutoff_df.columns if c not in _CUTOFF_FIXED_COLS]
+    if not variable_cols:
+        return start_row
+    var_col = variable_cols[0]
+
+    scen_df = cutoff_df
+    if "scenario" in cutoff_df.columns:
+        scen_df = cutoff_df[cutoff_df["scenario"] == scenario]
+    if scen_df.empty:
+        return start_row
+
+    scen_sorted = scen_df.sort_values(var_col)
+    bins = scen_sorted[var_col].values
+    accepted = scen_sorted["accepted"].values
+    n_accepted = int(accepted.sum())
+    n_total = len(accepted)
+
+    # Section header
+    ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=max(len(bins) + 1, 12))
+    lbl = ws.cell(row=start_row, column=1)
+    lbl.value = f"  {seg_name}  |  {scenario.title()}  —  {n_accepted}/{n_total} bins accepted ({100 * n_accepted / n_total:.0f}%)"
+    lbl.font = _FONT_SECTION
+    lbl.fill = _FILL_SECTION
+    lbl.alignment = _ALIGN_LEFT
+    lbl.border = Border(left=Side(style="thick", color=_CLR_SECTION_BAR), bottom=_HAIR)
+    ws.row_dimensions[start_row].height = 28
+    start_row += 1
+
+    # Variable name label
+    label_cell = ws.cell(row=start_row, column=1)
+    label_cell.value = var_col
+    label_cell.font = _FONT_GRID_LABEL
+    label_cell.fill = _FILL_GRID_HEADER
+    label_cell.alignment = _ALIGN_CENTER
+    label_cell.border = _BORDER_GRID
+    ws.column_dimensions[_get_column_letter(1)].width = max(
+        ws.column_dimensions[_get_column_letter(1)].width or 8, len(var_col) + 4
+    )
+
+    # Bin header row
+    for ci, bv in enumerate(bins, 2):
+        c = ws.cell(row=start_row, column=ci)
+        c.value = int(bv) if isinstance(bv, float) and bv == int(bv) else bv
+        c.font = _FONT_GRID_HEADER
+        c.fill = _FILL_GRID_HEADER
+        c.alignment = _ALIGN_CENTER
+        c.border = _BORDER_GRID
+        ws.column_dimensions[_get_column_letter(ci)].width = max(
+            ws.column_dimensions[_get_column_letter(ci)].width or 0, 7
+        )
+    ws.row_dimensions[start_row].height = 26
+    start_row += 1
+
+    # Status label
+    status_cell = ws.cell(row=start_row, column=1)
+    status_cell.value = "Status"
+    status_cell.font = _FONT_GRID_LABEL
+    status_cell.fill = _FILL_GRID_HEADER
+    status_cell.alignment = _ALIGN_CENTER
+    status_cell.border = _BORDER_GRID
+
+    # Acceptance cells
+    for ci, acc in enumerate(accepted, 2):
+        cell = ws.cell(row=start_row, column=ci)
+        if pd.isna(acc):
+            cell.fill = _FILL_NA
+            cell.value = "—"
+            cell.font = Font(bold=False, color=_CLR_NEUTRAL_MID, size=11, name=_FN)
+        elif acc == 1:
+            cell.fill = _FILL_ACCEPT
+            cell.value = "A"
+            cell.font = _FONT_GRID_CELL
+        else:
+            cell.fill = _FILL_REJECT
+            cell.value = "R"
+            cell.font = _FONT_GRID_CELL
+        cell.alignment = _ALIGN_CENTER
+        cell.border = _BORDER_GRID
+    ws.row_dimensions[start_row].height = 30
+    start_row += 1
+
+    # Legend
+    start_row += 1
+    legend_items = [
+        ("  A  Accept  ", _FILL_ACCEPT, _CLR_WHITE),
+        ("  R  Reject  ", _FILL_REJECT, _CLR_WHITE),
+        ("  —  N/A  ", _FILL_NA, _CLR_TEXT),
+    ]
+    for ci, (label, fill, fg) in enumerate(legend_items, 1):
+        c = ws.cell(row=start_row, column=ci)
+        c.value = label
+        c.font = Font(bold=True, color=fg, size=9, name=_FN)
+        c.fill = fill
+        c.alignment = _ALIGN_CENTER
+        c.border = _BORDER_GRID
+
+    return start_row + 2
+
+
+def _write_acceptance_grid(ws, cutoff_df, seg_name, start_row, scenario="base"):
+    """Draw coloured acceptance/rejection grids on *ws* starting at *start_row*.
+
+    For N>2 variables (e.g. octroi_bin x efx_bin x income_bin), creates one
+    sub-grid per slice of the 3rd+ variables, laid out side by side.
+    For 1D, draws a horizontal acceptance strip.
+    Returns next free row.
+    """
+    variable_cols = [c for c in cutoff_df.columns if c not in _CUTOFF_FIXED_COLS]
+    if "accepted" not in cutoff_df.columns or len(variable_cols) < 1:
+        return start_row
+
+    # 1D: delegate to strip renderer
+    if len(variable_cols) == 1:
+        return _write_acceptance_strip_1d(ws, cutoff_df, seg_name, start_row, scenario)
+
+    scen_df = cutoff_df
+    if "scenario" in cutoff_df.columns:
+        scen_df = cutoff_df[cutoff_df["scenario"] == scenario]
+    if scen_df.empty:
+        return start_row
+
+    col_var = variable_cols[0]  # columns of each pivot
+    row_var = variable_cols[1]  # rows of each pivot
+    slice_vars = variable_cols[2:]  # additional dimensions (e.g. income_bin)
+
+    # Section label with left accent bar
+    slice_info = f"  —  sliced by {', '.join(slice_vars)}" if slice_vars else ""
+    ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=12)
+    lbl = ws.cell(row=start_row, column=1)
+    lbl.value = f"  {seg_name}  |  {scenario.title()}{slice_info}"
+    lbl.font = _FONT_SECTION
+    lbl.fill = _FILL_SECTION
+    lbl.alignment = _ALIGN_LEFT
+    lbl.border = Border(left=Side(style="thick", color=_CLR_SECTION_BAR), bottom=_HAIR)
+    ws.row_dimensions[start_row].height = 28
+    start_row += 1
+
+    # Build list of (label, slice_df) pairs
+    if slice_vars:
+        groups = scen_df.groupby(slice_vars, sort=True)
+        group_items = list(groups)[:12]  # cap at 12 sub-grids
+    else:
+        group_items = [(None, scen_df)]
+
+    # Lay out sub-grids side by side (horizontally)
+    col_offset = 0
+    grid_bottom = start_row
+    for slice_key, slice_df in group_items:
+        try:
+            pivot = slice_df.pivot_table(index=row_var, columns=col_var, values="accepted", aggfunc="first")
+            pivot = _sort_pivot(pivot)
+        except (TypeError, ValueError, KeyError):
+            continue
+        if pivot.empty:
+            continue
+
+        # Slice label above the sub-grid
+        if slice_key is not None:
+            if isinstance(slice_key, tuple):
+                label = ", ".join(f"{v}={k}" for v, k in zip(slice_vars, slice_key))
+            else:
+                label = f"{slice_vars[0]}={slice_key}"
+            lbl_cell = ws.cell(row=start_row, column=col_offset + 1)
+            lbl_cell.value = label
+            lbl_cell.font = Font(bold=True, color=_CLR_ACCENT, size=9, name=_FN)
+            lbl_cell.alignment = _ALIGN_LEFT
+            grid_start = start_row + 1
+        else:
+            grid_start = start_row
+
+        bottom = _write_single_pivot_grid(ws, pivot, col_var, row_var, grid_start, col_offset)
+        grid_bottom = max(grid_bottom, bottom)
+
+        # Advance column offset for next sub-grid (grid width + 1 gap column)
+        col_offset += len(pivot.columns) + 2  # +1 for row header, +1 gap
+
+    # Legend row
+    legend_row = grid_bottom + 2
+    legend_items = [
+        ("  A  Accept  ", _FILL_ACCEPT, _CLR_WHITE),
+        ("  R  Reject  ", _FILL_REJECT, _CLR_WHITE),
+        ("  —  N/A  ", _FILL_NA, _CLR_TEXT),
+    ]
+    for ci, (label, fill, fg) in enumerate(legend_items, 1):
+        c = ws.cell(row=legend_row, column=ci)
+        c.value = label
+        c.font = Font(bold=True, color=fg, size=9, name=_FN)
+        c.fill = fill
+        c.alignment = _ALIGN_CENTER
+        c.border = _BORDER_GRID
+
+    return legend_row + 2
+
+
 def export_consolidated_excel(
     consolidated_df: pd.DataFrame,
     output_base: str | Path,
@@ -3160,262 +3430,10 @@ def export_consolidated_excel(
             )
         return rows if rows else None
 
-    def _write_single_pivot_grid(ws, pivot, col_var, row_var, start_row, col_offset=0):
-        """Draw one pivot grid at (start_row, col_offset+1). Returns bottom row used."""
-        c0 = col_offset + 1
+    # _write_single_pivot_grid is now a module-level helper (R2b-ii todo #57 step 8).
 
-        # Corner label
-        corner = ws.cell(row=start_row, column=c0)
-        corner.value = f"{row_var} \\ {col_var}"
-        corner.font = _FONT_GRID_LABEL
-        corner.fill = _FILL_GRID_HEADER
-        corner.alignment = _ALIGN_CENTER
-        corner.border = _BORDER_GRID
-        ws.column_dimensions[get_column_letter(c0)].width = max(
-            ws.column_dimensions[get_column_letter(c0)].width or 8, len(str(corner.value)) + 4
-        )
-        ws.row_dimensions[start_row].height = 26
-
-        # Column headers
-        for ci, col_val in enumerate(pivot.columns, c0 + 1):
-            c = ws.cell(row=start_row, column=ci)
-            c.value = col_val
-            c.font = _FONT_GRID_HEADER
-            c.fill = _FILL_GRID_HEADER
-            c.alignment = _ALIGN_CENTER
-            c.border = _BORDER_GRID
-            ws.column_dimensions[get_column_letter(ci)].width = max(
-                ws.column_dimensions[get_column_letter(ci)].width or 0, 7
-            )
-
-        # Data rows
-        for ri, idx_val in enumerate(pivot.index, start_row + 1):
-            rh = ws.cell(row=ri, column=c0)
-            rh.value = idx_val
-            rh.font = _FONT_GRID_HEADER
-            rh.fill = _FILL_GRID_HEADER
-            rh.alignment = _ALIGN_CENTER
-            rh.border = _BORDER_GRID
-            ws.row_dimensions[ri].height = 26
-
-            for ci, col_val in enumerate(pivot.columns, c0 + 1):
-                cell = ws.cell(row=ri, column=ci)
-                val = pivot.loc[idx_val, col_val]
-                if pd.isna(val):
-                    cell.fill = _FILL_NA
-                    cell.value = "—"
-                    cell.font = Font(bold=False, color=_CLR_NEUTRAL_MID, size=10, name=_FN)
-                elif val == 1:
-                    cell.fill = _FILL_ACCEPT
-                    cell.value = "A"
-                    cell.font = _FONT_GRID_CELL
-                else:
-                    cell.fill = _FILL_REJECT
-                    cell.value = "R"
-                    cell.font = _FONT_GRID_CELL
-                cell.alignment = _ALIGN_CENTER
-                cell.border = _BORDER_GRID
-
-        return start_row + len(pivot.index)
-
-    def _write_acceptance_strip_1d(ws, cutoff_df, seg_name, start_row, scenario="base"):
-        """Draw a horizontal 1D acceptance strip on *ws* starting at *start_row*.
-
-        For single-variable optimization, shows each bin as a colored cell (green=A, red=R)
-        in a horizontal row, with a summary header and legend.
-        Returns next free row.
-        """
-        variable_cols = [c for c in cutoff_df.columns if c not in _CUTOFF_FIXED_COLS]
-        if not variable_cols:
-            return start_row
-        var_col = variable_cols[0]
-
-        scen_df = cutoff_df
-        if "scenario" in cutoff_df.columns:
-            scen_df = cutoff_df[cutoff_df["scenario"] == scenario]
-        if scen_df.empty:
-            return start_row
-
-        scen_sorted = scen_df.sort_values(var_col)
-        bins = scen_sorted[var_col].values
-        accepted = scen_sorted["accepted"].values
-        n_accepted = int(accepted.sum())
-        n_total = len(accepted)
-
-        # Section header
-        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=max(len(bins) + 1, 12))
-        lbl = ws.cell(row=start_row, column=1)
-        lbl.value = f"  {seg_name}  |  {scenario.title()}  —  {n_accepted}/{n_total} bins accepted ({100 * n_accepted / n_total:.0f}%)"
-        lbl.font = _FONT_SECTION
-        lbl.fill = _FILL_SECTION
-        lbl.alignment = _ALIGN_LEFT
-        lbl.border = Border(left=Side(style="thick", color=_CLR_SECTION_BAR), bottom=_HAIR)
-        ws.row_dimensions[start_row].height = 28
-        start_row += 1
-
-        # Variable name label
-        label_cell = ws.cell(row=start_row, column=1)
-        label_cell.value = var_col
-        label_cell.font = _FONT_GRID_LABEL
-        label_cell.fill = _FILL_GRID_HEADER
-        label_cell.alignment = _ALIGN_CENTER
-        label_cell.border = _BORDER_GRID
-        ws.column_dimensions[get_column_letter(1)].width = max(
-            ws.column_dimensions[get_column_letter(1)].width or 8, len(var_col) + 4
-        )
-
-        # Bin header row
-        for ci, bv in enumerate(bins, 2):
-            c = ws.cell(row=start_row, column=ci)
-            c.value = int(bv) if isinstance(bv, float) and bv == int(bv) else bv
-            c.font = _FONT_GRID_HEADER
-            c.fill = _FILL_GRID_HEADER
-            c.alignment = _ALIGN_CENTER
-            c.border = _BORDER_GRID
-            ws.column_dimensions[get_column_letter(ci)].width = max(
-                ws.column_dimensions[get_column_letter(ci)].width or 0, 7
-            )
-        ws.row_dimensions[start_row].height = 26
-        start_row += 1
-
-        # Status label
-        status_cell = ws.cell(row=start_row, column=1)
-        status_cell.value = "Status"
-        status_cell.font = _FONT_GRID_LABEL
-        status_cell.fill = _FILL_GRID_HEADER
-        status_cell.alignment = _ALIGN_CENTER
-        status_cell.border = _BORDER_GRID
-
-        # Acceptance cells
-        for ci, acc in enumerate(accepted, 2):
-            cell = ws.cell(row=start_row, column=ci)
-            if pd.isna(acc):
-                cell.fill = _FILL_NA
-                cell.value = "—"
-                cell.font = Font(bold=False, color=_CLR_NEUTRAL_MID, size=11, name=_FN)
-            elif acc == 1:
-                cell.fill = _FILL_ACCEPT
-                cell.value = "A"
-                cell.font = _FONT_GRID_CELL
-            else:
-                cell.fill = _FILL_REJECT
-                cell.value = "R"
-                cell.font = _FONT_GRID_CELL
-            cell.alignment = _ALIGN_CENTER
-            cell.border = _BORDER_GRID
-        ws.row_dimensions[start_row].height = 30
-        start_row += 1
-
-        # Legend
-        start_row += 1
-        legend_items = [
-            ("  A  Accept  ", _FILL_ACCEPT, _CLR_WHITE),
-            ("  R  Reject  ", _FILL_REJECT, _CLR_WHITE),
-            ("  —  N/A  ", _FILL_NA, _CLR_TEXT),
-        ]
-        for ci, (label, fill, fg) in enumerate(legend_items, 1):
-            c = ws.cell(row=start_row, column=ci)
-            c.value = label
-            c.font = Font(bold=True, color=fg, size=9, name=_FN)
-            c.fill = fill
-            c.alignment = _ALIGN_CENTER
-            c.border = _BORDER_GRID
-
-        return start_row + 2
-
-    def _write_acceptance_grid(ws, cutoff_df, seg_name, start_row, scenario="base"):
-        """Draw coloured acceptance/rejection grids on *ws* starting at *start_row*.
-
-        For N>2 variables (e.g. octroi_bin x efx_bin x income_bin), creates one
-        sub-grid per slice of the 3rd+ variables, laid out side by side.
-        For 1D, draws a horizontal acceptance strip.
-        Returns next free row.
-        """
-        variable_cols = [c for c in cutoff_df.columns if c not in _CUTOFF_FIXED_COLS]
-        if "accepted" not in cutoff_df.columns or len(variable_cols) < 1:
-            return start_row
-
-        # 1D: delegate to strip renderer
-        if len(variable_cols) == 1:
-            return _write_acceptance_strip_1d(ws, cutoff_df, seg_name, start_row, scenario)
-
-        scen_df = cutoff_df
-        if "scenario" in cutoff_df.columns:
-            scen_df = cutoff_df[cutoff_df["scenario"] == scenario]
-        if scen_df.empty:
-            return start_row
-
-        col_var = variable_cols[0]  # columns of each pivot
-        row_var = variable_cols[1]  # rows of each pivot
-        slice_vars = variable_cols[2:]  # additional dimensions (e.g. income_bin)
-
-        # Section label with left accent bar
-        slice_info = f"  —  sliced by {', '.join(slice_vars)}" if slice_vars else ""
-        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=12)
-        lbl = ws.cell(row=start_row, column=1)
-        lbl.value = f"  {seg_name}  |  {scenario.title()}{slice_info}"
-        lbl.font = _FONT_SECTION
-        lbl.fill = _FILL_SECTION
-        lbl.alignment = _ALIGN_LEFT
-        lbl.border = Border(left=Side(style="thick", color=_CLR_SECTION_BAR), bottom=_HAIR)
-        ws.row_dimensions[start_row].height = 28
-        start_row += 1
-
-        # Build list of (label, slice_df) pairs
-        if slice_vars:
-            groups = scen_df.groupby(slice_vars, sort=True)
-            group_items = list(groups)[:12]  # cap at 12 sub-grids
-        else:
-            group_items = [(None, scen_df)]
-
-        # Lay out sub-grids side by side (horizontally)
-        col_offset = 0
-        grid_bottom = start_row
-        for slice_key, slice_df in group_items:
-            try:
-                pivot = slice_df.pivot_table(index=row_var, columns=col_var, values="accepted", aggfunc="first")
-                pivot = _sort_pivot(pivot)
-            except (TypeError, ValueError, KeyError):
-                continue
-            if pivot.empty:
-                continue
-
-            # Slice label above the sub-grid
-            if slice_key is not None:
-                if isinstance(slice_key, tuple):
-                    label = ", ".join(f"{v}={k}" for v, k in zip(slice_vars, slice_key))
-                else:
-                    label = f"{slice_vars[0]}={slice_key}"
-                lbl_cell = ws.cell(row=start_row, column=col_offset + 1)
-                lbl_cell.value = label
-                lbl_cell.font = Font(bold=True, color=_CLR_ACCENT, size=9, name=_FN)
-                lbl_cell.alignment = _ALIGN_LEFT
-                grid_start = start_row + 1
-            else:
-                grid_start = start_row
-
-            bottom = _write_single_pivot_grid(ws, pivot, col_var, row_var, grid_start, col_offset)
-            grid_bottom = max(grid_bottom, bottom)
-
-            # Advance column offset for next sub-grid (grid width + 1 gap column)
-            col_offset += len(pivot.columns) + 2  # +1 for row header, +1 gap
-
-        # Legend row
-        legend_row = grid_bottom + 2
-        legend_items = [
-            ("  A  Accept  ", _FILL_ACCEPT, _CLR_WHITE),
-            ("  R  Reject  ", _FILL_REJECT, _CLR_WHITE),
-            ("  —  N/A  ", _FILL_NA, _CLR_TEXT),
-        ]
-        for ci, (label, fill, fg) in enumerate(legend_items, 1):
-            c = ws.cell(row=legend_row, column=ci)
-            c.value = label
-            c.font = Font(bold=True, color=fg, size=9, name=_FN)
-            c.fill = fill
-            c.alignment = _ALIGN_CENTER
-            c.border = _BORDER_GRID
-
-        return legend_row + 2
+    # _write_acceptance_strip_1d and _write_acceptance_grid are now
+    # module-level helpers (R2b-ii todo #57 step 9).
 
     def _get_total_row(period: str, scenario: str = "base"):
         mask = (
