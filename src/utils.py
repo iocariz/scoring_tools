@@ -8,6 +8,7 @@ This module provides core utility functions used throughout the scoring tools:
 """
 
 import os
+from typing import overload
 
 import numpy as np
 import pandas as pd
@@ -41,6 +42,43 @@ def resolve_reporting_supersegment(segment_config: dict) -> str | None:
     return segment_config.get("reporting_supersegment") or segment_config.get("supersegment")
 
 
+# Overloads narrow the return type for static checkers (todo #55).
+# Runtime behaviour is unchanged — pandas broadcasting preserves Series
+# when either input is a Series; scalar inputs return a float; ndarray
+# inputs return an ndarray. The overloads let call sites that use
+# ``.isna()`` / ``.fillna()`` type-check against a pd.Series result.
+@overload
+def calculate_b2_ever_h6(
+    numerator: pd.Series,
+    denominator: pd.Series | np.ndarray | float,
+    multiplier: float = ...,
+    as_percentage: bool = ...,
+    decimals: int = ...,
+) -> pd.Series: ...
+@overload
+def calculate_b2_ever_h6(
+    numerator: np.ndarray | float,
+    denominator: pd.Series,
+    multiplier: float = ...,
+    as_percentage: bool = ...,
+    decimals: int = ...,
+) -> pd.Series: ...
+@overload
+def calculate_b2_ever_h6(
+    numerator: np.ndarray,
+    denominator: np.ndarray | float,
+    multiplier: float = ...,
+    as_percentage: bool = ...,
+    decimals: int = ...,
+) -> np.ndarray: ...
+@overload
+def calculate_b2_ever_h6(
+    numerator: float,
+    denominator: float,
+    multiplier: float = ...,
+    as_percentage: bool = ...,
+    decimals: int = ...,
+) -> float: ...
 def calculate_b2_ever_h6(
     numerator: pd.Series | np.ndarray | float,
     denominator: pd.Series | np.ndarray | float,
@@ -65,6 +103,13 @@ def calculate_b2_ever_h6(
         Calculated b2_ever_h6 values, with division-by-zero handled as NaN.
         Callers that need 0 instead of NaN should apply np.nan_to_num() at the
         display/output boundary.
+
+        Type contract (enforced by overloads and a small runtime wrap at
+        the end of the body):
+          - Any Series input → Series output (preserves the Series's index).
+          - Both inputs scalar → float output (``.isna`` will NOT work;
+            callers must use ``math.isnan`` / ``np.isnan``).
+          - Otherwise (ndarray inputs) → ndarray output.
     """
     # Handle division by zero
     if isinstance(denominator, (pd.Series, np.ndarray)):
@@ -80,7 +125,18 @@ def calculate_b2_ever_h6(
     # Risk cannot be negative — clip to 0 (preserves NaN for missing cells)
     result = np.clip(result, 0, None)
 
-    return np.round(result, decimals)
+    result = np.round(result, decimals)
+
+    # Runtime wrap (todo #55 defense-in-depth): if either input is a Series
+    # but the intermediate arithmetic degraded to an ndarray (e.g. via a
+    # future change to np.where), restore the Series shape + index so
+    # downstream ``.isna()`` / ``.fillna()`` calls stay valid.
+    if isinstance(result, np.ndarray) and isinstance(numerator, pd.Series):
+        result = pd.Series(result, index=numerator.index)
+    elif isinstance(result, np.ndarray) and isinstance(denominator, pd.Series):
+        result = pd.Series(result, index=denominator.index)
+
+    return result
 
 
 def calculate_todu_30ever_from_b2(

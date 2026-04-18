@@ -127,6 +127,35 @@ class TestCalculateB2EverH6:
         assert np.isnan(result[2])
         assert np.isclose(result[3], 1.4)
 
+    def test_returns_series_when_any_input_is_series(self):
+        """todo #55 contract: any Series input → Series output with `.isna()`."""
+        num_series = pd.Series([100, 200, 0], index=["a", "b", "c"])
+        denom_array = np.array([1000.0, 0.0, 500.0])
+        result = calculate_b2_ever_h6(num_series, denom_array)
+        assert isinstance(result, pd.Series)
+        assert list(result.index) == ["a", "b", "c"]
+        assert hasattr(result, "isna")
+        assert int(result.isna().sum()) == 1  # denom=0 → NaN
+
+        # Reverse: scalar numerator, Series denominator → Series output
+        result2 = calculate_b2_ever_h6(100.0, pd.Series([1000.0, 500.0], index=["x", "y"]))
+        assert isinstance(result2, pd.Series)
+        assert list(result2.index) == ["x", "y"]
+
+    def test_returns_scalar_when_both_inputs_scalar(self):
+        """todo #55 contract: both scalar → float (no .isna)."""
+        result = calculate_b2_ever_h6(100, 1000)
+        # The function returns a numpy scalar; plain `isinstance(result, float)`
+        # would miss np.float64. Check both the value type and the absence of
+        # Series / ndarray attributes.
+        assert not isinstance(result, (pd.Series, np.ndarray))
+        assert isinstance(result, (float, np.floating))
+
+    def test_returns_ndarray_when_both_inputs_ndarray(self):
+        """todo #55 contract: ndarray+ndarray → ndarray."""
+        result = calculate_b2_ever_h6(np.array([100.0, 200.0]), np.array([1000.0, 500.0]))
+        assert isinstance(result, np.ndarray)
+
     def test_empty_series(self):
         """Test with empty series."""
         numerator = pd.Series([], dtype=float)
