@@ -1696,6 +1696,7 @@ def generate_consolidation_report(
 # placement makes them (a) easy to inspect in one block and (b) available
 # to future module-level helpers extracted from the function body.
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side  # noqa: E402
+from openpyxl.utils import get_column_letter as _get_column_letter  # noqa: E402
 
 # ----- Core brand colors -----
 _CLR_PRIMARY = "1B2A4A"  # Deep navy — titles, header bg
@@ -1911,6 +1912,46 @@ _COLUMN_LABELS = {
 }
 
 
+# =============================================================================
+# Pure Excel-styling helpers (R2b todo #57 step 2)
+# =============================================================================
+# Extracted from the body of `export_consolidated_excel`. These take an
+# openpyxl worksheet + primitives and have no closure over segment state,
+# so lifting them to module level is safe and shrinks the 2000-line function
+# by another ~60 lines. They reference only the module-level design tokens
+# defined above.
+
+
+def _set_col_width(ws, col_idx: int, header_text, max_rows: int) -> None:
+    """Size column *col_idx* by the longer of its header label and data width (cap 34)."""
+    letter = _get_column_letter(col_idx)
+    label_len = len(str(header_text))
+    data_max = max(
+        (len(str(ws.cell(row=r, column=col_idx).value or "")) for r in range(2, max_rows + 1)),
+        default=0,
+    )
+    ws.column_dimensions[letter].width = min(max(label_len, data_max) + 3, 34)
+
+
+def _apply_number_format(cell, col_name: str) -> None:
+    """Assign a currency / percentage / integer number format based on *col_name*."""
+    if col_name in _CURRENCY_COLS:
+        cell.number_format = '#,##0 "€"'
+    elif col_name in _PCT_COLS:
+        cell.number_format = "0.00"
+    elif col_name in _INTEGER_COLS:
+        cell.number_format = "#,##0"
+
+
+def _apply_page_setup(ws) -> None:
+    """Set landscape orientation, fit-to-width printing, hide on-screen gridlines."""
+    ws.sheet_view.showGridLines = False
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+
 def export_consolidated_excel(
     consolidated_df: pd.DataFrame,
     output_base: str | Path,
@@ -1955,30 +1996,8 @@ def export_consolidated_excel(
     # Helpers
     # =====================================================================
 
-    def _set_col_width(ws, col_idx, header_text, max_rows):
-        letter = get_column_letter(col_idx)
-        label_len = len(str(header_text))
-        data_max = max(
-            (len(str(ws.cell(row=r, column=col_idx).value or "")) for r in range(2, max_rows + 1)),
-            default=0,
-        )
-        ws.column_dimensions[letter].width = min(max(label_len, data_max) + 3, 34)
-
-    def _apply_number_format(cell, col_name):
-        if col_name in _CURRENCY_COLS:
-            cell.number_format = '#,##0 "€"'
-        elif col_name in _PCT_COLS:
-            cell.number_format = "0.00"
-        elif col_name in _INTEGER_COLS:
-            cell.number_format = "#,##0"
-
-    def _apply_page_setup(ws):
-        """Set landscape, fit-to-width, hide gridlines."""
-        ws.sheet_view.showGridLines = False
-        ws.page_setup.orientation = "landscape"
-        ws.page_setup.fitToWidth = 1
-        ws.page_setup.fitToHeight = 0
-        ws.sheet_properties.pageSetUpPr.fitToPage = True
+    # _set_col_width, _apply_number_format, _apply_page_setup are now
+    # module-level helpers (R2b todo #57 step 2).
 
     def _style_table(ws, df_cols, *, header_row=1, highlight_total=True):
         """Apply full dashboard styling to a data table starting at header_row."""
