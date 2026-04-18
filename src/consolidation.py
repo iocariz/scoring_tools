@@ -3021,6 +3021,54 @@ def _write_acceptance_grid(ws, cutoff_df, seg_name, start_row, scenario="base"):
     return legend_row + 2
 
 
+# =============================================================================
+# Income-bin label + total-row lookup helpers (R2b-ii todo #57 step 10)
+# =============================================================================
+
+
+def _income_bin_title(income_val: Any, income_threshold: float | None) -> str:
+    """Portfolio-owner labels based on configured income_bin threshold."""
+    try:
+        iv = int(float(income_val))
+    except (TypeError, ValueError):
+        return f"Income Bin {income_val}"
+    if iv == 1:
+        if income_threshold is not None:
+            return f"income_bin <= {income_threshold:,.0f}€"
+        return "Income Bin 1"
+    if iv == 2:
+        if income_threshold is not None:
+            return f"income_bin > {income_threshold:,.0f}€"
+        return "Income Bin 2"
+    return f"Income Bin {income_val}"
+
+
+def _ib_label(iv: float, income_threshold: float | None) -> str:
+    try:
+        iv_int = int(iv)
+    except (TypeError, ValueError):
+        return f"Bin {iv}"
+    if income_threshold is not None:
+        if iv_int == 1:
+            return f"≤ {income_threshold:,.0f}€"
+        if iv_int == 2:
+            return f"> {income_threshold:,.0f}€"
+    return f"Bin {iv_int}"
+
+
+def _get_total_row(consolidated_df: pd.DataFrame, period: str, scenario: str = "base"):
+    mask = (
+        (consolidated_df["group"] == "TOTAL")
+        & (consolidated_df["period"] == period)
+        & (consolidated_df["scenario"] == scenario)
+    )
+    rows = consolidated_df[mask]
+    if not rows.empty:
+        return rows.iloc[0]
+    fallback = consolidated_df[(consolidated_df["group"] == "TOTAL") & (consolidated_df["period"] == period)]
+    return fallback.iloc[0] if not fallback.empty else None
+
+
 def export_consolidated_excel(
     consolidated_df: pd.DataFrame,
     output_base: str | Path,
@@ -3140,21 +3188,7 @@ def export_consolidated_excel(
         # now module-level helpers (R2b-ii todo #57 step 6).
         income_threshold = _resolve_income_threshold(output_base, segments, supersegments, seg_name)
 
-        def _income_bin_title(income_val: Any) -> str:
-            """Portfolio-owner labels based on configured income_bin threshold."""
-            try:
-                iv = int(float(income_val))
-            except (TypeError, ValueError):
-                return f"Income Bin {income_val}"
-            if iv == 1:
-                if income_threshold is not None:
-                    return f"income_bin <= {income_threshold:,.0f}€"
-                return "Income Bin 1"
-            if iv == 2:
-                if income_threshold is not None:
-                    return f"income_bin > {income_threshold:,.0f}€"
-                return "Income Bin 2"
-            return f"Income Bin {income_val}"
+        # _income_bin_title is now a module-level helper (R2b-ii todo #57 step 10).
 
         audit_path = data_dir / ("audit_base_mr.csv" if period == "mr" else "audit_base.csv")
         audit_full: pd.DataFrame | None = None
@@ -3205,7 +3239,7 @@ def export_consolidated_excel(
                 if c not in tbl.columns:
                     tbl[c] = np.nan
             tbl = tbl[template_cols]
-            out_tables.append((_income_bin_title(income_val), tbl))
+            out_tables.append((_income_bin_title(income_val, income_threshold), tbl))
 
         # Rows with missing or out-of-grid income_bin (audit-only; closes sum vs main RP)
         if audit_full is not None and "income_bin" in audit_full.columns and income_values:
@@ -3343,18 +3377,6 @@ def export_consolidated_excel(
         if not ib_vals:
             return None
 
-        def _ib_label(iv: float) -> str:
-            try:
-                iv_int = int(iv)
-            except (TypeError, ValueError):
-                return f"Bin {iv}"
-            if income_threshold is not None:
-                if iv_int == 1:
-                    return f"≤ {income_threshold:,.0f}€"
-                if iv_int == 2:
-                    return f"> {income_threshold:,.0f}€"
-            return f"Bin {iv_int}"
-
         # ── Compute risk per (income_bin, category) from desagregado ──
         risk_lookup: dict[tuple[float, str], float | None] = {}
         if df_sum is not None and "passes_cut" in df_sum.columns:
@@ -3397,7 +3419,7 @@ def export_consolidated_excel(
 
         rows: list[dict] = []
         for iv in ib_vals:
-            label = _ib_label(iv)
+            label = _ib_label(iv, income_threshold)
             ib_mask = ib_col_a == iv
             for audit_cls, grid_cat in cat_map.items():
                 cls_mask = cls_col == audit_cls
@@ -3434,18 +3456,6 @@ def export_consolidated_excel(
 
     # _write_acceptance_strip_1d and _write_acceptance_grid are now
     # module-level helpers (R2b-ii todo #57 step 9).
-
-    def _get_total_row(period: str, scenario: str = "base"):
-        mask = (
-            (consolidated_df["group"] == "TOTAL")
-            & (consolidated_df["period"] == period)
-            & (consolidated_df["scenario"] == scenario)
-        )
-        rows = consolidated_df[mask]
-        if not rows.empty:
-            return rows.iloc[0]
-        fallback = consolidated_df[(consolidated_df["group"] == "TOTAL") & (consolidated_df["period"] == period)]
-        return fallback.iloc[0] if not fallback.empty else None
 
     # =====================================================================
     # Build workbook
@@ -3491,7 +3501,7 @@ def export_consolidated_excel(
         ws_exec.row_dimensions[3].height = 6
 
         # --- MAIN PERIOD KPI cards (rows 4-5) ---
-        tr_main = _get_total_row("main")
+        tr_main = _get_total_row(consolidated_df, "main")
         kpi_row = 4
         ws_exec.row_dimensions[kpi_row].height = 38
         ws_exec.row_dimensions[kpi_row + 1].height = 22
@@ -3530,7 +3540,7 @@ def export_consolidated_excel(
             ws_exec.cell(row=kpi_row, column=1).font = _FONT_SUBTITLE
 
         # --- MR PERIOD KPI cards (rows 6-7) ---
-        tr_mr = _get_total_row("mr")
+        tr_mr = _get_total_row(consolidated_df, "mr")
         mr_row = 6
         ws_exec.row_dimensions[mr_row].height = 38
         ws_exec.row_dimensions[mr_row + 1].height = 22
