@@ -264,17 +264,58 @@ def main(
     resimulate_risk: list[float] | None = None,
 ):
     """
-    Load and preprocess SAS data using configuration.
+    Run the full single-segment scoring pipeline end-to-end.
+
+    Orchestrates the phases documented in ``CLAUDE.md``: config load,
+    data loading, preprocessing, inference, optimization, scenario
+    analysis, sensitivity, RI optimizer, trend analysis, and HTML report.
 
     Args:
-        config_path: Path to the configuration TOML file (default: config.toml)
-        model_path: Optional path to a pre-trained model directory.
-        training_only: If True, only runs data preprocessing and model training.
+        config_path: Path to the configuration TOML file (default: ``config.toml``).
+        model_path: Optional path to a pre-trained model directory. When set,
+            the inference phase skips training and loads this artefact; paths
+            are subject to the ``safe_joblib_load`` trusted-root allowlist
+            (see ``src/persistence.py`` and ``SCORING_TRUSTED_MODEL_ROOTS``).
+        training_only: If True, run only the preprocessing + inference phases
+            (skip optimization, scenario analysis, sensitivity, RI optimizer,
+            and report generation).
+        baseline_mode: If True, force ``settings.baseline_mode = True`` — show
+            the current booked portfolio as-is with no cutoff optimization
+            (Optimum = Actual, zero swap-in/swap-out). MR inference still runs.
+            Only the base scenario is generated; sensitivity and RI optimizer
+            are skipped. Equivalent to the ``--baseline`` CLI flag.
+        base_scenario_only: If True, force ``settings.base_scenario_only =
+            True`` — generate only the base scenario, skip pessimistic /
+            optimistic scenarios. Config-only flag; no CLI equivalent.
         skip_dq_checks: If True, skip data quality checks.
-        preloaded_data: Optional pre-loaded and standardized DataFrame.
+        preloaded_data: Optional pre-loaded and standardized DataFrame. When
+            provided, bypasses the SAS read in the data-loading phase.
+            ``run_batch.py`` uses this to share a loaded DataFrame across
+            segments.
+        output: ``OutputPaths`` instance controlling where all artifacts are
+            written. Defaults to paths rooted at the current working
+            directory.
+        floor_cells_path: Path to a CSV of "floor cells" (bins that must be
+            accepted regardless of optimization). Used for sequential cutoff
+            ordering across segments — see ``cutoff_floor_segment`` /
+            ``cutoff_ordering_mode`` in ``CLAUDE.md``.
+        floor_cells_mode: ``"floor"`` (must-accept) or ``"ceiling"``
+            (must-reject) interpretation of ``floor_cells_path``. Paired with
+            the bottom-up vs top-down ordering chosen in batch mode.
+        resimulate_risk: Optional list of risk targets (in %). When provided,
+            the pipeline skips training and optimization, reloads cached
+            optimization artefacts, and re-runs scenario analysis at the
+            supplied targets. See the ``--resimulate`` CLI flag and the
+            Resimulation section of ``CLAUDE.md``.
 
     Returns:
-        Tuple of processed DataFrames, or None if processing fails
+        Result dict from ``run_optimization_phase`` / ``run_scenario_analysis``,
+        or ``None`` when running in ``training_only`` or ``resimulate_risk``
+        mode (no downstream result to return).
+
+    Raises:
+        ConfigLoadError, DataLoadError, PreprocessingError, InferencePhaseError,
+        OptimizationError: each wraps the underlying cause with segment context.
     """
     if output is None:
         output = OutputPaths()
