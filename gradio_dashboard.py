@@ -901,9 +901,7 @@ def create_app() -> gr.Blocks:
                             "mask": optimal_mask,
                         }
                         n_acc = sum(optimal_mask)
-                        info = (
-                            f"**1D mode** ({variables[0]}): {n_acc}/{len(optimal_mask)} bins accepted."
-                        )
+                        info = f"**1D mode** ({variables[0]}): {n_acc}/{len(optimal_mask)} bins accepted."
                         return kpi, fig, info, state
 
                     elif is_nd and optimal_mask is not None:

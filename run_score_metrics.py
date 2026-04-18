@@ -374,6 +374,7 @@ def plot_score_discriminance(df: pd.DataFrame, output_dir: Path) -> Path:
     apply_matplotlib_style()
 
     df = df.copy()
+
     def _make_x_label(r):
         if r["level"] == "supersegment":
             return f"[SS] {r['name']} ({r['period']})"

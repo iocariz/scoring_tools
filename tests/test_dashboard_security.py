@@ -125,4 +125,3 @@ def test_static_root_route_is_shadowed_by_flask_default():
     endpoints = {rule.endpoint for rule in app.url_map.iter_rules() if rule.rule == "/static/<path:filename>"}
     assert "static" in endpoints
     assert "serve_static_root" in endpoints
-

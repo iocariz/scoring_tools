@@ -123,8 +123,7 @@ def _verify_integrity_sidecar(pkl_path: Path) -> None:
     expected = sidecar.read_text(encoding="ascii").strip().split()
     if not expected or len(expected[0]) != 64 or not all(c in "0123456789abcdef" for c in expected[0].lower()):
         raise ModelIntegrityError(
-            f"refusing to load {pkl_path}: sidecar {sidecar.name} is malformed "
-            f"(expected a 64-char hex SHA-256 digest)."
+            f"refusing to load {pkl_path}: sidecar {sidecar.name} is malformed (expected a 64-char hex SHA-256 digest)."
         )
     actual = _compute_sha256(pkl_path)
     if actual.lower() != expected[0].lower():

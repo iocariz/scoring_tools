@@ -266,8 +266,7 @@ class PreprocessingSettings(BaseModel):
         for var, direction in v.items():
             if direction not in (1, -1):
                 raise ValueError(
-                    f"directions['{var}'] must be 1 or -1, got {direction}. "
-                    f"1 = ascending risk, -1 = descending risk."
+                    f"directions['{var}'] must be 1 or -1, got {direction}. 1 = ascending risk, -1 = descending risk."
                 )
         return v
 
@@ -284,9 +283,7 @@ class PreprocessingSettings(BaseModel):
                     raise ValueError(f"min_accepted_bin_by_variable['{var}'] cannot be an empty dict")
                 for income_bin_value, th in threshold.items():
                     if th is None:
-                        raise ValueError(
-                            f"min_accepted_bin_by_variable['{var}']['{income_bin_value}'] cannot be null"
-                        )
+                        raise ValueError(f"min_accepted_bin_by_variable['{var}']['{income_bin_value}'] cannot be null")
                     try:
                         float(th)
                     except (TypeError, ValueError) as e:

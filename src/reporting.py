@@ -483,8 +483,7 @@ def _build_acceptance_strip_1d(df: pd.DataFrame, var_col: str) -> str:
 
         # Summary line
         parts.append(
-            f'<div class="strip-summary">{n_accepted}/{n_total} bins accepted '
-            f'({100 * n_accepted / n_total:.0f}%)</div>'
+            f'<div class="strip-summary">{n_accepted}/{n_total} bins accepted ({100 * n_accepted / n_total:.0f}%)</div>'
         )
 
         # Horizontal strip
@@ -500,9 +499,7 @@ def _build_acceptance_strip_1d(df: pd.DataFrame, var_col: str) -> str:
     return "\n".join(parts) if parts else None
 
 
-def _build_optimal_cutoff_1d(
-    csv_path: Path, var_name: str, settings: PreprocessingSettings
-) -> str | None:
+def _build_optimal_cutoff_1d(csv_path: Path, var_name: str, settings: PreprocessingSettings) -> str | None:
     """Render the optimal solution CSV for 1D as a table with decoded acceptance mask.
 
     Instead of showing the raw comma-separated mask, displays a clean table with
@@ -714,7 +711,7 @@ def _build_portfolio_metric_table(row: pd.Series, *, show_ci: bool = True) -> st
             row_cls = "row-swap"
 
         # KPI highlight on key risk/production cells for Actual and Optimum
-        kpi = ' kpi-highlight' if prefix in ("actual", "optimum") else ""
+        kpi = " kpi-highlight" if prefix in ("actual", "optimum") else ""
 
         lines.append(f'<tr class="{row_cls}">')
         lines.append(f"<td><strong>{label}</strong></td>")

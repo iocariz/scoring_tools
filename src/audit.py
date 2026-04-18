@@ -516,9 +516,9 @@ def validate_audit_against_summary(
 
     if swap_in_row.empty or swap_out_row.empty:
         logger.warning(
-            "Audit validation failed: summary_table is missing Swap-in or Swap-out rows "
-            "(empty={'swap_in': %s, 'swap_out': %s}). Treating as validation failure, not a silent skip."
-            % (swap_in_row.empty, swap_out_row.empty)
+            f"Audit validation failed: summary_table is missing Swap-in or Swap-out rows "
+            f"(swap_in_empty={swap_in_row.empty}, swap_out_empty={swap_out_row.empty}). "
+            f"Treating as validation failure, not a silent skip."
         )
         return False
 

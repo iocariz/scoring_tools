@@ -46,9 +46,7 @@ from src.persistence import (
 from src.utils import calculate_b2_ever_h6
 
 
-def _stratified_cv_splitter(
-    raw_data: pd.DataFrame, cv_folds: int, random_state: int, indicators: list[str]
-):
+def _stratified_cv_splitter(raw_data: pd.DataFrame, cv_folds: int, random_state: int, indicators: list[str]):
     """Create a StratifiedKFold splitter using a binarized risk indicator.
 
     Falls back to plain KFold when the indicator column is missing or has only
@@ -368,9 +366,7 @@ def _get_regression_weights(processed_data: pd.DataFrame) -> pd.Series | None:
     return None
 
 
-def _create_feature_dataframe(
-    mesh_df: pd.DataFrame, features: list[str], var0: str, var1: str | None
-) -> pd.DataFrame:
+def _create_feature_dataframe(mesh_df: pd.DataFrame, features: list[str], var0: str, var1: str | None) -> pd.DataFrame:
     """
     Create feature DataFrame for model predictions on a mesh grid.
 
@@ -438,20 +434,29 @@ def plot_3d_surface(
             fig = go.Figure()
             fig.add_trace(
                 go.Scatter(
-                    x=train_data[var0], y=train_data[target_var], mode="markers",
-                    marker=dict(size=5, color=styles.COLOR_ACCENT, opacity=0.7), name="Training Data",
+                    x=train_data[var0],
+                    y=train_data[target_var],
+                    mode="markers",
+                    marker=dict(size=5, color=styles.COLOR_ACCENT, opacity=0.7),
+                    name="Training Data",
                 )
             )
             fig.add_trace(
                 go.Scatter(
-                    x=test_data[var0], y=test_data[target_var], mode="markers",
-                    marker=dict(size=5, color=styles.COLOR_RISK, opacity=0.7), name="Test Data",
+                    x=test_data[var0],
+                    y=test_data[target_var],
+                    mode="markers",
+                    marker=dict(size=5, color=styles.COLOR_RISK, opacity=0.7),
+                    name="Test Data",
                 )
             )
             fig.add_trace(
                 go.Scatter(
-                    x=x_range, y=y_pred, mode="lines",
-                    line=dict(color="rgba(0,0,0,0.8)", width=2), name="Model Predictions",
+                    x=x_range,
+                    y=y_pred,
+                    mode="lines",
+                    line=dict(color="rgba(0,0,0,0.8)", width=2),
+                    name="Model Predictions",
                 )
             )
             styles.apply_plotly_style(
@@ -646,7 +651,14 @@ def _select_feature_set_cv(
             # to prevent data leakage in cross-validation.
             train_outlier_stats = compute_outlier_stats(train_agg, target_var) if len(train_agg) > 2 else None
             val_agg = process_dataset(
-                raw_val, bins, variables, indicators, target_var, multiplier, features, z_threshold,
+                raw_val,
+                bins,
+                variables,
+                indicators,
+                target_var,
+                multiplier,
+                features,
+                z_threshold,
                 outlier_stats=train_outlier_stats,
             )
 
@@ -786,7 +798,14 @@ def compute_cell_level_ci(
         # to prevent data leakage in cross-validation.
         train_outlier_stats = compute_outlier_stats(train_agg, target_var) if len(train_agg) > 2 else None
         val_agg = process_dataset(
-            raw_val, bins, variables, indicators, target_var, multiplier, final_features, z_threshold,
+            raw_val,
+            bins,
+            variables,
+            indicators,
+            target_var,
+            multiplier,
+            final_features,
+            z_threshold,
             outlier_stats=train_outlier_stats,
         )
 
@@ -1683,7 +1702,9 @@ def compute_pre_reject_inference_data(
     final_features = risk_inference["features"]
     risk_vars = model_variables or variables
 
-    def _ensure_unique_merge_keys(df: pd.DataFrame, key_cols: list[str], value_cols: list[str], *, name: str) -> pd.DataFrame:
+    def _ensure_unique_merge_keys(
+        df: pd.DataFrame, key_cols: list[str], value_cols: list[str], *, name: str
+    ) -> pd.DataFrame:
         if not df.duplicated(key_cols).any():
             return df
         dup_count = int(df.duplicated(key_cols).sum())
@@ -1729,8 +1750,7 @@ def compute_pre_reject_inference_data(
         repesca_summary["stress_factor"] = repesca_summary["stress_factor"].fillna(global_fallback)
         sf = repesca_summary["stress_factor"]
         logger.info(
-            f"Swap-in per-bin stress: min={sf.min():.4f}, avg={sf.mean():.4f}, "
-            f"max={sf.max():.4f}, bins={len(sf)}"
+            f"Swap-in per-bin stress: min={sf.min():.4f}, avg={sf.mean():.4f}, max={sf.max():.4f}, bins={len(sf)}"
         )
         repesca_summary["todu_30ever_h6"] *= sf
         if "todu_30ever_h3" in repesca_summary.columns:
@@ -1812,7 +1832,9 @@ def run_optimization_pipeline(
     INDICADORES = indicators
     VARIABLES = variables
 
-    def _ensure_unique_merge_keys(df: pd.DataFrame, key_cols: list[str], value_cols: list[str], *, name: str) -> pd.DataFrame:
+    def _ensure_unique_merge_keys(
+        df: pd.DataFrame, key_cols: list[str], value_cols: list[str], *, name: str
+    ) -> pd.DataFrame:
         if not df.duplicated(key_cols).any():
             return df
         dup_count = int(df.duplicated(key_cols).sum())

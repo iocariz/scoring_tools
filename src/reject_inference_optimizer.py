@@ -86,7 +86,9 @@ def _compute_calibration_error(
 
     Returns the exposure-weighted mean of (relative_error ** 2).
     """
-    rate_col = "smoothed_acceptance_rate" if "smoothed_acceptance_rate" in acceptance_rates.columns else "acceptance_rate"
+    rate_col = (
+        "smoothed_acceptance_rate" if "smoothed_acceptance_rate" in acceptance_rates.columns else "acceptance_rate"
+    )
     merge_cols = variables + [rate_col] if rate_col != "acceptance_rate" else variables + ["acceptance_rate"]
     df = merged.merge(acceptance_rates[merge_cols], on=variables, how="left")
     # Keep calibration objective aligned with runtime RI adjustment behavior:

@@ -26,6 +26,7 @@ MAX_PARALLEL_JOBS = int(os.environ.get("SCORING_TOOLS_MAX_JOBS", min(4, os.cpu_c
 # Supersegment resolution helpers
 # ---------------------------------------------------------------------------
 
+
 def resolve_modelling_supersegment(segment_config: dict) -> str | None:
     """Return the modelling supersegment for a segment.
 
@@ -273,7 +274,9 @@ def fit_h3_extrapolation_curve(
         b3 = np.clip(b3, eps, None)
         b6 = np.clip(b6, eps, None)
         var_proxy = 1.0 / (n_eff * b6) + 1.0 / (n_eff * b3)
-        var_proxy = np.clip(var_proxy, eps, np.nanpercentile(var_proxy, 99.5) if len(var_proxy) > 5 else np.max(var_proxy))
+        var_proxy = np.clip(
+            var_proxy, eps, np.nanpercentile(var_proxy, 99.5) if len(var_proxy) > 5 else np.max(var_proxy)
+        )
         w_fit = 1.0 / np.sqrt(var_proxy)
         eff_w = w_fit**2
         weighting_scheme = "inverse_variance_proxy"
@@ -455,9 +458,14 @@ def calculate_per_bin_stress_factors(
         return pd.DataFrame(columns=variables + ["stress_factor"])
 
     global_stress = calculate_stress_factor(
-        df, status_col=status_col, score_col=score_col,
-        num_col=num_col, den_col=den_col, frac=frac,
-        target_status=target_status, higher_is_worse=higher_is_worse,
+        df,
+        status_col=status_col,
+        score_col=score_col,
+        num_col=num_col,
+        den_col=den_col,
+        frac=frac,
+        target_status=target_status,
+        higher_is_worse=higher_is_worse,
     )
 
     rows: list[dict] = []
@@ -508,8 +516,7 @@ def calculate_annual_coef(date_ini_book_obs: pd.Timestamp, date_fin_book_obs: pd
     """
     if date_fin_book_obs < date_ini_book_obs:
         raise ValueError(
-            f"date_fin_book_obs ({date_fin_book_obs.date()}) is before "
-            f"date_ini_book_obs ({date_ini_book_obs.date()})"
+            f"date_fin_book_obs ({date_fin_book_obs.date()}) is before date_ini_book_obs ({date_ini_book_obs.date()})"
         )
     n_month = (
         (date_fin_book_obs.year - date_ini_book_obs.year) * 12 + (date_fin_book_obs.month - date_ini_book_obs.month) + 1
@@ -618,9 +625,7 @@ def calculate_bootstrap_intervals(
         logger.warning("Bootstrap CI: data_booked is empty — returning zero CIs")
         return {"production_ci_lower": 0.0, "production_ci_upper": 0.0, "risk_ci_lower": 0.0, "risk_ci_upper": 0.0}
     if len(data_booked) < 10:
-        logger.warning(
-            f"Bootstrap CI: only {len(data_booked)} row(s) in data_booked — CIs may be unreliable"
-        )
+        logger.warning(f"Bootstrap CI: only {len(data_booked)} row(s) in data_booked — CIs may be unreliable")
 
     # Generate per-iteration seeds for reproducibility
     if random_state is not None:

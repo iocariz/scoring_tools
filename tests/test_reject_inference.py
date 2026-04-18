@@ -264,10 +264,7 @@ class TestTimeAwareAcceptanceRates:
 
         # Baseline "fixed prior" posterior mean using cfg prior_strength.
         global_rate = (bin_11["n_booked"] + bin_22["n_booked"]) / (
-            bin_11["n_booked"]
-            + bin_11["n_score_rejected"]
-            + bin_22["n_booked"]
-            + bin_22["n_score_rejected"]
+            bin_11["n_booked"] + bin_11["n_score_rejected"] + bin_22["n_booked"] + bin_22["n_score_rejected"]
         )
         alpha_cfg = max(bayesian_prior_strength * global_rate, 0.5)
         beta_cfg = max(bayesian_prior_strength * (1 - global_rate), 0.5)
@@ -912,7 +909,9 @@ class TestPartialOrderVerification:
             for v1 in [1, 2]:
                 for v2 in [1, 2]:
                     # Deliberately non-monotone: lower-risk cells get higher mults
-                    rows.append({"var0": v0, "var1": v1, "var2": v2, "reject_risk_multiplier": 3.0 - v0 - v1 + v2 * 0.1})
+                    rows.append(
+                        {"var0": v0, "var1": v1, "var2": v2, "reject_risk_multiplier": 3.0 - v0 - v1 + v2 * 0.1}
+                    )
         result = pd.DataFrame(rows)
         variables = ["var0", "var1", "var2"]
         enforced = _enforce_multiplier_monotonicity(result.copy(), variables)
@@ -979,9 +978,7 @@ class TestApplyH3MultiplierFlag:
         rates = self._make_rates()
         original_h3 = repesca["todu_30ever_h3"].values.copy()
 
-        result = apply_parceling_adjustment(
-            repesca, rates, VARIABLES, apply_h3_multiplier=False
-        )
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES, apply_h3_multiplier=False)
 
         # H6 should still be adjusted
         assert result["todu_30ever_h6"].iloc[2] > 300.0

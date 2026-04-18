@@ -312,18 +312,26 @@ def plot_3d_graph(
         var0 = variables[0]
         pred_col = f"{var_target}_pred"
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=data_train[var0], y=data_train[var_target],
-            mode="markers", name=f"{var_target} (actual)",
-            marker=dict(size=8, color="blue", opacity=0.7),
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=data_train[var0],
+                y=data_train[var_target],
+                mode="markers",
+                name=f"{var_target} (actual)",
+                marker=dict(size=8, color="blue", opacity=0.7),
+            )
+        )
         if pred_col in data_surf.columns:
             surf_sorted = data_surf.sort_values(var0)
-            fig.add_trace(go.Scatter(
-                x=surf_sorted[var0], y=surf_sorted[pred_col],
-                mode="lines+markers", name="Regression",
-                line=dict(color="red", width=2),
-            ))
+            fig.add_trace(
+                go.Scatter(
+                    x=surf_sorted[var0],
+                    y=surf_sorted[pred_col],
+                    mode="lines+markers",
+                    name="Regression",
+                    line=dict(color="red", width=2),
+                )
+            )
         styles.apply_plotly_style(fig, title="Regression Plot (1D)", width=1000, height=600)
         fig.update_layout(xaxis_title=var0, yaxis_title=var_target)
         return fig
@@ -484,7 +492,9 @@ class RiskProductionVisualizer:
         self.actual_todu_30 = tudu_30_ever
         self.actual_todu_amt = tudu_amt_pile
 
-        self.B2_0 = calculate_b2_ever_h6(tudu_30_ever, tudu_amt_pile, multiplier=self.multiplier, as_percentage=True, decimals=2)
+        self.B2_0 = calculate_b2_ever_h6(
+            tudu_30_ever, tudu_amt_pile, multiplier=self.multiplier, as_percentage=True, decimals=2
+        )
 
         # Calculate OA_0
         self.OA_0 = self.data_summary_disaggregated["oa_amt_h0_boo"].sum()
@@ -753,9 +763,7 @@ class RiskProductionVisualizer:
             data_filtered = candidates.sort_values("b2_ever_h6").head(1)
         else:
             # Explicitly select max production under risk cap (#30)
-            data_filtered = data_filtered.sort_values(
-                ["b2_ever_h6", "oa_amt_h0"]
-            ).tail(1)
+            data_filtered = data_filtered.sort_values(["b2_ever_h6", "oa_amt_h0"]).tail(1)
         return data_filtered
 
     def _apply_static_update(self):
@@ -1986,8 +1994,7 @@ def plot_acceptance_grid_nd(
     # Compact cell text: production + risk only; ACC/REJ is conveyed by color
     if "oa_amt_h0" in cell_df.columns:
         cell_df["_text"] = cell_df.apply(
-            lambda r: "N/A" if r.get("_b2_missing", False)
-            else f"{_fmt_production(r['oa_amt_h0'])}<br>{r['_b2']:.1f}%",
+            lambda r: "N/A" if r.get("_b2_missing", False) else f"{_fmt_production(r['oa_amt_h0'])}<br>{r['_b2']:.1f}%",
             axis=1,
         )
     else:

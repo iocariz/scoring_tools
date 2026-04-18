@@ -125,7 +125,9 @@ def run_preprocessing_phase(
     # within the configured observation period, not relative to max(df) across the full dataset.
     data_for_tasa_fin = data_clean
     if settings.date_ini_book_obs and settings.date_fin_book_obs:
-        data_for_tasa_fin = filter_by_date(data_clean, "mis_date", settings.date_ini_book_obs, settings.date_fin_book_obs)
+        data_for_tasa_fin = filter_by_date(
+            data_clean, "mis_date", settings.date_ini_book_obs, settings.date_fin_book_obs
+        )
 
     result = calculate_and_plot_transformation_rate(
         data_for_tasa_fin, date_col="mis_date", amount_col="oa_amt", n_months=settings.n_months

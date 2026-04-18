@@ -1637,8 +1637,7 @@ def _build_nd_slice_grid_figure(
         for x_value, x_label in zip(x_values, x_labels, strict=False):
             # Build full combo tuple in variable order
             combo = tuple(
-                x_value if v == grid_x_var else y_value if v == grid_y_var else fixed_vars[v]
-                for v in variables
+                x_value if v == grid_x_var else y_value if v == grid_y_var else fixed_vars[v] for v in variables
             )
             idx = grid.cell_index.get(combo)
             if idx is None:
@@ -1806,7 +1805,8 @@ def _build_nd_slice_grid_panel(
         # Count accepted cells for this slice
         var_positions = {v: variables.index(v) for v in slice_vars}
         slice_indices = [
-            idx for combo, idx in grid.cell_index.items()
+            idx
+            for combo, idx in grid.cell_index.items()
             if all(combo[var_positions[sv]] == fv for sv, fv in fixed_vars.items())
         ]
         accepted_count = int(current_mask_arr[slice_indices].sum()) if slice_indices else 0
@@ -2046,7 +2046,9 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
     frontier_label = f"{len(pareto_data)} points" if pareto_data else "Not loaded"
     frontier_detail = f"{risk_min:.2f}% to {risk_max:.2f}% risk"
     uncertainty_label = "Available" if has_ci else "Not loaded"
-    uncertainty_detail = "Toggle uncertainty overlay to inspect cell CI width" if has_ci else "No cell_level_ci.csv found"
+    uncertainty_detail = (
+        "Toggle uncertainty overlay to inspect cell CI width" if has_ci else "No cell_level_ci.csv found"
+    )
     if is_1d:
         guide_message = (
             "Use the risk selector to jump to the closest Pareto solution. "
@@ -2245,7 +2247,8 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                         dbc.CardHeader(
                             [
                                 html.Span(
-                                    f"Bin Acceptance ({grid.n_cells} bins)" if is_1d
+                                    f"Bin Acceptance ({grid.n_cells} bins)"
+                                    if is_1d
                                     else f"Cell Acceptance ({len(variables)} variables, {grid.n_cells} cells)",
                                     className="fw-bold",
                                 ),
@@ -2268,10 +2271,18 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                                     [
                                         dbc.Badge("Accept", color="success", className="me-2"),
                                         dbc.Badge("Reject", color="danger", className="me-2"),
-                                        dbc.Badge("Changed vs reference", color="warning", text_color="dark", className="me-2"),
-                                        dbc.Badge("Pinned Accept", color="success", className="me-2", style={"opacity": 0.8}),
+                                        dbc.Badge(
+                                            "Changed vs reference", color="warning", text_color="dark", className="me-2"
+                                        ),
+                                        dbc.Badge(
+                                            "Pinned Accept", color="success", className="me-2", style={"opacity": 0.8}
+                                        ),
                                         dbc.Badge("Pinned Reject", color="danger", style={"opacity": 0.8}),
-                                        *([dbc.Badge("Click to toggle", color="primary")] if len(variables) >= 3 else []),
+                                        *(
+                                            [dbc.Badge("Click to toggle", color="primary")]
+                                            if len(variables) >= 3
+                                            else []
+                                        ),
                                     ],
                                     className="mb-3 d-flex flex-wrap gap-2",
                                 ),
@@ -2306,11 +2317,20 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                                             "border": "none",
                                         },
                                         style_cell_conditional=[
-                                            {"if": {"column_id": variable}, "fontWeight": "600"} for variable in variables
+                                            {"if": {"column_id": variable}, "fontWeight": "600"}
+                                            for variable in variables
                                         ]
                                         + [
-                                            {"if": {"column_id": "booked_prod"}, "textAlign": "right", "minWidth": "110px"},
-                                            {"if": {"column_id": "rep_prod"}, "textAlign": "right", "minWidth": "110px"},
+                                            {
+                                                "if": {"column_id": "booked_prod"},
+                                                "textAlign": "right",
+                                                "minWidth": "110px",
+                                            },
+                                            {
+                                                "if": {"column_id": "rep_prod"},
+                                                "textAlign": "right",
+                                                "minWidth": "110px",
+                                            },
                                             {"if": {"column_id": "booked_risk_pct"}, "minWidth": "110px"},
                                         ],
                                         style_header={
@@ -2488,7 +2508,8 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
                     dbc.Col(
                         [
                             dbc.Card(
-                                [dbc.CardHeader("Configuration Summary"), dbc.CardBody(id="cutoff-results")], className="mb-3"
+                                [dbc.CardHeader("Configuration Summary"), dbc.CardBody(id="cutoff-results")],
+                                className="mb-3",
                             ),
                             dbc.Card(
                                 [
@@ -3187,8 +3208,7 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
                     y=cell_prod,
                     marker_color=bar_colors,
                     hovertemplate=(
-                        f"{var0}: %{{x}}<br>Production: \u20ac%{{y:,.0f}}"
-                        "<br>Risk: %{customdata:.2f}%<extra></extra>"
+                        f"{var0}: %{{x}}<br>Production: \u20ac%{{y:,.0f}}<br>Risk: %{{customdata:.2f}}%<extra></extra>"
                     ),
                     customdata=cell_risk,
                 )
@@ -3882,7 +3902,10 @@ def clear_pins(clear_clicks, reset_clicks, pinned_cells):
 
     if trigger_id == "reset-cutoffs-btn":
         if n_pins:
-            return {}, {"tone": "secondary", "message": f"Reset to the reference optimum and cleared {n_pins} pinned cells."}
+            return {}, {
+                "tone": "secondary",
+                "message": f"Reset to the reference optimum and cleared {n_pins} pinned cells.",
+            }
         return {}, {"tone": "secondary", "message": "Reset to the reference optimum."}
 
     return dash.no_update, dash.no_update
@@ -4135,7 +4158,11 @@ def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current
     if not n_clicks or not store_data:
         return current_values, dash.no_update, dash.no_update
     if not pinned_cells:
-        return current_values, dash.no_update, {"tone": "info", "message": "Pin at least one cell before re-optimizing."}
+        return (
+            current_values,
+            dash.no_update,
+            {"tone": "info", "message": "Pin at least one cell before re-optimizing."},
+        )
 
     try:
         from src.optimization_utils import CellGrid, mask_to_cutoffs, solve_with_fixed_cells
@@ -4150,7 +4177,11 @@ def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current
         # Load summary data
         paths = get_scenario_paths(scenario, segment)
         if not paths["summary_data"].exists():
-            return current_values, dash.no_update, {"tone": "danger", "message": "Summary data not found for re-optimization."}
+            return (
+                current_values,
+                dash.no_update,
+                {"tone": "danger", "message": "Summary data not found for re-optimization."},
+            )
         summary_data = pd.read_csv(paths["summary_data"])
 
         grid = CellGrid.from_summary(summary_data, variables)
@@ -4181,13 +4212,17 @@ def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current
 
         if mask is None:
             logger.warning("Re-optimization with pins: infeasible")
-            return current_values, dash.no_update, {
-                "tone": "warning",
-                "message": (
-                    f"No feasible solution found for {n_pins} pins ({n_accept} accept, {n_reject} reject) "
-                    f"at target risk {target_risk:.2f}%. Try fewer accept pins or a higher risk target."
-                ),
-            }
+            return (
+                current_values,
+                dash.no_update,
+                {
+                    "tone": "warning",
+                    "message": (
+                        f"No feasible solution found for {n_pins} pins ({n_accept} accept, {n_reject} reject) "
+                        f"at target risk {target_risk:.2f}%. Try fewer accept pins or a higher risk target."
+                    ),
+                },
+            )
 
         success_message = (
             f"Applied {n_pins} pins ({n_accept} accept, {n_reject} reject) at target {target_risk:.2f}% — "
@@ -4203,10 +4238,14 @@ def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current
         bins = store_data["bins"]
         cutoffs = mask_to_cutoffs(mask, grid, inv_vars)
         if var0_col not in cutoffs:
-            return current_values, dash.no_update, {
-                "tone": "warning",
-                "message": "Pinned solution was feasible, but cutoffs could not be reconstructed from the mask.",
-            }
+            return (
+                current_values,
+                dash.no_update,
+                {
+                    "tone": "warning",
+                    "message": "Pinned solution was feasible, but cutoffs could not be reconstructed from the mask.",
+                },
+            )
 
         new_values = []
         for bin_val in bins:
@@ -4221,10 +4260,14 @@ def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current
 
     except Exception as e:
         logger.error(f"Re-optimize with pins failed: {e}")
-        return current_values, dash.no_update, {
-            "tone": "danger",
-            "message": "Re-optimization with pins failed. Check the logs and try a simpler set of pins.",
-        }
+        return (
+            current_values,
+            dash.no_update,
+            {
+                "tone": "danger",
+                "message": "Re-optimization with pins failed. Check the logs and try a simpler set of pins.",
+            },
+        )
 
 
 # --- N>2 Cell Pin Callback ---

@@ -190,9 +190,7 @@ def run_resimulation(
 
     data_demand_period = filter_by_date(data_clean, "mis_date", settings.date_ini_book_obs, settings.date_fin_book_obs)
     if "status_name" in data_demand_period.columns and "oa_amt_h0" in data_demand_period.columns:
-        total_demand = data_demand_period.loc[
-            data_demand_period["status_name"] != "canceled", "oa_amt_h0"
-        ].sum()
+        total_demand = data_demand_period.loc[data_demand_period["status_name"] != "canceled", "oa_amt_h0"].sum()
     else:
         total_demand = data_demand_period["oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_period.columns else 0.0
 
@@ -343,6 +341,7 @@ def main(
             # Let run_resimulation infer output dir from config path unless
             # an explicit output was provided by the caller (e.g., run_batch.py).
             import pathlib
+
             resim_output = output if output.base_dir != pathlib.Path(".") else None
             run_resimulation(config_path, resimulate_risk, output=resim_output)
             return None
@@ -370,8 +369,15 @@ def main(
         # Save resimulation artifacts (parquet + scalars) for future --resimulate runs
         try:
             _save_resimulation_artifacts(
-                output, data_clean, data_booked, stress_factor, tasa_fin, annual_coef,
-                settings, per_bin_stress, per_bin_tasa_fin,
+                output,
+                data_clean,
+                data_booked,
+                stress_factor,
+                tasa_fin,
+                annual_coef,
+                settings,
+                per_bin_stress,
+                per_bin_tasa_fin,
             )
         except Exception as e:
             logger.warning(f"[{segment}] Failed to save resimulation artifacts (non-blocking): {e}")

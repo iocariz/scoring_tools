@@ -157,7 +157,9 @@ def compute_acceptance_rates(
 
             if include_all_rejections:
                 rejected_w = data_demand.loc[data_demand["status_name"] == StatusName.REJECTED.value, variables].copy()
-                rejected_w["__w"] = data_tmp.loc[data_demand["status_name"] == StatusName.REJECTED.value, "__w"].to_numpy()
+                rejected_w["__w"] = data_tmp.loc[
+                    data_demand["status_name"] == StatusName.REJECTED.value, "__w"
+                ].to_numpy()
                 n_rejected = rejected_w.groupby(variables)["__w"].sum().reset_index(name="n_score_rejected")
                 n_rejected_raw = rejected_w.groupby(variables).size().reset_index(name="n_score_rejected_raw")
             else:
@@ -179,7 +181,9 @@ def compute_acceptance_rates(
     # upcast int → float; we restore after fillna to keep downstream joins stable).
     var_dtypes = {v: n_booked[v].dtype for v in variables}
     rates = n_booked.merge(n_rejected, on=variables, how="outer").fillna(0)
-    rates = rates.merge(n_booked_raw, on=variables, how="left").merge(n_rejected_raw, on=variables, how="left").fillna(0)
+    rates = (
+        rates.merge(n_booked_raw, on=variables, how="left").merge(n_rejected_raw, on=variables, how="left").fillna(0)
+    )
     for v, dt in var_dtypes.items():
         if rates[v].dtype != dt:
             rates[v] = rates[v].astype(dt)
@@ -400,10 +404,14 @@ def _enforce_multiplier_monotonicity(
 
         max_change = np.abs(result["reject_risk_multiplier"].values - prev_values).max()
         if max_change < tol:
-            logger.debug(f"Isotonic monotonicity converged after {iteration + 1} iteration(s) (max_change={max_change:.2e})")
+            logger.debug(
+                f"Isotonic monotonicity converged after {iteration + 1} iteration(s) (max_change={max_change:.2e})"
+            )
             break
     else:
-        logger.debug(f"Isotonic monotonicity did not converge after {max_iterations} iterations (max_change={max_change:.2e})")
+        logger.debug(
+            f"Isotonic monotonicity did not converge after {max_iterations} iterations (max_change={max_change:.2e})"
+        )
 
     # Post-hoc: verify and fix partial-order violations across all dimensions.
     # A cell a dominates b if a[v] >= b[v] for all v (respecting direction).

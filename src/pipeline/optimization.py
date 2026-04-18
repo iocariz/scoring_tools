@@ -148,8 +148,11 @@ def run_optimization_phase(
 
         # Use evaluate_solution for KPIs — same code path as all other modes
         baseline_kpis = evaluate_solution(
-            accept_all_mask, grid, settings.indicators,
-            settings.multiplier, multiplier_h3=settings.multiplier_h3,
+            accept_all_mask,
+            grid,
+            settings.indicators,
+            settings.multiplier,
+            multiplier_h3=settings.multiplier_h3,
         )
         baseline_kpis["sol_fac"] = 0
 
@@ -260,14 +263,9 @@ def run_optimization_phase(
             floor_df = floor_df.dropna(subset=settings.variables)
             n_nan_rows = n_raw - len(floor_df)
             if n_nan_rows > 0:
-                logger.warning(
-                    f"[{segment}] Floor cells CSV: dropped {n_nan_rows} row(s) with NaN coordinates"
-                )
+                logger.warning(f"[{segment}] Floor cells CSV: dropped {n_nan_rows} row(s) with NaN coordinates")
             # Build a float-normalized lookup to handle int/float type mismatches
-            normalized_index = {
-                tuple(float(v) for v in coord): idx
-                for coord, idx in floor_grid.cell_index.items()
-            }
+            normalized_index = {tuple(float(v) for v in coord): idx for coord, idx in floor_grid.cell_index.items()}
             n_floor_rows = len(floor_df)
 
             if floor_cells_mode == "ceiling":
@@ -277,10 +275,7 @@ def run_optimization_phase(
                     coord = tuple(float(row[var]) for var in settings.variables)
                     if coord in normalized_index:
                         allowed_indices.add(normalized_index[coord])
-                floor_fixed_cells = {
-                    idx: 0 for idx in range(len(floor_grid.cell_data))
-                    if idx not in allowed_indices
-                }
+                floor_fixed_cells = {idx: 0 for idx in range(len(floor_grid.cell_data)) if idx not in allowed_indices}
                 logger.info(
                     f"[{segment}] Ceiling constraint (top-down): {len(allowed_indices)} cells allowed, "
                     f"{len(floor_fixed_cells)} cells forced rejected (from {floor_cells_path})"
@@ -328,7 +323,9 @@ def run_optimization_phase(
                 reject = False
                 for var, threshold_cfg in settings.min_accepted_bin_by_variable.items():
                     if isinstance(threshold_cfg, dict):
-                        resolved = conditional_thresholds[var].get(float(income_val)) if income_val is not None else None
+                        resolved = (
+                            conditional_thresholds[var].get(float(income_val)) if income_val is not None else None
+                        )
                         if resolved is None:
                             continue
                         threshold = resolved
@@ -342,7 +339,9 @@ def run_optimization_phase(
 
             if floor_fixed_cells is None:
                 floor_fixed_cells = {}
-            conflicts = [idx for idx, val in minbin_reject_cells.items() if floor_fixed_cells.get(idx) == 1 and val == 0]
+            conflicts = [
+                idx for idx, val in minbin_reject_cells.items() if floor_fixed_cells.get(idx) == 1 and val == 0
+            ]
             if conflicts:
                 raise ValueError(
                     f"[{segment}] min_accepted_bin_by_variable conflicts with must-accept floor constraints "
@@ -418,9 +417,7 @@ def run_optimization_phase(
                     # Legacy enumeration can blow up in memory when the grid is large.
                     # If it fails, fall back to GA-based search (if pymoo is available)
                     # rather than crashing.
-                    logger.warning(
-                        f"[{segment}] Legacy enumeration failed ({e}). Trying GA fallback instead."
-                    )
+                    logger.warning(f"[{segment}] Legacy enumeration failed ({e}). Trying GA fallback instead.")
                     from src.optimization_utils import _ga_pareto_fallback
 
                     pareto_df, grid, pareto_masks = _ga_pareto_fallback(
@@ -481,7 +478,15 @@ def run_optimization_phase(
         f"b2 range: [{b2_min:.2f}%, {b2_max:.2f}%] | optimum_risk={settings.optimum_risk:.1f}% | {elapsed:.1f}s"
     )
 
-    return data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var, grid, pareto_masks, floor_fixed_cells
+    return (
+        data_summary_desagregado,
+        data_summary,
+        data_summary_sample_no_opt,
+        values_per_var,
+        grid,
+        pareto_masks,
+        floor_fixed_cells,
+    )
 
 
 def run_scenario_analysis(
@@ -1119,7 +1124,8 @@ def run_ri_optimizer_phase(
         # Step 3: Compute acceptance rates (on training split)
         # Propagate Bayesian smoothing settings so optimizer uses the same rates as main pipeline
         acceptance_rates = compute_acceptance_rates(
-            train_demand, settings.variables,
+            train_demand,
+            settings.variables,
             bayesian_smoothing=settings.reject_bayesian_smoothing,
             bayesian_prior_strength=settings.reject_bayesian_prior_strength,
             include_all_rejections=settings.reject_include_all_rejections,
@@ -1180,7 +1186,8 @@ def run_ri_optimizer_phase(
                     per_bin_stress=per_bin_stress,
                 )
                 val_acceptance_rates = compute_acceptance_rates(
-                    val_demand, settings.variables,
+                    val_demand,
+                    settings.variables,
                     bayesian_smoothing=settings.reject_bayesian_smoothing,
                     bayesian_prior_strength=settings.reject_bayesian_prior_strength,
                     include_all_rejections=settings.reject_include_all_rejections,
