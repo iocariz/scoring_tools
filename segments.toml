@@ -82,13 +82,15 @@ min_risk = 0.8
 max_risk = 1.4
 cutoff_floor_segment = "no_premium_cd"  # Must accept at least what cd accepts (least restrictive)
 
-[segments.no_premium_ab.min_accepted_bin_by_variable.new_efx_clus]
-1 = 4
-2 = 2
+[segments.no_premium_ab.fixed_cutoffs]
+sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]   # var0 bin values
 
-[segments.no_premium_ab.min_accepted_bin_by_variable.sc_octroi_new_clus]
-1 = 2
-2 = 1
+# new_efx_clus cutoffs vary by income_bin value (conditioning variable):
+[segments.no_premium_ab.fixed_cutoffs.new_efx_clus]
+1 = [21, 21, 21, 21, 21, 9, 8, 7, 7, 7]     # when income_bin = 1
+2 = [21, 8, 8, 8, 8, 8, 5, 5, 5, 5]    # when income_bin = 2
+strict_validation = false
+# run_all_scenarios = false
 
 [segments.no_premium_cd]
 segment_filter = "no_premium_cd"
