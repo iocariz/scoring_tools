@@ -2592,6 +2592,121 @@ def _build_top_movers_df(source_df, *, period: str) -> pd.DataFrame:
     return movers
 
 
+# =============================================================================
+# Config-loading helpers for the Excel exporter (R2b-ii todo #57 step 6)
+# =============================================================================
+# Previously nested inside export_consolidated_excel / _build_income_bin_tables,
+# these read segment/global config files to derive multipliers, inv_vars,
+# baseline_mode, and income-bin thresholds. Lifted to module level with
+# explicit output_base / segments / supersegments parameters so the
+# function body shrinks further and these are independently testable.
+
+
+def _load_segment_settings(output_base: Path, seg_name_local: str) -> dict[str, Any]:
+    """Load multiplier, multiplier_h3, inv_vars, baseline_mode from the segment's saved config."""
+    defaults: dict[str, Any] = {
+        "multiplier": float(DEFAULT_RISK_MULTIPLIER),
+        "multiplier_h3": None,
+        "inv_vars": None,
+        "baseline_mode": False,
+    }
+    try:
+        import tomllib
+
+        seg_cfg_path = output_base / seg_name_local / "config_segment.toml"
+        if seg_cfg_path.exists():
+            cfg = tomllib.loads(seg_cfg_path.read_text(encoding="utf-8"))
+            prep = cfg.get("preprocessing", cfg)
+            if "multiplier" in prep:
+                defaults["multiplier"] = float(prep["multiplier"])
+            if "multiplier_h3" in prep:
+                defaults["multiplier_h3"] = float(prep["multiplier_h3"])
+            if "inv_vars" in prep:
+                defaults["inv_vars"] = list(prep["inv_vars"])
+            if "baseline_mode" in prep:
+                defaults["baseline_mode"] = bool(prep["baseline_mode"])
+    except Exception:
+        logger.warning(
+            f"_get_segment_defaults: failed to read segment config for '{seg_name_local}'; using global defaults",
+            exc_info=True,
+        )
+    return defaults
+
+
+def _extract_binary_income_threshold(bin_edges: Any) -> float | None:
+    if not isinstance(bin_edges, list) or len(bin_edges) < 3:
+        return None
+    finite_edges = []
+    for e in bin_edges:
+        try:
+            ef = float(e)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(ef):
+            finite_edges.append(ef)
+    if len(finite_edges) != 1:
+        return None
+    return float(finite_edges[0])
+
+
+def _resolve_income_threshold(
+    output_base: Path,
+    segments: dict[str, dict[str, Any]],
+    supersegments: dict[str, dict[str, Any]],
+    seg_name_local: str,
+) -> float | None:
+    # 0) Segment run config snapshot (contains learned/injected edges in batch mode)
+    try:
+        import tomllib
+
+        seg_cfg_path = output_base / seg_name_local / "config_segment.toml"
+        if seg_cfg_path.exists():
+            cfg = tomllib.loads(seg_cfg_path.read_text(encoding="utf-8"))
+            prep = cfg.get("preprocessing", cfg)
+            seg_file_edges = prep.get("bins", {}).get("income_bin", {}).get("bin_edges")
+            th = _extract_binary_income_threshold(seg_file_edges)
+            if th is not None:
+                return th
+    except Exception:
+        logger.warning(
+            f"_resolve_income_threshold: failed to read segment-file edges for "
+            f"'{seg_name_local}'; falling back to segments.toml",
+            exc_info=True,
+        )
+
+    seg_cfg = segments.get(seg_name_local, {})
+    # 1) Segment-level bins override
+    seg_edges = seg_cfg.get("bins", {}).get("income_bin", {}).get("bin_edges")
+    th = _extract_binary_income_threshold(seg_edges)
+    if th is not None:
+        return th
+
+    # 2) Reporting supersegment-level fixed bin edges
+    reporting_ss = seg_cfg.get("reporting_supersegment") or seg_cfg.get("supersegment")
+    if reporting_ss and reporting_ss in supersegments:
+        ss_edges = supersegments[reporting_ss].get("bin_edges", {}).get("income_bin")
+        th = _extract_binary_income_threshold(ss_edges)
+        if th is not None:
+            return th
+
+    # 3) Global config fallback (config.toml)
+    try:
+        cfg_path = Path("config.toml")
+        if cfg_path.exists():
+            cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+            global_edges = cfg.get("preprocessing", {}).get("bins", {}).get("income_bin", {}).get("bin_edges")
+            th = _extract_binary_income_threshold(global_edges)
+            if th is not None:
+                return th
+    except Exception:
+        logger.warning(
+            f"_resolve_income_threshold: failed to read global config.toml edges for "
+            f"'{seg_name_local}'; no threshold will be resolved",
+            exc_info=True,
+        )
+    return None
+
+
 def export_consolidated_excel(
     consolidated_df: pd.DataFrame,
     output_base: str | Path,
@@ -2644,35 +2759,7 @@ def export_consolidated_excel(
     # _write_rp_sheet and _write_classification_grid are now module-level
     # helpers (R2b todo #57 step 4).
 
-    def _load_segment_settings(seg_name_local: str) -> dict[str, Any]:
-        """Load multiplier, multiplier_h3, inv_vars, baseline_mode from the segment's saved config."""
-        defaults: dict[str, Any] = {
-            "multiplier": float(DEFAULT_RISK_MULTIPLIER),
-            "multiplier_h3": None,
-            "inv_vars": None,
-            "baseline_mode": False,
-        }
-        try:
-            import tomllib
-
-            seg_cfg_path = output_base / seg_name_local / "config_segment.toml"
-            if seg_cfg_path.exists():
-                cfg = tomllib.loads(seg_cfg_path.read_text(encoding="utf-8"))
-                prep = cfg.get("preprocessing", cfg)
-                if "multiplier" in prep:
-                    defaults["multiplier"] = float(prep["multiplier"])
-                if "multiplier_h3" in prep:
-                    defaults["multiplier_h3"] = float(prep["multiplier_h3"])
-                if "inv_vars" in prep:
-                    defaults["inv_vars"] = list(prep["inv_vars"])
-                if "baseline_mode" in prep:
-                    defaults["baseline_mode"] = bool(prep["baseline_mode"])
-        except Exception:
-            logger.warning(
-                f"_get_segment_defaults: failed to read segment config for '{seg_name_local}'; using global defaults",
-                exc_info=True,
-            )
-        return defaults
+    # _load_segment_settings is now a module-level helper (R2b-ii todo #57 step 6).
 
     def _build_income_bin_tables(
         seg_name: str, period: str, template_cols: list[str]
@@ -2733,76 +2820,11 @@ def export_consolidated_excel(
 
         from src.mr_pipeline import calculate_metrics_from_cuts
 
-        seg_settings = _load_segment_settings(seg_name)
+        seg_settings = _load_segment_settings(output_base, seg_name)
 
-        def _extract_binary_income_threshold(bin_edges: Any) -> float | None:
-            if not isinstance(bin_edges, list) or len(bin_edges) < 3:
-                return None
-            finite_edges = []
-            for e in bin_edges:
-                try:
-                    ef = float(e)
-                except (TypeError, ValueError):
-                    continue
-                if np.isfinite(ef):
-                    finite_edges.append(ef)
-            if len(finite_edges) != 1:
-                return None
-            return float(finite_edges[0])
-
-        def _resolve_income_threshold(seg_name_local: str) -> float | None:
-            # 0) Segment run config snapshot (contains learned/injected edges in batch mode)
-            try:
-                import tomllib
-
-                seg_cfg_path = output_base / seg_name_local / "config_segment.toml"
-                if seg_cfg_path.exists():
-                    cfg = tomllib.loads(seg_cfg_path.read_text(encoding="utf-8"))
-                    prep = cfg.get("preprocessing", cfg)
-                    seg_file_edges = prep.get("bins", {}).get("income_bin", {}).get("bin_edges")
-                    th = _extract_binary_income_threshold(seg_file_edges)
-                    if th is not None:
-                        return th
-            except Exception:
-                logger.warning(
-                    f"_resolve_income_threshold: failed to read segment-file edges for "
-                    f"'{seg_name_local}'; falling back to segments.toml",
-                    exc_info=True,
-                )
-
-            seg_cfg = segments.get(seg_name_local, {})
-            # 1) Segment-level bins override
-            seg_edges = seg_cfg.get("bins", {}).get("income_bin", {}).get("bin_edges")
-            th = _extract_binary_income_threshold(seg_edges)
-            if th is not None:
-                return th
-
-            # 2) Reporting supersegment-level fixed bin edges
-            reporting_ss = seg_cfg.get("reporting_supersegment") or seg_cfg.get("supersegment")
-            if reporting_ss and reporting_ss in supersegments:
-                ss_edges = supersegments[reporting_ss].get("bin_edges", {}).get("income_bin")
-                th = _extract_binary_income_threshold(ss_edges)
-                if th is not None:
-                    return th
-
-            # 3) Global config fallback (config.toml)
-            try:
-                cfg_path = Path("config.toml")
-                if cfg_path.exists():
-                    cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
-                    global_edges = cfg.get("preprocessing", {}).get("bins", {}).get("income_bin", {}).get("bin_edges")
-                    th = _extract_binary_income_threshold(global_edges)
-                    if th is not None:
-                        return th
-            except Exception:
-                logger.warning(
-                    f"_resolve_income_threshold: failed to read global config.toml edges for "
-                    f"'{seg_name_local}'; no threshold will be resolved",
-                    exc_info=True,
-                )
-            return None
-
-        income_threshold = _resolve_income_threshold(seg_name)
+        # _extract_binary_income_threshold and _resolve_income_threshold are
+        # now module-level helpers (R2b-ii todo #57 step 6).
+        income_threshold = _resolve_income_threshold(output_base, segments, supersegments, seg_name)
 
         def _income_bin_title(income_val: Any) -> str:
             """Portfolio-owner labels based on configured income_bin threshold."""
@@ -3721,7 +3743,7 @@ def export_consolidated_excel(
         _rp_exclude_cols_mr = _rp_exclude_cols | {"todu_30ever_h3", "todu_amt_pile_h3"}
 
         for seg_name in segments:
-            seg_settings = _load_segment_settings(seg_name)
+            seg_settings = _load_segment_settings(output_base, seg_name)
 
             # Resolve variables list — fall back to global config
             try:
