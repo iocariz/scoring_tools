@@ -37,6 +37,15 @@ def parse_args():
         description="Interactive Global Allocator Dashboard",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "Bind host (default: 127.0.0.1, loopback only). Non-localhost "
+            "binds require DASHBOARD_AUTH_USER + DASHBOARD_AUTH_PASS env "
+            "vars; see src/web_auth.py and todo #50."
+        ),
+    )
     parser.add_argument("--port", "-p", type=int, default=8051, help="Port to run dashboard on (default: 8051)")
     parser.add_argument("--debug", action="store_true", help="Run in debug mode")
     return parser.parse_args()
@@ -555,4 +564,16 @@ if __name__ == "__main__":
             "refusing to enable Werkzeug debug console (RCE risk)."
         )
     effective_debug = debug_requested and debug_allowed
-    app.run(debug=effective_debug, port=args.port)
+
+    # Auth policy (todo #50): non-localhost binds require env credentials.
+    from src.web_auth import DashboardAuthError, enforce_bind_auth_policy, install_basic_auth
+
+    try:
+        creds = enforce_bind_auth_policy(args.host)
+    except DashboardAuthError as exc:
+        logger.error(str(exc))
+        raise SystemExit(2) from exc
+    if creds is not None:
+        install_basic_auth(app.server, creds)
+
+    app.run(debug=effective_debug, host=args.host, port=args.port)
