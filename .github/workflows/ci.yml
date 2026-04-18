@@ -34,6 +34,9 @@ jobs:
       - name: Check linting
         run: ruff check .
 
+      - name: Verify uv.lock is in sync with pyproject.toml (todo #51)
+        run: uv lock --check
+
   test:
     name: Test
     runs-on: ubuntu-latest
