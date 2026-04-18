@@ -77,29 +77,38 @@ class DataQualityReport:
         )
 
     def print_report(self) -> None:
-        """Print formatted report to console."""
-        print("\n" + "=" * 60)
-        print("DATA QUALITY REPORT")
-        print("=" * 60)
+        """Log the formatted DQ report via loguru.
 
-        # Group by status
-        for status, label in [
-            (CheckStatus.FAILED, "FAILURES"),
-            (CheckStatus.WARNING, "WARNINGS"),
-            (CheckStatus.PASSED, "PASSED"),
-        ]:
+        (Name retained for backward compatibility; output is now routed
+        through the logger so it respects --log-file and log-level
+        filtering. todo #61.)
+
+        Failures → logger.error, warnings → logger.warning, passes →
+        logger.info, so operators can filter by severity downstream.
+        """
+        logger.info("\n" + "=" * 60)
+        logger.info("DATA QUALITY REPORT")
+        logger.info("=" * 60)
+
+        # Group by status; severity maps to log level so operators can filter.
+        status_levels = [
+            (CheckStatus.FAILED, "FAILURES", logger.error),
+            (CheckStatus.WARNING, "WARNINGS", logger.warning),
+            (CheckStatus.PASSED, "PASSED", logger.info),
+        ]
+        for status, label, emit in status_levels:
             checks = [c for c in self.checks if c.status == status]
             if checks:
-                print(f"\n{label}:")
+                emit(f"\n{label}:")
                 for check in checks:
-                    print(f"  {check}")
+                    emit(f"  {check}")
                     if check.details:
                         for key, value in check.details.items():
-                            print(f"    - {key}: {value}")
+                            emit(f"    - {key}: {value}")
 
-        print("\n" + "-" * 60)
-        print(self.summary())
-        print("=" * 60 + "\n")
+        logger.info("\n" + "-" * 60)
+        logger.info(self.summary())
+        logger.info("=" * 60 + "\n")
 
 
 def check_required_columns(df: pd.DataFrame, required_columns: list[str], context: str = "data") -> CheckResult:

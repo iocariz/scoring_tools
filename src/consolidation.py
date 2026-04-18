@@ -2621,7 +2621,7 @@ def export_consolidated_excel(
         ws.cell(row=r1, column=1).fill = _FILL_HEADER
         ws.cell(row=r1, column=1).border = _BORDER_HEADER
         col = 2
-        for i, lbl in enumerate(ib_labels + ["Total"]):
+        for _i, lbl in enumerate(ib_labels + ["Total"]):
             end_col = col + cols_per_ib - 1
             ws.merge_cells(start_row=r1, start_column=col, end_row=r1, end_column=end_col)
             c = ws.cell(row=r1, column=col)
@@ -3678,18 +3678,22 @@ def export_consolidated_excel(
 
 
 def print_consolidation_summary(df: pd.DataFrame) -> None:
-    """Print a formatted summary of consolidated metrics."""
-    print("\n" + "=" * 80)
-    print("CONSOLIDATED RISK PRODUCTION SUMMARY")
-    print("=" * 80)
+    """Log a formatted summary of consolidated metrics via loguru.
+
+    (Name retained for backward compatibility; output is now routed through
+    the logger so it respects --log-file and log-level filtering. todo #61.)
+    """
+    logger.info("\n" + "=" * 80)
+    logger.info("CONSOLIDATED RISK PRODUCTION SUMMARY")
+    logger.info("=" * 80)
 
     # Get unique scenarios and periods
     scenarios = df["scenario"].unique()
 
     for scenario in scenarios:
-        print(f"\n{'─' * 40}")
-        print(f"SCENARIO: {scenario}")
-        print(f"{'─' * 40}")
+        logger.info(f"\n{'─' * 40}")
+        logger.info(f"SCENARIO: {scenario}")
+        logger.info(f"{'─' * 40}")
 
         scenario_df = df[df["scenario"] == scenario]
 
@@ -3698,22 +3702,25 @@ def print_consolidation_summary(df: pd.DataFrame) -> None:
 
         for _, row in total_df.iterrows():
             period = row["period"].upper()
-            print(f"\n  {period} Period:")
-            print(f"    Actual Production:  €{row['actual_production']:,.0f}")
-            print(f"    Optimum Production: €{row['optimum_production']:,.0f}")
-            print(f"    Delta:              €{row['production_delta']:,.0f} ({row['production_delta_pct']:.1f}%)")
-            print(f"    Risk:               {row['actual_risk_pct']:.2f}% → {row['optimum_risk_pct']:.2f}%")
+            logger.info(f"\n  {period} Period:")
+            logger.info(f"    Actual Production:  €{row['actual_production']:,.0f}")
+            logger.info(f"    Optimum Production: €{row['optimum_production']:,.0f}")
+            logger.info(
+                f"    Delta:              €{row['production_delta']:,.0f} "
+                f"({row['production_delta_pct']:.1f}%)"
+            )
+            logger.info(f"    Risk:               {row['actual_risk_pct']:.2f}% → {row['optimum_risk_pct']:.2f}%")
 
         # Show supersegment breakdown
         ss_df = scenario_df[scenario_df["group"].str.startswith("supersegment_")]
         if not ss_df.empty:
-            print("\n  By Supersegment (Main Period):")
+            logger.info("\n  By Supersegment (Main Period):")
             main_ss = ss_df[ss_df["period"] == "main"]
             for _, row in main_ss.iterrows():
                 ss_name = row["group"].replace("supersegment_", "")
-                print(
+                logger.info(
                     f"    {ss_name}: €{row['actual_production']:,.0f} → €{row['optimum_production']:,.0f} "
                     f"({row['production_delta_pct']:+.1f}%), Risk: {row['actual_risk_pct']:.2f}% → {row['optimum_risk_pct']:.2f}%"
                 )
 
-    print("\n" + "=" * 80)
+    logger.info("\n" + "=" * 80)
