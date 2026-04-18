@@ -81,8 +81,11 @@ class ConsolidatedMetrics:
         return float(
             np.nan_to_num(
                 calculate_b2_ever_h6(
-                    self.actual_todu_30ever_h6, self.actual_todu_amt_pile_h6,
-                    multiplier=self.multiplier, as_percentage=True, decimals=6,
+                    self.actual_todu_30ever_h6,
+                    self.actual_todu_amt_pile_h6,
+                    multiplier=self.multiplier,
+                    as_percentage=True,
+                    decimals=6,
                 )
             )
         )
@@ -92,8 +95,11 @@ class ConsolidatedMetrics:
         return float(
             np.nan_to_num(
                 calculate_b2_ever_h6(
-                    self.optimum_todu_30ever_h6, self.optimum_todu_amt_pile_h6,
-                    multiplier=self.multiplier, as_percentage=True, decimals=6,
+                    self.optimum_todu_30ever_h6,
+                    self.optimum_todu_amt_pile_h6,
+                    multiplier=self.multiplier,
+                    as_percentage=True,
+                    decimals=6,
                 )
             )
         )
@@ -103,8 +109,11 @@ class ConsolidatedMetrics:
         return float(
             np.nan_to_num(
                 calculate_b2_ever_h6(
-                    self.swap_in_todu_30ever_h6, self.swap_in_todu_amt_pile_h6,
-                    multiplier=self.multiplier, as_percentage=True, decimals=6,
+                    self.swap_in_todu_30ever_h6,
+                    self.swap_in_todu_amt_pile_h6,
+                    multiplier=self.multiplier,
+                    as_percentage=True,
+                    decimals=6,
                 )
             )
         )
@@ -114,8 +123,11 @@ class ConsolidatedMetrics:
         return float(
             np.nan_to_num(
                 calculate_b2_ever_h6(
-                    self.swap_out_todu_30ever_h6, self.swap_out_todu_amt_pile_h6,
-                    multiplier=self.multiplier, as_percentage=True, decimals=6,
+                    self.swap_out_todu_30ever_h6,
+                    self.swap_out_todu_amt_pile_h6,
+                    multiplier=self.multiplier,
+                    as_percentage=True,
+                    decimals=6,
                 )
             )
         )
@@ -636,7 +648,10 @@ def patch_consolidated_production_from_segment_audits(
                 cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
                 return bool(cfg.get("preprocessing", cfg).get("baseline_mode", False))
         except Exception:
-            pass
+            logger.warning(
+                f"_is_baseline_segment: failed to read config for '{seg_name_local}'; treating as non-baseline",
+                exc_info=True,
+            )
         return False
 
     for seg_name in segments:
@@ -817,7 +832,7 @@ def aggregate_metrics(
         for s in segments:
             prod_width = max(s["prod_upper"] - s["prod_lower"], 0.0)
             prod_se = prod_width / (2 * z_95) if prod_width else 0.0
-            prod_var += prod_se ** 2
+            prod_var += prod_se**2
         combined_prod_se = float(np.sqrt(prod_var))
         aggregated[key]["production_ci_lower"] = max(agg_prod_point - z_95 * combined_prod_se, 0.0)
         aggregated[key]["production_ci_upper"] = agg_prod_point + z_95 * combined_prod_se
@@ -1139,9 +1154,7 @@ def _sort_consolidated_rows(df: pd.DataFrame) -> pd.DataFrame:
         return df.copy()
 
     ordered = df.copy()
-    ordered["_scenario_order"] = ordered["scenario"].map(
-        {"pessimistic": 0, "base": 1, "optimistic": 2}
-    ).fillna(99)
+    ordered["_scenario_order"] = ordered["scenario"].map({"pessimistic": 0, "base": 1, "optimistic": 2}).fillna(99)
     ordered["_period_order"] = ordered["period"].map({"main": 0, "mr": 1}).fillna(99)
     ordered["_group_order"] = ordered["group"].map(
         lambda value: 0 if value == "TOTAL" else 1 if str(value).startswith("supersegment_") else 2
@@ -1177,7 +1190,9 @@ def create_consolidation_dashboard(df: pd.DataFrame, title: str = "Consolidated 
     segment_df = ordered_df[
         ~(ordered_df["group"].eq("TOTAL") | ordered_df["group"].astype(str).str.startswith("supersegment_"))
     ].copy()
-    focus_scenario = "base" if "base" in ordered_df["scenario"].astype(str).values else str(ordered_df.iloc[0]["scenario"])
+    focus_scenario = (
+        "base" if "base" in ordered_df["scenario"].astype(str).values else str(ordered_df.iloc[0]["scenario"])
+    )
     focus_label = focus_scenario.title()
 
     fig = make_subplots(
@@ -1362,7 +1377,9 @@ def create_consolidation_dashboard(df: pd.DataFrame, title: str = "Consolidated 
                     "visible": error_visible,
                 },
                 hovertemplate=(
-                    "<b>%{x}</b><br>Period: " + period.upper() + "<br>Optimum production: €%{y:,.0f}"
+                    "<b>%{x}</b><br>Period: "
+                    + period.upper()
+                    + "<br>Optimum production: €%{y:,.0f}"
                     + "<br>Production delta: %{text}<br>Risk delta: %{customdata[0]:+.2f} pp<extra></extra>"
                 ),
             ),
@@ -1386,7 +1403,9 @@ def create_consolidation_dashboard(df: pd.DataFrame, title: str = "Consolidated 
                 showlegend=False,
                 customdata=np.column_stack([period_data["optimum_rejection_rate_pct"].to_numpy()]),
                 hovertemplate=(
-                    "<b>%{text}</b><br>Period: " + period.upper() + "<br>Optimum risk: %{x:.2f}%"
+                    "<b>%{text}</b><br>Period: "
+                    + period.upper()
+                    + "<br>Optimum risk: %{x:.2f}%"
                     + "<br>Optimum production: €%{y:,.0f}<br>Optimum rejection rate: %{customdata[0]:.1f}%<extra></extra>"
                 ),
             ),
@@ -1411,7 +1430,9 @@ def create_consolidation_dashboard(df: pd.DataFrame, title: str = "Consolidated 
                     },
                     showlegend=False,
                     hovertemplate=(
-                        "<b>Actual baseline</b><br>Period: " + period.upper() + "<br>Risk: %{x:.2f}%"
+                        "<b>Actual baseline</b><br>Period: "
+                        + period.upper()
+                        + "<br>Risk: %{x:.2f}%"
                         + "<br>Production: €%{y:,.0f}<extra></extra>"
                     ),
                 ),
@@ -1424,8 +1445,7 @@ def create_consolidation_dashboard(df: pd.DataFrame, title: str = "Consolidated 
         if heat_df["group_display"].nunique() > 12:
             ranked_groups = (
                 heat_df.assign(_rank_value=heat_df["production_delta"].abs())
-                .sort_values(["_group_order", "_rank_value"], ascending=[True, False])
-                ["group_display"]
+                .sort_values(["_group_order", "_rank_value"], ascending=[True, False])["group_display"]
                 .drop_duplicates()
                 .head(12)
             )
@@ -1434,11 +1454,17 @@ def create_consolidation_dashboard(df: pd.DataFrame, title: str = "Consolidated 
         heat_df = heat_df.sort_values(["_group_order", "group_display", "_period_order"])
         heat_index = heat_df["group_display"].drop_duplicates().tolist()
         heat_cols = [value for value in ["main", "mr"] if value in heat_df["period"].values]
-        heat_pivot = heat_df.pivot_table(index="group_display", columns="period", values="production_delta_pct", aggfunc="first")
+        heat_pivot = heat_df.pivot_table(
+            index="group_display", columns="period", values="production_delta_pct", aggfunc="first"
+        )
         heat_pivot = heat_pivot.reindex(index=heat_index, columns=heat_cols)
-        heat_eur = heat_df.pivot_table(index="group_display", columns="period", values="production_delta", aggfunc="first")
+        heat_eur = heat_df.pivot_table(
+            index="group_display", columns="period", values="production_delta", aggfunc="first"
+        )
         heat_eur = heat_eur.reindex(index=heat_index, columns=heat_cols)
-        heat_risk = heat_df.pivot_table(index="group_display", columns="period", values="risk_delta_pct", aggfunc="first")
+        heat_risk = heat_df.pivot_table(
+            index="group_display", columns="period", values="risk_delta_pct", aggfunc="first"
+        )
         heat_risk = heat_risk.reindex(index=heat_index, columns=heat_cols)
 
         heat_text = []
@@ -1487,7 +1513,8 @@ def create_consolidation_dashboard(df: pd.DataFrame, title: str = "Consolidated 
         top_groups = ordered_df[(ordered_df["scenario"] == focus_scenario) & (~ordered_df["group"].eq("TOTAL"))].copy()
     if not top_groups.empty:
         ranked = (
-            top_groups.groupby("group_display", as_index=False)["production_delta"].max()
+            top_groups.groupby("group_display", as_index=False)["production_delta"]
+            .max()
             .sort_values("production_delta", ascending=False)
             .head(8)
         )
@@ -1508,12 +1535,16 @@ def create_consolidation_dashboard(df: pd.DataFrame, title: str = "Consolidated 
                     text=[f"{value:+.1f}%" for value in period_groups["production_delta_pct"]],
                     textposition="outside",
                     cliponaxis=False,
-                    customdata=np.column_stack([
-                        period_groups["risk_delta_pct"].to_numpy(),
-                        period_groups["optimum_risk_pct"].to_numpy(),
-                    ]),
+                    customdata=np.column_stack(
+                        [
+                            period_groups["risk_delta_pct"].to_numpy(),
+                            period_groups["optimum_risk_pct"].to_numpy(),
+                        ]
+                    ),
                     hovertemplate=(
-                        "<b>%{y}</b><br>Period: " + period.upper() + "<br>Production delta: €%{x:,.0f}"
+                        "<b>%{y}</b><br>Period: "
+                        + period.upper()
+                        + "<br>Production delta: €%{x:,.0f}"
                         + "<br>Production delta %: %{text}<br>Risk delta: %{customdata[0]:+.2f} pp"
                         + "<br>Optimum risk: %{customdata[1]:.2f}%<extra></extra>"
                     ),
@@ -1524,7 +1555,8 @@ def create_consolidation_dashboard(df: pd.DataFrame, title: str = "Consolidated 
 
     fig.update_layout(
         title={
-            "text": title + "<br><sup>Executive portfolio view across scenarios, periods, and segment opportunities</sup>",
+            "text": title
+            + "<br><sup>Executive portfolio view across scenarios, periods, and segment opportunities</sup>",
             "x": 0.5,
             "xanchor": "center",
         },
@@ -1594,7 +1626,9 @@ def generate_consolidation_report(
     logger.info("Generating consolidated risk production report...")
 
     # Consolidate data
-    df = consolidate_segments(output_base, segments, supersegments, scenarios, multiplier=multiplier, multiplier_h3=multiplier_h3)
+    df = consolidate_segments(
+        output_base, segments, supersegments, scenarios, multiplier=multiplier, multiplier_h3=multiplier_h3
+    )
 
     if df.empty:
         logger.warning("No data found to consolidate")
@@ -1672,43 +1706,43 @@ def export_consolidated_excel(
     # Design tokens — modern, soft palette
     # =====================================================================
     # Core brand
-    _CLR_PRIMARY = "1B2A4A"       # Deep navy — titles, header bg
-    _CLR_PRIMARY_LIGHT = "34495E" # Lighter navy — secondary headers
-    _CLR_ACCENT = "2980B9"        # Cerulean blue — KPI accents, links
+    _CLR_PRIMARY = "1B2A4A"  # Deep navy — titles, header bg
+    _CLR_PRIMARY_LIGHT = "34495E"  # Lighter navy — secondary headers
+    _CLR_ACCENT = "2980B9"  # Cerulean blue — KPI accents, links
     _CLR_ACCENT_LIGHT = "D6EAF8"  # Pale blue — KPI card bg
     _CLR_WHITE = "FFFFFF"
 
     # Semantic
-    _CLR_GOOD = "1ABC9C"          # Teal-green — softer than pure green
-    _CLR_GOOD_LIGHT = "D1F2EB"    # Pale teal — TOTAL row bg
-    _CLR_GOOD_DARK = "0E6655"     # Dark teal — TOTAL row text
-    _CLR_BAD = "E74C3C"           # Warm red — risk / negative deltas
-    _CLR_BAD_LIGHT = "FDEDEC"     # Pale pink — reject cell tint (unused as fill on its own)
-    _CLR_WARN = "F39C12"          # Amber — cutoff tab, warnings
-    _CLR_MR_BG = "FEF5E7"         # Warm cream — MR KPI tint
-    _CLR_MR_FG = "CA6F1E"         # Dark amber — MR labels
+    _CLR_GOOD = "1ABC9C"  # Teal-green — softer than pure green
+    _CLR_GOOD_LIGHT = "D1F2EB"  # Pale teal — TOTAL row bg
+    _CLR_GOOD_DARK = "0E6655"  # Dark teal — TOTAL row text
+    _CLR_BAD = "E74C3C"  # Warm red — risk / negative deltas
+    _CLR_BAD_LIGHT = "FDEDEC"  # Pale pink — reject cell tint (unused as fill on its own)
+    _CLR_WARN = "F39C12"  # Amber — cutoff tab, warnings
+    _CLR_MR_BG = "FEF5E7"  # Warm cream — MR KPI tint
+    _CLR_MR_FG = "CA6F1E"  # Dark amber — MR labels
 
     # Neutral
-    _CLR_NEUTRAL_LIGHT = "F8F9FA" # Near-white stripe
-    _CLR_NEUTRAL = "DEE2E6"       # Soft grey — table borders
-    _CLR_NEUTRAL_MID = "AEB6BF"   # Mid grey — subtle text
-    _CLR_TEXT = "2C3E50"          # Dark grey — body text
+    _CLR_NEUTRAL_LIGHT = "F8F9FA"  # Near-white stripe
+    _CLR_NEUTRAL = "DEE2E6"  # Soft grey — table borders
+    _CLR_NEUTRAL_MID = "AEB6BF"  # Mid grey — subtle text
+    _CLR_TEXT = "2C3E50"  # Dark grey — body text
 
     # Acceptance grid (softer, desaturated tones)
-    _CLR_GRID_ACCEPT = "58D68D"   # Soft green
-    _CLR_GRID_REJECT = "EC7063"   # Soft red-coral
-    _CLR_GRID_NA = "D5DBDB"       # Light warm grey
-    _CLR_GRID_HDR = "2C3E50"      # Dark header for contrast
+    _CLR_GRID_ACCEPT = "58D68D"  # Soft green
+    _CLR_GRID_REJECT = "EC7063"  # Soft red-coral
+    _CLR_GRID_NA = "D5DBDB"  # Light warm grey
+    _CLR_GRID_HDR = "2C3E50"  # Dark header for contrast
 
     # Section
-    _CLR_SECTION_BG = "EBF5FB"    # Pale blue — section header bg
-    _CLR_SECTION_BAR = "2980B9"   # Accent bar
+    _CLR_SECTION_BG = "EBF5FB"  # Pale blue — section header bg
+    _CLR_SECTION_BAR = "2980B9"  # Accent bar
 
     # Row highlight — RP sheets
-    _CLR_OPTIMUM_BG = "D4EFDF"    # Pale green — Optimum selected row
-    _CLR_OPTIMUM_FG = "1E8449"    # Dark green — Optimum selected text
-    _CLR_SUMMARY_BG = "D6EAF8"    # Pale blue — Summary / delta row
-    _CLR_SUMMARY_FG = "1B4F72"    # Dark blue — Summary text
+    _CLR_OPTIMUM_BG = "D4EFDF"  # Pale green — Optimum selected row
+    _CLR_OPTIMUM_FG = "1E8449"  # Dark green — Optimum selected text
+    _CLR_SUMMARY_BG = "D6EAF8"  # Pale blue — Summary / delta row
+    _CLR_SUMMARY_FG = "1B4F72"  # Dark blue — Summary text
 
     # Sheet tab colours
     _CLR_TAB_EXEC = "2980B9"
@@ -1760,12 +1794,15 @@ def export_consolidated_excel(
     _BORDER_HEADER = Border(
         top=Side(style="thin", color=_CLR_PRIMARY),
         bottom=Side(style="medium", color=_CLR_ACCENT),
-        left=_HAIR, right=_HAIR,
+        left=_HAIR,
+        right=_HAIR,
     )
     _BORDER_BOTTOM = Border(bottom=Side(style="medium", color=_CLR_ACCENT))
     _ACCENT_LEFT = Border(
         left=Side(style="thick", color=_CLR_ACCENT),
-        top=_HAIR, bottom=_HAIR, right=_HAIR,
+        top=_HAIR,
+        bottom=_HAIR,
+        right=_HAIR,
     )
     _SECTION_LEFT = Border(left=Side(style="thick", color=_CLR_SECTION_BAR))
     _BORDER_GRID = Border(
@@ -1784,34 +1821,71 @@ def export_consolidated_excel(
     # Column classification
     # =====================================================================
     _CURRENCY_COLS = {
-        "actual_production", "optimum_production", "swap_in_production", "swap_out_production",
-        "production_delta", "production_ci_lower", "production_ci_upper", "total_demand",
-        "Production (€)", "Total Demand (€)",
+        "actual_production",
+        "optimum_production",
+        "swap_in_production",
+        "swap_out_production",
+        "production_delta",
+        "production_ci_lower",
+        "production_ci_upper",
+        "total_demand",
+        "Production (€)",
+        "Total Demand (€)",
     }
     _PCT_COLS = {
-        "actual_risk_pct", "optimum_risk_pct", "swap_in_risk_pct", "swap_out_risk_pct",
-        "production_delta_pct", "risk_delta_pct", "risk_ci_lower", "risk_ci_upper",
-        "actual_rejection_rate_pct", "optimum_rejection_rate_pct",
-        "actual_risk_h3_pct", "optimum_risk_h3_pct", "swap_in_risk_h3_pct", "swap_out_risk_h3_pct",
-        "Risk (%)", "Risk H3 (%)", "Production (%)", "Rejection Rate (%)",
+        "actual_risk_pct",
+        "optimum_risk_pct",
+        "swap_in_risk_pct",
+        "swap_out_risk_pct",
+        "production_delta_pct",
+        "risk_delta_pct",
+        "risk_ci_lower",
+        "risk_ci_upper",
+        "actual_rejection_rate_pct",
+        "optimum_rejection_rate_pct",
+        "actual_risk_h3_pct",
+        "optimum_risk_h3_pct",
+        "swap_in_risk_h3_pct",
+        "swap_out_risk_h3_pct",
+        "Risk (%)",
+        "Risk H3 (%)",
+        "Production (%)",
+        "Rejection Rate (%)",
     }
     _INTEGER_COLS = {
         "n_segments",
-        "actual_todu_30ever_h6", "actual_todu_amt_pile_h6",
-        "optimum_todu_30ever_h6", "optimum_todu_amt_pile_h6",
-        "swap_in_todu_30ever_h6", "swap_in_todu_amt_pile_h6",
-        "swap_out_todu_30ever_h6", "swap_out_todu_amt_pile_h6",
-        "actual_todu_30ever_h3", "actual_todu_amt_pile_h3",
-        "optimum_todu_30ever_h3", "optimum_todu_amt_pile_h3",
-        "swap_in_todu_30ever_h3", "swap_in_todu_amt_pile_h3",
-        "swap_out_todu_30ever_h3", "swap_out_todu_amt_pile_h3",
+        "actual_todu_30ever_h6",
+        "actual_todu_amt_pile_h6",
+        "optimum_todu_30ever_h6",
+        "optimum_todu_amt_pile_h6",
+        "swap_in_todu_30ever_h6",
+        "swap_in_todu_amt_pile_h6",
+        "swap_out_todu_30ever_h6",
+        "swap_out_todu_amt_pile_h6",
+        "actual_todu_30ever_h3",
+        "actual_todu_amt_pile_h3",
+        "optimum_todu_30ever_h3",
+        "optimum_todu_amt_pile_h3",
+        "swap_in_todu_30ever_h3",
+        "swap_in_todu_amt_pile_h3",
+        "swap_out_todu_30ever_h3",
+        "swap_out_todu_amt_pile_h3",
     }
     _TEXT_COLS = {"group", "period", "scenario", "segments", "Metric", "segment"}
     _DELTA_COLS = {"production_delta", "production_delta_pct", "risk_delta_pct"}
-    _CUTOFF_FIXED_COLS = frozenset({
-        "accepted", "segment", "scenario", "risk_pct", "production",
-        "production_ci_lower", "production_ci_upper", "risk_ci_lower", "risk_ci_upper",
-    })
+    _CUTOFF_FIXED_COLS = frozenset(
+        {
+            "accepted",
+            "segment",
+            "scenario",
+            "risk_pct",
+            "production",
+            "production_ci_lower",
+            "production_ci_upper",
+            "risk_ci_lower",
+            "risk_ci_upper",
+        }
+    )
 
     _COLUMN_LABELS = {
         "group": "Group",
@@ -1933,8 +2007,7 @@ def export_consolidated_excel(
                         data_cell.font = Font(bold=bold, color=clr, size=10, name=_FN)
         ws.freeze_panes = ws.cell(row=header_row + 1, column=1).coordinate
         ws.auto_filter.ref = (
-            f"{ws.cell(row=header_row, column=1).coordinate}"
-            f":{ws.cell(row=ws.max_row, column=n_cols).coordinate}"
+            f"{ws.cell(row=header_row, column=1).coordinate}:{ws.cell(row=ws.max_row, column=n_cols).coordinate}"
         )
 
     def _write_kpi_card(ws, row, col, label, value_str, delta_str=None, delta_positive=True):
@@ -2002,7 +2075,9 @@ def export_consolidated_excel(
                 cell.alignment = _ALIGN_LEFT if col_name in _TEXT_COLS else _ALIGN_RIGHT
                 _apply_number_format(cell, col_name)
 
-            is_total = group_col_idx and str(ws.cell(row=ri, column=group_col_idx).value or "").strip().lower().startswith("total")
+            is_total = group_col_idx and str(
+                ws.cell(row=ri, column=group_col_idx).value or ""
+            ).strip().lower().startswith("total")
             for ci, col_name in enumerate(cols_list, 1):
                 cell = ws.cell(row=ri, column=ci)
                 if is_total:
@@ -2020,8 +2095,15 @@ def export_consolidated_excel(
         return ws.max_row + 2
 
     def _write_rp_sheet(
-        writer, df_rp, sheet_name, seg_name, period_label, tab_color,
-        extra_tables=None, classification_grid=None, is_mr=False,
+        writer,
+        df_rp,
+        sheet_name,
+        seg_name,
+        period_label,
+        tab_color,
+        extra_tables=None,
+        classification_grid=None,
+        is_mr=False,
     ):
         """Create a styled RP sheet with title banner, period label, data tables, and classification grid."""
         if extra_tables is None:
@@ -2135,10 +2217,15 @@ def export_consolidated_excel(
                 if "baseline_mode" in prep:
                     defaults["baseline_mode"] = bool(prep["baseline_mode"])
         except Exception:
-            pass
+            logger.warning(
+                f"_get_segment_defaults: failed to read segment config for '{seg_name_local}'; using global defaults",
+                exc_info=True,
+            )
         return defaults
 
-    def _build_income_bin_tables(seg_name: str, period: str, template_cols: list[str]) -> list[tuple[str, pd.DataFrame]]:
+    def _build_income_bin_tables(
+        seg_name: str, period: str, template_cols: list[str]
+    ) -> list[tuple[str, pd.DataFrame]]:
         data_dir = output_base / seg_name / "data"
         accepted_cells_path = data_dir / "accepted_cells_base.csv"
         if not accepted_cells_path.exists():
@@ -2226,7 +2313,11 @@ def export_consolidated_excel(
                     if th is not None:
                         return th
             except Exception:
-                pass
+                logger.warning(
+                    f"_resolve_income_threshold: failed to read segment-file edges for "
+                    f"'{seg_name_local}'; falling back to segments.toml",
+                    exc_info=True,
+                )
 
             seg_cfg = segments.get(seg_name_local, {})
             # 1) Segment-level bins override
@@ -2248,17 +2339,16 @@ def export_consolidated_excel(
                 cfg_path = Path("config.toml")
                 if cfg_path.exists():
                     cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
-                    global_edges = (
-                        cfg.get("preprocessing", {})
-                        .get("bins", {})
-                        .get("income_bin", {})
-                        .get("bin_edges")
-                    )
+                    global_edges = cfg.get("preprocessing", {}).get("bins", {}).get("income_bin", {}).get("bin_edges")
                     th = _extract_binary_income_threshold(global_edges)
                     if th is not None:
                         return th
             except Exception:
-                pass
+                logger.warning(
+                    f"_resolve_income_threshold: failed to read global config.toml edges for "
+                    f"'{seg_name_local}'; no threshold will be resolved",
+                    exc_info=True,
+                )
             return None
 
         income_threshold = _resolve_income_threshold(seg_name)
@@ -2430,16 +2520,24 @@ def export_consolidated_excel(
                     if "acceptance_mask" in df_opt.columns and pd.notna(df_opt.iloc[0].get("acceptance_mask")):
                         try:
                             from src.optimization_utils import CellGrid, decode_mask
+
                             _grid = CellGrid.from_summary(df_sum, variables)
                             _mask = decode_mask(str(df_opt.iloc[0]["acceptance_mask"]))
                             if len(_mask) != len(_grid.cell_data):
                                 _mask = None
                                 _grid = None
                         except Exception:
+                            logger.warning(
+                                "Failed to decode acceptance_mask or construct CellGrid; "
+                                "falling back to legacy 2-var cut_map path. Downstream audit "
+                                "tables may use a different cutoff interpretation.",
+                                exc_info=True,
+                            )
                             _mask = None
                             _grid = None
                     if _mask is not None and _grid is not None:
                         from src.optimization_utils import classify_by_mask
+
                         df_sum["passes_cut"] = classify_by_mask(df_sum, _mask, _grid)
                     else:
                         var0 = variables[0]
@@ -2462,6 +2560,11 @@ def export_consolidated_excel(
                         else:
                             df_sum = None
             except Exception:
+                logger.warning(
+                    "Failed to construct audit summary (passes_cut / cut_map); "
+                    "audit tab for this segment/scenario will be skipped.",
+                    exc_info=True,
+                )
                 df_sum = None
 
         # ── Income bin labels ──
@@ -2503,13 +2606,11 @@ def export_consolidated_excel(
                     risk_lookup[(iv, cat)] = risk
                 # Optimum risk = combined kept_boo + swap_in_rep
                 sub_pass = sub[sub["passes_cut"]]
-                o_rn = (
-                    (sub_pass["todu_30ever_h6_boo"].sum() if "todu_30ever_h6_boo" in sub_pass.columns else 0)
-                    + (sub_pass["todu_30ever_h6_rep"].sum() if "todu_30ever_h6_rep" in sub_pass.columns else 0)
+                o_rn = (sub_pass["todu_30ever_h6_boo"].sum() if "todu_30ever_h6_boo" in sub_pass.columns else 0) + (
+                    sub_pass["todu_30ever_h6_rep"].sum() if "todu_30ever_h6_rep" in sub_pass.columns else 0
                 )
-                o_rd = (
-                    (sub_pass["todu_amt_pile_h6_boo"].sum() if "todu_amt_pile_h6_boo" in sub_pass.columns else 0)
-                    + (sub_pass["todu_amt_pile_h6_rep"].sum() if "todu_amt_pile_h6_rep" in sub_pass.columns else 0)
+                o_rd = (sub_pass["todu_amt_pile_h6_boo"].sum() if "todu_amt_pile_h6_boo" in sub_pass.columns else 0) + (
+                    sub_pass["todu_amt_pile_h6_rep"].sum() if "todu_amt_pile_h6_rep" in sub_pass.columns else 0
                 )
                 opt_risk = None
                 if o_rd > 0:
@@ -2533,25 +2634,29 @@ def export_consolidated_excel(
                 vol = float(subset[amt_col].sum()) if not subset.empty else 0.0
                 cnt = len(subset)
                 risk = risk_lookup.get((iv, grid_cat))
-                rows.append({
-                    "category": grid_cat,
-                    "income_bin": iv,
-                    "income_label": label,
-                    "volume": vol,
-                    "risk": risk,
-                    "count": cnt,
-                })
+                rows.append(
+                    {
+                        "category": grid_cat,
+                        "income_bin": iv,
+                        "income_label": label,
+                        "volume": vol,
+                        "risk": risk,
+                        "count": cnt,
+                    }
+                )
             # Optimum = Keep + Swap-in
             keep_r = next(r for r in rows if r["category"] == "Keep" and r["income_bin"] == iv)
             si_r = next(r for r in rows if r["category"] == "Swap-in" and r["income_bin"] == iv)
-            rows.append({
-                "category": "Optimum",
-                "income_bin": iv,
-                "income_label": label,
-                "volume": keep_r["volume"] + si_r["volume"],
-                "risk": risk_lookup.get((iv, "Optimum")),
-                "count": keep_r["count"] + si_r["count"],
-            })
+            rows.append(
+                {
+                    "category": "Optimum",
+                    "income_bin": iv,
+                    "income_label": label,
+                    "volume": keep_r["volume"] + si_r["volume"],
+                    "risk": risk_lookup.get((iv, "Optimum")),
+                    "count": keep_r["count"] + si_r["count"],
+                }
+            )
         return rows if rows else None
 
     def _write_classification_grid(ws, grid_data, start_row, is_mr=False):
@@ -2594,7 +2699,7 @@ def export_consolidated_excel(
         ws.cell(row=r1, column=1).fill = _FILL_HEADER
         ws.cell(row=r1, column=1).border = _BORDER_HEADER
         col = 2
-        for i, lbl in enumerate(ib_labels + ["Total"]):
+        for _i, lbl in enumerate(ib_labels + ["Total"]):
             end_col = col + cols_per_ib - 1
             ws.merge_cells(start_row=r1, start_column=col, end_row=r1, end_column=end_col)
             c = ws.cell(row=r1, column=col)
@@ -2647,7 +2752,6 @@ def export_consolidated_excel(
 
             col = 2
             total_vol, total_cnt = 0.0, 0
-            total_rn, total_rd = 0.0, 0.0
 
             for ib in ib_order:
                 d = lookup.get((cat, ib), {"volume": 0, "risk": None, "count": 0})
@@ -2710,9 +2814,7 @@ def export_consolidated_excel(
                 total_risk = None
                 cat_rows = [lookup.get((cat, ib), {}) for ib in ib_order]
                 # We don't have raw todu here; use weighted average by volume as approximation
-                weighted_sum = sum(
-                    (cr.get("risk", 0) or 0) * (cr.get("volume", 0) or 0) for cr in cat_rows
-                )
+                weighted_sum = sum((cr.get("risk", 0) or 0) * (cr.get("volume", 0) or 0) for cr in cat_rows)
                 if total_vol > 0 and any(cr.get("risk") is not None for cr in cat_rows):
                     total_risk = weighted_sum / total_vol
                 rc = ws.cell(row=r, column=col)
@@ -2780,7 +2882,7 @@ def export_consolidated_excel(
         chart.grouping = "clustered"
         chart.title = "Production Volume by Income Bin"
         chart.y_axis.title = "Volume (€)"
-        chart.y_axis.numFmt = '#,##0'
+        chart.y_axis.numFmt = "#,##0"
         chart.y_axis.delete = False
         chart.x_axis.delete = False
         chart.x_axis.tickLblPos = "low"
@@ -2790,10 +2892,8 @@ def export_consolidated_excel(
         chart.legend.position = "b"
         chart.gapWidth = 80  # tighter bar groups
 
-        data_ref = Reference(ws, min_col=2, max_col=1 + n_cats,
-                             min_row=chart_data_row, max_row=vol_block_end)
-        cats_ref = Reference(ws, min_col=1,
-                             min_row=chart_data_row + 1, max_row=vol_block_end)
+        data_ref = Reference(ws, min_col=2, max_col=1 + n_cats, min_row=chart_data_row, max_row=vol_block_end)
+        cats_ref = Reference(ws, min_col=1, min_row=chart_data_row + 1, max_row=vol_block_end)
         chart.add_data(data_ref, titles_from_data=True)
         chart.set_categories(cats_ref)
         chart.shape = 4
@@ -2833,7 +2933,7 @@ def export_consolidated_excel(
             risk_chart.grouping = "clustered"
             risk_chart.title = "Risk (%) by Income Bin"
             risk_chart.y_axis.title = "Risk (%)"
-            risk_chart.y_axis.numFmt = '0.00'
+            risk_chart.y_axis.numFmt = "0.00"
             risk_chart.y_axis.delete = False
             risk_chart.x_axis.delete = False
             risk_chart.x_axis.tickLblPos = "low"
@@ -2843,10 +2943,8 @@ def export_consolidated_excel(
             risk_chart.legend.position = "b"
             risk_chart.gapWidth = 80
 
-            risk_data_ref = Reference(ws, min_col=2, max_col=1 + n_cats,
-                                      min_row=risk_data_row, max_row=risk_block_end)
-            risk_cats_ref = Reference(ws, min_col=1,
-                                      min_row=risk_data_row + 1, max_row=risk_block_end)
+            risk_data_ref = Reference(ws, min_col=2, max_col=1 + n_cats, min_row=risk_data_row, max_row=risk_block_end)
+            risk_cats_ref = Reference(ws, min_col=1, min_row=risk_data_row + 1, max_row=risk_block_end)
             risk_chart.add_data(risk_data_ref, titles_from_data=True)
             risk_chart.set_categories(risk_cats_ref)
             risk_chart.shape = 4
@@ -2934,10 +3032,12 @@ def export_consolidated_excel(
         except (TypeError, ValueError):
             pass
         try:
-            pivot = pivot[sorted(
-                pivot.columns,
-                key=lambda x: float(x) if str(x).replace(".", "").replace("-", "").isdigit() else x,
-            )]
+            pivot = pivot[
+                sorted(
+                    pivot.columns,
+                    key=lambda x: float(x) if str(x).replace(".", "").replace("-", "").isdigit() else x,
+                )
+            ]
         except (TypeError, ValueError):
             pass
         return pivot
@@ -3069,8 +3169,8 @@ def export_consolidated_excel(
         if scen_df.empty:
             return start_row
 
-        col_var = variable_cols[0]   # columns of each pivot
-        row_var = variable_cols[1]   # rows of each pivot
+        col_var = variable_cols[0]  # columns of each pivot
+        row_var = variable_cols[1]  # rows of each pivot
         slice_vars = variable_cols[2:]  # additional dimensions (e.g. income_bin)
 
         # Section label with left accent bar
@@ -3166,9 +3266,7 @@ def export_consolidated_excel(
             movers = movers[movers["scenario"] == "base"]
         if "period" in movers.columns:
             movers = movers[movers["period"] == period]
-        movers = movers[
-            ~(movers["group"].eq("TOTAL") | movers["group"].astype(str).str.startswith("supersegment_"))
-        ]
+        movers = movers[~(movers["group"].eq("TOTAL") | movers["group"].astype(str).str.startswith("supersegment_"))]
         if movers.empty:
             return movers
 
@@ -3204,9 +3302,7 @@ def export_consolidated_excel(
         rows = consolidated_df[mask]
         if not rows.empty:
             return rows.iloc[0]
-        fallback = consolidated_df[
-            (consolidated_df["group"] == "TOTAL") & (consolidated_df["period"] == period)
-        ]
+        fallback = consolidated_df[(consolidated_df["group"] == "TOTAL") & (consolidated_df["period"] == period)]
         return fallback.iloc[0] if not fallback.empty else None
 
     # =====================================================================
@@ -3259,19 +3355,30 @@ def export_consolidated_excel(
         ws_exec.row_dimensions[kpi_row + 1].height = 22
 
         if tr_main is not None:
-            _write_kpi_card(ws_exec, kpi_row, 1, "Optimum Production",
-                            f"€{tr_main.get('optimum_production', 0):,.0f}")
+            _write_kpi_card(ws_exec, kpi_row, 1, "Optimum Production", f"€{tr_main.get('optimum_production', 0):,.0f}")
             pd_val = tr_main.get("production_delta", 0)
-            _write_kpi_card(ws_exec, kpi_row, 3, "Production Delta",
-                            f"€{pd_val:+,.0f}",
-                            delta_str=f"{tr_main.get('production_delta_pct', 0):+.1f}%",
-                            delta_positive=pd_val >= 0)
+            _write_kpi_card(
+                ws_exec,
+                kpi_row,
+                3,
+                "Production Delta",
+                f"€{pd_val:+,.0f}",
+                delta_str=f"{tr_main.get('production_delta_pct', 0):+.1f}%",
+                delta_positive=pd_val >= 0,
+            )
             rd = tr_main.get("risk_delta_pct", 0)
-            _write_kpi_card(ws_exec, kpi_row, 5, "Optimum Risk",
-                            f"{tr_main.get('optimum_risk_pct', 0):.2f}%",
-                            delta_str=f"{rd:+.2f} pp", delta_positive=rd <= 0)
-            _write_kpi_card(ws_exec, kpi_row, 7, "Rejection Rate",
-                            f"{tr_main.get('optimum_rejection_rate_pct', 0):.1f}%")
+            _write_kpi_card(
+                ws_exec,
+                kpi_row,
+                5,
+                "Optimum Risk",
+                f"{tr_main.get('optimum_risk_pct', 0):.2f}%",
+                delta_str=f"{rd:+.2f} pp",
+                delta_positive=rd <= 0,
+            )
+            _write_kpi_card(
+                ws_exec, kpi_row, 7, "Rejection Rate", f"{tr_main.get('optimum_rejection_rate_pct', 0):.1f}%"
+            )
             # Label
             ws_exec.cell(row=kpi_row, column=9).value = "MAIN PERIOD"
             ws_exec.cell(row=kpi_row, column=9).font = Font(bold=True, color=_CLR_ACCENT, size=9, name=_FN)
@@ -3287,19 +3394,30 @@ def export_consolidated_excel(
         ws_exec.row_dimensions[mr_row + 1].height = 22
 
         if tr_mr is not None:
-            _write_kpi_card(ws_exec, mr_row, 1, "MR Optimum Prod.",
-                            f"€{tr_mr.get('optimum_production', 0):,.0f}")
+            _write_kpi_card(ws_exec, mr_row, 1, "MR Optimum Prod.", f"€{tr_mr.get('optimum_production', 0):,.0f}")
             mr_pd = tr_mr.get("production_delta", 0)
-            _write_kpi_card(ws_exec, mr_row, 3, "MR Prod. Delta",
-                            f"€{mr_pd:+,.0f}",
-                            delta_str=f"{tr_mr.get('production_delta_pct', 0):+.1f}%",
-                            delta_positive=mr_pd >= 0)
+            _write_kpi_card(
+                ws_exec,
+                mr_row,
+                3,
+                "MR Prod. Delta",
+                f"€{mr_pd:+,.0f}",
+                delta_str=f"{tr_mr.get('production_delta_pct', 0):+.1f}%",
+                delta_positive=mr_pd >= 0,
+            )
             mr_rd = tr_mr.get("risk_delta_pct", 0)
-            _write_kpi_card(ws_exec, mr_row, 5, "MR Optimum Risk",
-                            f"{tr_mr.get('optimum_risk_pct', 0):.2f}%",
-                            delta_str=f"{mr_rd:+.2f} pp", delta_positive=mr_rd <= 0)
-            _write_kpi_card(ws_exec, mr_row, 7, "MR Rejection Rate",
-                            f"{tr_mr.get('optimum_rejection_rate_pct', 0):.1f}%")
+            _write_kpi_card(
+                ws_exec,
+                mr_row,
+                5,
+                "MR Optimum Risk",
+                f"{tr_mr.get('optimum_risk_pct', 0):.2f}%",
+                delta_str=f"{mr_rd:+.2f} pp",
+                delta_positive=mr_rd <= 0,
+            )
+            _write_kpi_card(
+                ws_exec, mr_row, 7, "MR Rejection Rate", f"{tr_mr.get('optimum_rejection_rate_pct', 0):.1f}%"
+            )
             ws_exec.cell(row=mr_row, column=9).value = "MR PERIOD"
             ws_exec.cell(row=mr_row, column=9).font = Font(bold=True, color=_CLR_MR_FG, size=9, name=_FN)
             ws_exec.cell(row=mr_row, column=9).alignment = _ALIGN_LEFT
@@ -3318,8 +3436,14 @@ def export_consolidated_excel(
 
         # --- Main-period summary table ---
         exec_cols = [
-            "group", "actual_production", "optimum_production", "production_delta",
-            "production_delta_pct", "actual_risk_pct", "optimum_risk_pct", "risk_delta_pct",
+            "group",
+            "actual_production",
+            "optimum_production",
+            "production_delta",
+            "production_delta_pct",
+            "actual_risk_pct",
+            "optimum_risk_pct",
+            "risk_delta_pct",
         ]
         main_base_mask = (consolidated_df["period"] == "main") & (consolidated_df["scenario"] == "base")
         exec_main = _prepare_export_df(
@@ -3357,15 +3481,21 @@ def export_consolidated_excel(
             total_overview_cols,
         )
         if not total_overview_df.empty:
-            next_row = _write_exec_table(ws_exec, total_overview_df, next_row, "Scenario Overview — Total Portfolio", n_table_cols=12)
+            next_row = _write_exec_table(
+                ws_exec, total_overview_df, next_row, "Scenario Overview — Total Portfolio", n_table_cols=12
+            )
 
         main_top_movers = _build_top_movers_df(consolidated_df, period="main")
         if not main_top_movers.empty:
-            next_row = _write_exec_table(ws_exec, main_top_movers, next_row, "Top Segment Opportunities — Main Base Scenario")
+            next_row = _write_exec_table(
+                ws_exec, main_top_movers, next_row, "Top Segment Opportunities — Main Base Scenario"
+            )
 
         mr_top_movers = _build_top_movers_df(consolidated_df, period="mr")
         if not mr_top_movers.empty:
-            next_row = _write_exec_table(ws_exec, mr_top_movers, next_row, "Top Segment Opportunities — MR Base Scenario")
+            next_row = _write_exec_table(
+                ws_exec, mr_top_movers, next_row, "Top Segment Opportunities — MR Base Scenario"
+            )
 
         # --- Acceptance grids per segment on Executive Summary ---
         cutoff_data: dict[str, pd.DataFrame] = {}
@@ -3503,9 +3633,9 @@ def export_consolidated_excel(
             seg_settings = _load_segment_settings(seg_name)
 
             # Resolve variables list — fall back to global config
-            seg_vars = seg_settings.get("inv_vars") or None
             try:
                 import tomllib as _tomllib
+
                 _seg_cfg_path = output_base / seg_name / "config_segment.toml"
                 if _seg_cfg_path.exists():
                     _scfg = _tomllib.loads(_seg_cfg_path.read_text(encoding="utf-8"))
@@ -3518,6 +3648,11 @@ def export_consolidated_excel(
                 else:
                     seg_vars_full = None
             except Exception:
+                logger.warning(
+                    f"Failed to read variables from segment config for '{seg_name}'; "
+                    f"will fall back to segments.toml / config.toml",
+                    exc_info=True,
+                )
                 seg_vars_full = None
             # Fall back to global variables from segments.toml / config.toml
             if not seg_vars_full:
@@ -3526,12 +3661,17 @@ def export_consolidated_excel(
             if not seg_vars_full:
                 try:
                     import tomllib as _tomllib
+
                     _gcfg_path = Path("config.toml")
                     if _gcfg_path.exists():
                         _gcfg = _tomllib.loads(_gcfg_path.read_text(encoding="utf-8"))
                         seg_vars_full = _gcfg.get("preprocessing", {}).get("variables")
                 except Exception:
-                    pass
+                    logger.warning(
+                        f"Failed to read variables from global config.toml for '{seg_name}'; "
+                        f"will use hardcoded default list",
+                        exc_info=True,
+                    )
             if not seg_vars_full:
                 seg_vars_full = ["new_efx_clus", "sc_octroi_new_clus", "income_bin"]
 
@@ -3539,6 +3679,7 @@ def export_consolidated_excel(
             _income_th = None
             try:
                 import tomllib as _tomllib
+
                 _seg_cfg_path2 = output_base / seg_name / "config_segment.toml"
                 if _seg_cfg_path2.exists():
                     _scfg2 = _tomllib.loads(_seg_cfg_path2.read_text(encoding="utf-8"))
@@ -3548,10 +3689,16 @@ def export_consolidated_excel(
                         if len(finite) == 1:
                             _income_th = finite[0]
             except Exception:
-                pass
+                logger.warning(
+                    f"Failed to resolve income threshold from segment config for '{seg_name}'; "
+                    f"will try reporting supersegment edges next",
+                    exc_info=True,
+                )
             if _income_th is None:
                 # Try reporting supersegment edges
-                _rs = segments.get(seg_name, {}).get("reporting_supersegment") or segments.get(seg_name, {}).get("supersegment")
+                _rs = segments.get(seg_name, {}).get("reporting_supersegment") or segments.get(seg_name, {}).get(
+                    "supersegment"
+                )
                 if _rs and _rs in supersegments:
                     _edges = supersegments[_rs].get("bin_edges", {}).get("income_bin")
                     if _edges and isinstance(_edges, list) and len(_edges) >= 3:
@@ -3574,7 +3721,9 @@ def export_consolidated_excel(
 
             # Build classification grid for main period
             main_grid = _build_classification_grid(
-                seg_name, period="main", variables=seg_vars_full,
+                seg_name,
+                period="main",
+                variables=seg_vars_full,
                 multiplier=seg_settings["multiplier"],
                 multiplier_h3=seg_settings.get("multiplier_h3"),
                 inv_vars=seg_settings.get("inv_vars"),
@@ -3611,7 +3760,9 @@ def export_consolidated_excel(
 
             # Build classification grid for MR period (volumes only)
             mr_grid = _build_classification_grid(
-                seg_name, period="mr", variables=seg_vars_full,
+                seg_name,
+                period="mr",
+                variables=seg_vars_full,
                 multiplier=seg_settings["multiplier"],
                 multiplier_h3=seg_settings.get("multiplier_h3"),
                 inv_vars=seg_settings.get("inv_vars"),
@@ -3640,18 +3791,22 @@ def export_consolidated_excel(
 
 
 def print_consolidation_summary(df: pd.DataFrame) -> None:
-    """Print a formatted summary of consolidated metrics."""
-    print("\n" + "=" * 80)
-    print("CONSOLIDATED RISK PRODUCTION SUMMARY")
-    print("=" * 80)
+    """Log a formatted summary of consolidated metrics via loguru.
+
+    (Name retained for backward compatibility; output is now routed through
+    the logger so it respects --log-file and log-level filtering. todo #61.)
+    """
+    logger.info("\n" + "=" * 80)
+    logger.info("CONSOLIDATED RISK PRODUCTION SUMMARY")
+    logger.info("=" * 80)
 
     # Get unique scenarios and periods
     scenarios = df["scenario"].unique()
 
     for scenario in scenarios:
-        print(f"\n{'─' * 40}")
-        print(f"SCENARIO: {scenario}")
-        print(f"{'─' * 40}")
+        logger.info(f"\n{'─' * 40}")
+        logger.info(f"SCENARIO: {scenario}")
+        logger.info(f"{'─' * 40}")
 
         scenario_df = df[df["scenario"] == scenario]
 
@@ -3660,22 +3815,22 @@ def print_consolidation_summary(df: pd.DataFrame) -> None:
 
         for _, row in total_df.iterrows():
             period = row["period"].upper()
-            print(f"\n  {period} Period:")
-            print(f"    Actual Production:  €{row['actual_production']:,.0f}")
-            print(f"    Optimum Production: €{row['optimum_production']:,.0f}")
-            print(f"    Delta:              €{row['production_delta']:,.0f} ({row['production_delta_pct']:.1f}%)")
-            print(f"    Risk:               {row['actual_risk_pct']:.2f}% → {row['optimum_risk_pct']:.2f}%")
+            logger.info(f"\n  {period} Period:")
+            logger.info(f"    Actual Production:  €{row['actual_production']:,.0f}")
+            logger.info(f"    Optimum Production: €{row['optimum_production']:,.0f}")
+            logger.info(f"    Delta:              €{row['production_delta']:,.0f} ({row['production_delta_pct']:.1f}%)")
+            logger.info(f"    Risk:               {row['actual_risk_pct']:.2f}% → {row['optimum_risk_pct']:.2f}%")
 
         # Show supersegment breakdown
         ss_df = scenario_df[scenario_df["group"].str.startswith("supersegment_")]
         if not ss_df.empty:
-            print("\n  By Supersegment (Main Period):")
+            logger.info("\n  By Supersegment (Main Period):")
             main_ss = ss_df[ss_df["period"] == "main"]
             for _, row in main_ss.iterrows():
                 ss_name = row["group"].replace("supersegment_", "")
-                print(
+                logger.info(
                     f"    {ss_name}: €{row['actual_production']:,.0f} → €{row['optimum_production']:,.0f} "
                     f"({row['production_delta_pct']:+.1f}%), Risk: {row['actual_risk_pct']:.2f}% → {row['optimum_risk_pct']:.2f}%"
                 )
 
-    print("\n" + "=" * 80)
+    logger.info("\n" + "=" * 80)

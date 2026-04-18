@@ -60,6 +60,18 @@ def sample_metadata():
     }
 
 
+@pytest.fixture(autouse=True)
+def _trusted_model_roots(tmp_path, monkeypatch):
+    """Extend the trusted-model-root allowlist to include this test's tmp_path.
+
+    R0 (todo #44) enforces that pickle loads resolve under a trusted root;
+    the default is ``<cwd>/models``, which is not where tests write. Setting
+    SCORING_TRUSTED_MODEL_ROOTS to tmp_path keeps tests working while the
+    production default remains narrow.
+    """
+    monkeypatch.setenv("SCORING_TRUSTED_MODEL_ROOTS", str(tmp_path.resolve()))
+
+
 @pytest.fixture
 def saved_model_path(tmp_path, fitted_linear_model, sample_features, sample_metadata):
     """Save a model to tmp_path and return the directory path."""
@@ -340,3 +352,111 @@ class TestMetadataIntegrity:
             metadata = json.load(f)
 
         assert metadata["aggregated_data"] is True
+
+
+# =============================================================================
+# Integrity enforcement (R0, todo #44)
+# =============================================================================
+
+
+class TestPickleIntegrity:
+    def test_save_writes_sha256_sidecar(self, saved_model_path):
+        """Every saved model.pkl must have a model.pkl.sha256 sidecar next to it."""
+        sidecar = os.path.join(saved_model_path, "model.pkl.sha256")
+        assert os.path.isfile(sidecar), "missing .sha256 sidecar after save"
+        with open(sidecar) as f:
+            contents = f.read().strip()
+        assert len(contents) == 64
+        assert all(c in "0123456789abcdef" for c in contents.lower())
+
+    def test_load_refuses_without_sidecar(self, saved_model_path):
+        """Deleting the sidecar makes load refuse the pickle."""
+        from src.persistence import ModelIntegrityError
+
+        sidecar = os.path.join(saved_model_path, "model.pkl.sha256")
+        os.remove(sidecar)
+        with pytest.raises(ModelIntegrityError, match="sidecar .* is missing"):
+            load_model_for_prediction(saved_model_path)
+
+    def test_load_refuses_on_sha256_mismatch(self, saved_model_path):
+        """Tampering with the pickle after signing makes load refuse it."""
+        from src.persistence import ModelIntegrityError
+
+        pkl = os.path.join(saved_model_path, "model.pkl")
+        with open(pkl, "ab") as f:
+            f.write(b"tampered")  # bytes appended after sidecar was written
+        with pytest.raises(ModelIntegrityError, match="SHA-256 mismatch"):
+            load_model_for_prediction(saved_model_path)
+
+    def test_load_refuses_malformed_sidecar(self, saved_model_path):
+        """A sidecar that is not a 64-char hex digest is rejected."""
+        from src.persistence import ModelIntegrityError
+
+        sidecar = os.path.join(saved_model_path, "model.pkl.sha256")
+        with open(sidecar, "w") as f:
+            f.write("not-a-digest\n")
+        with pytest.raises(ModelIntegrityError, match="malformed"):
+            load_model_for_prediction(saved_model_path)
+
+    def test_load_refuses_untrusted_path(
+        self, tmp_path, fitted_linear_model, sample_features, sample_metadata, monkeypatch
+    ):
+        """A model saved outside the trusted-roots allowlist cannot be loaded."""
+        from src.persistence import ModelIntegrityError
+
+        # Save into a directory that will NOT be in the allowlist below.
+        untrusted_dir = tmp_path / "untrusted"
+        untrusted_dir.mkdir()
+        model, _, _ = fitted_linear_model
+        model_dir = save_model_with_metadata(
+            model=model,
+            features=sample_features,
+            metadata=sample_metadata,
+            base_path=str(untrusted_dir / "models"),
+        )
+        # Now restrict the allowlist to a different directory.
+        trusted_elsewhere = tmp_path / "elsewhere"
+        trusted_elsewhere.mkdir()
+        monkeypatch.setenv("SCORING_TRUSTED_MODEL_ROOTS", str(trusted_elsewhere.resolve()))
+        with pytest.raises(ModelIntegrityError, match="is not under any trusted root"):
+            load_model_for_prediction(model_dir)
+
+    def test_default_roots_cover_output_supersegment_tree(
+        self, tmp_path, fitted_linear_model, sample_features, sample_metadata, monkeypatch
+    ):
+        """run_batch saves shared models under output/_supersegment_*/models/ and
+        loads them from a segment's working directory. The default allowlist must
+        cover that cross-directory access. Regression test for the post-R0
+        allowlist fix."""
+        import src.persistence as persistence
+
+        model, _, _ = fitted_linear_model
+
+        # Simulate the project layout: output/_supersegment_total/models/... and
+        # output/no_premium_ef/ as the per-segment working directory.
+        project_root = tmp_path / "project"
+        (project_root / "output").mkdir(parents=True)
+        segment_cwd = project_root / "output" / "no_premium_ef"
+        segment_cwd.mkdir()
+
+        # Pin the initial-cwd anchor to our simulated project root (the real one
+        # captured at import time was the pytest tmp cwd for the test runner).
+        monkeypatch.setattr(persistence, "_INITIAL_CWD", project_root.resolve())
+        # Clear any env-var override so we exercise the default trusted roots.
+        monkeypatch.delenv("SCORING_TRUSTED_MODEL_ROOTS", raising=False)
+
+        supersegment_models = project_root / "output" / "_supersegment_total" / "models"
+        model_dir = save_model_with_metadata(
+            model=model,
+            features=sample_features,
+            metadata=sample_metadata,
+            base_path=str(supersegment_models),
+        )
+
+        # Change cwd to mimic run_batch's per-segment os.chdir.
+        monkeypatch.chdir(segment_cwd)
+
+        # Load succeeds: the default allowlist now includes <initial_cwd>/output.
+        loaded_model, metadata, features = load_model_for_prediction(model_dir)
+        assert hasattr(loaded_model, "predict")
+        assert features == sample_features

@@ -148,8 +148,8 @@ def calculate_psi_by_period(
     end_date_ref: pd.Timestamp,
     start_date_act: pd.Timestamp,
     end_date_act: pd.Timestamp,
-    buckets: int = None,
-    breakpoints: list = None,
+    buckets: int | None = None,
+    breakpoints: list | None = None,
     show_plots: bool = False,
 ) -> pd.DataFrame:
     """
@@ -270,7 +270,7 @@ def model_summary(
     df: pd.DataFrame,
     target_column: str,
     score_columns: dict,
-    combined_columns: dict = None,
+    combined_columns: dict | None = None,
     plot: bool = True,
     n_iterations: int = DEFAULT_N_BOOTSTRAPS,
     alpha: float = 0.05,

@@ -871,30 +871,118 @@ class TestCreateConsolidationDashboard:
         """Verify the dashboard includes KPI, scenario, heatmap, and ranking views."""
         df = pd.DataFrame(
             [
-                {"group": "TOTAL", "period": "main", "scenario": "pessimistic", "actual_production": 1000, "optimum_production": 900,
-                 "production_delta": -100, "production_delta_pct": -10.0, "actual_risk_pct": 1.6, "optimum_risk_pct": 1.2,
-                 "risk_delta_pct": -0.4, "optimum_rejection_rate_pct": 18.0, "production_ci_lower": 850, "production_ci_upper": 950},
-                {"group": "TOTAL", "period": "main", "scenario": "base", "actual_production": 1000, "optimum_production": 1050,
-                 "production_delta": 50, "production_delta_pct": 5.0, "actual_risk_pct": 1.6, "optimum_risk_pct": 1.3,
-                 "risk_delta_pct": -0.3, "optimum_rejection_rate_pct": 15.0, "production_ci_lower": 1000, "production_ci_upper": 1100},
-                {"group": "TOTAL", "period": "main", "scenario": "optimistic", "actual_production": 1000, "optimum_production": 1120,
-                 "production_delta": 120, "production_delta_pct": 12.0, "actual_risk_pct": 1.6, "optimum_risk_pct": 1.45,
-                 "risk_delta_pct": -0.15, "optimum_rejection_rate_pct": 13.0, "production_ci_lower": 1080, "production_ci_upper": 1160},
-                {"group": "TOTAL", "period": "mr", "scenario": "base", "actual_production": 980, "optimum_production": 1040,
-                 "production_delta": 60, "production_delta_pct": 6.1, "actual_risk_pct": 1.5, "optimum_risk_pct": 1.0,
-                 "risk_delta_pct": -0.5, "optimum_rejection_rate_pct": 14.0, "production_ci_lower": 1000, "production_ci_upper": 1080},
-                {"group": "supersegment_ss1", "period": "main", "scenario": "base", "actual_production": 1000, "optimum_production": 1050,
-                 "production_delta": 50, "production_delta_pct": 5.0, "actual_risk_pct": 1.6, "optimum_risk_pct": 1.3,
-                 "risk_delta_pct": -0.3, "optimum_rejection_rate_pct": 15.0},
-                {"group": "supersegment_ss1", "period": "mr", "scenario": "base", "actual_production": 980, "optimum_production": 1040,
-                 "production_delta": 60, "production_delta_pct": 6.1, "actual_risk_pct": 1.5, "optimum_risk_pct": 1.0,
-                 "risk_delta_pct": -0.5, "optimum_rejection_rate_pct": 14.0},
-                {"group": "ss1/seg1", "period": "main", "scenario": "base", "actual_production": 500, "optimum_production": 560,
-                 "production_delta": 60, "production_delta_pct": 12.0, "actual_risk_pct": 1.8, "optimum_risk_pct": 1.4,
-                 "risk_delta_pct": -0.4, "optimum_rejection_rate_pct": 16.0},
-                {"group": "ss1/seg1", "period": "mr", "scenario": "base", "actual_production": 480, "optimum_production": 530,
-                 "production_delta": 50, "production_delta_pct": 10.4, "actual_risk_pct": 1.7, "optimum_risk_pct": 1.1,
-                 "risk_delta_pct": -0.6, "optimum_rejection_rate_pct": 15.0},
+                {
+                    "group": "TOTAL",
+                    "period": "main",
+                    "scenario": "pessimistic",
+                    "actual_production": 1000,
+                    "optimum_production": 900,
+                    "production_delta": -100,
+                    "production_delta_pct": -10.0,
+                    "actual_risk_pct": 1.6,
+                    "optimum_risk_pct": 1.2,
+                    "risk_delta_pct": -0.4,
+                    "optimum_rejection_rate_pct": 18.0,
+                    "production_ci_lower": 850,
+                    "production_ci_upper": 950,
+                },
+                {
+                    "group": "TOTAL",
+                    "period": "main",
+                    "scenario": "base",
+                    "actual_production": 1000,
+                    "optimum_production": 1050,
+                    "production_delta": 50,
+                    "production_delta_pct": 5.0,
+                    "actual_risk_pct": 1.6,
+                    "optimum_risk_pct": 1.3,
+                    "risk_delta_pct": -0.3,
+                    "optimum_rejection_rate_pct": 15.0,
+                    "production_ci_lower": 1000,
+                    "production_ci_upper": 1100,
+                },
+                {
+                    "group": "TOTAL",
+                    "period": "main",
+                    "scenario": "optimistic",
+                    "actual_production": 1000,
+                    "optimum_production": 1120,
+                    "production_delta": 120,
+                    "production_delta_pct": 12.0,
+                    "actual_risk_pct": 1.6,
+                    "optimum_risk_pct": 1.45,
+                    "risk_delta_pct": -0.15,
+                    "optimum_rejection_rate_pct": 13.0,
+                    "production_ci_lower": 1080,
+                    "production_ci_upper": 1160,
+                },
+                {
+                    "group": "TOTAL",
+                    "period": "mr",
+                    "scenario": "base",
+                    "actual_production": 980,
+                    "optimum_production": 1040,
+                    "production_delta": 60,
+                    "production_delta_pct": 6.1,
+                    "actual_risk_pct": 1.5,
+                    "optimum_risk_pct": 1.0,
+                    "risk_delta_pct": -0.5,
+                    "optimum_rejection_rate_pct": 14.0,
+                    "production_ci_lower": 1000,
+                    "production_ci_upper": 1080,
+                },
+                {
+                    "group": "supersegment_ss1",
+                    "period": "main",
+                    "scenario": "base",
+                    "actual_production": 1000,
+                    "optimum_production": 1050,
+                    "production_delta": 50,
+                    "production_delta_pct": 5.0,
+                    "actual_risk_pct": 1.6,
+                    "optimum_risk_pct": 1.3,
+                    "risk_delta_pct": -0.3,
+                    "optimum_rejection_rate_pct": 15.0,
+                },
+                {
+                    "group": "supersegment_ss1",
+                    "period": "mr",
+                    "scenario": "base",
+                    "actual_production": 980,
+                    "optimum_production": 1040,
+                    "production_delta": 60,
+                    "production_delta_pct": 6.1,
+                    "actual_risk_pct": 1.5,
+                    "optimum_risk_pct": 1.0,
+                    "risk_delta_pct": -0.5,
+                    "optimum_rejection_rate_pct": 14.0,
+                },
+                {
+                    "group": "ss1/seg1",
+                    "period": "main",
+                    "scenario": "base",
+                    "actual_production": 500,
+                    "optimum_production": 560,
+                    "production_delta": 60,
+                    "production_delta_pct": 12.0,
+                    "actual_risk_pct": 1.8,
+                    "optimum_risk_pct": 1.4,
+                    "risk_delta_pct": -0.4,
+                    "optimum_rejection_rate_pct": 16.0,
+                },
+                {
+                    "group": "ss1/seg1",
+                    "period": "mr",
+                    "scenario": "base",
+                    "actual_production": 480,
+                    "optimum_production": 530,
+                    "production_delta": 50,
+                    "production_delta_pct": 10.4,
+                    "actual_risk_pct": 1.7,
+                    "optimum_risk_pct": 1.1,
+                    "risk_delta_pct": -0.6,
+                    "optimum_rejection_rate_pct": 15.0,
+                },
             ]
         )
 
@@ -921,16 +1009,45 @@ class TestExportConsolidatedExcel:
         """Create a minimal consolidated DataFrame with expected structure."""
         return pd.DataFrame(
             [
-                {"group": "TOTAL", "period": "main", "scenario": "base", "n_segments": 1, "segments": "seg1",
-                 "actual_production": 1000000, "actual_risk_pct": 1.5, "optimum_production": 1050000,
-                 "optimum_risk_pct": 1.4, "production_delta": 50000, "production_delta_pct": 5.0},
-                {"group": "supersegment_ss1", "period": "main", "scenario": "base", "n_segments": 1,
-                 "segments": "seg1", "actual_production": 1000000, "actual_risk_pct": 1.5,
-                 "optimum_production": 1050000, "optimum_risk_pct": 1.4, "production_delta": 50000,
-                 "production_delta_pct": 5.0},
-                {"group": "ss1/seg1", "period": "main", "scenario": "base", "n_segments": 1, "segments": "seg1",
-                 "actual_production": 1000000, "actual_risk_pct": 1.5, "optimum_production": 1050000,
-                 "optimum_risk_pct": 1.4, "production_delta": 50000, "production_delta_pct": 5.0},
+                {
+                    "group": "TOTAL",
+                    "period": "main",
+                    "scenario": "base",
+                    "n_segments": 1,
+                    "segments": "seg1",
+                    "actual_production": 1000000,
+                    "actual_risk_pct": 1.5,
+                    "optimum_production": 1050000,
+                    "optimum_risk_pct": 1.4,
+                    "production_delta": 50000,
+                    "production_delta_pct": 5.0,
+                },
+                {
+                    "group": "supersegment_ss1",
+                    "period": "main",
+                    "scenario": "base",
+                    "n_segments": 1,
+                    "segments": "seg1",
+                    "actual_production": 1000000,
+                    "actual_risk_pct": 1.5,
+                    "optimum_production": 1050000,
+                    "optimum_risk_pct": 1.4,
+                    "production_delta": 50000,
+                    "production_delta_pct": 5.0,
+                },
+                {
+                    "group": "ss1/seg1",
+                    "period": "main",
+                    "scenario": "base",
+                    "n_segments": 1,
+                    "segments": "seg1",
+                    "actual_production": 1000000,
+                    "actual_risk_pct": 1.5,
+                    "optimum_production": 1050000,
+                    "optimum_risk_pct": 1.4,
+                    "production_delta": 50000,
+                    "production_delta_pct": 5.0,
+                },
             ]
         )
 
@@ -940,15 +1057,17 @@ class TestExportConsolidatedExcel:
         seg_dir = temp_output_dir / "seg1" / "data"
         seg_dir.mkdir(parents=True)
         # Cutoff data with accepted column for acceptance grid
-        pd.DataFrame({
-            "octroi_bin": [1, 1, 2, 2],
-            "efx_bin": [1, 2, 1, 2],
-            "accepted": [1, 0, 1, 1],
-            "segment": ["seg1"] * 4,
-            "scenario": ["base"] * 4,
-            "risk_pct": [1.0, 2.0, 1.5, 1.8],
-            "production": [100, 200, 150, 180],
-        }).to_csv(seg_dir / "cutoff_summary_wide.csv", index=False)
+        pd.DataFrame(
+            {
+                "octroi_bin": [1, 1, 2, 2],
+                "efx_bin": [1, 2, 1, 2],
+                "accepted": [1, 0, 1, 1],
+                "segment": ["seg1"] * 4,
+                "scenario": ["base"] * 4,
+                "risk_pct": [1.0, 2.0, 1.5, 1.8],
+                "production": [100, 200, 150, 180],
+            }
+        ).to_csv(seg_dir / "cutoff_summary_wide.csv", index=False)
         pd.DataFrame({"Metric": ["Actual"], "Risk (%)": [1.5], "Production (€)": [1000000]}).to_csv(
             seg_dir / "risk_production_summary_table_base.csv", index=False
         )
@@ -1002,15 +1121,17 @@ class TestExportConsolidatedExcel:
         df = self._make_consolidated_df()
         seg_dir = temp_output_dir / "seg1" / "data"
         seg_dir.mkdir(parents=True)
-        pd.DataFrame({
-            "octroi_bin": [1, 1, 2, 2],
-            "efx_bin": [1, 2, 1, 2],
-            "accepted": [1, 0, 1, 1],
-            "segment": ["seg1"] * 4,
-            "scenario": ["base"] * 4,
-            "risk_pct": [1.0, 2.0, 1.5, 1.8],
-            "production": [100, 200, 150, 180],
-        }).to_csv(seg_dir / "cutoff_summary_wide.csv", index=False)
+        pd.DataFrame(
+            {
+                "octroi_bin": [1, 1, 2, 2],
+                "efx_bin": [1, 2, 1, 2],
+                "accepted": [1, 0, 1, 1],
+                "segment": ["seg1"] * 4,
+                "scenario": ["base"] * 4,
+                "risk_pct": [1.0, 2.0, 1.5, 1.8],
+                "production": [100, 200, 150, 180],
+            }
+        ).to_csv(seg_dir / "cutoff_summary_wide.csv", index=False)
 
         xlsx_path = export_consolidated_excel(df, temp_output_dir, {"seg1": {"name": "seg1"}})
 
@@ -1037,12 +1158,18 @@ class TestExportConsolidatedExcel:
         for inc in [1, 2]:
             for o in [1, 2]:
                 for e in [1, 2]:
-                    rows.append({
-                        "octroi_bin": o, "efx_bin": e, "income_bin": inc,
-                        "accepted": 1 if (o + e + inc) <= 4 else 0,
-                        "segment": "seg1", "scenario": "base",
-                        "risk_pct": 1.0, "production": 100,
-                    })
+                    rows.append(
+                        {
+                            "octroi_bin": o,
+                            "efx_bin": e,
+                            "income_bin": inc,
+                            "accepted": 1 if (o + e + inc) <= 4 else 0,
+                            "segment": "seg1",
+                            "scenario": "base",
+                            "risk_pct": 1.0,
+                            "production": 100,
+                        }
+                    )
         pd.DataFrame(rows).to_csv(seg_dir / "cutoff_summary_wide.csv", index=False)
 
         xlsx_path = export_consolidated_excel(df, temp_output_dir, {"seg1": {"name": "seg1"}})

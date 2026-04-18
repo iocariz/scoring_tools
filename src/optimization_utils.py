@@ -92,8 +92,7 @@ class CellGrid:
         n_phantom = int((~observed).sum())
         if n_phantom > 0:
             logger.debug(
-                f"CellGrid: {n_phantom}/{len(all_combos)} cells unobserved in data "
-                f"(will be excluded from optimization)"
+                f"CellGrid: {n_phantom}/{len(all_combos)} cells unobserved in data (will be excluded from optimization)"
             )
 
         return cls(
@@ -185,9 +184,12 @@ def _build_monotonicity_constraints(
     risk_metric: np.ndarray | None = None
     risk_se: np.ndarray | None = None
     exposure: np.ndarray | None = None
-    if relax_on_uncertainty and (
-        uncertainty_min_exposure > 0 or uncertainty_z_threshold > 0
-    ) and "todu_30ever_h6" in grid.cell_data.columns and "todu_amt_pile_h6" in grid.cell_data.columns:
+    if (
+        relax_on_uncertainty
+        and (uncertainty_min_exposure > 0 or uncertainty_z_threshold > 0)
+        and "todu_30ever_h6" in grid.cell_data.columns
+        and "todu_amt_pile_h6" in grid.cell_data.columns
+    ):
         t30 = grid.cell_data["todu_30ever_h6"].to_numpy(dtype=float)
         exposure = grid.cell_data["todu_amt_pile_h6"].to_numpy(dtype=float)
         safe_exp = np.where(exposure > 0, exposure, np.nan)
@@ -232,14 +234,16 @@ def _build_monotonicity_constraints(
                 safer_idx = flat_idx
 
             if relax_on_uncertainty and risk_metric is not None and risk_se is not None and exposure is not None:
-                sparse_pair = min(float(exposure[riskier_idx]), float(exposure[safer_idx])) < float(uncertainty_min_exposure)
+                sparse_pair = min(float(exposure[riskier_idx]), float(exposure[safer_idx])) < float(
+                    uncertainty_min_exposure
+                )
                 ambiguous_pair = False
                 if uncertainty_z_threshold > 0:
                     diff = abs(float(risk_metric[riskier_idx]) - float(risk_metric[safer_idx]))
                     pooled_se = float(np.sqrt(risk_se[riskier_idx] ** 2 + risk_se[safer_idx] ** 2))
-                    ambiguous_pair = np.isfinite(pooled_se) and pooled_se > 0 and diff < float(
-                        uncertainty_z_threshold
-                    ) * pooled_se
+                    ambiguous_pair = (
+                        np.isfinite(pooled_se) and pooled_se > 0 and diff < float(uncertainty_z_threshold) * pooled_se
+                    )
                 if sparse_pair and ambiguous_pair:
                     continue
 
@@ -589,7 +593,9 @@ def trace_pareto_frontier(
 
     logger.info(f"MILP Pareto sweep: {n_points} risk targets in [{sweep_min:.2f}, {max_risk * 1.1:.2f}%]")
 
-    for target in _progress_iter(risk_targets, desc="MILP Pareto sweep", enabled=show_progress, total=len(risk_targets)):
+    for target in _progress_iter(
+        risk_targets, desc="MILP Pareto sweep", enabled=show_progress, total=len(risk_targets)
+    ):
         mask = milp_solve_cutoffs(
             grid,
             target,
@@ -621,14 +627,14 @@ def trace_pareto_frontier(
             # falling back to GA (which ignores floor constraints), try a wider
             # sweep up to the accept-all risk.  If still infeasible, create a
             # single solution from the floor cells themselves.
-            logger.warning(
-                "MILP sweep infeasible at all targets with floor constraint. "
-                "Trying wider risk range..."
-            )
+            logger.warning("MILP sweep infeasible at all targets with floor constraint. Trying wider risk range...")
             wider_targets = np.linspace(max_risk * 0.5, max_risk * 2.0, n_points)
             for target in wider_targets:
                 mask = milp_solve_cutoffs(
-                    grid, target, inv_vars, multiplier,
+                    grid,
+                    target,
+                    inv_vars,
+                    multiplier,
                     fixed_cells=fixed_cells,
                     max_swapin_production_pct=max_swapin_production_pct,
                     max_swapin_risk=max_swapin_risk,
@@ -648,9 +654,7 @@ def trace_pareto_frontier(
             if not solutions:
                 # Last resort: accept exactly the floor cells (+ all cells for
                 # max-risk solution) so the constraint is guaranteed satisfied.
-                logger.warning(
-                    "Floor constraint still infeasible. Creating floor-only solution."
-                )
+                logger.warning("Floor constraint still infeasible. Creating floor-only solution.")
                 floor_mask = np.zeros(len(grid.cell_data), dtype=int)
                 for idx, val in fixed_cells.items():
                     floor_mask[idx] = val
@@ -728,8 +732,8 @@ def trace_pareto_frontier(
     # Each bisection solves one MILP at the midpoint risk; new unique
     # masks trigger further bisection on the new sub-intervals.
     # ─────────────────────────────────────────────────────────────────
-    MAX_REFINE_ROUNDS = 3       # outer passes over the frontier
-    MIN_RISK_GAP = 0.02         # skip intervals narrower than 0.02 pp
+    MAX_REFINE_ROUNDS = 3  # outer passes over the frontier
+    MIN_RISK_GAP = 0.02  # skip intervals narrower than 0.02 pp
 
     n_refined = 0
     for _round in range(MAX_REFINE_ROUNDS):
@@ -747,7 +751,10 @@ def trace_pareto_frontier(
         found_new = False
         for mid_target in midpoints:
             mask = milp_solve_cutoffs(
-                grid, mid_target, inv_vars, multiplier,
+                grid,
+                mid_target,
+                inv_vars,
+                multiplier,
                 fixed_cells=fixed_cells,
                 max_swapin_production_pct=max_swapin_production_pct,
                 max_swapin_risk=max_swapin_risk,
@@ -1380,9 +1387,7 @@ def _validate_nd_cutoff_structure(
                 if str(k) in meta_keys:
                     continue
                 if not isinstance(v, (list, tuple)):
-                    raise ValueError(
-                        f"fixed_cutoffs['{var}']['{k}'] must be a list, got {type(v).__name__}"
-                    )
+                    raise ValueError(f"fixed_cutoffs['{var}']['{k}'] must be a list, got {type(v).__name__}")
                 key = float(k)
                 row = [float(x) for x in v]
                 if len(row) != anchor_len:
@@ -1623,8 +1628,7 @@ def create_fixed_cutoff_mask(
 
     n_accepted = int(mask.sum())
     logger.info(
-        f"Fixed cutoff mask: {n_accepted}/{grid.n_cells} cells accepted "
-        f"({n_accepted / grid.n_cells * 100:.1f}%)"
+        f"Fixed cutoff mask: {n_accepted}/{grid.n_cells} cells accepted ({n_accepted / grid.n_cells * 100:.1f}%)"
     )
 
     return grid, mask

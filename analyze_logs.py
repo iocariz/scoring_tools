@@ -291,7 +291,9 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
         if m:
             s.zero_proportion = float(m.group(1))
 
-        m = re.search(r"Preprocessing done.*?booked=([\d,]+)\s+demand=([\d,]+).*?stress=([\d.]+)\s+tasa_fin=([\d.]+)%", msg)
+        m = re.search(
+            r"Preprocessing done.*?booked=([\d,]+)\s+demand=([\d,]+).*?stress=([\d.]+)\s+tasa_fin=([\d.]+)%", msg
+        )
         if m:
             s.n_booked = int(m.group(1).replace(",", ""))
             s.n_demand = int(m.group(2).replace(",", ""))
@@ -308,7 +310,10 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
             s.monotonicity_directions[m.group(1)] = int(m.group(2))
 
         # --- Optimization ---
-        m = re.search(r"Optimization done.*?mode=(\w+).*?(\d+)\s+solutions.*?(\d+)x(\d+)(?:x(\d+))?\s+grid.*?b2 range:\s*\[([\d.]+)%?,\s*([\d.]+)%?\].*?optimum_risk=([\d.]+)", msg)
+        m = re.search(
+            r"Optimization done.*?mode=(\w+).*?(\d+)\s+solutions.*?(\d+)x(\d+)(?:x(\d+))?\s+grid.*?b2 range:\s*\[([\d.]+)%?,\s*([\d.]+)%?\].*?optimum_risk=([\d.]+)",
+            msg,
+        )
         if m:
             s.pareto_n_solutions = int(m.group(2))
             dims = f"{m.group(3)}x{m.group(4)}"
@@ -345,7 +350,10 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
             s.n_accepted_cells = int(m.group(2))
 
         # --- Scenario analysis ---
-        m = re.search(r"Scenario\s+(\w+)\s*\|\s*risk_threshold=([\d.]+)%\s*\|\s*selected b2=([\d.]+)%\s*\|\s*production=([\d,]+)", msg)
+        m = re.search(
+            r"Scenario\s+(\w+)\s*\|\s*risk_threshold=([\d.]+)%\s*\|\s*selected b2=([\d.]+)%\s*\|\s*production=([\d,]+)",
+            msg,
+        )
         if m:
             scen = ScenarioResult(
                 name=m.group(1),
@@ -362,7 +370,10 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
             s.scenarios[scen.name] = scen
 
         # --- Pareto fallback ---
-        m = re.search(r"No Pareto solution with b2_ever_h6 <= ([\d.]+)%.*?Pareto b2 range:\s*\[([\d.]+)%?,\s*([\d.]+)%?\].*?Falling back.*?b2=([\d.]+)%", msg)
+        m = re.search(
+            r"No Pareto solution with b2_ever_h6 <= ([\d.]+)%.*?Pareto b2 range:\s*\[([\d.]+)%?,\s*([\d.]+)%?\].*?Falling back.*?b2=([\d.]+)%",
+            msg,
+        )
         if m:
             target = float(m.group(1))
             s.pareto_fallback_targets.append(target)
@@ -396,7 +407,10 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
             s.risk_inversion = True
 
         # --- Risk sources ---
-        m = re.search(r"Risk sources:\s+h3_extrapolated=(\d+),\s*mr_observed=(\d+),\s*main_imputed=(\d+),\s*model_fallback=(\d+)", msg)
+        m = re.search(
+            r"Risk sources:\s+h3_extrapolated=(\d+),\s*mr_observed=(\d+),\s*main_imputed=(\d+),\s*model_fallback=(\d+)",
+            msg,
+        )
         if m:
             s.mr_risk_sources = {
                 "h3_extrapolated": int(m.group(1)),
@@ -571,376 +585,452 @@ def generate_recommendations(segments: dict[str, SegmentMetrics]) -> list[Recomm
         # --- Hard errors ---
         for err in s.errors:
             if "Unexpected segment error" in err or "Pipeline returned no result" in err:
-                recs.append(Recommendation(
-                    priority="HIGH",
-                    category="Error",
-                    message=f"{prefix}Pipeline failed: {err[:200]}",
-                ))
+                recs.append(
+                    Recommendation(
+                        priority="HIGH",
+                        category="Error",
+                        message=f"{prefix}Pipeline failed: {err[:200]}",
+                    )
+                )
 
         if s.dq_failures > 0:
-            recs.append(Recommendation(
-                priority="HIGH",
-                category="Data Quality",
-                message=f"{prefix}{s.dq_failures} DQ check(s) failed. Pipeline may have skipped this segment.",
-                setting="data source / segment_filter",
-                suggested="Check DQ report output. Use --skip-dq-checks only for debugging.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="HIGH",
+                    category="Data Quality",
+                    message=f"{prefix}{s.dq_failures} DQ check(s) failed. Pipeline may have skipped this segment.",
+                    setting="data source / segment_filter",
+                    suggested="Check DQ report output. Use --skip-dq-checks only for debugging.",
+                )
+            )
 
         # --- Model quality ---
         if s.cv_r2_mean is not None and s.cv_r2_mean < 0.1:
-            recs.append(Recommendation(
-                priority="HIGH",
-                category="Model",
-                message=f"{prefix}Very low CV R² ({s.cv_r2_mean:.4f}). Model has weak predictive power.",
-                setting="inference_variables / cv_folds",
-                current=f"R²={s.cv_r2_mean:.4f}",
-                suggested="Try adding more inference_variables, increasing cv_folds to 5, or enabling Optuna tuning.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="HIGH",
+                    category="Model",
+                    message=f"{prefix}Very low CV R² ({s.cv_r2_mean:.4f}). Model has weak predictive power.",
+                    setting="inference_variables / cv_folds",
+                    current=f"R²={s.cv_r2_mean:.4f}",
+                    suggested="Try adding more inference_variables, increasing cv_folds to 5, or enabling Optuna tuning.",
+                )
+            )
         elif s.cv_r2_mean is not None and s.cv_r2_mean < 0.3:
-            recs.append(Recommendation(
-                priority="MEDIUM",
-                category="Model",
-                message=f"{prefix}Low CV R² ({s.cv_r2_mean:.4f}). Consider enriching feature set.",
-                setting="inference_variables",
-                current=f"R²={s.cv_r2_mean:.4f}",
-                suggested="Add more predictive variables or try enabling Optuna hyperparameter tuning.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="MEDIUM",
+                    category="Model",
+                    message=f"{prefix}Low CV R² ({s.cv_r2_mean:.4f}). Consider enriching feature set.",
+                    setting="inference_variables",
+                    current=f"R²={s.cv_r2_mean:.4f}",
+                    suggested="Add more predictive variables or try enabling Optuna hyperparameter tuning.",
+                )
+            )
 
         if s.train_r2 is not None and s.cv_r2_mean is not None:
             gap = s.train_r2 - s.cv_r2_mean
             if gap > 0.15:
-                recs.append(Recommendation(
-                    priority="MEDIUM",
-                    category="Model",
-                    message=f"{prefix}Possible overfitting: Train R²={s.train_r2:.4f} vs CV R²={s.cv_r2_mean:.4f} (gap={gap:.4f}).",
-                    setting="cv_folds / model regularization",
-                    suggested="Increase cv_folds (e.g. 5), use stronger regularization, or reduce feature count.",
-                ))
+                recs.append(
+                    Recommendation(
+                        priority="MEDIUM",
+                        category="Model",
+                        message=f"{prefix}Possible overfitting: Train R²={s.train_r2:.4f} vs CV R²={s.cv_r2_mean:.4f} (gap={gap:.4f}).",
+                        setting="cv_folds / model regularization",
+                        suggested="Increase cv_folds (e.g. 5), use stronger regularization, or reduce feature count.",
+                    )
+                )
 
         if s.cv_rmse_std is not None and s.cv_rmse_mean is not None and s.cv_rmse_mean > 0:
             cv_coeff = s.cv_rmse_std / s.cv_rmse_mean
             if cv_coeff > 0.3:
-                recs.append(Recommendation(
-                    priority="MEDIUM",
-                    category="Model",
-                    message=f"{prefix}High CV variance (RMSE CoV={cv_coeff:.2f}). Model is unstable across folds.",
-                    setting="cv_folds / sample size",
-                    suggested="Increase cv_folds or ensure enough booked records per fold.",
-                ))
+                recs.append(
+                    Recommendation(
+                        priority="MEDIUM",
+                        category="Model",
+                        message=f"{prefix}High CV variance (RMSE CoV={cv_coeff:.2f}). Model is unstable across folds.",
+                        setting="cv_folds / sample size",
+                        suggested="Increase cv_folds or ensure enough booked records per fold.",
+                    )
+                )
 
         # --- Sample size ---
         if s.n_booked is not None and s.n_booked < 500:
-            recs.append(Recommendation(
-                priority="HIGH",
-                category="Data",
-                message=f"{prefix}Very small sample: only {s.n_booked} booked records.",
-                setting="date range / segment filter",
-                suggested="Expand date_ini_book_obs/date_fin_book_obs or merge with related segment via modelling_supersegment.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="HIGH",
+                    category="Data",
+                    message=f"{prefix}Very small sample: only {s.n_booked} booked records.",
+                    setting="date range / segment filter",
+                    suggested="Expand date_ini_book_obs/date_fin_book_obs or merge with related segment via modelling_supersegment.",
+                )
+            )
         elif s.n_booked is not None and s.n_booked < 2000:
-            recs.append(Recommendation(
-                priority="MEDIUM",
-                category="Data",
-                message=f"{prefix}Small sample: {s.n_booked} booked records. Model may be unreliable.",
-                setting="date range / modelling_supersegment",
-                suggested="Consider sharing training data via modelling_supersegment or expanding date range.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="MEDIUM",
+                    category="Data",
+                    message=f"{prefix}Small sample: {s.n_booked} booked records. Model may be unreliable.",
+                    setting="date range / modelling_supersegment",
+                    suggested="Consider sharing training data via modelling_supersegment or expanding date range.",
+                )
+            )
 
         if s.zero_proportion is not None and s.zero_proportion > 95:
-            recs.append(Recommendation(
-                priority="MEDIUM",
-                category="Data",
-                message=f"{prefix}Extremely high zero proportion ({s.zero_proportion:.1f}%). Hurdle model recommended.",
-                setting="Model selection",
-                suggested="Ensure HurdleRegressor is available in the model candidates (it should be by default).",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="MEDIUM",
+                    category="Data",
+                    message=f"{prefix}Extremely high zero proportion ({s.zero_proportion:.1f}%). Hurdle model recommended.",
+                    setting="Model selection",
+                    suggested="Ensure HurdleRegressor is available in the model candidates (it should be by default).",
+                )
+            )
 
         # --- Optimization: unreachable optimum_risk ---
         if s.pareto_fallback_targets:
             actual_min = s.pareto_actual_min
             if actual_min is not None and s.optimum_risk is not None:
-                recs.append(Recommendation(
-                    priority="HIGH",
-                    category="Optimization",
-                    message=(
-                        f"{prefix}optimum_risk={s.optimum_risk}% is unreachable. "
-                        f"Minimum achievable risk on the Pareto frontier is {actual_min:.2f}%. "
-                        f"All scenarios fell back to the minimum-risk solution."
-                    ),
-                    setting="optimum_risk",
-                    current=f"{s.optimum_risk}%",
-                    suggested=f"Set optimum_risk >= {actual_min:.2f} (suggest {_round_up(actual_min, 0.1):.2f}).",
-                ))
+                recs.append(
+                    Recommendation(
+                        priority="HIGH",
+                        category="Optimization",
+                        message=(
+                            f"{prefix}optimum_risk={s.optimum_risk}% is unreachable. "
+                            f"Minimum achievable risk on the Pareto frontier is {actual_min:.2f}%. "
+                            f"All scenarios fell back to the minimum-risk solution."
+                        ),
+                        setting="optimum_risk",
+                        current=f"{s.optimum_risk}%",
+                        suggested=f"Set optimum_risk >= {actual_min:.2f} (suggest {_round_up(actual_min, 0.1):.2f}).",
+                    )
+                )
 
         if s.milp_infeasible:
-            recs.append(Recommendation(
-                priority="HIGH",
-                category="Optimization",
-                message=f"{prefix}MILP solver found no feasible solutions." + (" GA fallback was triggered." if s.ga_fallback else ""),
-                setting="optimum_risk / risk_step / monotonicity constraints",
-                suggested=(
-                    "Relax optimum_risk (increase target), widen risk_step, "
-                    "check monotonicity directions, or enable monotonicity_relaxation_enabled=true."
-                ),
-            ))
+            recs.append(
+                Recommendation(
+                    priority="HIGH",
+                    category="Optimization",
+                    message=f"{prefix}MILP solver found no feasible solutions."
+                    + (" GA fallback was triggered." if s.ga_fallback else ""),
+                    setting="optimum_risk / risk_step / monotonicity constraints",
+                    suggested=(
+                        "Relax optimum_risk (increase target), widen risk_step, "
+                        "check monotonicity directions, or enable monotonicity_relaxation_enabled=true."
+                    ),
+                )
+            )
 
         if s.pareto_n_solutions is not None and s.pareto_n_solutions < 5:
-            recs.append(Recommendation(
-                priority="MEDIUM",
-                category="Optimization",
-                message=f"{prefix}Very sparse Pareto frontier ({s.pareto_n_solutions} solutions).",
-                setting="pareto_n_points / risk_step",
-                suggested="Increase pareto_n_points (e.g. 100) or reduce risk_step for finer granularity.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="MEDIUM",
+                    category="Optimization",
+                    message=f"{prefix}Very sparse Pareto frontier ({s.pareto_n_solutions} solutions).",
+                    setting="pareto_n_points / risk_step",
+                    suggested="Increase pareto_n_points (e.g. 100) or reduce risk_step for finer granularity.",
+                )
+            )
 
         # --- Scenario: base didn't improve over actual ---
         base = s.scenarios.get("base")
         if base and s.mr_decomposition.actual_risk is not None and base.selected_b2 is not None:
-            if s.mr_decomposition.optimum_risk is not None and s.mr_decomposition.optimum_risk > s.mr_decomposition.actual_risk:
-                recs.append(Recommendation(
-                    priority="MEDIUM",
-                    category="MR Validation",
-                    message=(
-                        f"{prefix}MR optimum risk ({s.mr_decomposition.optimum_risk:.2f}%) is worse than "
-                        f"actual risk ({s.mr_decomposition.actual_risk:.2f}%). The proposed cutoffs "
-                        f"increase risk in the MR period."
-                    ),
-                    setting="optimum_risk / reject_inference",
-                    suggested="Review if the main-period cutoffs generalize to MR. Consider tightening optimum_risk.",
-                ))
+            if (
+                s.mr_decomposition.optimum_risk is not None
+                and s.mr_decomposition.optimum_risk > s.mr_decomposition.actual_risk
+            ):
+                recs.append(
+                    Recommendation(
+                        priority="MEDIUM",
+                        category="MR Validation",
+                        message=(
+                            f"{prefix}MR optimum risk ({s.mr_decomposition.optimum_risk:.2f}%) is worse than "
+                            f"actual risk ({s.mr_decomposition.actual_risk:.2f}%). The proposed cutoffs "
+                            f"increase risk in the MR period."
+                        ),
+                        setting="optimum_risk / reject_inference",
+                        suggested="Review if the main-period cutoffs generalize to MR. Consider tightening optimum_risk.",
+                    )
+                )
 
         # No feasible solution for a scenario
         for scen_name, scen in s.scenarios.items():
             if scen.is_fallback and scen.selected_b2 is None:
-                recs.append(Recommendation(
-                    priority="HIGH",
-                    category="Optimization",
-                    message=f"{prefix}Scenario '{scen_name}' found no feasible solution on the Pareto frontier.",
-                    setting="optimum_risk / risk_step",
-                    suggested="The risk target for this scenario is likely unreachable. Adjust optimum_risk or risk_step.",
-                ))
+                recs.append(
+                    Recommendation(
+                        priority="HIGH",
+                        category="Optimization",
+                        message=f"{prefix}Scenario '{scen_name}' found no feasible solution on the Pareto frontier.",
+                        setting="optimum_risk / risk_step",
+                        suggested="The risk target for this scenario is likely unreachable. Adjust optimum_risk or risk_step.",
+                    )
+                )
 
         # --- Risk inversion ---
         if s.risk_inversion:
-            recs.append(Recommendation(
-                priority="HIGH",
-                category="MR Validation",
-                message=(
-                    f"{prefix}Risk inversion detected: swap-out bins have lower risk than actual. "
-                    f"The risk ordering has shifted between main and MR periods."
-                ),
-                setting="bin edges / MR date range",
-                suggested="Investigate population drift. Re-learn bin edges or adjust MR date range.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="HIGH",
+                    category="MR Validation",
+                    message=(
+                        f"{prefix}Risk inversion detected: swap-out bins have lower risk than actual. "
+                        f"The risk ordering has shifted between main and MR periods."
+                    ),
+                    setting="bin edges / MR date range",
+                    suggested="Investigate population drift. Re-learn bin edges or adjust MR date range.",
+                )
+            )
 
         # --- MR risk sources ---
         if s.mr_risk_sources:
             fb = s.mr_risk_sources.get("model_fallback", 0)
             total = sum(s.mr_risk_sources.values())
             if total > 0 and fb / total > 0.3:
-                recs.append(Recommendation(
-                    priority="MEDIUM",
-                    category="MR Validation",
-                    message=(
-                        f"{prefix}{fb}/{total} MR bins ({fb / total * 100:.0f}%) use model fallback risk. "
-                        f"MR risk estimates may be unreliable."
-                    ),
-                    setting="mr_min_obs_per_bin / MR date range",
-                    suggested="Lower mr_min_obs_per_bin or extend MR observation window for more data.",
-                ))
+                recs.append(
+                    Recommendation(
+                        priority="MEDIUM",
+                        category="MR Validation",
+                        message=(
+                            f"{prefix}{fb}/{total} MR bins ({fb / total * 100:.0f}%) use model fallback risk. "
+                            f"MR risk estimates may be unreliable."
+                        ),
+                        setting="mr_min_obs_per_bin / MR date range",
+                        suggested="Lower mr_min_obs_per_bin or extend MR observation window for more data.",
+                    )
+                )
 
         # --- MR imputation ---
         if s.mr_imputed_pct is not None and s.mr_imputed_pct > 20:
-            recs.append(Recommendation(
-                priority="MEDIUM",
-                category="MR Validation",
-                message=f"{prefix}{s.mr_imputed_pct:.1f}% of MR production comes from model-imputed bins.",
-                setting="bin granularity",
-                suggested="Consider coarser binning (fewer bins) to reduce the number of MR-only cells.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="MEDIUM",
+                    category="MR Validation",
+                    message=f"{prefix}{s.mr_imputed_pct:.1f}% of MR production comes from model-imputed bins.",
+                    setting="bin granularity",
+                    suggested="Consider coarser binning (fewer bins) to reduce the number of MR-only cells.",
+                )
+            )
 
         # --- Low MR risk warning ---
         if s.mr_low_risk_warning:
-            recs.append(Recommendation(
-                priority="HIGH",
-                category="MR Validation",
-                message=f"{prefix}MR-observed H6 risk is suspiciously low (<10% of main-period risk). Likely immature loan dilution.",
-                setting="mr_maturity_months / mr_min_obs_per_bin",
-                suggested="Increase mr_maturity_months to exclude immature accounts from H6 risk computation.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="HIGH",
+                    category="MR Validation",
+                    message=f"{prefix}MR-observed H6 risk is suspiciously low (<10% of main-period risk). Likely immature loan dilution.",
+                    setting="mr_maturity_months / mr_min_obs_per_bin",
+                    suggested="Increase mr_maturity_months to exclude immature accounts from H6 risk computation.",
+                )
+            )
 
         # --- Reject inference ---
         if s.ri_non_score_rejection_bias:
-            recs.append(Recommendation(
-                priority="MEDIUM",
-                category="Reject Inference",
-                message=f"{prefix}Non-score rejections exceed 10% of demand — acceptance rate bias may be material.",
-                setting="reject_include_all_rejections",
-                suggested="Set reject_include_all_rejections = true to include all rejections in the denominator.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="MEDIUM",
+                    category="Reject Inference",
+                    message=f"{prefix}Non-score rejections exceed 10% of demand — acceptance rate bias may be material.",
+                    setting="reject_include_all_rejections",
+                    suggested="Set reject_include_all_rejections = true to include all rejections in the denominator.",
+                )
+            )
 
         if s.ri_avg_multiplier is not None and s.ri_avg_multiplier > 3.0:
-            recs.append(Recommendation(
-                priority="MEDIUM",
-                category="Reject Inference",
-                message=f"{prefix}High average RI multiplier ({s.ri_avg_multiplier:.2f}×). Repesca risk uplift is aggressive.",
-                setting="reject_uplift_factor / reject_parceling_method",
-                suggested="Consider reducing reject_uplift_factor or switching to a milder parceling method ('linear').",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="MEDIUM",
+                    category="Reject Inference",
+                    message=f"{prefix}High average RI multiplier ({s.ri_avg_multiplier:.2f}×). Repesca risk uplift is aggressive.",
+                    setting="reject_uplift_factor / reject_parceling_method",
+                    suggested="Consider reducing reject_uplift_factor or switching to a milder parceling method ('linear').",
+                )
+            )
         elif s.ri_avg_multiplier is not None and s.ri_avg_multiplier > 2.0:
-            recs.append(Recommendation(
-                priority="LOW",
-                category="Reject Inference",
-                message=f"{prefix}Moderately high RI multiplier ({s.ri_avg_multiplier:.2f}×).",
-                setting="reject_uplift_factor",
-                suggested="Monitor swap-in actual risk vs predicted risk. If bias emerges, reduce reject_uplift_factor.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="LOW",
+                    category="Reject Inference",
+                    message=f"{prefix}Moderately high RI multiplier ({s.ri_avg_multiplier:.2f}×).",
+                    setting="reject_uplift_factor",
+                    suggested="Monitor swap-in actual risk vs predicted risk. If bias emerges, reduce reject_uplift_factor.",
+                )
+            )
 
         if s.ri_negative_between_var:
-            recs.append(Recommendation(
-                priority="LOW",
-                category="Reject Inference",
-                message=f"{prefix}Bayesian smoothing: between-bin variance was non-positive. Data may not support random-effects model.",
-                setting="reject_bayesian_prior_strength",
-                suggested="The configured prior_strength is being used as fallback. Consider increasing it for more smoothing.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="LOW",
+                    category="Reject Inference",
+                    message=f"{prefix}Bayesian smoothing: between-bin variance was non-positive. Data may not support random-effects model.",
+                    setting="reject_bayesian_prior_strength",
+                    suggested="The configured prior_strength is being used as fallback. Consider increasing it for more smoothing.",
+                )
+            )
 
         if s.ri_no_feasible:
-            recs.append(Recommendation(
-                priority="MEDIUM",
-                category="Reject Inference",
-                message=f"{prefix}RI optimizer found no feasible solution.",
-                setting="ri_uplift_range / ri_max_mult_range",
-                suggested="Widen search ranges: ri_uplift_range=[0.0, 8.0], ri_max_mult_range=[1.0, 8.0].",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="MEDIUM",
+                    category="Reject Inference",
+                    message=f"{prefix}RI optimizer found no feasible solution.",
+                    setting="ri_uplift_range / ri_max_mult_range",
+                    suggested="Widen search ranges: ri_uplift_range=[0.0, 8.0], ri_max_mult_range=[1.0, 8.0].",
+                )
+            )
 
         if s.ri_validation_failed:
-            recs.append(Recommendation(
-                priority="LOW",
-                category="Reject Inference",
-                message=f"{prefix}RI temporal validation failed (non-blocking).",
-                setting="ri_validation_split",
-                suggested="Increase ri_validation_split (e.g. 0.8) to give more data to training.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="LOW",
+                    category="Reject Inference",
+                    message=f"{prefix}RI temporal validation failed (non-blocking).",
+                    setting="ri_validation_split",
+                    suggested="Increase ri_validation_split (e.g. 0.8) to give more data to training.",
+                )
+            )
 
         # --- H3/H6 ratio ---
         if s.h6_h3_ratio_trend_pct is not None and abs(s.h6_h3_ratio_trend_pct) > 50:
-            recs.append(Recommendation(
-                priority="MEDIUM",
-                category="MR Validation",
-                message=f"{prefix}H6/H3 ratio shows significant trend ({s.h6_h3_ratio_trend_pct:+.1f}%). Extrapolation may be inaccurate.",
-                setting="mr_extrapolation_method",
-                suggested="Use mr_extrapolation_method='auto' for data-driven curvature fitting.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="MEDIUM",
+                    category="MR Validation",
+                    message=f"{prefix}H6/H3 ratio shows significant trend ({s.h6_h3_ratio_trend_pct:+.1f}%). Extrapolation may be inaccurate.",
+                    setting="mr_extrapolation_method",
+                    suggested="Use mr_extrapolation_method='auto' for data-driven curvature fitting.",
+                )
+            )
 
         if s.h3_floor_bins > 3:
-            recs.append(Recommendation(
-                priority="LOW",
-                category="MR Validation",
-                message=f"{prefix}{s.h3_floor_bins} bin(s) had H6 risk clamped to H3 floor.",
-                setting="mr_extrapolation_curvature",
-                suggested="H3 floor is a safety net. If many bins are floored, the extrapolation may be underestimating H6 risk.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="LOW",
+                    category="MR Validation",
+                    message=f"{prefix}{s.h3_floor_bins} bin(s) had H6 risk clamped to H3 floor.",
+                    setting="mr_extrapolation_curvature",
+                    suggested="H3 floor is a safety net. If many bins are floored, the extrapolation may be underestimating H6 risk.",
+                )
+            )
 
         # --- MR recalibration ---
         if s.mr_recal_avg_factor is not None:
             if s.mr_recal_avg_factor < 0.5 or s.mr_recal_avg_factor > 2.0:
-                recs.append(Recommendation(
-                    priority="MEDIUM",
-                    category="MR Validation",
-                    message=(
-                        f"{prefix}MR recalibration factor is extreme (avg={s.mr_recal_avg_factor:.3f}). "
-                        f"Repesca risk was scaled by {'<0.5×' if s.mr_recal_avg_factor < 0.5 else '>2.0×'}."
-                    ),
-                    setting="MR date range / reject_inference parameters",
-                    suggested="Large calibration factors suggest main vs MR risk divergence. Review period selection.",
-                ))
+                recs.append(
+                    Recommendation(
+                        priority="MEDIUM",
+                        category="MR Validation",
+                        message=(
+                            f"{prefix}MR recalibration factor is extreme (avg={s.mr_recal_avg_factor:.3f}). "
+                            f"Repesca risk was scaled by {'<0.5×' if s.mr_recal_avg_factor < 0.5 else '>2.0×'}."
+                        ),
+                        setting="MR date range / reject_inference parameters",
+                        suggested="Large calibration factors suggest main vs MR risk divergence. Review period selection.",
+                    )
+                )
 
         # --- Stability ---
         if s.psi_value is not None:
             if s.psi_value > 0.25:
-                recs.append(Recommendation(
-                    priority="HIGH",
-                    category="Stability",
-                    message=f"{prefix}Significant population shift (PSI={s.psi_value:.4f} > 0.25).",
-                    setting="date ranges / bin edges",
-                    suggested="Investigate population drift between main and MR. Consider re-learning bin edges.",
-                ))
+                recs.append(
+                    Recommendation(
+                        priority="HIGH",
+                        category="Stability",
+                        message=f"{prefix}Significant population shift (PSI={s.psi_value:.4f} > 0.25).",
+                        setting="date ranges / bin edges",
+                        suggested="Investigate population drift between main and MR. Consider re-learning bin edges.",
+                    )
+                )
             elif s.psi_value > 0.1:
-                recs.append(Recommendation(
-                    priority="MEDIUM",
-                    category="Stability",
-                    message=f"{prefix}Moderate population shift (PSI={s.psi_value:.4f}). Monitor trend.",
-                    setting="date ranges",
-                    suggested="Review MR date range or check for data quality changes between periods.",
-                ))
+                recs.append(
+                    Recommendation(
+                        priority="MEDIUM",
+                        category="Stability",
+                        message=f"{prefix}Moderate population shift (PSI={s.psi_value:.4f}). Monitor trend.",
+                        setting="date ranges",
+                        suggested="Review MR date range or check for data quality changes between periods.",
+                    )
+                )
 
         if s.risk_drift_bins > 3:
-            recs.append(Recommendation(
-                priority="HIGH",
-                category="MR Validation",
-                message=f"{prefix}Risk drift in {s.risk_drift_bins} bins (>20% deviation main vs MR).",
-                setting="mr_extrapolation_method / mr_min_obs_per_bin",
-                suggested="Try mr_extrapolation_method='auto'. Increase mr_min_obs_per_bin for more observations per cell.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="HIGH",
+                    category="MR Validation",
+                    message=f"{prefix}Risk drift in {s.risk_drift_bins} bins (>20% deviation main vs MR).",
+                    setting="mr_extrapolation_method / mr_min_obs_per_bin",
+                    suggested="Try mr_extrapolation_method='auto'. Increase mr_min_obs_per_bin for more observations per cell.",
+                )
+            )
 
         if s.mr_auto_fallback:
-            recs.append(Recommendation(
-                priority="MEDIUM",
-                category="MR Validation",
-                message=f"{prefix}MR auto-calibration fell back to linear (insufficient data).",
-                setting="mr_min_obs_per_bin / mr_extrapolation_method",
-                suggested="Lower mr_min_obs_per_bin (e.g. 15) or set mr_extrapolation_method='power' with manual curvature.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="MEDIUM",
+                    category="MR Validation",
+                    message=f"{prefix}MR auto-calibration fell back to linear (insufficient data).",
+                    setting="mr_min_obs_per_bin / mr_extrapolation_method",
+                    suggested="Lower mr_min_obs_per_bin (e.g. 15) or set mr_extrapolation_method='power' with manual curvature.",
+                )
+            )
 
         # --- DQ ---
         if s.dq_warnings > 5:
-            recs.append(Recommendation(
-                priority="MEDIUM",
-                category="Data Quality",
-                message=f"{prefix}{s.dq_warnings} data quality warnings.",
-                setting="Data pipeline / input data",
-                suggested="Review DQ warnings and fix upstream data issues before production runs.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="MEDIUM",
+                    category="Data Quality",
+                    message=f"{prefix}{s.dq_warnings} data quality warnings.",
+                    setting="Data pipeline / input data",
+                    suggested="Review DQ warnings and fix upstream data issues before production runs.",
+                )
+            )
 
         # --- Binning ---
         if s.nan_drop_pct is not None and s.nan_drop_pct > 10:
-            recs.append(Recommendation(
-                priority="MEDIUM",
-                category="Binning",
-                message=f"{prefix}High NaN rate during binning ({s.nan_drop_pct:.1f}% dropped).",
-                setting="bin source columns / data imputation",
-                suggested="Check source_col data quality. Consider imputation or adjusting bin edges.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="MEDIUM",
+                    category="Binning",
+                    message=f"{prefix}High NaN rate during binning ({s.nan_drop_pct:.1f}% dropped).",
+                    setting="bin source columns / data imputation",
+                    suggested="Check source_col data quality. Consider imputation or adjusting bin edges.",
+                )
+            )
 
         if s.out_of_range_bins > 100:
-            recs.append(Recommendation(
-                priority="LOW",
-                category="Binning",
-                message=f"{prefix}{s.out_of_range_bins} records fell outside bin edges.",
-                setting="bin_edges",
-                suggested="Re-learn bin edges with method='quantile' or extend edge range to cover data.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="LOW",
+                    category="Binning",
+                    message=f"{prefix}{s.out_of_range_bins} records fell outside bin edges.",
+                    setting="bin_edges",
+                    suggested="Re-learn bin edges with method='quantile' or extend edge range to cover data.",
+                )
+            )
 
         # --- Anomalies ---
         if s.n_anomalous_months > 3:
-            recs.append(Recommendation(
-                priority="MEDIUM",
-                category="Trends",
-                message=f"{prefix}{s.n_anomalous_months} anomalous months detected in trend analysis.",
-                setting="date range / segment filter",
-                suggested="Investigate anomalous months. Consider narrowing date_fin_book_obs.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="MEDIUM",
+                    category="Trends",
+                    message=f"{prefix}{s.n_anomalous_months} anomalous months detected in trend analysis.",
+                    setting="date range / segment filter",
+                    suggested="Investigate anomalous months. Consider narrowing date_fin_book_obs.",
+                )
+            )
 
         # --- Performance ---
         if s.elapsed_total is not None and s.elapsed_total > 600:
-            recs.append(Recommendation(
-                priority="LOW",
-                category="Performance",
-                message=f"{prefix}Pipeline took {s.elapsed_total:.0f}s ({s.elapsed_total / 60:.1f} min).",
-                setting="n_bootstraps / pareto_n_points",
-                suggested="Reduce n_bootstraps (e.g. 500) or pareto_n_points (e.g. 30) for faster iteration.",
-            ))
+            recs.append(
+                Recommendation(
+                    priority="LOW",
+                    category="Performance",
+                    message=f"{prefix}Pipeline took {s.elapsed_total:.0f}s ({s.elapsed_total / 60:.1f} min).",
+                    setting="n_bootstraps / pareto_n_points",
+                    suggested="Reduce n_bootstraps (e.g. 500) or pareto_n_points (e.g. 30) for faster iteration.",
+                )
+            )
 
     return recs
 
@@ -1004,8 +1094,7 @@ def generate_alternative_segments_toml(
 
     # Process each segment
     real_segments = {
-        name: s for name, s in segments.items()
-        if not name.startswith("_supersegment_") and name != "default"
+        name: s for name, s in segments.items() if not name.startswith("_supersegment_") and name != "default"
     }
 
     for seg_name, s in sorted(real_segments.items()):
@@ -1054,8 +1143,7 @@ def generate_alternative_segments_toml(
 
         # --- Suggest wider risk_step if all 3 scenarios select different solutions ---
         if base and pess and opti:
-            if (pess.selected_b2 != base.selected_b2 != opti.selected_b2
-                    and cur_risk_step and cur_risk_step <= 0.05):
+            if pess.selected_b2 != base.selected_b2 != opti.selected_b2 and cur_risk_step and cur_risk_step <= 0.05:
                 new_risk_step = 0.1
                 seg_changes.append(
                     f"risk_step: {cur_risk_step} -> {new_risk_step} "
@@ -1166,10 +1254,7 @@ def format_report(
     lines.append("")
 
     # Filter to real segments for display
-    real_segments = {
-        n: s for n, s in segments.items()
-        if not n.startswith("_supersegment_") and n != "default"
-    }
+    real_segments = {n: s for n, s in segments.items() if not n.startswith("_supersegment_") and n != "default"}
 
     lines.append(f"Segments analyzed: {len(real_segments)}")
     lines.append("")
@@ -1273,11 +1358,17 @@ def format_report(
         mr = s.mr_decomposition
         if mr.actual_risk is not None:
             lines.append("  MR Decomposition:")
-            lines.append(f"    Actual:   risk={mr.actual_risk:.2f}%  prod=€{mr.actual_prod:,.0f}" if mr.actual_prod else "")
+            lines.append(
+                f"    Actual:   risk={mr.actual_risk:.2f}%  prod=€{mr.actual_prod:,.0f}" if mr.actual_prod else ""
+            )
             if mr.swap_out_risk is not None:
-                lines.append(f"    Swap-out: risk={mr.swap_out_risk:.2f}%  prod=€{mr.swap_out_prod:,.0f} ({mr.swap_out_pct:.1f}%)")
+                lines.append(
+                    f"    Swap-out: risk={mr.swap_out_risk:.2f}%  prod=€{mr.swap_out_prod:,.0f} ({mr.swap_out_pct:.1f}%)"
+                )
             if mr.swap_in_risk is not None:
-                lines.append(f"    Swap-in:  risk={mr.swap_in_risk:.2f}%  prod=€{mr.swap_in_prod:,.0f} ({mr.swap_in_pct:.1f}%)")
+                lines.append(
+                    f"    Swap-in:  risk={mr.swap_in_risk:.2f}%  prod=€{mr.swap_in_prod:,.0f} ({mr.swap_in_pct:.1f}%)"
+                )
             if mr.optimum_risk is not None:
                 lines.append(f"    Optimum:  risk={mr.optimum_risk:.2f}%  prod=€{mr.optimum_prod:,.0f}")
 
@@ -1305,7 +1396,9 @@ def format_report(
             psi = f"{s.psi_value:.4f}" if s.psi_value is not None else "?"
             ri = f"{s.ri_avg_multiplier:.2f}×" if s.ri_avg_multiplier is not None else "?"
             time_s = f"{s.elapsed_total:.0f}s" if s.elapsed_total else "?"
-            lines.append(f"{name:<22s} {booked:>8s} {target:>7s} {sel_b2:>7s} {prod:>14s} {pareto:>7s} {psi:>7s} {ri:>7s} {time_s:>6s}")
+            lines.append(
+                f"{name:<22s} {booked:>8s} {target:>7s} {sel_b2:>7s} {prod:>14s} {pareto:>7s} {psi:>7s} {ri:>7s} {time_s:>6s}"
+            )
 
         lines.append("")
 
@@ -1424,7 +1517,9 @@ Examples:
     parser.add_argument("--verbose", "-v", action="store_true", help="Include all warnings and errors in report")
     parser.add_argument("--output", "-o", type=str, default=None, help="Write report to file instead of stdout")
     parser.add_argument(
-        "--segments-config", type=str, default="segments.toml",
+        "--segments-config",
+        type=str,
+        default="segments.toml",
         help="Path to current segments.toml for generating alternative config (default: segments.toml)",
     )
 
@@ -1469,7 +1564,8 @@ Examples:
 
     # Format and output report
     report = format_report(
-        segments, recommendations,
+        segments,
+        recommendations,
         verbose=args.verbose,
         alt_toml=alt_toml,
         alt_changes=alt_changes,

@@ -599,9 +599,7 @@ class GlobalAllocator:
             best_score = -float("inf")
             best_segment_to_increment = None
             best_candidate_risk = float("inf")
-            needs_more_production = (
-                global_production_floor is not None and total_production < global_production_floor
-            )
+            needs_more_production = global_production_floor is not None and total_production < global_production_floor
 
             for seg in sorted(self.frontiers.keys()):
                 # Skip locked segments
@@ -703,9 +701,10 @@ class GlobalAllocator:
         tol = 1e-3
         if abs(final_global_risk - global_risk_target) < tol:
             binding_heuristic.append("global_risk")
-        if global_production_floor is not None and abs(final_total_prod - global_production_floor) / max(
-            global_production_floor, 1.0
-        ) < 1e-4:
+        if (
+            global_production_floor is not None
+            and abs(final_total_prod - global_production_floor) / max(global_production_floor, 1.0) < 1e-4
+        ):
             binding_heuristic.append("global_production_floor")
         if constraints:
             for seg, sc in constraints.items():

@@ -34,6 +34,13 @@ jobs:
       - name: Check linting
         run: ruff check .
 
+      # Note (todo #51): `uv lock --check` was briefly enabled here, but the
+      # committed uv.lock is platform-resolved and a Linux-CI fresh resolution
+      # yields a different package set (86 committed vs 144 on Linux). The
+      # check would need either a multi-platform lockfile regeneration
+      # (best done in a Linux runner / Docker container as a one-off) or a
+      # switch to a universal lockfile format. Deferred to R2.
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -61,11 +68,15 @@ jobs:
         run: uv pip install --system -e . pytest-cov
 
       - name: Run tests with coverage
+        # --cov-fail-under=60 sets an R1 floor (todo #59). Baseline at R1
+        # ship was 62%; ratchet upward as R2 decomposition + R3 methodology
+        # pass add tests. Do not lower without discussion.
         run: |
           uv run pytest tests/ \
             --cov=src \
             --cov-report=xml \
             --cov-report=term-missing \
+            --cov-fail-under=60 \
             -v
 
       - name: Upload coverage reports
@@ -73,6 +84,8 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           files: ./coverage.xml
+          # Flip to true once the Codecov account is green on main to start
+          # failing the build on upload issues rather than suppressing them.
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

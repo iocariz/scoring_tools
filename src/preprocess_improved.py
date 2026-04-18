@@ -47,9 +47,10 @@ def log_dataframe_stats(df: pd.DataFrame, name: str) -> None:
     memory_mb = df.memory_usage(deep=True).sum() / 1024**2
     logger.info(f"{name} memory usage: {memory_mb:.2f} MB")
 
-    # Log a few sample rows if dataframe is not empty
+    # Structural summary only — never log row-level data (PII risk in --log-file)
     if not df.empty:
-        logger.debug(f"{name} first rows:\n{df.head(3)}")
+        dtype_summary = df.dtypes.value_counts().to_dict()
+        logger.debug(f"{name} shape: {df.shape}, dtype counts: {dtype_summary}")
 
 
 def validate_dataframe_columns(df: pd.DataFrame, required_columns: list[str], operation: str) -> None:
@@ -231,7 +232,9 @@ def learn_quantile_bins(
     valid = data[source_col].dropna()
     n_dropped = n_before - len(valid)
     if n_dropped > 0:
-        logger.info(f"learn_quantile_bins: dropped {n_dropped:,} NaN rows ({n_dropped / n_before:.1%}) from '{source_col}'")
+        logger.info(
+            f"learn_quantile_bins: dropped {n_dropped:,} NaN rows ({n_dropped / n_before:.1%}) from '{source_col}'"
+        )
     if len(valid) < max_bins * 2:
         raise ValueError(f"learn_quantile_bins: only {len(valid)} valid records for '{source_col}'")
 
@@ -301,7 +304,9 @@ def learn_income_bins(
     valid = data_booked[[source_col, target_col]].dropna()
     n_dropped = n_before - len(valid)
     if n_dropped > 0:
-        logger.info(f"learn_income_bins: dropped {n_dropped:,} NaN rows ({n_dropped / n_before:.1%}) from '{source_col}'/'{target_col}'")
+        logger.info(
+            f"learn_income_bins: dropped {n_dropped:,} NaN rows ({n_dropped / n_before:.1%}) from '{source_col}'/'{target_col}'"
+        )
     if len(valid) < min_samples_leaf * 2:
         raise ValueError(f"learn_income_bins: only {len(valid)} valid records — need at least {min_samples_leaf * 2}")
 
@@ -382,7 +387,9 @@ def learn_optimization_bins(
     valid = data_booked[[source_col, target_col]].dropna()
     n_dropped = n_before - len(valid)
     if n_dropped > 0:
-        logger.info(f"learn_optimization_bins: dropped {n_dropped:,} NaN rows ({n_dropped / n_before:.1%}) from '{source_col}'/'{target_col}'")
+        logger.info(
+            f"learn_optimization_bins: dropped {n_dropped:,} NaN rows ({n_dropped / n_before:.1%}) from '{source_col}'/'{target_col}'"
+        )
 
     # Determine sample weights
     weights = None
@@ -438,7 +445,9 @@ def learn_optimization_bins(
         holdout_binned = pd.cut(holdout_fold[source_col], bins=edges, labels=False)
         train_risk = train_fold.groupby(train_binned, observed=True)[target_col].mean()
         holdout_risk = holdout_fold.groupby(holdout_binned, observed=True)[target_col].mean()
-        logger.info(f"  Bin stability: train_risk={train_risk.round(4).to_dict()}, holdout_risk={holdout_risk.round(4).to_dict()}")
+        logger.info(
+            f"  Bin stability: train_risk={train_risk.round(4).to_dict()}, holdout_risk={holdout_risk.round(4).to_dict()}"
+        )
         if len(train_risk) >= 2 and len(holdout_risk) >= 2:
             train_diff = float(train_risk.iloc[-1] - train_risk.iloc[0])
             holdout_diff = float(holdout_risk.iloc[-1] - holdout_risk.iloc[0])

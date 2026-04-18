@@ -445,11 +445,11 @@
         {% endif %}
 
         {% for chart in section.charts %}
-        <div class="chart-container">{{ chart }}</div>
+        <div class="chart-container">{{ chart | safe }}</div>
         {% endfor %}
 
         {% for table in section.tables %}
-        <div class="table-wrapper">{{ table }}</div>
+        <div class="table-wrapper">{{ table | safe }}</div>
         {% endfor %}
     </div>
     {% endfor %}

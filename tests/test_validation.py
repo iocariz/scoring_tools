@@ -107,7 +107,11 @@ class TestPreprocessorSettings:
         valid_config_dict["variables"] = ["new_efx_clus", "sc_octroi_new_clus", "income_bin"]
         valid_config_dict["bins"] = {
             "new_efx_clus": {"source_col": "risk_score_rf", "output_col": "new_efx_clus", "bin_edges": [0, 1, 2]},
-            "sc_octroi_new_clus": {"source_col": "score_rf", "output_col": "sc_octroi_new_clus", "bin_edges": [0, 1, 2]},
+            "sc_octroi_new_clus": {
+                "source_col": "score_rf",
+                "output_col": "sc_octroi_new_clus",
+                "bin_edges": [0, 1, 2],
+            },
             "income_bin": {"source_col": "income", "output_col": "income_bin", "bin_edges": [0, 1, 2]},
         }
         valid_config_dict["min_accepted_bin_by_variable"] = {

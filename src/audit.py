@@ -471,7 +471,7 @@ def validate_audit_against_summary(
     audit_df: pd.DataFrame,
     summary_table: pd.DataFrame,
     tolerance: float = 0.01,
-) -> bool | None:
+) -> bool:
     """
     Validate that audit table totals match the summary table.
 
@@ -483,8 +483,12 @@ def validate_audit_against_summary(
         tolerance: Allowed relative difference (default 1%).
 
     Returns:
-        True if validation passes, False if it fails, None if validation
-        could not be performed (e.g., missing columns).
+        ``True`` if audit totals match the summary within tolerance.
+        ``False`` if they diverge OR a precondition fails (missing
+        Swap-in/Swap-out rows, NaN values, structural mismatch). The
+        difference between "failed validation" and "could not validate"
+        is logged — callers that need the distinction should inspect
+        the logs rather than relying on a tri-state return.
     """
     # Calculate totals from audit using adjusted amounts
     if "oa_amt_adjusted" in audit_df.columns:
@@ -503,26 +507,38 @@ def validate_audit_against_summary(
         f"Audit totals - swap_in: {swap_in_audit:,.0f}, swap_out: {swap_out_audit:,.0f}, keep: {keep_audit:,.0f}"
     )
 
-    # Try to extract from summary table
     try:
         swap_in_row = summary_table[summary_table["Metric"] == "Swap-in"]
         swap_out_row = summary_table[summary_table["Metric"] == "Swap-out"]
-
-        if not swap_in_row.empty and not swap_out_row.empty:
-            swap_in_summary = swap_in_row["Production (€)"].values[0]
-            swap_out_summary = swap_out_row["Production (€)"].values[0]
-
-            # Compare with tolerance
-            si_diff = abs(swap_in_audit - swap_in_summary) / max(swap_in_summary, 1)
-            so_diff = abs(swap_out_audit - swap_out_summary) / max(swap_out_summary, 1)
-
-            if si_diff > tolerance or so_diff > tolerance:
-                logger.warning(f"Audit validation warning: swap_in diff={si_diff:.2%}, swap_out diff={so_diff:.2%}")
-                return False
-
-            logger.info("Audit validation passed: totals match summary table")
-            return True
-
     except (KeyError, ValueError) as e:
-        logger.warning(f"Could not validate audit against summary: {e}")
-        return None
+        logger.warning(f"Audit validation failed: summary_table does not expose a Metric column ({e})")
+        return False
+
+    if swap_in_row.empty or swap_out_row.empty:
+        logger.warning(
+            f"Audit validation failed: summary_table is missing Swap-in or Swap-out rows "
+            f"(swap_in_empty={swap_in_row.empty}, swap_out_empty={swap_out_row.empty}). "
+            f"Treating as validation failure, not a silent skip."
+        )
+        return False
+
+    swap_in_summary = swap_in_row["Production (€)"].values[0]
+    swap_out_summary = swap_out_row["Production (€)"].values[0]
+
+    if pd.isna(swap_in_summary) or pd.isna(swap_out_summary):
+        logger.warning(
+            f"Audit validation failed: summary_table contains NaN reference value(s) "
+            f"(swap_in={swap_in_summary}, swap_out={swap_out_summary}). Cannot compare."
+        )
+        return False
+
+    # Compare with tolerance
+    si_diff = abs(swap_in_audit - swap_in_summary) / max(swap_in_summary, 1)
+    so_diff = abs(swap_out_audit - swap_out_summary) / max(swap_out_summary, 1)
+
+    if si_diff > tolerance or so_diff > tolerance:
+        logger.warning(f"Audit validation warning: swap_in diff={si_diff:.2%}, swap_out diff={so_diff:.2%}")
+        return False
+
+    logger.info("Audit validation passed: totals match summary table")
+    return True

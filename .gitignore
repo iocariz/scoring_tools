@@ -22,3 +22,14 @@ error_log.txt
 .pytest_cache/
 .claude/
 allocation_results.csv
+
+# Runtime artefacts (R1 #60) — never commit these
+*.log
+*.pdf
+*.pptx
+*.docx
+coverage.xml
+.coverage
+.coverage.*
+*_suggested.toml
+allocation_results_*.csv

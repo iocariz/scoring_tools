@@ -132,7 +132,9 @@ class TestRunPreprocessingPhase:
         def fake_complete_preprocessing_pipeline(data, settings):
             return data_clean, pd.DataFrame(), pd.DataFrame()
 
-        monkeypatch.setattr(preprocessing_module, "complete_preprocessing_pipeline", fake_complete_preprocessing_pipeline)
+        monkeypatch.setattr(
+            preprocessing_module, "complete_preprocessing_pipeline", fake_complete_preprocessing_pipeline
+        )
         monkeypatch.setattr(preprocessing_module, "plot_risk_vs_production", lambda *args, **kwargs: risk_fig)
         monkeypatch.setattr(preprocessing_module, "calculate_stress_factor", lambda *args, **kwargs: 1.0)
 
@@ -189,7 +191,9 @@ class TestRunInferencePhase:
                 ["f1", "f2"],
             ),
         )
-        monkeypatch.setattr(inference_module.joblib, "load", lambda path: loaded_todu_model)
+        # After R0 (#44) the pipeline uses safe_joblib_load, not raw joblib.load,
+        # to enforce SHA-256 + trusted-path checks. Patch the safe wrapper directly.
+        monkeypatch.setattr(inference_module, "safe_joblib_load", lambda path: loaded_todu_model)
 
         def fail_todu_average(*args, **kwargs):
             raise AssertionError("Fallback TODU model training should not run when a saved model exists")
@@ -314,7 +318,9 @@ class TestRunOptimizationPhase:
             output=output,
         )
 
-        data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var, grid, pareto_masks, _ = result
+        data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var, grid, pareto_masks, _ = (
+            result
+        )
         assert list(values_per_var["sc_octroi_new_clus"]) == [1, 2]
         assert grid is None
         assert pareto_masks == []
@@ -326,7 +332,9 @@ class TestRunOptimizationPhase:
         assert Path(output.pareto_solutions_csv).exists()
 
     def test_uses_trace_pareto_frontier_for_non_fixed_path(self, monkeypatch, tmp_path):
-        settings = make_settings(max_swapin_production_pct=30.0, max_swapin_risk=5.0, pareto_n_points=7, milp_time_limit=12.0)
+        settings = make_settings(
+            max_swapin_production_pct=30.0, max_swapin_risk=5.0, pareto_n_points=7, milp_time_limit=12.0
+        )
         output = OutputPaths(base_dir=tmp_path)
         output.ensure_dirs()
         captured = {}
@@ -513,8 +521,12 @@ class TestPipelineReportingWrappers:
         data_dir = segment_dir / "data"
         data_dir.mkdir(parents=True)
         (data_dir / "risk_production_summary_table_base.csv").write_text("metric,value\nActual,1\n", encoding="utf-8")
-        (data_dir / "risk_production_summary_table_optimistic.csv").write_text("metric,value\nActual,2\n", encoding="utf-8")
-        (data_dir / "risk_production_summary_table_mr_base.csv").write_text("metric,value\nActual,3\n", encoding="utf-8")
+        (data_dir / "risk_production_summary_table_optimistic.csv").write_text(
+            "metric,value\nActual,2\n", encoding="utf-8"
+        )
+        (data_dir / "risk_production_summary_table_mr_base.csv").write_text(
+            "metric,value\nActual,3\n", encoding="utf-8"
+        )
         (segment_dir / "config_segment.toml").write_text(
             """
 [preprocessing]

@@ -24,7 +24,9 @@ Unresolved items from the methodological, statistical, and code review. Organize
 
 50. **No authentication on any web UI** (`dashboard.py`, `interactive_allocator.py`, `gradio_dashboard.py`) — Default `localhost` bind is good, but no authn layer. A misconfigured reverse proxy or accidental port exposure leaks portfolio risk KPIs. **Fix:** Flask `before_request` Basic Auth against env-var creds for any non-localhost deployment; document the requirement.
 
-51. **No lockfile committed** (`pyproject.toml`) — Only lower-version bounds; `uv.lock` not in git. `pip install` silently picks up CVE-laden transitive bumps. **Fix:** Commit `uv.lock`, run `uv lock --check` in CI.
+51. **No lockfile committed** (`pyproject.toml`) — original audit statement was stale: `uv.lock` was tracked since `01440b9`. R1 attempted to add `uv lock --check` to CI but had to revert it: the committed lockfile is platform-resolved (~86 packages, macOS-origin) and a Linux CI fresh resolution yields ~144 packages, so the check fails on every PR regardless of whether anyone touched pyproject. **Remaining fix (R2):** regenerate `uv.lock` on a Linux runner (or in a pinned Docker image) to produce a lockfile matching the CI environment, then re-enable the `uv lock --check` step. Alternative: adopt uv's universal / multi-platform lockfile mode once stable. Meanwhile the lockfile is still committed — CVE exposure is bounded to the lockfile's macOS-resolved set, not unbounded.
+
+88. **HTML-building helpers interpolate user-influenced values without escaping** (`src/reporting.py`, `_build_cutoff_reference_table` 134–310, `_build_scenario_kpi_table` 341, `_build_acceptance_matrices` 408, `csv_to_html_table` 83) — Jinja2 `autoescape` is now enabled (#43 fixed), but these helpers emit pre-built HTML strings that are then marked `| safe` in the template. They interpolate scenario names, CSV column labels, and cell values directly via f-strings (e.g. `f'<span class="badge">{scenario.title()}</span>'`). A malicious value in `segments.toml` or an upstream CSV still becomes stored XSS through this path. **Fix:** escape every user-influenced interpolation inside these helpers using `html.escape()` (already imported); add unit tests with malicious inputs as regression guards.
 
 ### LOW
 
@@ -48,7 +50,7 @@ Unresolved items from the methodological, statistical, and code review. Organize
 
 84. **NaN source values silently dropped in `pd.cut` binning** (`src/preprocess_improved.py`, ~589–591, around the cut call) — `-inf`-bounded bins catch `−∞` but not NaN; NaN rows stay NaN after cut and are excised downstream without a drop-count log. Survivorship bias when missingness is non-random. **Fix:** explicit NaN-bin assignment or fail-loud count + threshold guard.
 
-86. **Audit validation silently returns `None` on missing reference rows** (`src/audit.py`, 511–512) — When expected Swap-in/Swap-out rows are missing from the summary table, `validate_audit_against_summary` returns `None`, which downstream callers treat as not-failed. A malformed summary passes validation. Methodological complement to type-safety item #54. **Fix:** raise on precondition failure or return `False`; add `pd.isna` check on `values[0]` before equality comparison.
+86. ~~**Audit validation silently returns `None` on missing reference rows** (`src/audit.py`, 511–512) — When expected Swap-in/Swap-out rows are missing from the summary table, `validate_audit_against_summary` returns `None`, which downstream callers treat as not-failed. A malformed summary passes validation. Methodological complement to type-safety item #54. **Fix:** raise on precondition failure or return `False`; add `pd.isna` check on `values[0]` before equality comparison.~~ **Fixed jointly with #54:** missing rows and NaN reference values now both log a warning and return `False`. Single path for "could not validate" vs "validation disagreed" is the log record — return type is now unambiguously `bool`.
 
 ### LOW
 
@@ -66,7 +68,7 @@ Unresolved items from the methodological, statistical, and code review. Organize
 
 53. **`base_path: str` reassigned to `Path`** (`src/persistence.py`, 23, 37–44) — Signature lies; mypy reports `"str".mkdir`. **Fix:** `base_path: str | Path = "models"` and use a single local `path = Path(base_path)`.
 
-54. **`bool | None` return with missing return** (`src/audit.py`, 470–528) — `validate_audit_against_summary` declares `-> bool | None`, mypy flags missing return at 470, callers treat as `bool`. **Fix:** Return `False` (or raise) on missing-column precondition; tighten signature to `-> bool`.
+54. ~~**`bool | None` return with missing return** (`src/audit.py`, 470–528) — `validate_audit_against_summary` declares `-> bool | None`, mypy flags missing return at 470, callers treat as `bool`. **Fix:** Return `False` (or raise) on missing-column precondition; tighten signature to `-> bool`.~~ **Fixed:** Signature tightened to `-> bool`. Every precondition failure (missing Metric column, empty Swap-in / Swap-out rows, NaN reference values) now logs a warning and returns `False` explicitly — no path falls through to an implicit `None`. Jointly fixes #86 (same function's silent-pass-on-missing-rows behaviour).
 
 55. **`union-attr` runtime risk on `calculate_b2_ever_h6`** (`src/optimization_utils.py`, 1763–1798; `src/mr_pipeline.py`, 1044–1077; `src/preprocess_improved.py`, 1042–1048; `src/plots.py`, 1960–1961; `src/inference_optimized.py`, 142) — Returns `Series | float`; callers do `.isna()/.fillna()/.values` without narrowing → `AttributeError` on scalar inputs. **Fix:** Always return `pd.Series` (wrap scalars) or narrow at every call site.
 
@@ -213,7 +215,7 @@ Unresolved items from the methodological, statistical, and code review. Organize
     - `src/optuna_tuning.py` 33%
     **Fix:** Scenario tests for `run_optimization_phase` on small synthetic grids (mock MILP solver); parametrized TOML edge-case tests for `config_loader.py`.
 
-59. **CI does not enforce coverage gate** (`.github/workflows/ci.yml`, 65, 74) — No `--cov-fail-under=80` on pytest; `fail_ci_if_error: false` suppresses Codecov failures. The 80% project target is not enforced. **Fix:** `pytest --cov=src --cov-fail-under=80`; flip Codecov flag.
+59. **CI does not enforce coverage gate** (`.github/workflows/ci.yml`, 65, 74) — No `--cov-fail-under=80` on pytest; `fail_ci_if_error: false` suppresses Codecov failures. The 80% project target is not enforced. **Fix:** `pytest --cov=src --cov-fail-under=80`; flip Codecov flag. **Partially fixed in R1:** gate set to `--cov-fail-under=60` (baseline was 62%). Ratchet upward as R2 decomposition + R3 add tests. `fail_ci_if_error` still `false` with a comment noting when to flip (once Codecov upload is reliably green on main).
 
 ### MEDIUM
 
@@ -261,7 +263,7 @@ Unresolved items from the methodological, statistical, and code review. Organize
 
 ### MEDIUM
 
-70. **Undocumented config fields in CLAUDE.md** — `min_accepted_bin_by_variable` (`src/config.py`, 334; `src/pipeline/optimization.py`, 308), `base_scenario_only` (`src/config.py`, 329; no CLI flag unlike `--baseline`), `strict_validation` (`src/pipeline/optimization.py`, 177), `run_all_scenarios` (`src/pipeline/optimization.py`, 878). **Fix:** Document in CLAUDE.md; flag deprecated `min_accepted_bin_by_variable` vs `fixed_cutoffs`.
+70. ~~**Undocumented config fields in CLAUDE.md** — `min_accepted_bin_by_variable` (`src/config.py`, 334; `src/pipeline/optimization.py`, 308), `base_scenario_only` (`src/config.py`, 329; no CLI flag unlike `--baseline`), `strict_validation` (`src/pipeline/optimization.py`, 177), `run_all_scenarios` (`src/pipeline/optimization.py`, 878). **Fix:** Document in CLAUDE.md; flag deprecated `min_accepted_bin_by_variable` vs `fixed_cutoffs`.~~ **Fixed:** All four documented in CLAUDE.md Configuration section. `strict_validation` and `run_all_scenarios` added as sub-bullets under "Fixed cutoffs"; `base_scenario_only` added as a distinct paragraph clarifying it differs from `baseline_mode` (still runs optimization, just one target); `min_accepted_bin_by_variable` documented with the scalar-vs-income-keyed-map distinction and flagged as the legacy alternative to `fixed_cutoffs`.
 
 ### LOW
 

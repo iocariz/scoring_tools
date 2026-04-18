@@ -336,5 +336,7 @@ def calculate_risk_values(
     """
     df = calculate_RV(df, model_rv)
     df = calculate_B2(df, model_risk, variables, stressor, var_reg)
-    df["todu_30ever_h6"] = calculate_todu_30ever_from_b2(df["b2_ever_h6"], df["todu_amt_pile_h6"], multiplier=multiplier)
+    df["todu_30ever_h6"] = calculate_todu_30ever_from_b2(
+        df["b2_ever_h6"], df["todu_amt_pile_h6"], multiplier=multiplier
+    )
     return df
