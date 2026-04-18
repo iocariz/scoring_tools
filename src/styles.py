@@ -59,7 +59,12 @@ def apply_matplotlib_style():
 # --- Plotly Styles ---
 
 
-def apply_plotly_style(fig: go.Figure, title: str = None, height: int = None, width: int = None):
+def apply_plotly_style(
+    fig: go.Figure,
+    title: str | None = None,
+    height: int | None = None,
+    width: int | None = None,
+):
     """
     Applies standard layout settings to a Plotly figure.
 
