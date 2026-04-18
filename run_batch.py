@@ -22,13 +22,11 @@ Output structure:
 
 import argparse
 import copy
-import os
 import re
 import shutil
 import sys
 import tomllib
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -418,25 +416,29 @@ def run_segment_pipeline(
     if model_path:
         logger.info(f"Using pre-trained model from: {model_path}")
 
-    # Run with segment output directory as cwd so all relative outputs are isolated.
+    # Pass an explicit OutputPaths rooted at the segment's output directory
+    # instead of os.chdir'ing the whole process (todo #67). All pipeline
+    # phases thread `output` through, so every write lands under dirs["root"]
+    # without touching process-global cwd. Safe for ThreadPoolExecutor too.
     try:
         from main import main as run_main_pipeline
 
         temp_config = write_temp_config(merged_config, dirs["root"]).resolve()
         resolved_model_path = str(Path(model_path).resolve()) if model_path else None
+        segment_output = OutputPaths(base_dir=dirs["root"].resolve())
 
-        with _working_directory(dirs["root"]):
-            result = run_main_pipeline(
-                config_path=str(temp_config),
-                model_path=resolved_model_path,
-                skip_dq_checks=skip_dq_checks,
-                preloaded_data=preloaded_data,
-                training_only=training_only,
-                baseline_mode=baseline_mode,
-                base_scenario_only=base_scenario_only,
-                floor_cells_path=floor_cells_path,
-                floor_cells_mode=floor_cells_mode,
-            )
+        result = run_main_pipeline(
+            config_path=str(temp_config),
+            model_path=resolved_model_path,
+            skip_dq_checks=skip_dq_checks,
+            preloaded_data=preloaded_data,
+            training_only=training_only,
+            baseline_mode=baseline_mode,
+            base_scenario_only=base_scenario_only,
+            floor_cells_path=floor_cells_path,
+            floor_cells_mode=floor_cells_mode,
+            output=segment_output,
+        )
 
         if result is None:
             raise SegmentPipelineError(f"Pipeline returned no result for segment: {segment_name}")
@@ -530,13 +532,15 @@ def run_supersegment_training(
         from main import main as run_main_pipeline
 
         temp_config = write_temp_config(merged_config, dirs["root"]).resolve()
-        with _working_directory(dirs["root"]):
-            result = run_main_pipeline(
-                config_path=str(temp_config),
-                training_only=True,
-                skip_dq_checks=skip_dq_checks,
-                preloaded_data=preloaded_data,
-            )
+        # Explicit OutputPaths instead of os.chdir (todo #67).
+        supersegment_output = OutputPaths(base_dir=dirs["root"].resolve())
+        result = run_main_pipeline(
+            config_path=str(temp_config),
+            training_only=True,
+            skip_dq_checks=skip_dq_checks,
+            preloaded_data=preloaded_data,
+            output=supersegment_output,
+        )
 
         if result is None:
             raise SupersegmentTrainingError(f"Supersegment training returned no result: {supersegment_name}")
@@ -587,19 +591,11 @@ def write_temp_config(config: dict[str, Any], output_dir: Path) -> Path:
     return config_path
 
 
-@contextmanager
-def _working_directory(path: Path):
-    """Temporarily switch process cwd.
-
-    WARNING: os.chdir is process-global. This is safe with ProcessPoolExecutor
-    (each child gets its own CWD) but NOT with ThreadPoolExecutor.
-    """
-    original_cwd = Path.cwd()
-    os.chdir(path)
-    try:
-        yield
-    finally:
-        os.chdir(original_cwd)
+# Removed in R2 (todo #67): _working_directory context manager.
+# It used os.chdir to isolate each segment's output under dirs["root"].
+# All pipeline phases now accept an explicit `output: OutputPaths`
+# parameter that threads through every write, so process-global cwd
+# manipulation is no longer needed. Unblocks ThreadPoolExecutor usage.
 
 
 def _topological_sort_segments(

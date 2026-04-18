@@ -453,7 +453,10 @@ class TestPickleIntegrity:
             base_path=str(supersegment_models),
         )
 
-        # Change cwd to mimic run_batch's per-segment os.chdir.
+        # Change cwd to simulate a caller whose cwd differs from the project
+        # root. Historically run_batch used os.chdir per-segment (removed in
+        # R2 #67); equivalent situations still arise (tests, nested tooling,
+        # containerised jobs), so the allowlist must stay cwd-independent.
         monkeypatch.chdir(segment_cwd)
 
         # Load succeeds: the default allowlist now includes <initial_cwd>/output.
