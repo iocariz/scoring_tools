@@ -91,9 +91,7 @@ def test_run_optimization_pipeline_collapses_duplicate_per_bin_tasa_fin(monkeypa
     )
 
     # Duplicate key for (1,1,1): mean tasa_fin = 3.0
-    per_bin_tasa_fin = pd.DataFrame(
-        {"var0": [1, 1], "var1": [1, 1], "var2": [1, 1], "tasa_fin": [2.0, 4.0]}
-    )
+    per_bin_tasa_fin = pd.DataFrame({"var0": [1, 1], "var1": [1, 1], "var2": [1, 1], "tasa_fin": [2.0, 4.0]})
 
     out = run_optimization_pipeline(
         data_booked=pd.DataFrame(),

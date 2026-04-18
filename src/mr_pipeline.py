@@ -208,28 +208,26 @@ def calculate_metrics_from_cuts(
         # --- Optimum decomposition diagnostic ---
         kept_rn = actual_rn - so_rn
         kept_rd = actual_rd - so_rd
-        kept_risk = float(calculate_b2_ever_h6(kept_rn, kept_rd, multiplier=multiplier, as_percentage=True)) if kept_rd > 0 else 0.0
+        kept_risk = (
+            float(calculate_b2_ever_h6(kept_rn, kept_rd, multiplier=multiplier, as_percentage=True))
+            if kept_rd > 0
+            else 0.0
+        )
         kept_prod = actual_prod - so_prod
         logger.debug("OPTIMUM DECOMPOSITION:")
         logger.debug(
-            f"  Actual:   risk={actual_risk}%  prod={actual_prod:,.0f}  "
-            f"rn={actual_rn:.2f}  rd={actual_rd:.2f}"
+            f"  Actual:   risk={actual_risk}%  prod={actual_prod:,.0f}  rn={actual_rn:.2f}  rd={actual_rd:.2f}"
         )
         logger.debug(
             f"  Swap-out: risk={so_risk}%  prod={so_prod:,.0f} ({so_prod / actual_prod * 100:.1f}% of actual)  "
             f"rn={so_rn:.2f}  rd={so_rd:.2f}"
         )
-        logger.debug(
-            f"  Kept:     risk={kept_risk:.2f}%  prod={kept_prod:,.0f}  "
-            f"rn={kept_rn:.2f}  rd={kept_rd:.2f}"
-        )
+        logger.debug(f"  Kept:     risk={kept_risk:.2f}%  prod={kept_prod:,.0f}  rn={kept_rn:.2f}  rd={kept_rd:.2f}")
         logger.debug(
             f"  Swap-in:  risk={si_risk}%  prod={si_prod:,.0f} ({si_prod / actual_prod * 100:.1f}% of actual)  "
             f"rn={si_rn:.2f}  rd={si_rd:.2f}"
         )
-        logger.debug(
-            f"  Optimum:  risk={opt_risk}%  prod={opt_prod:,.0f}"
-        )
+        logger.debug(f"  Optimum:  risk={opt_risk}%  prod={opt_prod:,.0f}")
         if so_risk is not None and actual_risk is not None and so_risk < actual_risk:
             logger.warning(
                 f"  RISK INVERSION: swap-out risk ({so_risk:.2f}%) < actual risk ({actual_risk:.2f}%). "
@@ -396,10 +394,7 @@ def _compute_hybrid_mr_risk(
             logger.warning("Duplicate merge keys detected in mr_prod before outer merge with mr_agg.")
         mr_agg = mr_agg.merge(mr_prod, on=merge_keys, how="outer")
         if len(mr_agg) > max(n_before, len(mr_prod)):
-            logger.info(
-                f"MR outer merge: {n_before} + {len(mr_prod)} → {len(mr_agg)} "
-                f"(keys not fully overlapping)."
-            )
+            logger.info(f"MR outer merge: {n_before} + {len(mr_prod)} → {len(mr_agg)} (keys not fully overlapping).")
     else:
         mr_agg["mr_production"] = 0.0
 
@@ -415,10 +410,7 @@ def _compute_hybrid_mr_risk(
         logger.warning("Duplicate merge keys detected in mr_agg before outer merge with main_agg.")
     combined = main_agg.merge(mr_agg, on=merge_keys, how="outer")
     if len(combined) > max(n_main, n_mr):
-        logger.info(
-            f"Main/MR outer merge: {n_main} + {n_mr} → {len(combined)} "
-            f"(keys not fully overlapping)."
-        )
+        logger.info(f"Main/MR outer merge: {n_main} + {n_mr} → {len(combined)} (keys not fully overlapping).")
 
     # --- H3 aggregation (needed before risk source selection for extrapolation) ---
     has_h3 = multiplier_h3 is not None and "todu_30ever_h3" in data_booked.columns
@@ -438,9 +430,7 @@ def _compute_hybrid_mr_risk(
 
         # MR-period H3 — only accounts with mature H3 (maturity >= 3 months)
         if all(c in mr_booked.columns for c in h3_cols):
-            mr_h3_valid = mr_booked[
-                mr_booked["todu_30ever_h3"].notna() & mr_booked["todu_amt_pile_h3"].notna()
-            ]
+            mr_h3_valid = mr_booked[mr_booked["todu_30ever_h3"].notna() & mr_booked["todu_amt_pile_h3"].notna()]
             # Filter for H3 maturity: maturity = max(mis_date) - mis_date >= 3 months
             h3_maturity_months = 3
             if "mis_date" in mr_h3_valid.columns and len(mr_h3_valid) > 0:
@@ -526,16 +516,14 @@ def _compute_hybrid_mr_risk(
             valid_months = monthly["h6_h3_ratio"].dropna()
 
             logger.debug(
-                f"H6/H3 ratio trend: {len(monthly)} months in main period, "
-                f"{len(valid_months)} with valid ratio"
+                f"H6/H3 ratio trend: {len(monthly)} months in main period, {len(valid_months)} with valid ratio"
             )
             if len(valid_months) >= 3:
                 logger.debug("H6/H3 RATIO TREND (main period, monthly):")
                 for period, row in monthly.iterrows():
                     ratio_str = f"{row['h6_h3_ratio']:.2f}" if pd.notna(row["h6_h3_ratio"]) else "—"
                     logger.debug(
-                        f"  {period}:  H6={row['b2_h6'] * 100:.2f}%  "
-                        f"H3={row['b2_h3'] * 100:.2f}%  ratio={ratio_str}"
+                        f"  {period}:  H6={row['b2_h6'] * 100:.2f}%  H3={row['b2_h3'] * 100:.2f}%  ratio={ratio_str}"
                     )
 
                 # Overall ratio from raw numerators/denominators (not sum of rates)
@@ -572,8 +560,7 @@ def _compute_hybrid_mr_risk(
                         )
             else:
                 logger.warning(
-                    f"H6/H3 ratio trend: only {len(valid_months)} valid months "
-                    f"(need ≥3). Skipping trend analysis."
+                    f"H6/H3 ratio trend: only {len(valid_months)} valid months (need ≥3). Skipping trend analysis."
                 )
         else:
             missing = [c for c in h3_cols_trend + h6_cols_trend if c not in data_booked.columns]
@@ -631,7 +618,8 @@ def _compute_hybrid_mr_risk(
                     global_h6_rate = calculate_b2_ever_h6(
                         booked_valid["todu_30ever_h6"].sum(),
                         booked_valid["todu_amt_pile_h6"].sum(),
-                        multiplier=multiplier, decimals=6,
+                        multiplier=multiplier,
+                        decimals=6,
                     )
                 else:
                     global_h6_rate = np.nan
@@ -639,11 +627,16 @@ def _compute_hybrid_mr_risk(
                     global_h3_rate = calculate_b2_ever_h6(
                         booked_valid["todu_30ever_h3"].sum(),
                         booked_valid["todu_amt_pile_h3"].sum(),
-                        multiplier=multiplier_h3, decimals=6,
+                        multiplier=multiplier_h3,
+                        decimals=6,
                     )
                 else:
                     global_h3_rate = np.nan
-                ratio_of_sums = float(global_h6_rate / global_h3_rate) if pd.notna(global_h6_rate) and pd.notna(global_h3_rate) and global_h3_rate > 0 else np.nan
+                ratio_of_sums = (
+                    float(global_h6_rate / global_h3_rate)
+                    if pd.notna(global_h6_rate) and pd.notna(global_h3_rate) and global_h3_rate > 0
+                    else np.nan
+                )
             else:
                 ratio_of_sums = np.nan
 
@@ -653,9 +646,7 @@ def _compute_hybrid_mr_risk(
 
             logger.debug("H6/H3 RATIO RECONCILIATION (main period):")
             logger.debug("  Per-bin (used for extrapolation):")
-            logger.debug(
-                f"    median={per_bin_median:.3f}  mean={per_bin_mean:.3f}  n_bins={len(valid_ratios)}"
-            )
+            logger.debug(f"    median={per_bin_median:.3f}  mean={per_bin_mean:.3f}  n_bins={len(valid_ratios)}")
             logger.debug(f"    obs-weighted mean={wt_ratio:.3f}")
             logger.debug("  Per-bin individual ratios:")
             valid_positions = np.where(ratio_valid)[0]
@@ -719,8 +710,10 @@ def _compute_hybrid_mr_risk(
 
         can_extrapolate = has_h3_obs & np.isfinite(h6_h3_ratio)
         h6_from_h3 = extrapolate_h3_to_h6(
-            combined["b2_mr_h3"], h6_h3_ratio,
-            method=mr_extrapolation_method, curvature=mr_extrapolation_curvature,
+            combined["b2_mr_h3"],
+            h6_h3_ratio,
+            method=mr_extrapolation_method,
+            curvature=mr_extrapolation_curvature,
             b2_h3_main=combined.get("b2_main_h3"),
         )
 
@@ -756,11 +749,7 @@ def _compute_hybrid_mr_risk(
         else:
             b2_main_h3 = pd.Series(np.nan, index=combined.index)
         h3_floor = combined["b2_mr_h3"].where(has_h3_obs, b2_main_h3)
-        floored_mask = (
-            combined["b2_ever_h6_tmp"].notna()
-            & h3_floor.notna()
-            & (combined["b2_ever_h6_tmp"] < h3_floor)
-        )
+        floored_mask = combined["b2_ever_h6_tmp"].notna() & h3_floor.notna() & (combined["b2_ever_h6_tmp"] < h3_floor)
         n_floored = int(floored_mask.sum())
         if n_floored > 0:
             shortfall = (h3_floor[floored_mask] - combined.loc[floored_mask, "b2_ever_h6_tmp"]) * 100
@@ -827,9 +816,7 @@ def _compute_hybrid_mr_risk(
             if src_mask.any():
                 src_prod = combined.loc[src_mask, prod_col].sum()
                 src_risk_avg = (
-                    (combined.loc[src_mask, "b2_ever_h6_tmp"] * combined.loc[src_mask, prod_col]).sum()
-                    / src_prod
-                    * 100
+                    (combined.loc[src_mask, "b2_ever_h6_tmp"] * combined.loc[src_mask, prod_col]).sum() / src_prod * 100
                     if src_prod > 0
                     else 0.0
                 )
@@ -843,9 +830,9 @@ def _compute_hybrid_mr_risk(
         has_risk = combined["b2_ever_h6_tmp"].notna()
         prod_with_risk = combined.loc[has_risk, prod_col].sum()
         overall_risk_prod = (
-            (combined.loc[has_risk, "b2_ever_h6_tmp"] * combined.loc[has_risk, prod_col]).sum()
-            / prod_with_risk * 100
-            if prod_with_risk > 0 else 0.0
+            (combined.loc[has_risk, "b2_ever_h6_tmp"] * combined.loc[has_risk, prod_col]).sum() / prod_with_risk * 100
+            if prod_with_risk > 0
+            else 0.0
         )
         logger.debug(
             f"  {'OVERALL':>16}: weighted_risk={overall_risk_prod:.2f}% (production-weighted)  "
@@ -1054,11 +1041,7 @@ def _assign_tiered_risk(
             if "n_obs_mr_h3" in acct_keys.columns and "b2_mr_h3" in acct_keys.columns:
                 bin_n_obs_mr_h3 = acct_keys["n_obs_mr_h3"].fillna(0).values.astype(float)
                 bin_b2_mr_h3 = acct_keys["b2_mr_h3"].values.astype(float)
-                can_extrapolate_bin = (
-                    np.isfinite(bin_ratio)
-                    & (bin_b2_mr_h3 >= 0)
-                    & (bin_n_obs_mr_h3 >= h3_min_obs)
-                )
+                can_extrapolate_bin = np.isfinite(bin_ratio) & (bin_b2_mr_h3 >= 0) & (bin_n_obs_mr_h3 >= h3_min_obs)
             else:
                 # Backward compatibility for unit tests / partial diagnostic tables.
                 can_extrapolate_bin = np.isfinite(bin_ratio)
@@ -1067,9 +1050,7 @@ def _assign_tiered_risk(
             b2_main_h3_vals = None
             if "b2_main_h3" in comparison_df.columns:
                 main_h3_df = comparison_df[merge_keys + ["b2_main_h3"]].drop_duplicates(subset=merge_keys)
-                acct_main_h3 = data_demand_mr.loc[h3_eligible, merge_keys].merge(
-                    main_h3_df, on=merge_keys, how="left"
-                )
+                acct_main_h3 = data_demand_mr.loc[h3_eligible, merge_keys].merge(main_h3_df, on=merge_keys, how="left")
                 b2_main_h3_vals = acct_main_h3["b2_main_h3"].values
 
             # Extrapolate H3 → H6 per account
@@ -1172,7 +1153,7 @@ def process_mr_period(
         # per-bin MR risk estimation).  The coarser 2D aggregation gives denser
         # bins; the merge back assigns the same risk to all values of the
         # additional variable(s) within each 2D cell.
-        merge_keys = settings.variables[:min(len(settings.variables), 2)]
+        merge_keys = settings.variables[: min(len(settings.variables), 2)]
         if len(merge_keys) < len(settings.variables):
             logger.info(
                 f"MR analysis using {len(merge_keys)} merge keys {merge_keys} "
@@ -1258,7 +1239,12 @@ def process_mr_period(
                     "Collapsing merge_df by merge_keys and re-merging."
                 )
                 merge_df = merge_df.groupby(merge_keys, as_index=False)["b2_ever_h6_tmp"].mean()
-                data_demand_mr = pd.merge(data_demand_mr.drop(columns=["b2_ever_h6_tmp"], errors="ignore"), merge_df, on=merge_keys, how="left")
+                data_demand_mr = pd.merge(
+                    data_demand_mr.drop(columns=["b2_ever_h6_tmp"], errors="ignore"),
+                    merge_df,
+                    on=merge_keys,
+                    how="left",
+                )
 
             # Keep variable only for booked accounts
             non_booked_mask = data_demand_mr["status_name"] != StatusName.BOOKED.value
@@ -1630,12 +1616,11 @@ def process_mr_period(
             recalibration_applied = True
             main_bin_agg = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
             main_bin_agg["_main_b2"] = calculate_b2_ever_h6(
-                main_bin_agg["todu_30ever_h6"], main_bin_agg["todu_amt_pile_h6"],
+                main_bin_agg["todu_30ever_h6"],
+                main_bin_agg["todu_amt_pile_h6"],
                 multiplier=settings.multiplier,
             )
-            mr_bin_b2 = comparison_df[merge_keys + ["b2_ever_h6_tmp"]].rename(
-                columns={"b2_ever_h6_tmp": "_mr_b2"}
-            )
+            mr_bin_b2 = comparison_df[merge_keys + ["b2_ever_h6_tmp"]].rename(columns={"b2_ever_h6_tmp": "_mr_b2"})
 
             # Recompute calibration factor per *bin* and merge it back by merge_keys.
             # This avoids relying on row-order alignment assumptions (`cal_factor.values`).
@@ -1649,13 +1634,11 @@ def process_mr_period(
                 )
                 mr_bin_b2 = mr_bin_b2.groupby(merge_keys, as_index=False)["_mr_b2"].mean()
 
-            cal_factor_by_bin = main_bin_agg[merge_keys + ["_main_b2"]].merge(
-                mr_bin_b2, on=merge_keys, how="left"
-            )
+            cal_factor_by_bin = main_bin_agg[merge_keys + ["_main_b2"]].merge(mr_bin_b2, on=merge_keys, how="left")
             safe_main_b2 = cal_factor_by_bin["_main_b2"].clip(lower=1e-9)
-            cal_factor_by_bin["_mr_cal_factor"] = (cal_factor_by_bin["_mr_b2"] / safe_main_b2).clip(
-                lower=0.1, upper=10.0
-            ).fillna(1.0)
+            cal_factor_by_bin["_mr_cal_factor"] = (
+                (cal_factor_by_bin["_mr_b2"] / safe_main_b2).clip(lower=0.1, upper=10.0).fillna(1.0)
+            )
 
             n_before_recal_merge = len(data_summary_desagregado_mr)
             data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
@@ -1669,10 +1652,10 @@ def process_mr_period(
                     f"(before={n_before_recal_merge}, after={len(data_summary_desagregado_mr)}). "
                     "Collapsing calibration factors by merge_keys and re-merging."
                 )
-                cal_factor_by_bin = (
-                    cal_factor_by_bin.groupby(merge_keys, as_index=False)["_mr_cal_factor"].mean()
+                cal_factor_by_bin = cal_factor_by_bin.groupby(merge_keys, as_index=False)["_mr_cal_factor"].mean()
+                data_summary_desagregado_mr = data_summary_desagregado_mr.drop(
+                    columns=["_mr_cal_factor"], errors="ignore"
                 )
-                data_summary_desagregado_mr = data_summary_desagregado_mr.drop(columns=["_mr_cal_factor"], errors="ignore")
                 data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
                     cal_factor_by_bin[merge_keys + ["_mr_cal_factor"]],
                     on=merge_keys,
@@ -1685,13 +1668,17 @@ def process_mr_period(
                 before_avg = calculate_b2_ever_h6(
                     data_summary_desagregado_mr[rep_col].sum(),
                     data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
-                    multiplier=settings.multiplier, as_percentage=True,
+                    multiplier=settings.multiplier,
+                    as_percentage=True,
                 )
-                data_summary_desagregado_mr[rep_col] = data_summary_desagregado_mr[rep_col] * data_summary_desagregado_mr["_mr_cal_factor"]
+                data_summary_desagregado_mr[rep_col] = (
+                    data_summary_desagregado_mr[rep_col] * data_summary_desagregado_mr["_mr_cal_factor"]
+                )
                 after_avg = calculate_b2_ever_h6(
                     data_summary_desagregado_mr[rep_col].sum(),
                     data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
-                    multiplier=settings.multiplier, as_percentage=True,
+                    multiplier=settings.multiplier,
+                    as_percentage=True,
                 )
                 logger.info(
                     f"MR repesca recalibration: avg factor={data_summary_desagregado_mr['_mr_cal_factor'].mean():.3f} "
@@ -1713,23 +1700,33 @@ def process_mr_period(
                 if has_h3_cal:
                     h3_cal = comparison_df[merge_keys + ["b2_mr_h3", "b2_main_h3"]].drop_duplicates(subset=merge_keys)
                     safe_main_h3 = h3_cal["b2_main_h3"].clip(lower=1e-9)
-                    h3_cal["_mr_cal_factor_h3"] = (h3_cal["b2_mr_h3"] / safe_main_h3).clip(
-                        lower=0.1, upper=10.0
-                    ).fillna(1.0)
-                    data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
-                        h3_cal[merge_keys + ["_mr_cal_factor_h3"]], on=merge_keys, how="left",
+                    h3_cal["_mr_cal_factor_h3"] = (
+                        (h3_cal["b2_mr_h3"] / safe_main_h3).clip(lower=0.1, upper=10.0).fillna(1.0)
                     )
-                    data_summary_desagregado_mr["_mr_cal_factor_h3"] = data_summary_desagregado_mr["_mr_cal_factor_h3"].fillna(1.0)
-                    data_summary_desagregado_mr[rep_h3_col] = data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor_h3"]
+                    data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
+                        h3_cal[merge_keys + ["_mr_cal_factor_h3"]],
+                        on=merge_keys,
+                        how="left",
+                    )
+                    data_summary_desagregado_mr["_mr_cal_factor_h3"] = data_summary_desagregado_mr[
+                        "_mr_cal_factor_h3"
+                    ].fillna(1.0)
+                    data_summary_desagregado_mr[rep_h3_col] = (
+                        data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor_h3"]
+                    )
                     logger.info(
                         f"MR H3 repesca recalibration: avg factor={data_summary_desagregado_mr['_mr_cal_factor_h3'].mean():.3f} "
                         f"(range [{data_summary_desagregado_mr['_mr_cal_factor_h3'].min():.3f}, "
                         f"{data_summary_desagregado_mr['_mr_cal_factor_h3'].max():.3f}])"
                     )
-                    data_summary_desagregado_mr = data_summary_desagregado_mr.drop(columns=["_mr_cal_factor_h3"], errors="ignore")
+                    data_summary_desagregado_mr = data_summary_desagregado_mr.drop(
+                        columns=["_mr_cal_factor_h3"], errors="ignore"
+                    )
                 else:
                     # Fall back to H6 factor when H3 calibration data unavailable
-                    data_summary_desagregado_mr[rep_h3_col] = data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor"]
+                    data_summary_desagregado_mr[rep_h3_col] = (
+                        data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor"]
+                    )
                     logger.info("MR H3 repesca recalibration: using H6 factor (H3-specific data unavailable)")
 
             # Drop helper calibration factor column
@@ -1739,7 +1736,10 @@ def process_mr_period(
             for suffix_pair in [("todu_30ever_h6", "_boo", "_rep"), ("todu_30ever_h3", "_boo", "_rep")]:
                 base, boo, rep = suffix_pair
                 boo_col, rep_col_name = base + boo, base + rep
-                if boo_col in data_summary_desagregado_mr.columns and rep_col_name in data_summary_desagregado_mr.columns:
+                if (
+                    boo_col in data_summary_desagregado_mr.columns
+                    and rep_col_name in data_summary_desagregado_mr.columns
+                ):
                     data_summary_desagregado_mr[base] = (
                         data_summary_desagregado_mr[boo_col] + data_summary_desagregado_mr[rep_col_name]
                     )
@@ -1756,7 +1756,11 @@ def process_mr_period(
                 from src.optimization_utils import CellGrid, milp_solve_cutoffs
 
                 target_risk = settings.optimum_risk
-                if optimal_solution_df is not None and not optimal_solution_df.empty and "b2_ever_h6" in optimal_solution_df.columns:
+                if (
+                    optimal_solution_df is not None
+                    and not optimal_solution_df.empty
+                    and "b2_ever_h6" in optimal_solution_df.columns
+                ):
                     target_risk = float(optimal_solution_df["b2_ever_h6"].iloc[0])
 
                 mr_grid = CellGrid.from_summary(data_summary_desagregado_mr, settings.variables)
@@ -1783,7 +1787,9 @@ def process_mr_period(
                     # calculate_metrics_from_cuts requires optimal_solution_df non-empty
                     optimal_solution_df = pd.DataFrame({"sol_fac": [0]})
                 else:
-                    logger.warning("MR consistency fix: re-optimization after recalibration infeasible; keeping passed mask/grid.")
+                    logger.warning(
+                        "MR consistency fix: re-optimization after recalibration infeasible; keeping passed mask/grid."
+                    )
             except Exception as e:
                 logger.warning(f"MR consistency fix failed (non-blocking). Keeping passed mask/grid. Error: {e}")
 
@@ -1791,18 +1797,23 @@ def process_mr_period(
         dsm = data_summary_desagregado_mr
         if "todu_30ever_h6_boo" in dsm.columns and "todu_30ever_h6_rep" in dsm.columns:
             boo_b2 = calculate_b2_ever_h6(
-                dsm["todu_30ever_h6_boo"].sum(), dsm["todu_amt_pile_h6_boo"].sum(),
-                multiplier=settings.multiplier, as_percentage=True,
+                dsm["todu_30ever_h6_boo"].sum(),
+                dsm["todu_amt_pile_h6_boo"].sum(),
+                multiplier=settings.multiplier,
+                as_percentage=True,
             )
             rep_b2 = calculate_b2_ever_h6(
-                dsm["todu_30ever_h6_rep"].sum(), dsm.get("todu_amt_pile_h6_rep", pd.Series([0])).sum(),
-                multiplier=settings.multiplier, as_percentage=True,
+                dsm["todu_30ever_h6_rep"].sum(),
+                dsm.get("todu_amt_pile_h6_rep", pd.Series([0])).sum(),
+                multiplier=settings.multiplier,
+                as_percentage=True,
             )
             logger.info(
                 f"MR risk diagnostic — booked (b2_boo): {boo_b2:.2f}%, "
                 f"repesca (b2_rep after RI+recal): {rep_b2:.2f}%, "
-                f"ratio rep/boo: {rep_b2 / boo_b2:.2f}x" if boo_b2 > 0 else
-                f"MR risk diagnostic — booked (b2_boo): {boo_b2:.2f}%, repesca: {rep_b2:.2f}%"
+                f"ratio rep/boo: {rep_b2 / boo_b2:.2f}x"
+                if boo_b2 > 0
+                else f"MR risk diagnostic — booked (b2_boo): {boo_b2:.2f}%, repesca: {rep_b2:.2f}%"
             )
 
         # Save MR summary
@@ -1961,6 +1972,7 @@ def process_mr_period(
                     data_summary_desagregado_mr[ind] = data_summary_desagregado_mr[boo_col]
             # Override mask/grid with accept-all on MR grid so no cells are cut
             from src.optimization_utils import CellGrid
+
             mr_grid = CellGrid.from_summary(data_summary_desagregado_mr, settings.variables)
             mask = np.ones(len(mr_grid.cell_data), dtype=int)
             grid = mr_grid
@@ -1985,7 +1997,12 @@ def process_mr_period(
             total_demand=mr_total_demand,
         )
 
-        if mr_summary_table is not None and audit_mr_df is not None and not audit_mr_df.empty and not settings.baseline_mode:
+        if (
+            mr_summary_table is not None
+            and audit_mr_df is not None
+            and not audit_mr_df.empty
+            and not settings.baseline_mode
+        ):
             from src.audit import reconcile_risk_production_summary_with_audit
 
             mr_summary_table = reconcile_risk_production_summary_with_audit(mr_summary_table, audit_mr_df)

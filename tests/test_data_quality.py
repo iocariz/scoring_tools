@@ -103,15 +103,37 @@ class TestDataQualityReport:
         assert "1 warnings" in summary
         assert "1 failures" in summary
 
-    def test_print_report(self, capsys):
-        report = DataQualityReport()
-        report.add(CheckResult("Pass1", CheckStatus.PASSED, "ok"))
-        report.add(CheckResult("Fail1", CheckStatus.FAILED, "bad", details={"key": "val"}))
-        report.print_report()
-        captured = capsys.readouterr()
-        assert "DATA QUALITY REPORT" in captured.out
-        assert "FAILURES" in captured.out
-        assert "key" in captured.out
+    def test_print_report(self):
+        """After R1 #61, print_report() routes through loguru instead of print().
+
+        Capture emitted records with a dedicated loguru sink so we can assert
+        on both content and severity mapping.
+        """
+        from loguru import logger as loguru_logger
+
+        captured: list[tuple[str, str]] = []
+
+        def _sink(message):
+            record = message.record
+            captured.append((record["level"].name, record["message"]))
+
+        handler_id = loguru_logger.add(_sink, level="DEBUG")
+        try:
+            report = DataQualityReport()
+            report.add(CheckResult("Pass1", CheckStatus.PASSED, "ok"))
+            report.add(CheckResult("Fail1", CheckStatus.FAILED, "bad", details={"key": "val"}))
+            report.print_report()
+        finally:
+            loguru_logger.remove(handler_id)
+
+        text = "\n".join(m for _, m in captured)
+        assert "DATA QUALITY REPORT" in text
+        assert "FAILURES" in text
+        assert "key" in text
+
+        # Severity mapping: any line mentioning the FAILED check goes out at ERROR.
+        levels_for_failure = {lvl for lvl, msg in captured if "Fail1" in msg}
+        assert "ERROR" in levels_for_failure
 
 
 # =============================================================================

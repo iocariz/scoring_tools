@@ -241,9 +241,7 @@ def allocation_constraint_narrative(
         for label in result.binding_constraints:
             lines.append(f"  - {_explain_binding_label(label, constraints, global_production_floor, result.target)}")
     else:
-        lines.append(
-            "**Binding constraints:** None within tolerance (MILP slack; greedy uses heuristic flags only)."
-        )
+        lines.append("**Binding constraints:** None within tolerance (MILP slack; greedy uses heuristic flags only).")
 
     if tgt is not None and result.binding_constraints:
         if "global_risk" not in result.binding_constraints and abs(result.global_risk - tgt) > 0.02:

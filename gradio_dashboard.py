@@ -901,9 +901,7 @@ def create_app() -> gr.Blocks:
                             "mask": optimal_mask,
                         }
                         n_acc = sum(optimal_mask)
-                        info = (
-                            f"**1D mode** ({variables[0]}): {n_acc}/{len(optimal_mask)} bins accepted."
-                        )
+                        info = f"**1D mode** ({variables[0]}): {n_acc}/{len(optimal_mask)} bins accepted."
                         return kpi, fig, info, state
 
                     elif is_nd and optimal_mask is not None:
@@ -1099,6 +1097,15 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Risk Scoring Dashboard (Gradio)")
     parser.add_argument("--output", "-o", default="output", help="Base output directory")
     parser.add_argument("--segment", "-s", default=None, help="Initial segment to display")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "Bind host (default: 127.0.0.1, loopback only). Non-localhost "
+            "binds require DASHBOARD_AUTH_USER + DASHBOARD_AUTH_PASS env "
+            "vars; see src/web_auth.py and todo #50."
+        ),
+    )
     parser.add_argument("--port", "-p", type=int, default=7860)
     parser.add_argument("--share", action="store_true", help="Create a public link")
     return parser.parse_args()
@@ -1126,4 +1133,28 @@ if __name__ == "__main__":
             "Set GRADIO_SHARE_ALLOWED=1 to override."
         )
     effective_share = share_requested and share_allowed
-    app.launch(server_port=args.port, share=effective_share)
+
+    # Auth policy (todo #50): non-localhost binds require env credentials.
+    # --share implies a non-localhost bind (public tunnel), so auth is
+    # required even when binding locally in that case.
+    from src.web_auth import DashboardAuthError, enforce_bind_auth_policy
+
+    effective_host = args.host
+    try:
+        if effective_share:
+            # Treat --share as an implicit non-localhost bind for policy purposes.
+            creds = enforce_bind_auth_policy("0.0.0.0")
+        else:
+            creds = enforce_bind_auth_policy(effective_host)
+    except DashboardAuthError as exc:
+        print(f"ERROR: {exc}")
+        raise SystemExit(2) from exc
+
+    app.launch(
+        server_name=effective_host,
+        server_port=args.port,
+        share=effective_share,
+        # Gradio accepts a (user, pass) tuple directly via the ``auth`` arg;
+        # None disables authentication (localhost-only path).
+        auth=creds,
+    )

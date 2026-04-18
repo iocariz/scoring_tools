@@ -123,8 +123,7 @@ def _verify_integrity_sidecar(pkl_path: Path) -> None:
     expected = sidecar.read_text(encoding="ascii").strip().split()
     if not expected or len(expected[0]) != 64 or not all(c in "0123456789abcdef" for c in expected[0].lower()):
         raise ModelIntegrityError(
-            f"refusing to load {pkl_path}: sidecar {sidecar.name} is malformed "
-            f"(expected a 64-char hex SHA-256 digest)."
+            f"refusing to load {pkl_path}: sidecar {sidecar.name} is malformed (expected a 64-char hex SHA-256 digest)."
         )
     actual = _compute_sha256(pkl_path)
     if actual.lower() != expected[0].lower():
@@ -171,7 +170,12 @@ def safe_joblib_load(pkl_path: str | Path) -> Any:
     return joblib.load(resolved)
 
 
-def save_model_with_metadata(model, features: list[str], metadata: dict, base_path: str = "models") -> str:
+def save_model_with_metadata(
+    model,
+    features: list[str],
+    metadata: dict,
+    base_path: str | Path = "models",
+) -> str:
     """
     Save trained model with comprehensive metadata for production use.
 
@@ -179,20 +183,22 @@ def save_model_with_metadata(model, features: list[str], metadata: dict, base_pa
         model: Trained model object
         features: List of feature names
         metadata: Dictionary containing model metadata
-        base_path: Base directory for saving models
+        base_path: Base directory for saving models. Accepts ``str`` or
+            ``pathlib.Path``; coerced internally.
 
     Returns:
         Path to saved model directory
     """
-    # Create directory structure
-    base_path = Path(base_path)
-    base_path.mkdir(parents=True, exist_ok=True)
+    # Create directory structure. Keep the parameter's type contract honest:
+    # do not rebind `base_path` to a different type — coerce into a local.
+    base_dir = Path(base_path)
+    base_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Create version directory
-    version_path = base_path / f"model_{timestamp}"
+    version_path = base_dir / f"model_{timestamp}"
     version_path.mkdir(exist_ok=True)
 
     # Save model and write integrity sidecar

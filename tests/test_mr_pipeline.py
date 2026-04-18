@@ -569,9 +569,13 @@ class TestComputeHybridMRRisk:
                 "bin_a": [1] * n_main + [2] * n_main,
                 "bin_b": [1] * (2 * n_main),
                 "todu_30ever_h6": np.concatenate([rng_main.uniform(8, 12, n_main), rng_main.uniform(4, 6, n_main)]),
-                "todu_amt_pile_h6": np.concatenate([rng_main.uniform(90, 110, n_main), rng_main.uniform(190, 210, n_main)]),
+                "todu_amt_pile_h6": np.concatenate(
+                    [rng_main.uniform(90, 110, n_main), rng_main.uniform(190, 210, n_main)]
+                ),
                 "todu_30ever_h3": np.concatenate([rng_main.uniform(4, 6, n_main), rng_main.uniform(2, 4, n_main)]),
-                "todu_amt_pile_h3": np.concatenate([rng_main.uniform(80, 100, n_main), rng_main.uniform(170, 190, n_main)]),
+                "todu_amt_pile_h3": np.concatenate(
+                    [rng_main.uniform(80, 100, n_main), rng_main.uniform(170, 190, n_main)]
+                ),
                 "status_name": ["booked"] * (2 * n_main),
             }
         )
@@ -591,9 +595,7 @@ class TestComputeHybridMRRisk:
             }
         )
 
-        _, comparison_df = _compute_hybrid_mr_risk(
-            data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4
-        )
+        _, comparison_df = _compute_hybrid_mr_risk(data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4)
 
         assert (comparison_df["risk_source"] == "h3_extrapolated").all()
 
@@ -614,9 +616,13 @@ class TestComputeHybridMRRisk:
                 "bin_a": [1] * n_main + [2] * n_main,
                 "bin_b": [1] * (2 * n_main),
                 "todu_30ever_h6": np.concatenate([rng_main.uniform(8, 12, n_main), rng_main.uniform(4, 6, n_main)]),
-                "todu_amt_pile_h6": np.concatenate([rng_main.uniform(90, 110, n_main), rng_main.uniform(190, 210, n_main)]),
+                "todu_amt_pile_h6": np.concatenate(
+                    [rng_main.uniform(90, 110, n_main), rng_main.uniform(190, 210, n_main)]
+                ),
                 "todu_30ever_h3": np.concatenate([rng_main.uniform(4, 6, n_main), rng_main.uniform(2, 4, n_main)]),
-                "todu_amt_pile_h3": np.concatenate([rng_main.uniform(80, 100, n_main), rng_main.uniform(170, 190, n_main)]),
+                "todu_amt_pile_h3": np.concatenate(
+                    [rng_main.uniform(80, 100, n_main), rng_main.uniform(170, 190, n_main)]
+                ),
                 "status_name": ["booked"] * (2 * n_main),
             }
         )
@@ -636,9 +642,7 @@ class TestComputeHybridMRRisk:
             }
         )
 
-        _, comparison_df = _compute_hybrid_mr_risk(
-            data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4
-        )
+        _, comparison_df = _compute_hybrid_mr_risk(data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4)
 
         # MR H6 observed takes priority when sufficient observations exist
         assert (comparison_df["risk_source"] == "mr_observed").all()
@@ -693,9 +697,13 @@ class TestComputeHybridMRRisk:
                 "bin_a": [1] * n_main + [2] * n_main,
                 "bin_b": [1] * (2 * n_main),
                 "todu_30ever_h6": np.concatenate([rng_main.uniform(8, 12, n_main), rng_main.uniform(4, 6, n_main)]),
-                "todu_amt_pile_h6": np.concatenate([rng_main.uniform(90, 110, n_main), rng_main.uniform(190, 210, n_main)]),
+                "todu_amt_pile_h6": np.concatenate(
+                    [rng_main.uniform(90, 110, n_main), rng_main.uniform(190, 210, n_main)]
+                ),
                 "todu_30ever_h3": np.concatenate([rng_main.uniform(4, 6, n_main), rng_main.uniform(2, 4, n_main)]),
-                "todu_amt_pile_h3": np.concatenate([rng_main.uniform(80, 100, n_main), rng_main.uniform(170, 190, n_main)]),
+                "todu_amt_pile_h3": np.concatenate(
+                    [rng_main.uniform(80, 100, n_main), rng_main.uniform(170, 190, n_main)]
+                ),
                 "status_name": ["booked"] * (2 * n_main),
             }
         )
@@ -715,9 +723,7 @@ class TestComputeHybridMRRisk:
             }
         )
 
-        _, comparison_df = _compute_hybrid_mr_risk(
-            data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4
-        )
+        _, comparison_df = _compute_hybrid_mr_risk(data_booked, data_demand_mr, merge_keys, min_obs=30, multiplier_h3=4)
 
         # Zero H3 risk with sufficient observations IS a valid signal:
         # it means genuinely low risk. The extrapolation produces 0% risk.
@@ -824,9 +830,13 @@ class TestComputeHybridMRRisk:
                 "bin_a": [1] * n_main + [2] * n_main,
                 "bin_b": [1] * (2 * n_main),
                 "todu_30ever_h6": np.concatenate([rng_main.uniform(8, 12, n_main), rng_main.uniform(4, 6, n_main)]),
-                "todu_amt_pile_h6": np.concatenate([rng_main.uniform(90, 110, n_main), rng_main.uniform(190, 210, n_main)]),
+                "todu_amt_pile_h6": np.concatenate(
+                    [rng_main.uniform(90, 110, n_main), rng_main.uniform(190, 210, n_main)]
+                ),
                 "todu_30ever_h3": np.concatenate([rng_main.uniform(4, 6, n_main), rng_main.uniform(2, 4, n_main)]),
-                "todu_amt_pile_h3": np.concatenate([rng_main.uniform(80, 100, n_main), rng_main.uniform(170, 190, n_main)]),
+                "todu_amt_pile_h3": np.concatenate(
+                    [rng_main.uniform(80, 100, n_main), rng_main.uniform(170, 190, n_main)]
+                ),
                 "status_name": ["booked"] * (2 * n_main),
             }
         )
@@ -917,8 +927,12 @@ class TestAutoCalibration:
         )
 
         _, comparison_df = _compute_hybrid_mr_risk(
-            data_booked, data_demand_mr, merge_keys, min_obs=30,
-            multiplier_h3=4, mr_extrapolation_method="auto",
+            data_booked,
+            data_demand_mr,
+            merge_keys,
+            min_obs=30,
+            multiplier_h3=4,
+            mr_extrapolation_method="auto",
         )
 
         assert (comparison_df["fitted_method"] == "linear").all()
@@ -966,8 +980,12 @@ class TestAutoCalibration:
         )
 
         _, comparison_df = _compute_hybrid_mr_risk(
-            data_booked, data_demand_mr, merge_keys, min_obs=30,
-            multiplier_h3=4, mr_extrapolation_method="auto",
+            data_booked,
+            data_demand_mr,
+            merge_keys,
+            min_obs=30,
+            multiplier_h3=4,
+            mr_extrapolation_method="auto",
         )
 
         assert (comparison_df["fitted_method"] == "power").all()
@@ -999,7 +1017,10 @@ class TestAutoCalibration:
         )
 
         _, comparison_df = _compute_hybrid_mr_risk(
-            data_booked, data_demand_mr, merge_keys, min_obs=30,
+            data_booked,
+            data_demand_mr,
+            merge_keys,
+            min_obs=30,
             mr_extrapolation_method="auto",
         )
 
@@ -1108,9 +1129,7 @@ class TestCalculateMetricsNd:
         assert (df.loc[~accepted, "var0"] > 2.0).all()
 
         # evaluate_solution should produce valid KPIs
-        kpis = evaluate_solution(
-            mask, grid, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], multiplier=7
-        )
+        kpis = evaluate_solution(mask, grid, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], multiplier=7)
         assert kpis["oa_amt_h0"] > 0
         assert kpis["b2_ever_h6"] > 0
 
@@ -1371,7 +1390,9 @@ class TestProcessMRPeriodRegression:
             }
         )
 
-        monkeypatch.setattr("src.mr_pipeline._compute_hybrid_mr_risk", lambda *args, **kwargs: (merge_df, comparison_df))
+        monkeypatch.setattr(
+            "src.mr_pipeline._compute_hybrid_mr_risk", lambda *args, **kwargs: (merge_df, comparison_df)
+        )
         monkeypatch.setattr(
             "src.mr_pipeline._assign_tiered_risk",
             lambda data_demand_mr, *args, **kwargs: data_demand_mr.assign(_mr_tier=3),
@@ -1680,7 +1701,9 @@ class TestProcessMRPeriodRegression:
                 "fitted_curvature": [1.0, 1.0, 1.0],
             }
         )
-        monkeypatch.setattr("src.mr_pipeline._compute_hybrid_mr_risk", lambda *args, **kwargs: (merge_df, comparison_df))
+        monkeypatch.setattr(
+            "src.mr_pipeline._compute_hybrid_mr_risk", lambda *args, **kwargs: (merge_df, comparison_df)
+        )
         monkeypatch.setattr(
             "src.mr_pipeline._assign_tiered_risk",
             lambda data_demand_mr, *args, **kwargs: data_demand_mr.assign(_mr_tier=3),
@@ -1812,9 +1835,13 @@ class TestProcessMRPeriodRegression:
                 "fitted_curvature": [1.0],
             }
         )
-        monkeypatch.setattr("src.mr_pipeline._compute_hybrid_mr_risk", lambda *args, **kwargs: (merge_df, comparison_df))
+        monkeypatch.setattr(
+            "src.mr_pipeline._compute_hybrid_mr_risk", lambda *args, **kwargs: (merge_df, comparison_df)
+        )
         # Force model fallback inference failure so NaN remains.
-        monkeypatch.setattr("src.mr_pipeline.calculate_B2", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(
+            "src.mr_pipeline.calculate_B2", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
 
         def fake_run_optimization_pipeline(*, data_demand, **kwargs):
             row = data_demand.loc[data_demand["status_name"] == "booked"].iloc[0]
@@ -1947,8 +1974,12 @@ class TestH3FloorEnforcement:
         )
 
         merge_df, comparison_df = _compute_hybrid_mr_risk(
-            data_booked, data_demand_mr, merge_keys, min_obs=30,
-            multiplier=7.0, multiplier_h3=4.0,
+            data_booked,
+            data_demand_mr,
+            merge_keys,
+            min_obs=30,
+            multiplier=7.0,
+            multiplier_h3=4.0,
         )
 
         # For each bin, simulated H6 must be >= best available H3
@@ -1959,8 +1990,7 @@ class TestH3FloorEnforcement:
             h3_floor = next((v for v in h3_candidates if pd.notna(v)), None)
             if h3_floor is not None and pd.notna(h6):
                 assert h6 >= h3_floor - 1e-9, (
-                    f"Bin {row[merge_keys].to_dict()}: simulated H6 ({h6:.6f}) "
-                    f"< H3 floor ({h3_floor:.6f})"
+                    f"Bin {row[merge_keys].to_dict()}: simulated H6 ({h6:.6f}) < H3 floor ({h3_floor:.6f})"
                 )
 
     def test_h3_floor_no_effect_when_h6_already_higher(self):
@@ -1989,8 +2019,12 @@ class TestH3FloorEnforcement:
         )
 
         merge_df, comparison_df = _compute_hybrid_mr_risk(
-            data_booked, data_demand_mr, merge_keys, min_obs=30,
-            multiplier=7.0, multiplier_h3=4.0,
+            data_booked,
+            data_demand_mr,
+            merge_keys,
+            min_obs=30,
+            multiplier=7.0,
+            multiplier_h3=4.0,
         )
 
         # H6 (main imputed) should be larger than H3 → no clamping
@@ -2020,17 +2054,18 @@ class TestH3FloorEnforcement:
         )
         opt_sol = pd.DataFrame({"sol_fac": [0], 1: [1], 2: [1]})
         result = calculate_metrics_from_cuts(
-            df, opt_sol, variables,
-            multiplier=7.0, multiplier_h3=4.0,
+            df,
+            opt_sol,
+            variables,
+            multiplier=7.0,
+            multiplier_h3=4.0,
         )
         assert result is not None
         for _, row in result.iterrows():
             h6 = row.get("Risk (%)")
             h3 = row.get("Risk H3 (%)")
             if pd.notna(h6) and pd.notna(h3):
-                assert h6 >= h3 - 1e-9, (
-                    f"{row['Metric']}: H6 ({h6:.4f}%) < H3 ({h3:.4f}%)"
-                )
+                assert h6 >= h3 - 1e-9, f"{row['Metric']}: H6 ({h6:.4f}%) < H3 ({h3:.4f}%)"
 
 
 # =============================================================================
@@ -2048,23 +2083,27 @@ class TestTieredReconstruction:
     @pytest.fixture
     def merge_df(self):
         """Per-bin b2_ever_h6_tmp from _compute_hybrid_mr_risk."""
-        return pd.DataFrame({
-            "bin_a": [1, 2],
-            "bin_b": [1, 1],
-            "b2_ever_h6_tmp": [0.05, 0.10],
-        })
+        return pd.DataFrame(
+            {
+                "bin_a": [1, 2],
+                "bin_b": [1, 1],
+                "b2_ever_h6_tmp": [0.05, 0.10],
+            }
+        )
 
     @pytest.fixture
     def comparison_df_with_ratio(self):
         """comparison_df with h6_h3_ratio and b2_main_h3 columns."""
-        return pd.DataFrame({
-            "bin_a": [1, 2],
-            "bin_b": [1, 1],
-            "b2_ever_h6_tmp": [0.05, 0.10],
-            "h6_h3_ratio": [2.0, 2.5],
-            "b2_main_h3": [0.025, 0.04],
-            "risk_source": ["h3_extrapolated", "main_imputed"],
-        })
+        return pd.DataFrame(
+            {
+                "bin_a": [1, 2],
+                "bin_b": [1, 1],
+                "b2_ever_h6_tmp": [0.05, 0.10],
+                "h6_h3_ratio": [2.0, 2.5],
+                "b2_main_h3": [0.025, 0.04],
+                "risk_source": ["h3_extrapolated", "main_imputed"],
+            }
+        )
 
     def test_compute_account_maturity(self):
         """_compute_account_maturity returns correct month differences."""
@@ -2082,21 +2121,27 @@ class TestTieredReconstruction:
     def test_tier2_uses_account_h3_extrapolation(self, merge_keys, merge_df, comparison_df_with_ratio):
         """Tier 2 accounts use account-level H3 × bin ratio, not bin-level risk."""
         # Include a later-dated account so max(mis_date) gives the earlier ones >= 3mo maturity
-        data = pd.DataFrame({
-            "bin_a": [1, 1, 1],
-            "bin_b": [1, 1, 1],
-            "status_name": ["booked", "booked", "booked"],
-            "mis_date": pd.to_datetime(["2025-07-15", "2025-07-15", "2025-10-15"]),
-            "todu_30ever_h3": [3.0, 6.0, 1.0],  # different H3 per account
-            "todu_amt_pile_h3": [100.0, 100.0, 100.0],
-            "b2_ever_h6_tmp": [0.05, 0.05, 0.05],  # bin-level from merge
-            "oa_amt": [1000.0, 1000.0, 1000.0],
-        })
+        data = pd.DataFrame(
+            {
+                "bin_a": [1, 1, 1],
+                "bin_b": [1, 1, 1],
+                "status_name": ["booked", "booked", "booked"],
+                "mis_date": pd.to_datetime(["2025-07-15", "2025-07-15", "2025-10-15"]),
+                "todu_30ever_h3": [3.0, 6.0, 1.0],  # different H3 per account
+                "todu_amt_pile_h3": [100.0, 100.0, 100.0],
+                "b2_ever_h6_tmp": [0.05, 0.05, 0.05],  # bin-level from merge
+                "oa_amt": [1000.0, 1000.0, 1000.0],
+            }
+        )
         # max(mis_date) = 2025-10-15; first two accounts have 3 months maturity → Tier 2
 
         result = _assign_tiered_risk(
-            data, merge_df, comparison_df_with_ratio, merge_keys,
-            multiplier=7.0, multiplier_h3=4.0,
+            data,
+            merge_df,
+            comparison_df_with_ratio,
+            merge_keys,
+            multiplier=7.0,
+            multiplier_h3=4.0,
         )
 
         tier2 = result[result["_mr_tier"] == 2]
@@ -2112,14 +2157,16 @@ class TestTieredReconstruction:
 
     def test_tier3_uses_bin_level_main_rate(self, merge_keys, merge_df):
         """Tier 3 accounts (< 3 months) keep the bin-level b2_ever_h6_tmp."""
-        data = pd.DataFrame({
-            "bin_a": [1],
-            "bin_b": [1],
-            "status_name": ["booked"],
-            "mis_date": pd.to_datetime(["2025-09-15"]),  # 1 month maturity
-            "b2_ever_h6_tmp": [0.05],  # from merge_df
-            "oa_amt": [1000.0],
-        })
+        data = pd.DataFrame(
+            {
+                "bin_a": [1],
+                "bin_b": [1],
+                "status_name": ["booked"],
+                "mis_date": pd.to_datetime(["2025-09-15"]),  # 1 month maturity
+                "b2_ever_h6_tmp": [0.05],  # from merge_df
+                "oa_amt": [1000.0],
+            }
+        )
 
         result = _assign_tiered_risk(data, merge_df, None, merge_keys, multiplier=7.0)
 
@@ -2129,29 +2176,37 @@ class TestTieredReconstruction:
     def test_h3_floor_enforced_for_tier2(self, merge_keys, merge_df):
         """Tier 2: extrapolated H6 must be >= account H3 (H3 floor)."""
         # comparison_df with a very low h6_h3_ratio (0.5 → H6 < H3 before floor)
-        comparison_df = pd.DataFrame({
-            "bin_a": [1],
-            "bin_b": [1],
-            "b2_ever_h6_tmp": [0.05],
-            "h6_h3_ratio": [0.5],  # would make H6 = H3 * 0.5 < H3
-            "b2_main_h3": [0.025],
-            "risk_source": ["h3_extrapolated"],
-        })
+        comparison_df = pd.DataFrame(
+            {
+                "bin_a": [1],
+                "bin_b": [1],
+                "b2_ever_h6_tmp": [0.05],
+                "h6_h3_ratio": [0.5],  # would make H6 = H3 * 0.5 < H3
+                "b2_main_h3": [0.025],
+                "risk_source": ["h3_extrapolated"],
+            }
+        )
         # Include a later account so max date gives earlier one >= 3mo maturity
-        data = pd.DataFrame({
-            "bin_a": [1, 1],
-            "bin_b": [1, 1],
-            "status_name": ["booked", "booked"],
-            "mis_date": pd.to_datetime(["2025-07-15", "2025-10-15"]),
-            "todu_30ever_h3": [5.0, 1.0],
-            "todu_amt_pile_h3": [100.0, 100.0],
-            "b2_ever_h6_tmp": [0.05, 0.05],
-            "oa_amt": [1000.0, 1000.0],
-        })
+        data = pd.DataFrame(
+            {
+                "bin_a": [1, 1],
+                "bin_b": [1, 1],
+                "status_name": ["booked", "booked"],
+                "mis_date": pd.to_datetime(["2025-07-15", "2025-10-15"]),
+                "todu_30ever_h3": [5.0, 1.0],
+                "todu_amt_pile_h3": [100.0, 100.0],
+                "b2_ever_h6_tmp": [0.05, 0.05],
+                "oa_amt": [1000.0, 1000.0],
+            }
+        )
 
         result = _assign_tiered_risk(
-            data, merge_df, comparison_df, merge_keys,
-            multiplier=7.0, multiplier_h3=4.0,
+            data,
+            merge_df,
+            comparison_df,
+            merge_keys,
+            multiplier=7.0,
+            multiplier_h3=4.0,
         )
 
         tier2 = result[result["_mr_tier"] == 2]
@@ -2162,16 +2217,18 @@ class TestTieredReconstruction:
 
     def test_non_hybrid_mode_tiers_3_and_4_only(self, merge_keys, merge_df):
         """Without comparison_df (non-hybrid), only tiers 3 and 4 are assigned."""
-        data = pd.DataFrame({
-            "bin_a": [1, 2, 3],
-            "bin_b": [1, 1, 1],
-            "status_name": ["booked", "booked", "booked"],
-            "mis_date": pd.to_datetime(["2025-04-15", "2025-07-15", "2025-09-15"]),
-            "todu_30ever_h3": [5.0, 3.0, 1.0],
-            "todu_amt_pile_h3": [100.0, 100.0, 100.0],
-            "b2_ever_h6_tmp": [0.05, 0.10, np.nan],
-            "oa_amt": [1000.0, 1000.0, 1000.0],
-        })
+        data = pd.DataFrame(
+            {
+                "bin_a": [1, 2, 3],
+                "bin_b": [1, 1, 1],
+                "status_name": ["booked", "booked", "booked"],
+                "mis_date": pd.to_datetime(["2025-04-15", "2025-07-15", "2025-09-15"]),
+                "todu_30ever_h3": [5.0, 3.0, 1.0],
+                "todu_amt_pile_h3": [100.0, 100.0, 100.0],
+                "b2_ever_h6_tmp": [0.05, 0.10, np.nan],
+                "oa_amt": [1000.0, 1000.0, 1000.0],
+            }
+        )
 
         result = _assign_tiered_risk(data, merge_df, None, merge_keys, multiplier=7.0)
 
@@ -2182,13 +2239,15 @@ class TestTieredReconstruction:
 
     def test_missing_mis_date_graceful_fallback(self, merge_keys, merge_df):
         """Without mis_date column, all booked → Tier 3 or 4 (no maturity)."""
-        data = pd.DataFrame({
-            "bin_a": [1],
-            "bin_b": [1],
-            "status_name": ["booked"],
-            "b2_ever_h6_tmp": [0.05],
-            "oa_amt": [1000.0],
-        })
+        data = pd.DataFrame(
+            {
+                "bin_a": [1],
+                "bin_b": [1],
+                "status_name": ["booked"],
+                "b2_ever_h6_tmp": [0.05],
+                "oa_amt": [1000.0],
+            }
+        )
 
         result = _assign_tiered_risk(data, merge_df, None, merge_keys, multiplier=7.0)
 
@@ -2198,16 +2257,18 @@ class TestTieredReconstruction:
     def test_tier1_uses_actual_h6(self, merge_keys, merge_df):
         """Tier 1 accounts (>=6 months) use actual H6 outcomes."""
         # Include a recent account so max(mis_date)=2025-10-15 gives first account 6 months maturity
-        data = pd.DataFrame({
-            "bin_a": [1, 1],
-            "bin_b": [1, 1],
-            "status_name": ["booked", "booked"],
-            "mis_date": pd.to_datetime(["2025-04-15", "2025-10-15"]),
-            "_actual_todu_30ever_h6": [10.0, np.nan],
-            "_actual_todu_amt_pile_h6": [200.0, np.nan],
-            "b2_ever_h6_tmp": [0.05, 0.05],  # bin-level, should be overridden for Tier 1
-            "oa_amt": [1000.0, 1000.0],
-        })
+        data = pd.DataFrame(
+            {
+                "bin_a": [1, 1],
+                "bin_b": [1, 1],
+                "status_name": ["booked", "booked"],
+                "mis_date": pd.to_datetime(["2025-04-15", "2025-10-15"]),
+                "_actual_todu_30ever_h6": [10.0, np.nan],
+                "_actual_todu_amt_pile_h6": [200.0, np.nan],
+                "b2_ever_h6_tmp": [0.05, 0.05],  # bin-level, should be overridden for Tier 1
+                "oa_amt": [1000.0, 1000.0],
+            }
+        )
 
         result = _assign_tiered_risk(data, merge_df, None, merge_keys, multiplier=7.0)
 

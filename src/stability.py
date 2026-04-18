@@ -404,12 +404,20 @@ def plot_stability_dashboard(report: StabilityReport, top_n: int = 10) -> go.Fig
 
     # Add threshold lines (using centralized constants)
     fig.add_hline(
-        y=PSI_STABLE_THRESHOLD, line_dash="dash", line_color="orange",
-        annotation_text=f"Moderate ({PSI_STABLE_THRESHOLD})", row=1, col=1,
+        y=PSI_STABLE_THRESHOLD,
+        line_dash="dash",
+        line_color="orange",
+        annotation_text=f"Moderate ({PSI_STABLE_THRESHOLD})",
+        row=1,
+        col=1,
     )
     fig.add_hline(
-        y=PSI_UNSTABLE_THRESHOLD, line_dash="dash", line_color="red",
-        annotation_text=f"Unstable ({PSI_UNSTABLE_THRESHOLD})", row=1, col=1,
+        y=PSI_UNSTABLE_THRESHOLD,
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"Unstable ({PSI_UNSTABLE_THRESHOLD})",
+        row=1,
+        col=1,
     )
 
     # Histogram of PSI values

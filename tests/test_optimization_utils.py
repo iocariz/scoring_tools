@@ -638,6 +638,7 @@ class TestMILPSolver:
 # GA fallback tests (mocked pymoo)
 # =============================================================================
 
+
 class TestGAFallbackPhantomCells:
     def test_phantom_cells_not_accepted_in_ga_fallback(self, monkeypatch):
         """GA fallback must encode phantom/unobserved cells with xu=0.
@@ -1555,9 +1556,7 @@ class TestCreateFixedCutoffMask:
             "var1": [2.0, 1.0],
             "var2": [2.0, 1.0],
         }
-        grid, mask = create_fixed_cutoff_mask(
-            fixed_cutoffs, ["var0", "var1", "var2"], df
-        )
+        grid, mask = create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df)
 
         assert grid.n_cells == 3 * 3 * 2
         assert mask.shape == (grid.n_cells,)
@@ -1581,9 +1580,7 @@ class TestCreateFixedCutoffMask:
             "var1": [2.0, 2.0],  # cutoff = max bin for both
             "var2": [2.0, 2.0],
         }
-        grid, mask = create_fixed_cutoff_mask(
-            fixed_cutoffs, ["var0", "var1", "var2"], df
-        )
+        grid, mask = create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df)
 
         assert mask.sum() == grid.n_cells
 
@@ -1595,9 +1592,7 @@ class TestCreateFixedCutoffMask:
             "var1": [],
             "var2": [],
         }
-        grid, mask = create_fixed_cutoff_mask(
-            fixed_cutoffs, ["var0", "var1", "var2"], df
-        )
+        grid, mask = create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df)
 
         assert mask.sum() == 0
 
@@ -1610,9 +1605,7 @@ class TestCreateFixedCutoffMask:
             # var2 missing
         }
         with pytest.raises(ValueError, match="Missing"):
-            create_fixed_cutoff_mask(
-                fixed_cutoffs, ["var0", "var1", "var2"], df
-            )
+            create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df)
 
     def test_unequal_lengths_raises(self):
         """Unequal-length cutoff lists raise ValueError."""
@@ -1623,9 +1616,7 @@ class TestCreateFixedCutoffMask:
             "var2": [1.0, 2.0, 1.0],
         }
         with pytest.raises(ValueError, match="equal length"):
-            create_fixed_cutoff_mask(
-                fixed_cutoffs, ["var0", "var1", "var2"], df
-            )
+            create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df)
 
     def test_evaluate_solution_integration(self):
         """Mask from create_fixed_cutoff_mask works with evaluate_solution."""
@@ -1636,9 +1627,7 @@ class TestCreateFixedCutoffMask:
             "var1": [3.0, 2.0],
             "var2": [2.0, 2.0],
         }
-        grid, mask = create_fixed_cutoff_mask(
-            fixed_cutoffs, ["var0", "var1", "var2"], df
-        )
+        grid, mask = create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df)
         kpis = evaluate_solution(mask, grid, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], 7)
 
         assert "oa_amt_h0" in kpis
@@ -1657,12 +1646,8 @@ class TestCreateFixedCutoffMask:
             "var1": [2.0, 2.0],
             "var2": [2.0, 2.0],
         }
-        _, mask_no_inv = create_fixed_cutoff_mask(
-            fixed_cutoffs, ["var0", "var1", "var2"], df, inv_vars=[]
-        )
-        _, mask_with_inv = create_fixed_cutoff_mask(
-            fixed_cutoffs, ["var0", "var1", "var2"], df, inv_vars=["var1"]
-        )
+        _, mask_no_inv = create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df, inv_vars=[])
+        _, mask_with_inv = create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df, inv_vars=["var1"])
 
         # Without inv: var1 in {1,2} accepted; with inv: var1 in {2,3} accepted
         # They should differ (var1=1 vs var1=3 swap)
@@ -1682,9 +1667,7 @@ class TestCreateFixedCutoffMask:
             "var2": [1.0, 1.0],
         }
         with pytest.raises(ValueError, match="don't exist in data bins"):
-            create_fixed_cutoff_mask(
-                fixed_cutoffs, ["var0", "var1", "var2"], df, strict_validation=True
-            )
+            create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df, strict_validation=True)
 
     def test_meta_keys_skipped(self):
         """Meta keys like strict_validation in fixed_cutoffs dict are skipped."""
@@ -1697,9 +1680,7 @@ class TestCreateFixedCutoffMask:
             "run_all_scenarios": False,
         }
         # Should not raise (meta keys should be ignored by _validate_nd_cutoff_structure)
-        grid, mask = create_fixed_cutoff_mask(
-            fixed_cutoffs, ["var0", "var1", "var2"], df
-        )
+        grid, mask = create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df)
         assert mask.sum() == 1
 
     def test_single_var0_bin(self):
@@ -1710,9 +1691,7 @@ class TestCreateFixedCutoffMask:
             "var1": [2.0],
             "var2": [1.0],
         }
-        grid, mask = create_fixed_cutoff_mask(
-            fixed_cutoffs, ["var0", "var1", "var2"], df
-        )
+        grid, mask = create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df)
         # Only var0=2 cells, var1<=2, var2<=1 → var1 in {1,2}, var2 in {1} → 2 cells
         assert mask.sum() == 2
         assert mask[grid.cell_index[(2.0, 1.0, 1.0)]] == 1
@@ -1732,9 +1711,7 @@ class TestCreateFixedCutoffMask:
                 "2": [2, 1, 1],  # when var2=2
             },
         }
-        grid, mask = create_fixed_cutoff_mask(
-            fixed_cutoffs, ["var0", "var1", "var2"], df
-        )
+        grid, mask = create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df)
 
         # var0=1, var2=1: var1 <= 3 → {1,2,3} → 3 cells
         assert mask[grid.cell_index[(1.0, 1.0, 1.0)]] == 1
@@ -1770,9 +1747,7 @@ class TestCreateFixedCutoffMask:
                 "2": [1, 2],  # when var2=2: var1 >= 1 for var0=1, var1 >= 2 for var0=2
             },
         }
-        grid, mask = create_fixed_cutoff_mask(
-            fixed_cutoffs, ["var0", "var1", "var2"], df, inv_vars=["var1"]
-        )
+        grid, mask = create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df, inv_vars=["var1"])
 
         # var0=1, var2=1: var1 >= 2 → {2,3}
         assert mask[grid.cell_index[(1.0, 1.0, 1.0)]] == 0
@@ -1800,16 +1775,20 @@ class TestCreateFixedCutoffMask:
             for v1 in range(1, 4):
                 for v2 in range(1, 3):
                     for v3 in range(1, 3):
-                        rows.append({
-                            "var0": float(v0), "var1": float(v1),
-                            "var2": float(v2), "var3": float(v3),
-                            "todu_30ever_h6": rng.uniform(5, 50),
-                            "todu_amt_pile_h6": rng.uniform(100, 500),
-                            "oa_amt_h0": rng.uniform(1000, 10000),
-                            "todu_30ever_h6_boo": rng.uniform(5, 50),
-                            "todu_amt_pile_h6_boo": rng.uniform(100, 500),
-                            "oa_amt_h0_boo": rng.uniform(1000, 10000),
-                        })
+                        rows.append(
+                            {
+                                "var0": float(v0),
+                                "var1": float(v1),
+                                "var2": float(v2),
+                                "var3": float(v3),
+                                "todu_30ever_h6": rng.uniform(5, 50),
+                                "todu_amt_pile_h6": rng.uniform(100, 500),
+                                "oa_amt_h0": rng.uniform(1000, 10000),
+                                "todu_30ever_h6_boo": rng.uniform(5, 50),
+                                "todu_amt_pile_h6_boo": rng.uniform(100, 500),
+                                "oa_amt_h0_boo": rng.uniform(1000, 10000),
+                            }
+                        )
         df = pd.DataFrame(rows)
 
         # var3 is conditioning variable (absent), var1 is matrix, var2 is flat
@@ -1821,9 +1800,7 @@ class TestCreateFixedCutoffMask:
             },
             "var2": [2, 1],  # flat: cutoff per var0 bin
         }
-        grid, mask = create_fixed_cutoff_mask(
-            fixed_cutoffs, ["var0", "var1", "var2", "var3"], df
-        )
+        grid, mask = create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2", "var3"], df)
 
         # var0=1, var3=1: var1<=3, var2<=2 → all var1, all var2 → 3*2=6
         # var0=1, var3=2: var1<=2, var2<=2 → var1 in {1,2}, all var2 → 2*2=4
@@ -1849,9 +1826,7 @@ class TestCreateFixedCutoffMask:
             },
         }
         with pytest.raises(ValueError, match="don't exist in data bins"):
-            create_fixed_cutoff_mask(
-                fixed_cutoffs, ["var0", "var1", "var2"], df, strict_validation=True
-            )
+            create_fixed_cutoff_mask(fixed_cutoffs, ["var0", "var1", "var2"], df, strict_validation=True)
 
 
 class TestValidateNdCutoffStructure:

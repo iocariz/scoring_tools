@@ -27,9 +27,7 @@ def _get_regression_weights(processed_data: pd.DataFrame):
     return None
 
 
-def _stratified_cv_splitter(
-    raw_data: pd.DataFrame, cv_folds: int, random_state: int, indicators: list[str]
-):
+def _stratified_cv_splitter(raw_data: pd.DataFrame, cv_folds: int, random_state: int, indicators: list[str]):
     """Create a StratifiedKFold splitter using a binarized risk indicator.
 
     Credit risk data is heavily imbalanced (5-15% bad rate).  Standard KFold
@@ -138,8 +136,12 @@ def tune_tree_models(
 
     def eval_holdout_tree(model):
         """Train on tuning aggregate, evaluate on holdout aggregate for unbiased RMSE."""
-        train_agg = process_dataset(tuning_data, bins, variables, indicators, target_var, multiplier, variables, z_threshold)
-        test_agg = process_dataset(holdout_data, bins, variables, indicators, target_var, multiplier, variables, z_threshold)
+        train_agg = process_dataset(
+            tuning_data, bins, variables, indicators, target_var, multiplier, variables, z_threshold
+        )
+        test_agg = process_dataset(
+            holdout_data, bins, variables, indicators, target_var, multiplier, variables, z_threshold
+        )
         if len(test_agg) < 3 or len(train_agg) < 3:
             return None
         X_train, y_train = train_agg[variables], train_agg[target_var]
@@ -184,12 +186,13 @@ def tune_tree_models(
         if holdout_rmse is not None:
             xgb_mean, xgb_std = holdout_rmse, 0.0
             logger.info(
-                f"Best XGBoost: inner CV RMSE={study_xgb.best_value:.4f}, "
-                f"holdout RMSE={holdout_rmse:.4f} (unbiased)"
+                f"Best XGBoost: inner CV RMSE={study_xgb.best_value:.4f}, holdout RMSE={holdout_rmse:.4f} (unbiased)"
             )
         else:
             xgb_mean, xgb_std = eval_model(xgb_model, raw_data, cv_folds, fresh_seed)
-            logger.info(f"Best XGBoost CV RMSE: {xgb_mean:.4f} ± {xgb_std:.4f} (holdout too small, fresh-seed fallback)")
+            logger.info(
+                f"Best XGBoost CV RMSE: {xgb_mean:.4f} ± {xgb_std:.4f} (holdout too small, fresh-seed fallback)"
+            )
     else:
         xgb_mean, xgb_std = eval_model(xgb_model, raw_data, cv_folds, fresh_seed)
         logger.info(f"Best XGBoost CV RMSE: {xgb_mean:.4f} ± {xgb_std:.4f} (fresh-seed, dataset < 200 rows)")
@@ -228,12 +231,13 @@ def tune_tree_models(
         if holdout_rmse is not None:
             lgb_mean, lgb_std = holdout_rmse, 0.0
             logger.info(
-                f"Best LightGBM: inner CV RMSE={study_lgb.best_value:.4f}, "
-                f"holdout RMSE={holdout_rmse:.4f} (unbiased)"
+                f"Best LightGBM: inner CV RMSE={study_lgb.best_value:.4f}, holdout RMSE={holdout_rmse:.4f} (unbiased)"
             )
         else:
             lgb_mean, lgb_std = eval_model(lgb_model, raw_data, cv_folds, fresh_seed)
-            logger.info(f"Best LightGBM CV RMSE: {lgb_mean:.4f} ± {lgb_std:.4f} (holdout too small, fresh-seed fallback)")
+            logger.info(
+                f"Best LightGBM CV RMSE: {lgb_mean:.4f} ± {lgb_std:.4f} (holdout too small, fresh-seed fallback)"
+            )
     else:
         lgb_mean, lgb_std = eval_model(lgb_model, raw_data, cv_folds, fresh_seed)
         logger.info(f"Best LightGBM CV RMSE: {lgb_mean:.4f} ± {lgb_std:.4f} (fresh-seed, dataset < 200 rows)")
@@ -353,8 +357,12 @@ def tune_linear_models(
         if holdout_data is None:
             return None
         try:
-            train_agg = process_dataset(tuning_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold)
-            test_agg = process_dataset(holdout_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold)
+            train_agg = process_dataset(
+                tuning_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold
+            )
+            test_agg = process_dataset(
+                holdout_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold
+            )
             if len(test_agg) < 3 or len(train_agg) < 3:
                 return None
             m = sklearn_clone(model)

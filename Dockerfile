@@ -5,8 +5,13 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install system dependencies (if any specific ones are needed for sas7bdat or others)
-# RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
+# Install system dependencies.
+# - libgomp1 is required by lightgbm (OpenMP runtime); python:3.12-slim does
+#   not include it, and the CI Docker test job was failing with
+#   `OSError: libgomp.so.1: cannot open shared object file` prior to this.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv

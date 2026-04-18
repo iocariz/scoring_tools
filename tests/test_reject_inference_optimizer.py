@@ -339,7 +339,9 @@ class TestCalibrationRobustness:
                 "acceptance_rate": [0.6],
             }
         )
-        err = _compute_calibration_error(merged, acceptance_rates, ["var0", "var1"], multiplier=7.0, calibration_gamma=1.0)
+        err = _compute_calibration_error(
+            merged, acceptance_rates, ["var0", "var1"], multiplier=7.0, calibration_gamma=1.0
+        )
         assert np.isfinite(err)
 
     def test_select_best_ignores_non_finite_calibration_error(self):

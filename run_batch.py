@@ -411,10 +411,7 @@ def run_segment_pipeline(
             for var_name, edges in ss_edges.items():
                 if var_name in bins_section:
                     bins_section[var_name]["bin_edges"] = edges
-                    logger.info(
-                        f"Using supersegment '{reporting_ss}' bin edges for '{var_name}' "
-                        f"(overriding global)"
-                    )
+                    logger.info(f"Using supersegment '{reporting_ss}' bin edges for '{var_name}' (overriding global)")
 
     logger.info(f"Segment filter: {merged_config.get('segment_filter')}")
     logger.info(f"Optimum risk: {merged_config.get('optimum_risk')}")
@@ -821,9 +818,7 @@ def run_segments_sequential(
             if constraint_source:
                 # Skip segment if its constraint source failed
                 if constraint_source in results and not results[constraint_source]:
-                    logger.error(
-                        f"[{segment_name}] Skipping: constraint source '{constraint_source}' failed"
-                    )
+                    logger.error(f"[{segment_name}] Skipping: constraint source '{constraint_source}' failed")
                     results[segment_name] = False
                     seg_progress.set_postfix_str(f"{segment_name} ✗ (dep failed)", refresh=True)
                     continue
@@ -831,10 +826,7 @@ def run_segments_sequential(
                 floor_path = Path(output_base) / constraint_source / "data" / "accepted_cells_base.csv"
                 if floor_path.exists():
                     floor_cells_path = str(floor_path.resolve())
-                    logger.info(
-                        f"[{segment_name}] Using {direction} constraint from "
-                        f"segment '{constraint_source}'"
-                    )
+                    logger.info(f"[{segment_name}] Using {direction} constraint from segment '{constraint_source}'")
                 else:
                     logger.warning(
                         f"[{segment_name}] Constraint source '{constraint_source}' "
@@ -979,8 +971,7 @@ def run_segments_parallel(
 
     if constrained:
         logger.info(
-            f"Segments with cutoff_floor_segment will run sequentially after parallel batch: "
-            f"{list(constrained.keys())}"
+            f"Segments with cutoff_floor_segment will run sequentially after parallel batch: {list(constrained.keys())}"
         )
 
     if unconstrained:
@@ -1073,19 +1064,14 @@ def run_segments_parallel(
             if constraint_source:
                 # Skip segment if its constraint source failed
                 if constraint_source in results and not results[constraint_source]:
-                    logger.error(
-                        f"[{segment_name}] Skipping: constraint source '{constraint_source}' failed"
-                    )
+                    logger.error(f"[{segment_name}] Skipping: constraint source '{constraint_source}' failed")
                     results[segment_name] = False
                     continue
 
                 floor_path = Path(output_base) / constraint_source / "data" / "accepted_cells_base.csv"
                 if floor_path.exists():
                     floor_cells_path = str(floor_path.resolve())
-                    logger.info(
-                        f"[{segment_name}] Using {direction} constraint from "
-                        f"segment '{constraint_source}'"
-                    )
+                    logger.info(f"[{segment_name}] Using {direction} constraint from segment '{constraint_source}'")
                 else:
                     logger.warning(
                         f"[{segment_name}] Constraint source '{constraint_source}' "
@@ -1265,11 +1251,13 @@ def main():
     )
     parser.add_argument("--training-only", action="store_true", help="Only run data quality and training")
     parser.add_argument(
-        "--baseline", action="store_true",
+        "--baseline",
+        action="store_true",
         help="Baseline mode: show current portfolio as-is (no cutoff optimization).",
     )
     parser.add_argument(
-        "--base-only", action="store_true",
+        "--base-only",
+        action="store_true",
         help="Run only the base scenario (skip pessimistic and optimistic).",
     )
     parser.add_argument(
