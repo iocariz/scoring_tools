@@ -10,7 +10,7 @@ Key improvements:
 
 # Standard library imports
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 
 # Third-party imports
 import joblib
@@ -1758,10 +1758,10 @@ def run_optimization_pipeline(
     variables: list[str],
     annual_coef: float,
     b2_output_path: str = "images/b2_ever_h6_vs_octroi_and_risk_score.html",
-    reject_inference_method: str = "none",
+    reject_inference_method: Literal["none", "parceling"] = "none",
     reject_uplift_factor: float = 1.5,
     reject_max_risk_multiplier: float = 3.0,
-    reject_parceling_method: str = "linear",
+    reject_parceling_method: Literal["linear", "power", "sigmoid"] = "linear",
     reject_bayesian_smoothing: bool = False,
     reject_bayesian_prior_strength: float = 10.0,
     reject_enforce_monotonicity: bool = False,
@@ -1839,6 +1839,20 @@ def run_optimization_pipeline(
     # Apply reject inference adjustment (after stressor, before tasa_fin)
     if reject_inference_method != "none":
         from src.reject_inference import apply_reject_inference
+
+        # Runtime validation of Literal-typed params (todo #52). Pydantic
+        # validates these when loaded from config.toml, but direct callers
+        # (tests, ad-hoc scripts) can still pass arbitrary strings.
+        _allowed_methods = get_args(Literal["none", "parceling"])
+        _allowed_parceling = get_args(Literal["linear", "power", "sigmoid"])
+        if reject_inference_method not in _allowed_methods:
+            raise ValueError(
+                f"reject_inference_method must be one of {_allowed_methods}, got {reject_inference_method!r}"
+            )
+        if reject_parceling_method not in _allowed_parceling:
+            raise ValueError(
+                f"reject_parceling_method must be one of {_allowed_parceling}, got {reject_parceling_method!r}"
+            )
 
         data_sumary_desagregado_repesca = apply_reject_inference(
             repesca_summary=data_sumary_desagregado_repesca,

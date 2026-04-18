@@ -24,6 +24,7 @@ apply_parceling_adjustment -> apply tasa_fin -> merge -> CellGrid -> MILP solve 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal, get_args
 
 import numpy as np
 import pandas as pd
@@ -33,6 +34,8 @@ from src.constants import DEFAULT_RANDOM_STATE, Suffixes
 from src.optimization_utils import CellGrid, evaluate_solution, milp_solve_cutoffs
 from src.reject_inference import apply_parceling_adjustment
 from src.utils import calculate_b2_ever_h6
+
+ParcelingMethod = Literal["linear", "power", "sigmoid"]
 
 
 @dataclass
@@ -47,11 +50,23 @@ class OptimizerInputs:
     indicators: list[str]
     inv_vars: list[str] = field(default_factory=list)
     multiplier: float = 7.0
-    parceling_method: str = "linear"
+    parceling_method: ParcelingMethod = "linear"
     calibration_gamma: float = 1.0
     per_bin_tasa_fin: pd.DataFrame | None = None
     enforce_monotonicity: bool = False
     apply_h3_multiplier: bool = False
+
+    def __post_init__(self) -> None:
+        """Runtime validation of Literal-typed fields (todo #52).
+
+        Python does not enforce Literal at construction time; callers that
+        bypass Pydantic (tests, ad-hoc scripts) can still pass arbitrary
+        strings. Fail loudly here rather than silently mis-dispatching in
+        apply_parceling_adjustment.
+        """
+        allowed = get_args(ParcelingMethod)
+        if self.parceling_method not in allowed:
+            raise ValueError(f"parceling_method must be one of {allowed}, got {self.parceling_method!r}")
 
 
 def _compute_calibration_error(
