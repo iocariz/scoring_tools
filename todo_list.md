@@ -215,7 +215,7 @@ Unresolved items from the methodological, statistical, and code review. Organize
     - `src/optuna_tuning.py` 33%
     **Fix:** Scenario tests for `run_optimization_phase` on small synthetic grids (mock MILP solver); parametrized TOML edge-case tests for `config_loader.py`.
 
-59. **CI does not enforce coverage gate** (`.github/workflows/ci.yml`, 65, 74) — No `--cov-fail-under=80` on pytest; `fail_ci_if_error: false` suppresses Codecov failures. The 80% project target is not enforced. **Fix:** `pytest --cov=src --cov-fail-under=80`; flip Codecov flag.
+59. **CI does not enforce coverage gate** (`.github/workflows/ci.yml`, 65, 74) — No `--cov-fail-under=80` on pytest; `fail_ci_if_error: false` suppresses Codecov failures. The 80% project target is not enforced. **Fix:** `pytest --cov=src --cov-fail-under=80`; flip Codecov flag. **Partially fixed in R1:** gate set to `--cov-fail-under=60` (baseline was 62%). Ratchet upward as R2 decomposition + R3 add tests. `fail_ci_if_error` still `false` with a comment noting when to flip (once Codecov upload is reliably green on main).
 
 ### MEDIUM
 
