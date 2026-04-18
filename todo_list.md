@@ -50,7 +50,7 @@ Unresolved items from the methodological, statistical, and code review. Organize
 
 84. **NaN source values silently dropped in `pd.cut` binning** (`src/preprocess_improved.py`, ~589–591, around the cut call) — `-inf`-bounded bins catch `−∞` but not NaN; NaN rows stay NaN after cut and are excised downstream without a drop-count log. Survivorship bias when missingness is non-random. **Fix:** explicit NaN-bin assignment or fail-loud count + threshold guard.
 
-86. **Audit validation silently returns `None` on missing reference rows** (`src/audit.py`, 511–512) — When expected Swap-in/Swap-out rows are missing from the summary table, `validate_audit_against_summary` returns `None`, which downstream callers treat as not-failed. A malformed summary passes validation. Methodological complement to type-safety item #54. **Fix:** raise on precondition failure or return `False`; add `pd.isna` check on `values[0]` before equality comparison.
+86. ~~**Audit validation silently returns `None` on missing reference rows** (`src/audit.py`, 511–512) — When expected Swap-in/Swap-out rows are missing from the summary table, `validate_audit_against_summary` returns `None`, which downstream callers treat as not-failed. A malformed summary passes validation. Methodological complement to type-safety item #54. **Fix:** raise on precondition failure or return `False`; add `pd.isna` check on `values[0]` before equality comparison.~~ **Fixed jointly with #54:** missing rows and NaN reference values now both log a warning and return `False`. Single path for "could not validate" vs "validation disagreed" is the log record — return type is now unambiguously `bool`.
 
 ### LOW
 
@@ -68,7 +68,7 @@ Unresolved items from the methodological, statistical, and code review. Organize
 
 53. **`base_path: str` reassigned to `Path`** (`src/persistence.py`, 23, 37–44) — Signature lies; mypy reports `"str".mkdir`. **Fix:** `base_path: str | Path = "models"` and use a single local `path = Path(base_path)`.
 
-54. **`bool | None` return with missing return** (`src/audit.py`, 470–528) — `validate_audit_against_summary` declares `-> bool | None`, mypy flags missing return at 470, callers treat as `bool`. **Fix:** Return `False` (or raise) on missing-column precondition; tighten signature to `-> bool`.
+54. ~~**`bool | None` return with missing return** (`src/audit.py`, 470–528) — `validate_audit_against_summary` declares `-> bool | None`, mypy flags missing return at 470, callers treat as `bool`. **Fix:** Return `False` (or raise) on missing-column precondition; tighten signature to `-> bool`.~~ **Fixed:** Signature tightened to `-> bool`. Every precondition failure (missing Metric column, empty Swap-in / Swap-out rows, NaN reference values) now logs a warning and returns `False` explicitly — no path falls through to an implicit `None`. Jointly fixes #86 (same function's silent-pass-on-missing-rows behaviour).
 
 55. **`union-attr` runtime risk on `calculate_b2_ever_h6`** (`src/optimization_utils.py`, 1763–1798; `src/mr_pipeline.py`, 1044–1077; `src/preprocess_improved.py`, 1042–1048; `src/plots.py`, 1960–1961; `src/inference_optimized.py`, 142) — Returns `Series | float`; callers do `.isna()/.fillna()/.values` without narrowing → `AttributeError` on scalar inputs. **Fix:** Always return `pd.Series` (wrap scalars) or narrow at every call site.
 
