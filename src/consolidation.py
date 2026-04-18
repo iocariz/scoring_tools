@@ -2507,6 +2507,91 @@ def _write_classification_grid(ws, grid_data, start_row, is_mr=False):
     return vol_chart_row + 20
 
 
+# =============================================================================
+# Small data-transform helpers (R2b todo #57 step 5)
+# =============================================================================
+# Pure/near-pure helpers extracted from export_consolidated_excel body. They
+# reference only module-level utilities (_sort_consolidated_rows,
+# _display_group_name) and pandas primitives.
+
+
+def _append_summary_row_if_missing(df_tbl: pd.DataFrame) -> pd.DataFrame:
+    if df_tbl.empty or "Metric" not in df_tbl.columns:
+        return df_tbl
+    if df_tbl["Metric"].astype(str).str.strip().str.lower().eq("summary").any():
+        return df_tbl
+    actual = df_tbl[df_tbl["Metric"] == "Actual"]
+    optimum = df_tbl[df_tbl["Metric"] == "Optimum selected"]
+    if actual.empty or optimum.empty:
+        return df_tbl
+    summary = dict.fromkeys(df_tbl.columns, np.nan)
+    summary["Metric"] = "Summary"
+    for c in ("Risk (%)", "Production (€)", "Production (%)"):
+        if c in df_tbl.columns:
+            a = actual.iloc[0].get(c)
+            o = optimum.iloc[0].get(c)
+            if pd.notna(a) and pd.notna(o):
+                summary[c] = o - a
+    for c in ("production_ci_lower", "production_ci_upper", "risk_ci_lower", "risk_ci_upper"):
+        if c in df_tbl.columns:
+            summary[c] = np.nan
+    return pd.concat([df_tbl, pd.DataFrame([summary])], ignore_index=True)
+
+
+def _prepare_export_df(source_df, cols):
+    if source_df.empty:
+        return source_df.copy()
+
+    export_df = source_df.copy()
+    if {"group", "period", "scenario"}.issubset(export_df.columns):
+        export_df = _sort_consolidated_rows(export_df)
+    export_df = export_df[[c for c in cols if c in export_df.columns]].copy()
+    if "group" in export_df.columns:
+        export_df["group"] = export_df["group"].map(_display_group_name)
+    if "period" in export_df.columns:
+        export_df["period"] = export_df["period"].astype(str).str.upper()
+    if "scenario" in export_df.columns:
+        export_df["scenario"] = export_df["scenario"].astype(str).str.title()
+    return export_df
+
+
+def _build_top_movers_df(source_df, *, period: str) -> pd.DataFrame:
+    movers = source_df.copy()
+    if movers.empty:
+        return movers
+
+    if "scenario" in movers.columns:
+        movers = movers[movers["scenario"] == "base"]
+    if "period" in movers.columns:
+        movers = movers[movers["period"] == period]
+    movers = movers[~(movers["group"].eq("TOTAL") | movers["group"].astype(str).str.startswith("supersegment_"))]
+    if movers.empty:
+        return movers
+
+    sort_cols = [c for c in ["production_delta", "risk_delta_pct"] if c in movers.columns]
+    ascending = [c != "production_delta" for c in sort_cols]
+    if sort_cols:
+        movers = movers.sort_values(sort_cols, ascending=ascending)
+    movers = movers.head(8)
+    movers = movers[
+        [
+            c
+            for c in [
+                "group",
+                "optimum_production",
+                "production_delta",
+                "production_delta_pct",
+                "optimum_risk_pct",
+                "risk_delta_pct",
+                "optimum_rejection_rate_pct",
+            ]
+            if c in movers.columns
+        ]
+    ].copy()
+    movers["group"] = movers["group"].map(_display_group_name)
+    return movers
+
+
 def export_consolidated_excel(
     consolidated_df: pd.DataFrame,
     output_base: str | Path,
@@ -2558,28 +2643,6 @@ def export_consolidated_excel(
 
     # _write_rp_sheet and _write_classification_grid are now module-level
     # helpers (R2b todo #57 step 4).
-
-    def _append_summary_row_if_missing(df_tbl: pd.DataFrame) -> pd.DataFrame:
-        if df_tbl.empty or "Metric" not in df_tbl.columns:
-            return df_tbl
-        if df_tbl["Metric"].astype(str).str.strip().str.lower().eq("summary").any():
-            return df_tbl
-        actual = df_tbl[df_tbl["Metric"] == "Actual"]
-        optimum = df_tbl[df_tbl["Metric"] == "Optimum selected"]
-        if actual.empty or optimum.empty:
-            return df_tbl
-        summary = dict.fromkeys(df_tbl.columns, np.nan)
-        summary["Metric"] = "Summary"
-        for c in ("Risk (%)", "Production (€)", "Production (%)"):
-            if c in df_tbl.columns:
-                a = actual.iloc[0].get(c)
-                o = optimum.iloc[0].get(c)
-                if pd.notna(a) and pd.notna(o):
-                    summary[c] = o - a
-        for c in ("production_ci_lower", "production_ci_upper", "risk_ci_lower", "risk_ci_upper"):
-            if c in df_tbl.columns:
-                summary[c] = np.nan
-        return pd.concat([df_tbl, pd.DataFrame([summary])], ignore_index=True)
 
     def _load_segment_settings(seg_name_local: str) -> dict[str, Any]:
         """Load multiplier, multiplier_h3, inv_vars, baseline_mode from the segment's saved config."""
@@ -3320,58 +3383,6 @@ def export_consolidated_excel(
             c.border = _BORDER_GRID
 
         return legend_row + 2
-
-    def _prepare_export_df(source_df, cols):
-        if source_df.empty:
-            return source_df.copy()
-
-        export_df = source_df.copy()
-        if {"group", "period", "scenario"}.issubset(export_df.columns):
-            export_df = _sort_consolidated_rows(export_df)
-        export_df = export_df[[c for c in cols if c in export_df.columns]].copy()
-        if "group" in export_df.columns:
-            export_df["group"] = export_df["group"].map(_display_group_name)
-        if "period" in export_df.columns:
-            export_df["period"] = export_df["period"].astype(str).str.upper()
-        if "scenario" in export_df.columns:
-            export_df["scenario"] = export_df["scenario"].astype(str).str.title()
-        return export_df
-
-    def _build_top_movers_df(source_df, *, period: str) -> pd.DataFrame:
-        movers = source_df.copy()
-        if movers.empty:
-            return movers
-
-        if "scenario" in movers.columns:
-            movers = movers[movers["scenario"] == "base"]
-        if "period" in movers.columns:
-            movers = movers[movers["period"] == period]
-        movers = movers[~(movers["group"].eq("TOTAL") | movers["group"].astype(str).str.startswith("supersegment_"))]
-        if movers.empty:
-            return movers
-
-        sort_cols = [c for c in ["production_delta", "risk_delta_pct"] if c in movers.columns]
-        ascending = [c != "production_delta" for c in sort_cols]
-        if sort_cols:
-            movers = movers.sort_values(sort_cols, ascending=ascending)
-        movers = movers.head(8)
-        movers = movers[
-            [
-                c
-                for c in [
-                    "group",
-                    "optimum_production",
-                    "production_delta",
-                    "production_delta_pct",
-                    "optimum_risk_pct",
-                    "risk_delta_pct",
-                    "optimum_rejection_rate_pct",
-                ]
-                if c in movers.columns
-            ]
-        ].copy()
-        movers["group"] = movers["group"].map(_display_group_name)
-        return movers
 
     def _get_total_row(period: str, scenario: str = "base"):
         mask = (
