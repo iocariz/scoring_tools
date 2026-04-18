@@ -1686,6 +1686,231 @@ def generate_consolidation_report(
     return df, fig
 
 
+# =============================================================================
+# Excel-export design tokens + column classifications (R2b todo #57)
+# =============================================================================
+# Extracted from the body of `export_consolidated_excel` so the function
+# stops being a 2000-line monolith. These constants are referenced by the
+# nested sheet-builder helpers still inside the function; they are not
+# intended for external import (all prefixed with `_`). Module-level
+# placement makes them (a) easy to inspect in one block and (b) available
+# to future module-level helpers extracted from the function body.
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side  # noqa: E402
+
+# ----- Core brand colors -----
+_CLR_PRIMARY = "1B2A4A"  # Deep navy — titles, header bg
+_CLR_PRIMARY_LIGHT = "34495E"  # Lighter navy — secondary headers
+_CLR_ACCENT = "2980B9"  # Cerulean blue — KPI accents, links
+_CLR_ACCENT_LIGHT = "D6EAF8"  # Pale blue — KPI card bg
+_CLR_WHITE = "FFFFFF"
+
+# ----- Semantic colors -----
+_CLR_GOOD = "1ABC9C"  # Teal-green — softer than pure green
+_CLR_GOOD_LIGHT = "D1F2EB"  # Pale teal — TOTAL row bg
+_CLR_GOOD_DARK = "0E6655"  # Dark teal — TOTAL row text
+_CLR_BAD = "E74C3C"  # Warm red — risk / negative deltas
+_CLR_BAD_LIGHT = "FDEDEC"  # Pale pink — reject cell tint
+_CLR_WARN = "F39C12"  # Amber — cutoff tab, warnings
+_CLR_MR_BG = "FEF5E7"  # Warm cream — MR KPI tint
+_CLR_MR_FG = "CA6F1E"  # Dark amber — MR labels
+
+# ----- Neutral palette -----
+_CLR_NEUTRAL_LIGHT = "F8F9FA"  # Near-white stripe
+_CLR_NEUTRAL = "DEE2E6"  # Soft grey — table borders
+_CLR_NEUTRAL_MID = "AEB6BF"  # Mid grey — subtle text
+_CLR_TEXT = "2C3E50"  # Dark grey — body text
+
+# ----- Acceptance grid tones -----
+_CLR_GRID_ACCEPT = "58D68D"  # Soft green
+_CLR_GRID_REJECT = "EC7063"  # Soft red-coral
+_CLR_GRID_NA = "D5DBDB"  # Light warm grey
+_CLR_GRID_HDR = "2C3E50"  # Dark header for contrast
+
+# ----- Section styling -----
+_CLR_SECTION_BG = "EBF5FB"  # Pale blue — section header bg
+_CLR_SECTION_BAR = "2980B9"  # Accent bar
+
+# ----- Row highlights — RP sheets -----
+_CLR_OPTIMUM_BG = "D4EFDF"  # Pale green — Optimum selected row
+_CLR_OPTIMUM_FG = "1E8449"  # Dark green — Optimum selected text
+_CLR_SUMMARY_BG = "D6EAF8"  # Pale blue — Summary / delta row
+_CLR_SUMMARY_FG = "1B4F72"  # Dark blue — Summary text
+
+# ----- Sheet-tab colours -----
+_CLR_TAB_EXEC = "2980B9"
+_CLR_TAB_PORTFOLIO = "1B2A4A"
+_CLR_TAB_SEGMENT = "5DADE2"
+_CLR_TAB_SEGMENT_MR = "F39C12"
+_CLR_TAB_CUTOFF = "F39C12"
+_CLR_TAB_GRID = "1ABC9C"
+
+# ----- Fonts -----
+_FN = "Calibri"
+_FONT_TITLE = Font(bold=True, color=_CLR_PRIMARY, size=20, name=_FN)
+_FONT_SUBTITLE = Font(bold=False, color=_CLR_NEUTRAL_MID, size=11, name=_FN)
+_FONT_SECTION = Font(bold=True, color=_CLR_PRIMARY, size=12, name=_FN)
+_FONT_KPI_VALUE = Font(bold=True, color=_CLR_PRIMARY, size=24, name=_FN)
+_FONT_KPI_LABEL = Font(bold=False, color=_CLR_NEUTRAL_MID, size=9, name=_FN)
+_FONT_KPI_DELTA_POS = Font(bold=True, color=_CLR_GOOD, size=12, name=_FN)
+_FONT_KPI_DELTA_NEG = Font(bold=True, color=_CLR_BAD, size=12, name=_FN)
+_FONT_HEADER = Font(bold=True, color=_CLR_WHITE, size=10, name=_FN)
+_FONT_DATA = Font(color=_CLR_TEXT, size=10, name=_FN)
+_FONT_TOTAL = Font(bold=True, color=_CLR_GOOD_DARK, size=10, name=_FN)
+_FONT_MR_LABEL = Font(bold=True, color=_CLR_MR_FG, size=11, name=_FN)
+_FONT_GRID_LABEL = Font(bold=True, color=_CLR_PRIMARY, size=9, name=_FN)
+_FONT_GRID_CELL = Font(bold=True, color=_CLR_WHITE, size=11, name=_FN)
+_FONT_GRID_HEADER = Font(bold=True, color=_CLR_WHITE, size=9, name=_FN)
+
+# ----- Fills -----
+_FILL_HEADER = PatternFill(start_color=_CLR_PRIMARY, end_color=_CLR_PRIMARY, fill_type="solid")
+_FILL_STRIPE = PatternFill(start_color=_CLR_NEUTRAL_LIGHT, end_color=_CLR_NEUTRAL_LIGHT, fill_type="solid")
+_FILL_TOTAL = PatternFill(start_color=_CLR_GOOD_LIGHT, end_color=_CLR_GOOD_LIGHT, fill_type="solid")
+_FILL_KPI = PatternFill(start_color=_CLR_ACCENT_LIGHT, end_color=_CLR_ACCENT_LIGHT, fill_type="solid")
+_FILL_MR = PatternFill(start_color=_CLR_MR_BG, end_color=_CLR_MR_BG, fill_type="solid")
+_FILL_SECTION = PatternFill(start_color=_CLR_SECTION_BG, end_color=_CLR_SECTION_BG, fill_type="solid")
+_FILL_ACCEPT = PatternFill(start_color=_CLR_GRID_ACCEPT, end_color=_CLR_GRID_ACCEPT, fill_type="solid")
+_FILL_REJECT = PatternFill(start_color=_CLR_GRID_REJECT, end_color=_CLR_GRID_REJECT, fill_type="solid")
+_FILL_NA = PatternFill(start_color=_CLR_GRID_NA, end_color=_CLR_GRID_NA, fill_type="solid")
+_FILL_GRID_HEADER = PatternFill(start_color=_CLR_GRID_HDR, end_color=_CLR_GRID_HDR, fill_type="solid")
+_FILL_OPTIMUM = PatternFill(start_color=_CLR_OPTIMUM_BG, end_color=_CLR_OPTIMUM_BG, fill_type="solid")
+_FILL_SUMMARY = PatternFill(start_color=_CLR_SUMMARY_BG, end_color=_CLR_SUMMARY_BG, fill_type="solid")
+
+# Row-highlight fonts (depend on colors above — must appear after them)
+_FONT_OPTIMUM = Font(bold=True, color=_CLR_OPTIMUM_FG, size=10, name=_FN)
+_FONT_SUMMARY = Font(bold=True, color=_CLR_SUMMARY_FG, size=10, name=_FN)
+
+# ----- Borders -----
+_THIN = Side(style="thin", color=_CLR_NEUTRAL)
+_HAIR = Side(style="hair", color=_CLR_NEUTRAL)
+_BORDER_ALL = Border(top=_HAIR, bottom=_HAIR, left=_HAIR, right=_HAIR)
+_BORDER_HEADER = Border(
+    top=Side(style="thin", color=_CLR_PRIMARY),
+    bottom=Side(style="medium", color=_CLR_ACCENT),
+    left=_HAIR,
+    right=_HAIR,
+)
+_BORDER_BOTTOM = Border(bottom=Side(style="medium", color=_CLR_ACCENT))
+_ACCENT_LEFT = Border(
+    left=Side(style="thick", color=_CLR_ACCENT),
+    top=_HAIR,
+    bottom=_HAIR,
+    right=_HAIR,
+)
+_SECTION_LEFT = Border(left=Side(style="thick", color=_CLR_SECTION_BAR))
+_BORDER_GRID = Border(
+    top=Side(style="medium", color=_CLR_WHITE),
+    bottom=Side(style="medium", color=_CLR_WHITE),
+    left=Side(style="medium", color=_CLR_WHITE),
+    right=Side(style="medium", color=_CLR_WHITE),
+)
+
+# ----- Alignment -----
+_ALIGN_CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
+_ALIGN_LEFT = Alignment(horizontal="left", vertical="center")
+_ALIGN_RIGHT = Alignment(horizontal="right", vertical="center")
+
+
+# =============================================================================
+# Column classifications for Excel formatting
+# =============================================================================
+_CURRENCY_COLS = {
+    "actual_production",
+    "optimum_production",
+    "swap_in_production",
+    "swap_out_production",
+    "production_delta",
+    "production_ci_lower",
+    "production_ci_upper",
+    "total_demand",
+    "Production (€)",
+    "Total Demand (€)",
+}
+_PCT_COLS = {
+    "actual_risk_pct",
+    "optimum_risk_pct",
+    "swap_in_risk_pct",
+    "swap_out_risk_pct",
+    "production_delta_pct",
+    "risk_delta_pct",
+    "risk_ci_lower",
+    "risk_ci_upper",
+    "actual_rejection_rate_pct",
+    "optimum_rejection_rate_pct",
+    "actual_risk_h3_pct",
+    "optimum_risk_h3_pct",
+    "swap_in_risk_h3_pct",
+    "swap_out_risk_h3_pct",
+    "Risk (%)",
+    "Risk H3 (%)",
+    "Production (%)",
+    "Rejection Rate (%)",
+}
+_INTEGER_COLS = {
+    "n_segments",
+    "actual_todu_30ever_h6",
+    "actual_todu_amt_pile_h6",
+    "optimum_todu_30ever_h6",
+    "optimum_todu_amt_pile_h6",
+    "swap_in_todu_30ever_h6",
+    "swap_in_todu_amt_pile_h6",
+    "swap_out_todu_30ever_h6",
+    "swap_out_todu_amt_pile_h6",
+    "actual_todu_30ever_h3",
+    "actual_todu_amt_pile_h3",
+    "optimum_todu_30ever_h3",
+    "optimum_todu_amt_pile_h3",
+    "swap_in_todu_30ever_h3",
+    "swap_in_todu_amt_pile_h3",
+    "swap_out_todu_30ever_h3",
+    "swap_out_todu_amt_pile_h3",
+}
+_TEXT_COLS = {"group", "period", "scenario", "segments", "Metric", "segment"}
+_DELTA_COLS = {"production_delta", "production_delta_pct", "risk_delta_pct"}
+_CUTOFF_FIXED_COLS = frozenset(
+    {
+        "accepted",
+        "segment",
+        "scenario",
+        "risk_pct",
+        "production",
+        "production_ci_lower",
+        "production_ci_upper",
+        "risk_ci_lower",
+        "risk_ci_upper",
+    }
+)
+
+_COLUMN_LABELS = {
+    "group": "Group",
+    "period": "Period",
+    "scenario": "Scenario",
+    "n_segments": "# Segments",
+    "segments": "Segments",
+    "actual_production": "Actual Production (€)",
+    "actual_risk_pct": "Actual Risk (%)",
+    "optimum_production": "Optimum Production (€)",
+    "optimum_risk_pct": "Optimum Risk (%)",
+    "production_delta": "Production Delta (€)",
+    "production_delta_pct": "Production Delta (%)",
+    "risk_delta_pct": "Risk Delta (%)",
+    "swap_in_production": "Swap-In Production (€)",
+    "swap_in_risk_pct": "Swap-In Risk (%)",
+    "swap_out_production": "Swap-Out Production (€)",
+    "swap_out_risk_pct": "Swap-Out Risk (%)",
+    "total_demand": "Total Demand (€)",
+    "actual_rejection_rate_pct": "Actual Rejection Rate (%)",
+    "optimum_rejection_rate_pct": "Optimum Rejection Rate (%)",
+    "actual_risk_h3_pct": "Actual Risk H3 (%)",
+    "optimum_risk_h3_pct": "Optimum Risk H3 (%)",
+    "swap_in_risk_h3_pct": "Swap-In Risk H3 (%)",
+    "swap_out_risk_h3_pct": "Swap-Out Risk H3 (%)",
+    "production_ci_lower": "Production CI Lower (€)",
+    "production_ci_upper": "Production CI Upper (€)",
+    "risk_ci_lower": "Risk CI Lower (%)",
+    "risk_ci_upper": "Risk CI Upper (%)",
+}
+
+
 def export_consolidated_excel(
     consolidated_df: pd.DataFrame,
     output_base: str | Path,
@@ -1714,229 +1939,19 @@ def export_consolidated_excel(
     from datetime import date
 
     from openpyxl.chart import BarChart, Reference
-    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
+
+    # openpyxl.styles (Alignment, Border, Font, PatternFill, Side) are
+    # imported at module level — used by the design-token constants above.
 
     output_base = Path(output_base)
     supersegments = supersegments or {}
     xlsx_path = output_base / "consolidated_risk_production.xlsx"
 
-    # =====================================================================
-    # Design tokens — modern, soft palette
-    # =====================================================================
-    # Core brand
-    _CLR_PRIMARY = "1B2A4A"  # Deep navy — titles, header bg
-    _CLR_PRIMARY_LIGHT = "34495E"  # Lighter navy — secondary headers
-    _CLR_ACCENT = "2980B9"  # Cerulean blue — KPI accents, links
-    _CLR_ACCENT_LIGHT = "D6EAF8"  # Pale blue — KPI card bg
-    _CLR_WHITE = "FFFFFF"
+    # Design tokens and column classifications are module-level constants
+    # (R2b todo #57 — extracted to slim down this 2000-line function).
+    # Nested helpers below reference them via lexical scoping.
 
-    # Semantic
-    _CLR_GOOD = "1ABC9C"  # Teal-green — softer than pure green
-    _CLR_GOOD_LIGHT = "D1F2EB"  # Pale teal — TOTAL row bg
-    _CLR_GOOD_DARK = "0E6655"  # Dark teal — TOTAL row text
-    _CLR_BAD = "E74C3C"  # Warm red — risk / negative deltas
-    _CLR_BAD_LIGHT = "FDEDEC"  # Pale pink — reject cell tint (unused as fill on its own)
-    _CLR_WARN = "F39C12"  # Amber — cutoff tab, warnings
-    _CLR_MR_BG = "FEF5E7"  # Warm cream — MR KPI tint
-    _CLR_MR_FG = "CA6F1E"  # Dark amber — MR labels
-
-    # Neutral
-    _CLR_NEUTRAL_LIGHT = "F8F9FA"  # Near-white stripe
-    _CLR_NEUTRAL = "DEE2E6"  # Soft grey — table borders
-    _CLR_NEUTRAL_MID = "AEB6BF"  # Mid grey — subtle text
-    _CLR_TEXT = "2C3E50"  # Dark grey — body text
-
-    # Acceptance grid (softer, desaturated tones)
-    _CLR_GRID_ACCEPT = "58D68D"  # Soft green
-    _CLR_GRID_REJECT = "EC7063"  # Soft red-coral
-    _CLR_GRID_NA = "D5DBDB"  # Light warm grey
-    _CLR_GRID_HDR = "2C3E50"  # Dark header for contrast
-
-    # Section
-    _CLR_SECTION_BG = "EBF5FB"  # Pale blue — section header bg
-    _CLR_SECTION_BAR = "2980B9"  # Accent bar
-
-    # Row highlight — RP sheets
-    _CLR_OPTIMUM_BG = "D4EFDF"  # Pale green — Optimum selected row
-    _CLR_OPTIMUM_FG = "1E8449"  # Dark green — Optimum selected text
-    _CLR_SUMMARY_BG = "D6EAF8"  # Pale blue — Summary / delta row
-    _CLR_SUMMARY_FG = "1B4F72"  # Dark blue — Summary text
-
-    # Sheet tab colours
-    _CLR_TAB_EXEC = "2980B9"
-    _CLR_TAB_PORTFOLIO = "1B2A4A"
-    _CLR_TAB_SEGMENT = "5DADE2"
-    _CLR_TAB_SEGMENT_MR = "F39C12"
-    _CLR_TAB_CUTOFF = "F39C12"
-    _CLR_TAB_GRID = "1ABC9C"
-
-    # ----- Fonts -----
-    _FN = "Calibri"
-    _FONT_TITLE = Font(bold=True, color=_CLR_PRIMARY, size=20, name=_FN)
-    _FONT_SUBTITLE = Font(bold=False, color=_CLR_NEUTRAL_MID, size=11, name=_FN)
-    _FONT_SECTION = Font(bold=True, color=_CLR_PRIMARY, size=12, name=_FN)
-    _FONT_KPI_VALUE = Font(bold=True, color=_CLR_PRIMARY, size=24, name=_FN)
-    _FONT_KPI_LABEL = Font(bold=False, color=_CLR_NEUTRAL_MID, size=9, name=_FN)
-    _FONT_KPI_DELTA_POS = Font(bold=True, color=_CLR_GOOD, size=12, name=_FN)
-    _FONT_KPI_DELTA_NEG = Font(bold=True, color=_CLR_BAD, size=12, name=_FN)
-    _FONT_HEADER = Font(bold=True, color=_CLR_WHITE, size=10, name=_FN)
-    _FONT_DATA = Font(color=_CLR_TEXT, size=10, name=_FN)
-    _FONT_TOTAL = Font(bold=True, color=_CLR_GOOD_DARK, size=10, name=_FN)
-    _FONT_MR_LABEL = Font(bold=True, color=_CLR_MR_FG, size=11, name=_FN)
-    _FONT_GRID_LABEL = Font(bold=True, color=_CLR_PRIMARY, size=9, name=_FN)
-    _FONT_GRID_CELL = Font(bold=True, color=_CLR_WHITE, size=11, name=_FN)
-    _FONT_GRID_HEADER = Font(bold=True, color=_CLR_WHITE, size=9, name=_FN)
-
-    # ----- Fills -----
-    _FILL_HEADER = PatternFill(start_color=_CLR_PRIMARY, end_color=_CLR_PRIMARY, fill_type="solid")
-    _FILL_STRIPE = PatternFill(start_color=_CLR_NEUTRAL_LIGHT, end_color=_CLR_NEUTRAL_LIGHT, fill_type="solid")
-    _FILL_TOTAL = PatternFill(start_color=_CLR_GOOD_LIGHT, end_color=_CLR_GOOD_LIGHT, fill_type="solid")
-    _FILL_KPI = PatternFill(start_color=_CLR_ACCENT_LIGHT, end_color=_CLR_ACCENT_LIGHT, fill_type="solid")
-    _FILL_MR = PatternFill(start_color=_CLR_MR_BG, end_color=_CLR_MR_BG, fill_type="solid")
-    _FILL_SECTION = PatternFill(start_color=_CLR_SECTION_BG, end_color=_CLR_SECTION_BG, fill_type="solid")
-    _FILL_ACCEPT = PatternFill(start_color=_CLR_GRID_ACCEPT, end_color=_CLR_GRID_ACCEPT, fill_type="solid")
-    _FILL_REJECT = PatternFill(start_color=_CLR_GRID_REJECT, end_color=_CLR_GRID_REJECT, fill_type="solid")
-    _FILL_NA = PatternFill(start_color=_CLR_GRID_NA, end_color=_CLR_GRID_NA, fill_type="solid")
-    _FILL_GRID_HEADER = PatternFill(start_color=_CLR_GRID_HDR, end_color=_CLR_GRID_HDR, fill_type="solid")
-    _FILL_OPTIMUM = PatternFill(start_color=_CLR_OPTIMUM_BG, end_color=_CLR_OPTIMUM_BG, fill_type="solid")
-    _FILL_SUMMARY = PatternFill(start_color=_CLR_SUMMARY_BG, end_color=_CLR_SUMMARY_BG, fill_type="solid")
-
-    # Row-highlight fonts
-    _FONT_OPTIMUM = Font(bold=True, color=_CLR_OPTIMUM_FG, size=10, name=_FN)
-    _FONT_SUMMARY = Font(bold=True, color=_CLR_SUMMARY_FG, size=10, name=_FN)
-
-    # ----- Borders -----
-    _THIN = Side(style="thin", color=_CLR_NEUTRAL)
-    _HAIR = Side(style="hair", color=_CLR_NEUTRAL)
-    _BORDER_ALL = Border(top=_HAIR, bottom=_HAIR, left=_HAIR, right=_HAIR)
-    _BORDER_HEADER = Border(
-        top=Side(style="thin", color=_CLR_PRIMARY),
-        bottom=Side(style="medium", color=_CLR_ACCENT),
-        left=_HAIR,
-        right=_HAIR,
-    )
-    _BORDER_BOTTOM = Border(bottom=Side(style="medium", color=_CLR_ACCENT))
-    _ACCENT_LEFT = Border(
-        left=Side(style="thick", color=_CLR_ACCENT),
-        top=_HAIR,
-        bottom=_HAIR,
-        right=_HAIR,
-    )
-    _SECTION_LEFT = Border(left=Side(style="thick", color=_CLR_SECTION_BAR))
-    _BORDER_GRID = Border(
-        top=Side(style="medium", color=_CLR_WHITE),
-        bottom=Side(style="medium", color=_CLR_WHITE),
-        left=Side(style="medium", color=_CLR_WHITE),
-        right=Side(style="medium", color=_CLR_WHITE),
-    )
-
-    # ----- Alignment -----
-    _ALIGN_CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    _ALIGN_LEFT = Alignment(horizontal="left", vertical="center")
-    _ALIGN_RIGHT = Alignment(horizontal="right", vertical="center")
-
-    # =====================================================================
-    # Column classification
-    # =====================================================================
-    _CURRENCY_COLS = {
-        "actual_production",
-        "optimum_production",
-        "swap_in_production",
-        "swap_out_production",
-        "production_delta",
-        "production_ci_lower",
-        "production_ci_upper",
-        "total_demand",
-        "Production (€)",
-        "Total Demand (€)",
-    }
-    _PCT_COLS = {
-        "actual_risk_pct",
-        "optimum_risk_pct",
-        "swap_in_risk_pct",
-        "swap_out_risk_pct",
-        "production_delta_pct",
-        "risk_delta_pct",
-        "risk_ci_lower",
-        "risk_ci_upper",
-        "actual_rejection_rate_pct",
-        "optimum_rejection_rate_pct",
-        "actual_risk_h3_pct",
-        "optimum_risk_h3_pct",
-        "swap_in_risk_h3_pct",
-        "swap_out_risk_h3_pct",
-        "Risk (%)",
-        "Risk H3 (%)",
-        "Production (%)",
-        "Rejection Rate (%)",
-    }
-    _INTEGER_COLS = {
-        "n_segments",
-        "actual_todu_30ever_h6",
-        "actual_todu_amt_pile_h6",
-        "optimum_todu_30ever_h6",
-        "optimum_todu_amt_pile_h6",
-        "swap_in_todu_30ever_h6",
-        "swap_in_todu_amt_pile_h6",
-        "swap_out_todu_30ever_h6",
-        "swap_out_todu_amt_pile_h6",
-        "actual_todu_30ever_h3",
-        "actual_todu_amt_pile_h3",
-        "optimum_todu_30ever_h3",
-        "optimum_todu_amt_pile_h3",
-        "swap_in_todu_30ever_h3",
-        "swap_in_todu_amt_pile_h3",
-        "swap_out_todu_30ever_h3",
-        "swap_out_todu_amt_pile_h3",
-    }
-    _TEXT_COLS = {"group", "period", "scenario", "segments", "Metric", "segment"}
-    _DELTA_COLS = {"production_delta", "production_delta_pct", "risk_delta_pct"}
-    _CUTOFF_FIXED_COLS = frozenset(
-        {
-            "accepted",
-            "segment",
-            "scenario",
-            "risk_pct",
-            "production",
-            "production_ci_lower",
-            "production_ci_upper",
-            "risk_ci_lower",
-            "risk_ci_upper",
-        }
-    )
-
-    _COLUMN_LABELS = {
-        "group": "Group",
-        "period": "Period",
-        "scenario": "Scenario",
-        "n_segments": "# Segments",
-        "segments": "Segments",
-        "actual_production": "Actual Production (€)",
-        "actual_risk_pct": "Actual Risk (%)",
-        "optimum_production": "Optimum Production (€)",
-        "optimum_risk_pct": "Optimum Risk (%)",
-        "production_delta": "Production Delta (€)",
-        "production_delta_pct": "Production Delta (%)",
-        "risk_delta_pct": "Risk Delta (%)",
-        "swap_in_production": "Swap-In Production (€)",
-        "swap_in_risk_pct": "Swap-In Risk (%)",
-        "swap_out_production": "Swap-Out Production (€)",
-        "swap_out_risk_pct": "Swap-Out Risk (%)",
-        "total_demand": "Total Demand (€)",
-        "actual_rejection_rate_pct": "Actual Rejection Rate (%)",
-        "optimum_rejection_rate_pct": "Optimum Rejection Rate (%)",
-        "actual_risk_h3_pct": "Actual Risk H3 (%)",
-        "optimum_risk_h3_pct": "Optimum Risk H3 (%)",
-        "swap_in_risk_h3_pct": "Swap-In Risk H3 (%)",
-        "swap_out_risk_h3_pct": "Swap-Out Risk H3 (%)",
-        "production_ci_lower": "Production CI Lower (€)",
-        "production_ci_upper": "Production CI Upper (€)",
-        "risk_ci_lower": "Risk CI Lower (%)",
-        "risk_ci_upper": "Risk CI Upper (%)",
-    }
-
-    # =====================================================================
     # Helpers
     # =====================================================================
 
