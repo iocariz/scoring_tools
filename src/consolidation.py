@@ -1952,6 +1952,163 @@ def _apply_page_setup(ws) -> None:
     ws.sheet_properties.pageSetUpPr.fitToPage = True
 
 
+def _style_table(ws, df_cols, *, header_row: int = 1, highlight_total: bool = True) -> None:
+    """Apply full dashboard styling to a data table starting at header_row.
+
+    Pure helper — references only module-level design tokens and
+    column-classification sets. Extracted in R2b todo #57 step 3.
+    """
+    group_col_idx = None
+    metric_col_idx = None
+    n_cols = len(df_cols)
+    for col_idx, col_name in enumerate(df_cols, 1):
+        if col_name == "group":
+            group_col_idx = col_idx
+        if col_name == "Metric":
+            metric_col_idx = col_idx
+        cell = ws.cell(row=header_row, column=col_idx)
+        cell.value = _COLUMN_LABELS.get(col_name, col_name)
+        cell.font = _FONT_HEADER
+        cell.fill = _FILL_HEADER
+        cell.alignment = _ALIGN_CENTER
+        cell.border = _BORDER_HEADER
+        _set_col_width(ws, col_idx, cell.value, ws.max_row)
+        for r in range(header_row + 1, ws.max_row + 1):
+            data_cell = ws.cell(row=r, column=col_idx)
+            data_cell.font = _FONT_DATA
+            data_cell.border = _BORDER_ALL
+            data_cell.alignment = _ALIGN_LEFT if col_name in _TEXT_COLS else _ALIGN_RIGHT
+            _apply_number_format(data_cell, col_name)
+
+    ws.row_dimensions[header_row].height = 28
+    delta_col_indices = {ci for ci, cn in enumerate(df_cols, 1) if cn in _DELTA_COLS}
+    for r in range(header_row + 1, ws.max_row + 1):
+        ws.row_dimensions[r].height = 22
+        is_total = False
+        is_optimum = False
+        is_summary = False
+        if highlight_total and group_col_idx:
+            is_total = str(ws.cell(row=r, column=group_col_idx).value or "").strip().lower().startswith("total")
+        if metric_col_idx:
+            metric_val = str(ws.cell(row=r, column=metric_col_idx).value or "").strip().lower()
+            is_optimum = metric_val.startswith("optimum")
+            is_summary = metric_val == "summary"
+        for col_idx in range(1, n_cols + 1):
+            data_cell = ws.cell(row=r, column=col_idx)
+            if is_total:
+                data_cell.fill = _FILL_TOTAL
+                data_cell.font = _FONT_TOTAL
+            elif is_optimum:
+                data_cell.fill = _FILL_OPTIMUM
+                data_cell.font = _FONT_OPTIMUM
+            elif is_summary:
+                data_cell.fill = _FILL_SUMMARY
+                data_cell.font = _FONT_SUMMARY
+            elif r % 2 == 0:
+                data_cell.fill = _FILL_STRIPE
+            if col_idx in delta_col_indices:
+                val = data_cell.value
+                if isinstance(val, (int, float)):
+                    col_name = list(df_cols)[col_idx - 1]
+                    is_risk = col_name == "risk_delta_pct"
+                    good = val <= 0 if is_risk else val >= 0
+                    clr = _CLR_GOOD if good else _CLR_BAD
+                    bold = is_total or is_optimum or is_summary
+                    data_cell.font = Font(bold=bold, color=clr, size=10, name=_FN)
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1).coordinate
+    ws.auto_filter.ref = (
+        f"{ws.cell(row=header_row, column=1).coordinate}:{ws.cell(row=ws.max_row, column=n_cols).coordinate}"
+    )
+
+
+def _write_kpi_card(ws, row, col, label, value_str, delta_str=None, delta_positive: bool = True) -> None:
+    """Write a KPI card block: 2 rows × 2 columns. Pure helper."""
+    val_cell = ws.cell(row=row, column=col)
+    val_cell.value = value_str
+    val_cell.font = _FONT_KPI_VALUE
+    val_cell.fill = _FILL_KPI
+    val_cell.alignment = Alignment(horizontal="center", vertical="bottom")
+    val_cell.border = _ACCENT_LEFT
+    if delta_str:
+        dc = ws.cell(row=row, column=col + 1)
+        dc.value = delta_str
+        dc.font = _FONT_KPI_DELTA_POS if delta_positive else _FONT_KPI_DELTA_NEG
+        dc.fill = _FILL_KPI
+        dc.alignment = Alignment(horizontal="center", vertical="bottom")
+        dc.border = _BORDER_ALL
+    else:
+        ws.cell(row=row, column=col + 1).fill = _FILL_KPI
+        ws.cell(row=row, column=col + 1).border = _BORDER_ALL
+    lc = ws.cell(row=row + 1, column=col)
+    lc.value = label
+    lc.font = _FONT_KPI_LABEL
+    lc.fill = _FILL_KPI
+    lc.alignment = Alignment(horizontal="center", vertical="top")
+    lc.border = _ACCENT_LEFT
+    ws.cell(row=row + 1, column=col + 1).fill = _FILL_KPI
+    ws.cell(row=row + 1, column=col + 1).border = _BORDER_ALL
+
+
+def _write_exec_table(ws, df, start_row: int, section_title: str, *, n_table_cols: int = 8) -> int:
+    """Write a section header + styled table on the Executive Summary sheet.
+
+    Returns the next free row below the table. Pure helper — references
+    module-level constants and the two helpers above.
+    """
+    cols_list = list(df.columns)
+    span = max(len(cols_list), n_table_cols)
+
+    # Section header with left accent bar
+    ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=span)
+    hdr = ws.cell(row=start_row, column=1)
+    hdr.value = f"  {section_title}"
+    hdr.font = _FONT_SECTION
+    hdr.fill = _FILL_SECTION
+    hdr.alignment = _ALIGN_LEFT
+    hdr.border = Border(left=Side(style="thick", color=_CLR_SECTION_BAR), bottom=_THIN)
+    ws.row_dimensions[start_row].height = 28
+
+    table_row = start_row + 1
+    for ci, col_name in enumerate(cols_list, 1):
+        c = ws.cell(row=table_row, column=ci)
+        c.value = _COLUMN_LABELS.get(col_name, col_name)
+        c.font = _FONT_HEADER
+        c.fill = _FILL_HEADER
+        c.alignment = _ALIGN_CENTER
+        c.border = _BORDER_HEADER
+    ws.row_dimensions[table_row].height = 28
+
+    group_col_idx = cols_list.index("group") + 1 if "group" in cols_list else None
+    for ri, (_, data_row) in enumerate(df.iterrows(), table_row + 1):
+        ws.row_dimensions[ri].height = 20
+        for ci, col_name in enumerate(cols_list, 1):
+            cell = ws.cell(row=ri, column=ci)
+            cell.value = data_row[col_name]
+            cell.font = _FONT_DATA
+            cell.border = _BORDER_ALL
+            cell.alignment = _ALIGN_LEFT if col_name in _TEXT_COLS else _ALIGN_RIGHT
+            _apply_number_format(cell, col_name)
+
+        is_total = group_col_idx and str(ws.cell(row=ri, column=group_col_idx).value or "").strip().lower().startswith(
+            "total"
+        )
+        for ci, col_name in enumerate(cols_list, 1):
+            cell = ws.cell(row=ri, column=ci)
+            if is_total:
+                cell.fill = _FILL_TOTAL
+                cell.font = _FONT_TOTAL
+            elif ri % 2 == 0:
+                cell.fill = _FILL_STRIPE
+            if col_name in _DELTA_COLS and isinstance(cell.value, (int, float)):
+                good = cell.value <= 0 if col_name == "risk_delta_pct" else cell.value >= 0
+                clr = _CLR_GOOD if good else _CLR_BAD
+                cell.font = Font(bold=bool(is_total), color=clr, size=10, name=_FN)
+
+    for ci in range(1, len(cols_list) + 1):
+        _set_col_width(ws, ci, ws.cell(row=table_row, column=ci).value, ws.max_row)
+    return ws.max_row + 2
+
+
 def export_consolidated_excel(
     consolidated_df: pd.DataFrame,
     output_base: str | Path,
@@ -1999,153 +2156,8 @@ def export_consolidated_excel(
     # _set_col_width, _apply_number_format, _apply_page_setup are now
     # module-level helpers (R2b todo #57 step 2).
 
-    def _style_table(ws, df_cols, *, header_row=1, highlight_total=True):
-        """Apply full dashboard styling to a data table starting at header_row."""
-        group_col_idx = None
-        metric_col_idx = None
-        n_cols = len(df_cols)
-        for col_idx, col_name in enumerate(df_cols, 1):
-            if col_name == "group":
-                group_col_idx = col_idx
-            if col_name == "Metric":
-                metric_col_idx = col_idx
-            cell = ws.cell(row=header_row, column=col_idx)
-            cell.value = _COLUMN_LABELS.get(col_name, col_name)
-            cell.font = _FONT_HEADER
-            cell.fill = _FILL_HEADER
-            cell.alignment = _ALIGN_CENTER
-            cell.border = _BORDER_HEADER
-            _set_col_width(ws, col_idx, cell.value, ws.max_row)
-            for r in range(header_row + 1, ws.max_row + 1):
-                data_cell = ws.cell(row=r, column=col_idx)
-                data_cell.font = _FONT_DATA
-                data_cell.border = _BORDER_ALL
-                data_cell.alignment = _ALIGN_LEFT if col_name in _TEXT_COLS else _ALIGN_RIGHT
-                _apply_number_format(data_cell, col_name)
-
-        ws.row_dimensions[header_row].height = 28
-        delta_col_indices = {ci for ci, cn in enumerate(df_cols, 1) if cn in _DELTA_COLS}
-        for r in range(header_row + 1, ws.max_row + 1):
-            ws.row_dimensions[r].height = 22
-            is_total = False
-            is_optimum = False
-            is_summary = False
-            if highlight_total and group_col_idx:
-                is_total = str(ws.cell(row=r, column=group_col_idx).value or "").strip().lower().startswith("total")
-            if metric_col_idx:
-                metric_val = str(ws.cell(row=r, column=metric_col_idx).value or "").strip().lower()
-                is_optimum = metric_val.startswith("optimum")
-                is_summary = metric_val == "summary"
-            for col_idx in range(1, n_cols + 1):
-                data_cell = ws.cell(row=r, column=col_idx)
-                if is_total:
-                    data_cell.fill = _FILL_TOTAL
-                    data_cell.font = _FONT_TOTAL
-                elif is_optimum:
-                    data_cell.fill = _FILL_OPTIMUM
-                    data_cell.font = _FONT_OPTIMUM
-                elif is_summary:
-                    data_cell.fill = _FILL_SUMMARY
-                    data_cell.font = _FONT_SUMMARY
-                elif r % 2 == 0:
-                    data_cell.fill = _FILL_STRIPE
-                if col_idx in delta_col_indices:
-                    val = data_cell.value
-                    if isinstance(val, (int, float)):
-                        col_name = list(df_cols)[col_idx - 1]
-                        is_risk = col_name == "risk_delta_pct"
-                        good = val <= 0 if is_risk else val >= 0
-                        clr = _CLR_GOOD if good else _CLR_BAD
-                        bold = is_total or is_optimum or is_summary
-                        data_cell.font = Font(bold=bold, color=clr, size=10, name=_FN)
-        ws.freeze_panes = ws.cell(row=header_row + 1, column=1).coordinate
-        ws.auto_filter.ref = (
-            f"{ws.cell(row=header_row, column=1).coordinate}:{ws.cell(row=ws.max_row, column=n_cols).coordinate}"
-        )
-
-    def _write_kpi_card(ws, row, col, label, value_str, delta_str=None, delta_positive=True):
-        """Write a KPI card block: 2 rows x 2 columns."""
-        val_cell = ws.cell(row=row, column=col)
-        val_cell.value = value_str
-        val_cell.font = _FONT_KPI_VALUE
-        val_cell.fill = _FILL_KPI
-        val_cell.alignment = Alignment(horizontal="center", vertical="bottom")
-        val_cell.border = _ACCENT_LEFT
-        if delta_str:
-            dc = ws.cell(row=row, column=col + 1)
-            dc.value = delta_str
-            dc.font = _FONT_KPI_DELTA_POS if delta_positive else _FONT_KPI_DELTA_NEG
-            dc.fill = _FILL_KPI
-            dc.alignment = Alignment(horizontal="center", vertical="bottom")
-            dc.border = _BORDER_ALL
-        else:
-            ws.cell(row=row, column=col + 1).fill = _FILL_KPI
-            ws.cell(row=row, column=col + 1).border = _BORDER_ALL
-        lc = ws.cell(row=row + 1, column=col)
-        lc.value = label
-        lc.font = _FONT_KPI_LABEL
-        lc.fill = _FILL_KPI
-        lc.alignment = Alignment(horizontal="center", vertical="top")
-        lc.border = _ACCENT_LEFT
-        ws.cell(row=row + 1, column=col + 1).fill = _FILL_KPI
-        ws.cell(row=row + 1, column=col + 1).border = _BORDER_ALL
-
-    def _write_exec_table(ws, df, start_row, section_title, *, n_table_cols=8):
-        """Write a section header + styled table on the Executive Summary sheet.
-        Returns the next free row below the table.
-        """
-        cols_list = list(df.columns)
-        span = max(len(cols_list), n_table_cols)
-
-        # Section header with left accent bar
-        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=span)
-        hdr = ws.cell(row=start_row, column=1)
-        hdr.value = f"  {section_title}"
-        hdr.font = _FONT_SECTION
-        hdr.fill = _FILL_SECTION
-        hdr.alignment = _ALIGN_LEFT
-        hdr.border = Border(left=Side(style="thick", color=_CLR_SECTION_BAR), bottom=_THIN)
-        ws.row_dimensions[start_row].height = 28
-
-        table_row = start_row + 1
-        for ci, col_name in enumerate(cols_list, 1):
-            c = ws.cell(row=table_row, column=ci)
-            c.value = _COLUMN_LABELS.get(col_name, col_name)
-            c.font = _FONT_HEADER
-            c.fill = _FILL_HEADER
-            c.alignment = _ALIGN_CENTER
-            c.border = _BORDER_HEADER
-        ws.row_dimensions[table_row].height = 28
-
-        group_col_idx = cols_list.index("group") + 1 if "group" in cols_list else None
-        for ri, (_, data_row) in enumerate(df.iterrows(), table_row + 1):
-            ws.row_dimensions[ri].height = 20
-            for ci, col_name in enumerate(cols_list, 1):
-                cell = ws.cell(row=ri, column=ci)
-                cell.value = data_row[col_name]
-                cell.font = _FONT_DATA
-                cell.border = _BORDER_ALL
-                cell.alignment = _ALIGN_LEFT if col_name in _TEXT_COLS else _ALIGN_RIGHT
-                _apply_number_format(cell, col_name)
-
-            is_total = group_col_idx and str(
-                ws.cell(row=ri, column=group_col_idx).value or ""
-            ).strip().lower().startswith("total")
-            for ci, col_name in enumerate(cols_list, 1):
-                cell = ws.cell(row=ri, column=ci)
-                if is_total:
-                    cell.fill = _FILL_TOTAL
-                    cell.font = _FONT_TOTAL
-                elif ri % 2 == 0:
-                    cell.fill = _FILL_STRIPE
-                if col_name in _DELTA_COLS and isinstance(cell.value, (int, float)):
-                    good = cell.value <= 0 if col_name == "risk_delta_pct" else cell.value >= 0
-                    clr = _CLR_GOOD if good else _CLR_BAD
-                    cell.font = Font(bold=bool(is_total), color=clr, size=10, name=_FN)
-
-        for ci in range(1, len(cols_list) + 1):
-            _set_col_width(ws, ci, ws.cell(row=table_row, column=ci).value, ws.max_row)
-        return ws.max_row + 2
+    # _style_table, _write_kpi_card, _write_exec_table are now module-level
+    # helpers (R2b todo #57 step 3).
 
     def _write_rp_sheet(
         writer,
