@@ -2707,6 +2707,50 @@ def _resolve_income_threshold(
     return None
 
 
+# =============================================================================
+# Small helpers extracted from income-bin tables (R2b-ii todo #57 step 7)
+# =============================================================================
+
+
+def _sort_pivot(pivot):
+    """Sort pivot index and columns numerically where possible."""
+    try:
+        pivot = pivot.sort_index(key=lambda x: pd.to_numeric(x, errors="coerce"))
+    except (TypeError, ValueError):
+        pass
+    try:
+        pivot = pivot[
+            sorted(
+                pivot.columns,
+                key=lambda x: float(x) if str(x).replace(".", "").replace("-", "").isdigit() else x,
+            )
+        ]
+    except (TypeError, ValueError):
+        pass
+    return pivot
+
+
+def _audit_slice_for_income_bin(audit_df: pd.DataFrame, income_val: Any) -> pd.DataFrame:
+    if "income_bin" not in audit_df.columns:
+        return pd.DataFrame()
+    ib = pd.to_numeric(audit_df["income_bin"], errors="coerce")
+    try:
+        target = float(income_val)
+    except (TypeError, ValueError):
+        return pd.DataFrame()
+    return audit_df.loc[ib == target].copy()
+
+
+def _empty_rp_skeleton(template_cols: list[str]) -> pd.DataFrame:
+    base = dict.fromkeys(template_cols, np.nan)
+    rows = []
+    for m in ["Actual", "Swap-in", "Swap-out", "Optimum selected", "Summary"]:
+        r = dict(base)
+        r["Metric"] = m
+        rows.append(r)
+    return pd.DataFrame(rows)
+
+
 def export_consolidated_excel(
     consolidated_df: pd.DataFrame,
     output_base: str | Path,
@@ -2851,24 +2895,8 @@ def export_consolidated_excel(
             except (pd.errors.ParserError, OSError, ValueError):
                 audit_full = None
 
-        def _audit_slice_for_income_bin(audit_df: pd.DataFrame, income_val: Any) -> pd.DataFrame:
-            if "income_bin" not in audit_df.columns:
-                return pd.DataFrame()
-            ib = pd.to_numeric(audit_df["income_bin"], errors="coerce")
-            try:
-                target = float(income_val)
-            except (TypeError, ValueError):
-                return pd.DataFrame()
-            return audit_df.loc[ib == target].copy()
-
-        def _empty_rp_skeleton() -> pd.DataFrame:
-            base = dict.fromkeys(template_cols, np.nan)
-            rows = []
-            for m in ["Actual", "Swap-in", "Swap-out", "Optimum selected", "Summary"]:
-                r = dict(base)
-                r["Metric"] = m
-                rows.append(r)
-            return pd.DataFrame(rows)
+        # _audit_slice_for_income_bin and _empty_rp_skeleton are now
+        # module-level helpers (R2b-ii todo #57 step 7).
 
         out_tables: list[tuple[str, pd.DataFrame]] = []
         # Keep deterministic order with 1 first, then 2.
@@ -2917,7 +2945,7 @@ def export_consolidated_excel(
             if uncovered.any():
                 au_rest = audit_full.loc[uncovered].copy()
                 if not au_rest.empty:
-                    tbl_u = _empty_rp_skeleton()
+                    tbl_u = _empty_rp_skeleton(template_cols)
                     tbl_u = reconcile_risk_production_summary_with_audit(tbl_u, au_rest, silent=True)
                     for c in template_cols:
                         if c not in tbl_u.columns:
@@ -3189,23 +3217,6 @@ def export_consolidated_excel(
                 cell.border = _BORDER_GRID
 
         return start_row + len(pivot.index)
-
-    def _sort_pivot(pivot):
-        """Sort pivot index and columns numerically where possible."""
-        try:
-            pivot = pivot.sort_index(key=lambda x: pd.to_numeric(x, errors="coerce"))
-        except (TypeError, ValueError):
-            pass
-        try:
-            pivot = pivot[
-                sorted(
-                    pivot.columns,
-                    key=lambda x: float(x) if str(x).replace(".", "").replace("-", "").isdigit() else x,
-                )
-            ]
-        except (TypeError, ValueError):
-            pass
-        return pivot
 
     def _write_acceptance_strip_1d(ws, cutoff_df, seg_name, start_row, scenario="base"):
         """Draw a horizontal 1D acceptance strip on *ws* starting at *start_row*.
