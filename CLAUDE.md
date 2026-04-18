@@ -135,9 +135,15 @@ Two-tier config: `config.toml` (global defaults) overridden per-segment by `segm
 
 **Segment constraints** (in `segments.toml`): `min_risk`, `max_risk`, `min_production` (production floor), `locked_sol_fac` (lock to specific frontier point). Supersegments (`[supersegments.*]`) define named groups of segments. Each segment can independently reference a **modelling supersegment** (shared model training) and a **reporting supersegment** (consolidated report grouping) via `modelling_supersegment` and `reporting_supersegment` fields. Legacy `supersegment` field sets both. Resolution: `modelling_supersegment > supersegment > None`, `reporting_supersegment > supersegment > None`.
 
-**Fixed cutoffs:** `fixed_cutoffs` to skip MILP and use predefined cutoff combinations. For 2-var: paired bins/cutoffs lists. For N>2: per-variable lists of accepted bin values (cell accepted iff all coordinates are in their respective accepted lists).
+**Fixed cutoffs:** `fixed_cutoffs` to skip MILP and use predefined cutoff combinations. For 2-var: paired bins/cutoffs lists. For N>2: per-variable lists of accepted bin values (cell accepted iff all coordinates are in their respective accepted lists). Sub-keys inside `fixed_cutoffs`:
+- `strict_validation` (bool, default `false`) — fail loudly when the predefined cutoffs don't match the bin grid; otherwise drop silently with a warning.
+- `run_all_scenarios` (bool, default `false`) — when true, also generate pessimistic/optimistic scenarios instead of just base.
+
+**Per-variable minimum accepted bin:** `min_accepted_bin_by_variable` (dict) forces cells with `var_bin < threshold` to be rejected in optimization. Value is either a scalar (applies to all rows) or an `income_bin`-keyed map for per-income thresholds. Conflicts with must-accept `floor_cells` are detected and logged. Legacy alternative to `fixed_cutoffs` for simple monotonic pre-commits; prefer `fixed_cutoffs` for new segments.
 
 **Baseline mode:** `baseline_mode` (bool, default false) — show current booked portfolio as-is with no cutoff optimization (Optimum = Actual, zero swap-in/swap-out). MR inference still runs to predict risk for immature loans. Only the base scenario is generated; sensitivity and RI optimizer are skipped. Available via config or `--baseline` CLI flag.
+
+**Base scenario only:** `base_scenario_only` (bool, default false) — generate only the base scenario; skip pessimistic and optimistic. Config-only flag; no CLI equivalent (unlike `--baseline`). Distinct from `baseline_mode`: base-scenario-only still runs optimization, just with one risk target.
 
 **Sequential cutoff ordering:** `cutoff_floor_segment` (per-segment, in `segments.toml`) names the segment whose accepted cells constrain this segment, enforcing nested acceptance masks across segments (e.g., `mask_ef ⊆ mask_cd ⊆ mask_ab`). `cutoff_ordering_mode` (`"bottom_up"` / `"top_down"`, default `"bottom_up"`) controls the optimization direction: bottom-up optimizes the tightest segment first and propagates floor constraints (must-accept); top-down optimizes the least restrictive first and propagates ceiling constraints (must-reject). Segments are automatically topologically sorted by dependency. In parallel mode, constrained segments run sequentially after unconstrained ones complete.
 

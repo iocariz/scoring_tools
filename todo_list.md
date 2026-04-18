@@ -263,7 +263,7 @@ Unresolved items from the methodological, statistical, and code review. Organize
 
 ### MEDIUM
 
-70. **Undocumented config fields in CLAUDE.md** — `min_accepted_bin_by_variable` (`src/config.py`, 334; `src/pipeline/optimization.py`, 308), `base_scenario_only` (`src/config.py`, 329; no CLI flag unlike `--baseline`), `strict_validation` (`src/pipeline/optimization.py`, 177), `run_all_scenarios` (`src/pipeline/optimization.py`, 878). **Fix:** Document in CLAUDE.md; flag deprecated `min_accepted_bin_by_variable` vs `fixed_cutoffs`.
+70. ~~**Undocumented config fields in CLAUDE.md** — `min_accepted_bin_by_variable` (`src/config.py`, 334; `src/pipeline/optimization.py`, 308), `base_scenario_only` (`src/config.py`, 329; no CLI flag unlike `--baseline`), `strict_validation` (`src/pipeline/optimization.py`, 177), `run_all_scenarios` (`src/pipeline/optimization.py`, 878). **Fix:** Document in CLAUDE.md; flag deprecated `min_accepted_bin_by_variable` vs `fixed_cutoffs`.~~ **Fixed:** All four documented in CLAUDE.md Configuration section. `strict_validation` and `run_all_scenarios` added as sub-bullets under "Fixed cutoffs"; `base_scenario_only` added as a distinct paragraph clarifying it differs from `baseline_mode` (still runs optimization, just one target); `min_accepted_bin_by_variable` documented with the scalar-vs-income-keyed-map distinction and flagged as the legacy alternative to `fixed_cutoffs`.
 
 ### LOW
 
