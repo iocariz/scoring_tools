@@ -8,7 +8,7 @@ This module provides core utility functions used throughout the scoring tools:
 """
 
 import os
-from typing import overload
+from typing import TYPE_CHECKING, overload
 
 import numpy as np
 import pandas as pd
@@ -16,6 +16,9 @@ from joblib import Parallel, delayed
 from loguru import logger
 
 from .constants import DEFAULT_N_BOOTSTRAPS, DEFAULT_RISK_MULTIPLIER
+
+if TYPE_CHECKING:  # avoid a runtime circular import; CutoffSpec is resolved inside
+    from .optimization_utils import CutoffSpec  # noqa: F401
 
 # Cap parallel workers to avoid OOM on many-core servers.
 # Override with SCORING_TOOLS_MAX_JOBS environment variable.
@@ -527,44 +530,22 @@ def calculate_annual_coef(date_ini_book_obs: pd.Timestamp, date_fin_book_obs: pd
 
 def _bootstrap_worker(
     df: pd.DataFrame,
-    cut_map: dict[float, float],
-    variables: list[str],
+    spec: "CutoffSpec",
     multiplier: float,
     random_state: int | None = None,
-    inv_var1: bool = False,
     annual_coef: float = 1.0,
     repesca_production: float = 0.0,
-    mask: np.ndarray | None = None,
-    grid: object | None = None,
 ) -> tuple[float, float]:
-    """Worker function for bootstrap resampling."""
+    """Worker function for bootstrap resampling.
+
+    *spec* (todo #65) replaces the previous (cut_map, variables, inv_var1)
+    / (mask, grid) double-branch. A CutoffSpec unifies both encodings and
+    dispatches via its ``classify`` method.
+    """
     # Resample with replacement
     sample = df.sample(frac=1.0, replace=True, random_state=random_state)
 
-    # Apply cuts — N-dimensional mask-based path or legacy 2-var cut_map path
-    if mask is not None and grid is not None:
-        from src.optimization_utils import classify_by_mask
-
-        passes = classify_by_mask(sample, mask, grid)
-    else:
-        var0 = variables[0]
-        if len(variables) < 2:
-            raise ValueError("2-var cut_map bootstrap path requires at least 2 variables")
-        var1 = variables[1]
-
-        # Map cuts to each row based on var0 bin
-        # For missing bins, default to strict rejection:
-        #   non-inverted (var1 <= cutoff): fillna(-inf) → always rejects
-        #   inverted (var1 >= cutoff): fillna(+inf) → always rejects
-        fallback = np.inf if inv_var1 else -np.inf
-        full_cut_series = sample[var0].map(cut_map).fillna(fallback)
-
-        # Filter passed — inverted variables use >= (higher bin = safer)
-        if inv_var1:
-            passes = sample[var1] >= full_cut_series
-        else:
-            passes = sample[var1] <= full_cut_series
-
+    passes = spec.classify(sample)
     passed_df = sample[passes]
 
     # Use oa_amt_h0 to match the optimization pipeline metric
@@ -582,9 +563,9 @@ def _bootstrap_worker(
 
 def calculate_bootstrap_intervals(
     data_booked: pd.DataFrame,
-    cut_map: dict[float, float],
-    variables: list[str],
-    multiplier: float,
+    cut_map: dict[float, float] | None = None,
+    variables: list[str] | None = None,
+    multiplier: float = DEFAULT_RISK_MULTIPLIER,
     n_bootstraps: int = DEFAULT_N_BOOTSTRAPS,
     confidence_level: float = 0.95,
     random_state: int | None = 42,
@@ -594,31 +575,38 @@ def calculate_bootstrap_intervals(
     repesca_production: float = 0.0,
     mask: np.ndarray | None = None,
     grid: object | None = None,
+    spec: "CutoffSpec | None" = None,
 ) -> dict[str, float]:
     """
     Calculate confidence intervals for Risk and Production using bootstrap resampling.
 
+    Two call styles are supported (todo #65):
+      1. Pass a pre-built ``spec: CutoffSpec`` (preferred).
+      2. Pass one of the legacy encodings directly:
+         - 2-var: ``cut_map`` + ``variables`` [+ ``inv_var1``]
+         - N-var: ``mask`` + ``grid``
+         Internally these are converted to a ``CutoffSpec`` before dispatch.
+
     Args:
         data_booked: DataFrame of booked accounts (patient-level data)
-        cut_map: Dictionary mapping var0 bin values to var1 cutoff thresholds
-        variables: List of [var0, var1] names
+        cut_map: (Legacy) 2-var dict mapping var0 bin values to var1 cutoff.
+        variables: (Legacy) [var0, var1] for cut_map encoding.
         multiplier: Risk multiplier
         n_bootstraps: Number of bootstrap iterations
         confidence_level: Confidence level (e.g., 0.95)
         random_state: Seed for reproducibility (default: 42)
-        inv_var1: If True, use >= comparison for var1 (higher bin = safer)
-        model_cv_se_risk: Optional standard error of the risk model's CV predictions.
-            When provided, the risk CI is widened to account for model prediction
-            uncertainty (which the bootstrap alone does not capture, since it only
-            resamples booked records and ignores model inference error on the
-            rejected/swap-in population).  The total SE is computed as
-            ``sqrt(bootstrap_se² + model_cv_se²)``.
-        mask: Optional binary acceptance mask for N-d classify_by_mask path.
-        grid: Optional CellGrid for N-d classify_by_mask path.
+        inv_var1: (Legacy) If True, use >= comparison for var1 (higher = safer)
+        model_cv_se_risk: Optional standard error of the risk model's CV predictions
+            (informational only; no inflation applied — see comment below).
+        mask: (Legacy) Binary acceptance mask for N-d classify_by_mask path.
+        grid: (Legacy) CellGrid for N-d classify_by_mask path.
+        spec: Pre-built CutoffSpec. Takes precedence over legacy kwargs if given.
 
     Returns:
-        Dictionary with lower/upper bounds for production and risk
+        Dictionary with lower/upper bounds for production and risk.
     """
+    from src.optimization_utils import CellGrid, CutoffSpec
+
     logger.info(f"Calculating {confidence_level:.0%} CI with {n_bootstraps} bootstraps...")
 
     if data_booked.empty:
@@ -626,6 +614,19 @@ def calculate_bootstrap_intervals(
         return {"production_ci_lower": 0.0, "production_ci_upper": 0.0, "risk_ci_lower": 0.0, "risk_ci_upper": 0.0}
     if len(data_booked) < 10:
         logger.warning(f"Bootstrap CI: only {len(data_booked)} row(s) in data_booked — CIs may be unreliable")
+
+    # Resolve the cutoff spec: explicit > mask+grid > cut_map+variables.
+    if spec is None:
+        if mask is not None and grid is not None:
+            assert isinstance(grid, CellGrid)  # narrow type for CutoffSpec
+            spec = CutoffSpec.from_mask(mask, grid)
+        elif cut_map is not None and variables is not None:
+            spec = CutoffSpec.from_cut_map(cut_map, variables, inv_var1=inv_var1)
+        else:
+            raise ValueError(
+                "calculate_bootstrap_intervals requires either `spec=CutoffSpec(...)` or one of "
+                "the legacy encodings: (cut_map + variables) or (mask + grid)."
+            )
 
     # Generate per-iteration seeds for reproducibility
     if random_state is not None:
@@ -640,15 +641,11 @@ def calculate_bootstrap_intervals(
     results = Parallel(n_jobs=MAX_PARALLEL_JOBS, prefer="threads")(
         delayed(_bootstrap_worker)(
             data_booked,
-            cut_map,
-            variables,
+            spec,
             multiplier,
             random_state=int(seed) if seed is not None else None,
-            inv_var1=inv_var1,
             annual_coef=annual_coef,
             repesca_production=repesca_production,
-            mask=mask,
-            grid=grid,
         )
         for seed in seeds
     )

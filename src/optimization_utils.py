@@ -8,6 +8,7 @@ This module provides:
 - CellGrid helper for N-dimensional bin grids
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from itertools import combinations_with_replacement, product
 
@@ -139,6 +140,110 @@ def classify_by_mask(data: pd.DataFrame, mask: np.ndarray, grid: CellGrid) -> pd
         record_index = pd.MultiIndex.from_frame(data[grid.variables])
     mask_values = lookup_series.reindex(record_index).fillna(0).to_numpy(dtype=bool)
     return pd.Series(mask_values, index=data.index)
+
+
+# =============================================================================
+# CutoffSpec — unified value type for 2-var cut_map AND N-var mask+grid
+# (R2 todo #65 — partial: type exists, bootstrap path migrated. Remaining
+# migration of the sprawling `if len(variables) == 2:` sites throughout
+# src/ is follow-up scope.)
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class CutoffSpec:
+    """Canonical representation of an acceptance policy.
+
+    Two encodings, one abstraction:
+      - 2-var ``cut_map``:  ``{var0_bin: max_var1_accepted}`` with optional
+        ``inv_var1`` direction flag.
+      - N-var ``mask + grid``:  a 0/1 array aligned with a ``CellGrid``'s cells.
+
+    Construct via :meth:`from_cut_map` or :meth:`from_mask`; never mix.
+    :meth:`classify` dispatches to the correct path. :meth:`as_2d_cut_map`
+    returns the underlying dict when the spec is 2-var-shaped (else ``None``),
+    letting legacy call sites opt out explicitly.
+
+    Frozen so a spec can be safely shared across bootstrap worker processes.
+    """
+
+    variables: tuple[str, ...]
+    cut_map: dict[float, float] | None = None
+    inv_var1: bool = False
+    mask: np.ndarray | None = None
+    grid: CellGrid | None = None
+
+    def __post_init__(self) -> None:
+        has_cut_map = self.cut_map is not None
+        has_mask = self.mask is not None and self.grid is not None
+        if has_cut_map == has_mask:
+            # Exactly one encoding must be present.
+            raise ValueError(
+                "CutoffSpec requires exactly one of {cut_map} or {mask + grid}; "
+                f"got cut_map={has_cut_map}, mask+grid={has_mask}"
+            )
+        if has_cut_map and len(self.variables) < 2:
+            raise ValueError(f"cut_map encoding requires ≥2 variables, got {self.variables}")
+
+    @classmethod
+    def from_cut_map(
+        cls,
+        cut_map: dict[float, float],
+        variables: Sequence[str],
+        inv_var1: bool = False,
+    ) -> "CutoffSpec":
+        """Build a 2-var spec. *variables* = ``[var0, var1]`` (extras ignored for dispatch)."""
+        return cls(
+            variables=tuple(variables),
+            cut_map=dict(cut_map),
+            inv_var1=inv_var1,
+        )
+
+    @classmethod
+    def from_mask(
+        cls,
+        mask: np.ndarray,
+        grid: CellGrid,
+    ) -> "CutoffSpec":
+        """Build an N-var spec from a binary mask aligned with *grid*."""
+        return cls(
+            variables=tuple(grid.variables),
+            mask=np.asarray(mask),
+            grid=grid,
+        )
+
+    @property
+    def is_2d(self) -> bool:
+        """True iff this spec uses the legacy 2-var cut_map encoding."""
+        return self.cut_map is not None
+
+    def classify(self, data: pd.DataFrame) -> pd.Series:
+        """Apply the spec to *data*; return a boolean Series (True = accepted).
+
+        Missing bins are strictly rejected (fill-fail-closed).
+        """
+        if self.mask is not None and self.grid is not None:
+            return classify_by_mask(data, self.mask, self.grid)
+
+        assert self.cut_map is not None  # narrowed by __post_init__
+        var0, var1 = self.variables[0], self.variables[1]
+        # Missing cut_map key → strict reject:
+        #   non-inverted (var1 <= cutoff): fillna(-inf) always rejects
+        #   inverted     (var1 >= cutoff): fillna(+inf) always rejects
+        fallback = np.inf if self.inv_var1 else -np.inf
+        full_cut_series = data[var0].map(self.cut_map).fillna(fallback)
+        if self.inv_var1:
+            return data[var1] >= full_cut_series
+        return data[var1] <= full_cut_series
+
+    def as_2d_cut_map(self) -> dict[float, float] | None:
+        """Return the underlying ``cut_map`` if 2-var, else ``None``.
+
+        Call sites that still require the 2-var shape use this adapter
+        to fail loudly on N-var specs rather than silently consuming
+        the wrong abstraction.
+        """
+        return dict(self.cut_map) if self.cut_map is not None else None
 
 
 # =============================================================================

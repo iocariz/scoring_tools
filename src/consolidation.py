@@ -25,6 +25,25 @@ from .audit import audit_production_kpis, reconcile_risk_production_summary_with
 from .constants import DEFAULT_RISK_MULTIPLIER, DEFAULT_RISK_MULTIPLIER_H3
 from .utils import calculate_b2_ever_h6, resolve_reporting_supersegment
 
+# ---------------------------------------------------------------------------
+# Last-resort default variable list (todo #65)
+# ---------------------------------------------------------------------------
+# When BOTH the segment's config_segment.toml AND the global config.toml are
+# unreadable (corrupted, missing, parse error), fall back to the canonical
+# 3-variable setup this project was originally built around. This is a
+# survivor-bias default: it exists so that a malformed config still produces
+# *something* rather than crashing the consolidated report. New deployments
+# that use different variable names MUST supply a valid config — this list
+# is not the starting point for new projects.
+#
+# Kept as a module-level constant so it is grep-able and callers opt into
+# the default explicitly rather than burying it in a function body.
+_FALLBACK_REPORTING_VARIABLES: tuple[str, ...] = (
+    "new_efx_clus",
+    "sc_octroi_new_clus",
+    "income_bin",
+)
+
 
 @dataclass
 class ConsolidatedMetrics:
@@ -3673,7 +3692,8 @@ def export_consolidated_excel(
                         exc_info=True,
                     )
             if not seg_vars_full:
-                seg_vars_full = ["new_efx_clus", "sc_octroi_new_clus", "income_bin"]
+                # All config sources unreadable; use the documented fallback.
+                seg_vars_full = list(_FALLBACK_REPORTING_VARIABLES)
 
             # Resolve income threshold for labels
             _income_th = None
