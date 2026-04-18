@@ -554,12 +554,24 @@ class PreprocessingSettings(BaseModel):
 
     @model_validator(mode="after")
     def _auto_populate_bins(self) -> "PreprocessingSettings":
-        """Auto-populate ``bins`` dict from legacy octroi_bins/efx_bins if not set."""
+        """Auto-populate ``bins`` dict from legacy octroi_bins/efx_bins if not set.
+
+        todo #66: emit a DeprecationWarning whenever the legacy fields are
+        consulted. The `[preprocessing.bins.*]` TOML path is the supported
+        N-variable configuration; ``octroi_bins`` / ``efx_bins`` + their
+        hardcoded ``score_rf`` / ``risk_score_rf`` source columns encode a
+        2-variable assumption that the N-D pipeline has outgrown. Migration
+        helper in ``scripts/migrate_legacy_bins.py``.
+        """
+        import warnings
+
         # Known legacy variable → bins/source_col mapping
         _legacy_map = {
             "sc_octroi_new_clus": (self.octroi_bins, "score_rf"),
             "new_efx_clus": (self.efx_bins, "risk_score_rf"),
         }
+
+        _legacy_used: list[str] = []  # names of variables populated via the legacy path
 
         # Merge legacy octroi_bins/efx_bins into bins dict for variables not already defined
         for var in self.variables:
@@ -570,13 +582,28 @@ class PreprocessingSettings(BaseModel):
                 edges, src = _legacy_map[var]
                 if edges:
                     self.bins[var] = BinConfig(source_col=src, output_col=var, bin_edges=edges)
+                    _legacy_used.append(f"{var} (name-match → {src})")
                     continue
             # Positional fallback: var0 → octroi_bins, var1 → efx_bins
             idx = self.variables.index(var)
             if idx == 0 and self.octroi_bins:
                 self.bins[var] = BinConfig(source_col="score_rf", output_col=var, bin_edges=self.octroi_bins)
+                _legacy_used.append(f"{var} (positional var0 → score_rf)")
             elif idx == 1 and self.efx_bins:
                 self.bins[var] = BinConfig(source_col="risk_score_rf", output_col=var, bin_edges=self.efx_bins)
+                _legacy_used.append(f"{var} (positional var1 → risk_score_rf)")
+
+        if _legacy_used:
+            warnings.warn(
+                "Legacy 'octroi_bins' / 'efx_bins' config fields are deprecated and will be "
+                "removed in a future release. The following variables were populated via the "
+                f"legacy path: {_legacy_used}. Migrate to the explicit "
+                "[preprocessing.bins.VAR] TOML blocks — each variable gets a source_col, "
+                "output_col, and bin_edges (or max_bins + method). "
+                "See scripts/migrate_legacy_bins.py for an automated rewrite.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         if not self.bins:
             raise ValueError(
