@@ -1,4 +1,5 @@
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -38,6 +39,36 @@ from src.utils import (
 )
 
 
+@dataclass
+class OptimizationResult:
+    """Result of the optimization phase (todo #63).
+
+    Replaces the previous 7-tuple return from ``run_optimization_phase``.
+    Attribute access matches the ``PreprocessingResult`` pattern used by
+    :mod:`src.pipeline.preprocessing`. Supports positional unpacking via
+    ``__iter__`` so legacy ``a, b, c, ... = run_optimization_phase(...)``
+    call sites keep working during the migration window.
+    """
+
+    data_summary_desagregado: pd.DataFrame
+    data_summary: pd.DataFrame
+    data_summary_sample_no_opt: pd.DataFrame
+    values_per_var: dict[str, list]
+    grid: CellGrid | None
+    pareto_masks: list = field(default_factory=list)
+    floor_fixed_cells: dict[int, int] | None = None
+
+    def __iter__(self):
+        """Positional unpacking: preserves legacy 7-tuple call sites."""
+        yield self.data_summary_desagregado
+        yield self.data_summary
+        yield self.data_summary_sample_no_opt
+        yield self.values_per_var
+        yield self.grid
+        yield self.pareto_masks
+        yield self.floor_fixed_cells
+
+
 def run_optimization_phase(
     data_booked: pd.DataFrame,
     data_demand: pd.DataFrame,
@@ -52,7 +83,7 @@ def run_optimization_phase(
     per_bin_tasa_fin: pd.DataFrame | None = None,
     floor_cells_path: str | None = None,
     floor_cells_mode: str = "floor",
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, list], CellGrid | None, list, dict[int, int] | None]:
+) -> OptimizationResult:
     """Run the optimization pipeline: generate summary, find optimal cutoffs.
 
     Args:
@@ -75,8 +106,9 @@ def run_optimization_phase(
             all others are forced to rejected.
 
     Returns:
-        Tuple of (data_summary_desagregado, data_summary, data_summary_sample_no_opt,
-                  values_per_var, grid, pareto_masks)
+        :class:`OptimizationResult` with data_summary_desagregado,
+        data_summary, data_summary_sample_no_opt, values_per_var,
+        grid, pareto_masks, and floor_fixed_cells.
     """
     if output is None:
         output = OutputPaths()
@@ -478,14 +510,14 @@ def run_optimization_phase(
         f"b2 range: [{b2_min:.2f}%, {b2_max:.2f}%] | optimum_risk={settings.optimum_risk:.1f}% | {elapsed:.1f}s"
     )
 
-    return (
-        data_summary_desagregado,
-        data_summary,
-        data_summary_sample_no_opt,
-        values_per_var,
-        grid,
-        pareto_masks,
-        floor_fixed_cells,
+    return OptimizationResult(
+        data_summary_desagregado=data_summary_desagregado,
+        data_summary=data_summary,
+        data_summary_sample_no_opt=data_summary_sample_no_opt,
+        values_per_var=values_per_var,
+        grid=grid,
+        pareto_masks=pareto_masks,
+        floor_fixed_cells=floor_fixed_cells,
     )
 
 
@@ -866,7 +898,7 @@ def run_scenario_analysis(
     return cutoff_summary
 
 
-def _build_scenario_list(settings: PreprocessingSettings, use_fixed_cutoffs: bool) -> list[tuple[float, str]]:
+def build_scenario_list(settings: PreprocessingSettings, use_fixed_cutoffs: bool) -> list[tuple[float, str]]:
     """Build the list of (risk_threshold, name) scenarios to run."""
     base_optimum_risk = settings.optimum_risk
     scenario_step = settings.risk_step
@@ -901,7 +933,7 @@ def _build_scenario_list(settings: PreprocessingSettings, use_fixed_cutoffs: boo
     return scenarios
 
 
-def _compute_mr_annual_coef(settings: PreprocessingSettings) -> float:
+def compute_mr_annual_coef(settings: PreprocessingSettings) -> float:
     """Compute the annual coefficient for the MR period.
 
     Returns 1.0 if MR dates are not configured.
@@ -1250,7 +1282,7 @@ def run_ri_optimizer_phase(
         return None
 
 
-def _save_cutoff_summaries(
+def save_cutoff_summaries(
     cutoff_summaries: list[pd.DataFrame],
     settings: PreprocessingSettings,
     output: OutputPaths | None = None,

@@ -13,12 +13,12 @@ from src.data_manager import DataValidationError, load_and_prepare_data
 from src.pipeline.config_loader import load_and_validate_config
 from src.pipeline.inference import run_inference_phase
 from src.pipeline.optimization import (
-    _build_scenario_list,
-    _compute_mr_annual_coef,
-    _save_cutoff_summaries,
+    build_scenario_list,
+    compute_mr_annual_coef,
     run_optimization_phase,
     run_ri_optimizer_phase,
     run_scenario_analysis,
+    save_cutoff_summaries,
 )
 from src.pipeline.preprocessing import run_preprocessing_phase
 
@@ -196,7 +196,7 @@ def run_resimulation(
 
     # 8. Build scenarios and run
     scenarios = _build_resimulation_scenarios(resimulate_risk)
-    annual_coef_mr = _compute_mr_annual_coef(settings)
+    annual_coef_mr = compute_mr_annual_coef(settings)
     data_summary_sample_no_opt = pd.DataFrame(columns=["oa_amt_h0", "b2_ever_h6"])
 
     logger.info(
@@ -230,7 +230,7 @@ def run_resimulation(
         )
         cutoff_summaries.append(summary)
 
-    _save_cutoff_summaries(cutoff_summaries, settings, output=output)
+    save_cutoff_summaries(cutoff_summaries, settings, output=output)
 
     # Generate HTML report
     try:
@@ -398,15 +398,7 @@ def main(
             return data_clean, data_booked, data_demand, risk_inference, reg_todu_amt_pile
 
         # Step 5: Optimization (MILP Pareto frontier or fixed cutoffs)
-        (
-            data_summary_desagregado,
-            data_summary,
-            data_summary_sample_no_opt,
-            values_per_var,
-            grid,
-            pareto_masks,
-            floor_fixed_cells,
-        ) = run_optimization_phase(
+        opt = run_optimization_phase(
             data_booked,
             data_demand,
             risk_inference,
@@ -421,6 +413,13 @@ def main(
             floor_cells_path=floor_cells_path,
             floor_cells_mode=floor_cells_mode,
         )
+        data_summary_desagregado = opt.data_summary_desagregado
+        data_summary = opt.data_summary
+        data_summary_sample_no_opt = opt.data_summary_sample_no_opt
+        values_per_var = opt.values_per_var
+        grid = opt.grid
+        pareto_masks = opt.pareto_masks
+        floor_fixed_cells = opt.floor_fixed_cells
 
         # Compute total demand (booked + rejected, excluding canceled)
         if "status_name" in data_demand.columns and "oa_amt_h0" in data_demand.columns:
@@ -430,8 +429,8 @@ def main(
 
         # Step 6: Scenario analysis loop
         use_fixed_cutoffs = settings.fixed_cutoffs is not None and len(settings.fixed_cutoffs) > 0
-        scenarios = _build_scenario_list(settings, use_fixed_cutoffs)
-        annual_coef_mr = _compute_mr_annual_coef(settings)
+        scenarios = build_scenario_list(settings, use_fixed_cutoffs)
+        annual_coef_mr = compute_mr_annual_coef(settings)
 
         # Clean up stale scenario files that won't be regenerated (e.g., baseline
         # mode only produces "base", but old pessimistic/optimistic files from a
@@ -482,7 +481,7 @@ def main(
             )
             cutoff_summaries.append(summary)
 
-        _save_cutoff_summaries(cutoff_summaries, settings, output=output)
+        save_cutoff_summaries(cutoff_summaries, settings, output=output)
 
         # Step 6b: Sensitivity analysis (optional, non-blocking, skipped in baseline mode)
         if not settings.baseline_mode:
@@ -529,15 +528,7 @@ def main(
                 settings.reject_uplift_factor = new_uplift
                 settings.reject_max_risk_multiplier = new_max_mult
 
-                (
-                    data_summary_desagregado,
-                    data_summary,
-                    data_summary_sample_no_opt,
-                    values_per_var,
-                    grid,
-                    pareto_masks,
-                    floor_fixed_cells,
-                ) = run_optimization_phase(
+                opt = run_optimization_phase(
                     data_booked,
                     data_demand,
                     risk_inference,
@@ -552,6 +543,13 @@ def main(
                     floor_cells_path=floor_cells_path,
                     floor_cells_mode=floor_cells_mode,
                 )
+                data_summary_desagregado = opt.data_summary_desagregado
+                data_summary = opt.data_summary
+                data_summary_sample_no_opt = opt.data_summary_sample_no_opt
+                values_per_var = opt.values_per_var
+                grid = opt.grid
+                pareto_masks = opt.pareto_masks
+                floor_fixed_cells = opt.floor_fixed_cells
 
                 cutoff_summaries = []
                 for scenario_risk, scenario_name in scenarios:
@@ -579,7 +577,7 @@ def main(
                     )
                     cutoff_summaries.append(summary)
 
-                _save_cutoff_summaries(cutoff_summaries, settings, output=output)
+                save_cutoff_summaries(cutoff_summaries, settings, output=output)
             else:
                 logger.info(f"[{segment}] RI optimizer confirmed current params are optimal")
 
