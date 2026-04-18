@@ -15,7 +15,7 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
-from pptx.util import Emu, Inches, Pt
+from pptx.util import Inches, Pt
 
 # ---------------------------------------------------------------------------
 # Brand palette
@@ -280,9 +280,8 @@ def slide_agenda(prs):
     tf = _add_textbox(slide, Inches(1.5), Inches(2.1), Inches(10), Inches(5),
                       "", font_size=15)
     for i, item in enumerate(items):
-        color = LIGHT_BLUE if (i + 1) % 2 == 0 else DARK_BLUE
-        p = _add_para(tf, f"  {i + 1}.   {item}", font_size=15, color=BLACK,
-                       space_before=Pt(6))
+        _add_para(tf, f"  {i + 1}.   {item}", font_size=15, color=BLACK,
+                  space_before=Pt(6))
 
     _draw_footer(slide, 2, TOTAL_SLIDES)
 

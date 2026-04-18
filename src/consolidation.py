@@ -2674,7 +2674,6 @@ def export_consolidated_excel(
 
             col = 2
             total_vol, total_cnt = 0.0, 0
-            total_rn, total_rd = 0.0, 0.0
 
             for ib in ib_order:
                 d = lookup.get((cat, ib), {"volume": 0, "risk": None, "count": 0})
@@ -3530,7 +3529,6 @@ def export_consolidated_excel(
             seg_settings = _load_segment_settings(seg_name)
 
             # Resolve variables list — fall back to global config
-            seg_vars = seg_settings.get("inv_vars") or None
             try:
                 import tomllib as _tomllib
                 _seg_cfg_path = output_base / seg_name / "config_segment.toml"
