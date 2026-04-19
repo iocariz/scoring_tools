@@ -3069,6 +3069,359 @@ def _get_total_row(consolidated_df: pd.DataFrame, period: str, scenario: str = "
     return fallback.iloc[0] if not fallback.empty else None
 
 
+# =============================================================================
+# Income-bin + classification-grid builders (R2b-iii todo #57 step 11)
+# =============================================================================
+# These two remain the largest helpers inside export_consolidated_excel;
+# they close over output_base / segments / supersegments to read per-segment
+# artefacts (accepted_cells, desagregado, optimal_solution, audit). Lifting
+# them to module level with explicit path parameters closes out the
+# closure-light extraction phase of todo #57.
+
+
+def _build_income_bin_tables(
+    output_base: Path,
+    segments: dict[str, dict[str, Any]],
+    supersegments: dict[str, dict[str, Any]],
+    seg_name: str,
+    period: str,
+    template_cols: list[str],
+) -> list[tuple[str, pd.DataFrame]]:
+    data_dir = output_base / seg_name / "data"
+    accepted_cells_path = data_dir / "accepted_cells_base.csv"
+    if not accepted_cells_path.exists():
+        return []
+    try:
+        variables = list(pd.read_csv(accepted_cells_path, nrows=1).columns)
+    except (pd.errors.ParserError, OSError, ValueError):
+        return []
+    if not variables:
+        return []
+
+    if period == "mr":
+        ds_path = data_dir / "data_summary_desagregado_mr_base.csv"
+        if not ds_path.exists():
+            ds_path = data_dir / "data_summary_desagregado_mr.csv"
+        # Use MR-specific optimal solution (has re-optimized mask after recalibration);
+        # fall back to main-period if MR-specific doesn't exist (pre-fix runs).
+        opt_path = data_dir / "optimal_solution_mr_base.csv"
+        if not opt_path.exists():
+            opt_path = data_dir / "optimal_solution_mr.csv"
+        if not opt_path.exists():
+            opt_path = data_dir / "optimal_solution_base.csv"
+    else:
+        ds_path = data_dir / "data_summary_desagregado_base.csv"
+        opt_path = data_dir / "optimal_solution_base.csv"
+    if not ds_path.exists() or not opt_path.exists():
+        return []
+    try:
+        df_sum = pd.read_csv(ds_path)
+        df_opt = pd.read_csv(opt_path)
+    except (pd.errors.ParserError, OSError, ValueError):
+        return []
+    if df_sum.empty or df_opt.empty or "income_bin" not in df_sum.columns:
+        return []
+
+    mask = None
+    grid = None
+    if "acceptance_mask" in df_opt.columns and pd.notna(df_opt.iloc[0].get("acceptance_mask")):
+        try:
+            from src.optimization_utils import CellGrid, decode_mask
+
+            grid = CellGrid.from_summary(df_sum, variables)
+            mask = decode_mask(str(df_opt.iloc[0]["acceptance_mask"]))
+            if len(mask) != len(grid.cell_data):
+                logger.warning(
+                    f"[{seg_name}] acceptance_mask length ({len(mask)}) does not match grid cells ({len(grid.cell_data)})"
+                )
+                mask = None
+                grid = None
+        except Exception as e:
+            logger.warning(f"[{seg_name}] Could not decode acceptance_mask for income-bin RP tables: {e}")
+            mask = None
+            grid = None
+
+    from src.mr_pipeline import calculate_metrics_from_cuts
+
+    seg_settings = _load_segment_settings(output_base, seg_name)
+
+    # _extract_binary_income_threshold and _resolve_income_threshold are
+    # now module-level helpers (R2b-ii todo #57 step 6).
+    income_threshold = _resolve_income_threshold(output_base, segments, supersegments, seg_name)
+
+    # _income_bin_title is now a module-level helper (R2b-ii todo #57 step 10).
+
+    audit_path = data_dir / ("audit_base_mr.csv" if period == "mr" else "audit_base.csv")
+    audit_full: pd.DataFrame | None = None
+    if audit_path.exists():
+        try:
+            audit_full = pd.read_csv(audit_path, skipinitialspace=True)
+            audit_full.columns = audit_full.columns.str.strip()
+        except (pd.errors.ParserError, OSError, ValueError):
+            audit_full = None
+
+    # _audit_slice_for_income_bin and _empty_rp_skeleton are now
+    # module-level helpers (R2b-ii todo #57 step 7).
+
+    out_tables: list[tuple[str, pd.DataFrame]] = []
+    # Keep deterministic order with 1 first, then 2.
+    income_values = sorted(pd.Series(df_sum["income_bin"]).dropna().unique().tolist(), key=lambda x: float(x))
+    ib_grid = pd.to_numeric(df_sum["income_bin"], errors="coerce")
+    for income_val in income_values:
+        try:
+            iv = float(income_val)
+        except (TypeError, ValueError):
+            continue
+        df_bin = df_sum.loc[ib_grid == iv].copy()
+        if df_bin.empty:
+            continue
+        tbl = calculate_metrics_from_cuts(
+            data_summary_desagregado=df_bin,
+            optimal_solution_df=df_opt,
+            variables=variables,
+            inv_vars=seg_settings["inv_vars"],
+            mask=mask,
+            grid=grid,
+            multiplier=seg_settings["multiplier"],
+            multiplier_h3=seg_settings["multiplier_h3"],
+        )
+        if tbl is None or tbl.empty:
+            continue
+        tbl = _append_summary_row_if_missing(tbl)
+        # Match main RP sheet: production € from loan-level audit for this income_bin.
+        # Skip in baseline mode — the accept-all mask makes the audit classify all
+        # rejected applicants as swap-in, which would overwrite the correct zero values.
+        if audit_full is not None and not audit_full.empty and not seg_settings["baseline_mode"]:
+            audit_bin = _audit_slice_for_income_bin(audit_full, income_val)
+            if not audit_bin.empty:
+                tbl = reconcile_risk_production_summary_with_audit(tbl, audit_bin, silent=True)
+        # Match the same shape/columns as the total RP table in Excel.
+        for c in template_cols:
+            if c not in tbl.columns:
+                tbl[c] = np.nan
+        tbl = tbl[template_cols]
+        out_tables.append((_income_bin_title(income_val, income_threshold), tbl))
+
+    # Rows with missing or out-of-grid income_bin (audit-only; closes sum vs main RP)
+    if audit_full is not None and "income_bin" in audit_full.columns and income_values:
+        iba = pd.to_numeric(audit_full["income_bin"], errors="coerce")
+        targets = {float(x) for x in income_values}
+        uncovered = iba.isna() | (~iba.isin(list(targets)))
+        if uncovered.any():
+            au_rest = audit_full.loc[uncovered].copy()
+            if not au_rest.empty:
+                tbl_u = _empty_rp_skeleton(template_cols)
+                tbl_u = reconcile_risk_production_summary_with_audit(tbl_u, au_rest, silent=True)
+                for c in template_cols:
+                    if c not in tbl_u.columns:
+                        tbl_u[c] = np.nan
+                tbl_u = tbl_u[template_cols]
+                out_tables.append(("Income bin — unassigned / outside grid bins", tbl_u))
+
+    return out_tables
+
+
+def _build_classification_grid(
+    output_base: Path,
+    seg_name: str,
+    period: str,
+    variables: list[str],
+    multiplier: float,
+    multiplier_h3: float | None,
+    inv_vars: list[str] | None,
+    income_threshold: float | None,
+) -> list[dict] | None:
+    """Build volume/risk breakdown by income_bin and classification (keep/swap-in/swap-out).
+
+    Uses audit data for volumes and counts (matching the RP summary tables which are
+    reconciled against the audit), and desagregado data for risk calculations.
+
+    Returns a list of dicts, one per row, with keys:
+        category, income_bin, income_label, volume, risk, count
+    or None if data is unavailable.
+    """
+    data_dir = output_base / seg_name / "data"
+    is_mr = period == "mr"
+
+    # ── Load audit file (source of truth for volumes/counts) ──
+    audit_path = data_dir / ("audit_base_mr.csv" if is_mr else "audit_base.csv")
+    if not audit_path.exists():
+        return None
+    try:
+        audit = pd.read_csv(audit_path, skipinitialspace=True)
+        audit.columns = audit.columns.str.strip()
+    except (pd.errors.ParserError, OSError, ValueError):
+        return None
+    if audit.empty or "classification" not in audit.columns or "income_bin" not in audit.columns:
+        return None
+
+    amt_col = "oa_amt_adjusted" if "oa_amt_adjusted" in audit.columns else "oa_amt_h0"
+    if amt_col not in audit.columns:
+        return None
+
+    # ── Load desagregado for risk (grid-level todu values) ──
+    if is_mr:
+        ds_path = data_dir / "data_summary_desagregado_mr_base.csv"
+        if not ds_path.exists():
+            ds_path = data_dir / "data_summary_desagregado_mr.csv"
+        opt_path = data_dir / "optimal_solution_mr_base.csv"
+        if not opt_path.exists():
+            opt_path = data_dir / "optimal_solution_mr.csv"
+        if not opt_path.exists():
+            opt_path = data_dir / "optimal_solution_base.csv"
+    else:
+        ds_path = data_dir / "data_summary_desagregado_base.csv"
+        opt_path = data_dir / "optimal_solution_base.csv"
+
+    # Risk from desagregado (optional — volumes work without it)
+    df_sum = None
+    if not is_mr and ds_path.exists() and opt_path.exists():
+        try:
+            df_sum = pd.read_csv(ds_path)
+            df_opt = pd.read_csv(opt_path)
+            if df_sum.empty or df_opt.empty or "income_bin" not in df_sum.columns:
+                df_sum = None
+            else:
+                # Determine passes_cut
+                _mask = None
+                _grid = None
+                if "acceptance_mask" in df_opt.columns and pd.notna(df_opt.iloc[0].get("acceptance_mask")):
+                    try:
+                        from src.optimization_utils import CellGrid, decode_mask
+
+                        _grid = CellGrid.from_summary(df_sum, variables)
+                        _mask = decode_mask(str(df_opt.iloc[0]["acceptance_mask"]))
+                        if len(_mask) != len(_grid.cell_data):
+                            _mask = None
+                            _grid = None
+                    except Exception:
+                        logger.warning(
+                            "Failed to decode acceptance_mask or construct CellGrid; "
+                            "falling back to legacy 2-var cut_map path. Downstream audit "
+                            "tables may use a different cutoff interpretation.",
+                            exc_info=True,
+                        )
+                        _mask = None
+                        _grid = None
+                if _mask is not None and _grid is not None:
+                    from src.optimization_utils import classify_by_mask
+
+                    df_sum["passes_cut"] = classify_by_mask(df_sum, _mask, _grid)
+                else:
+                    var0 = variables[0]
+                    var1 = variables[1] if len(variables) > 1 else None
+                    if var1 is not None:
+                        opt_row = df_opt.iloc[0]
+                        cut_map = {}
+                        for bv in sorted(df_sum[var0].unique()):
+                            for key in [bv, str(bv), str(float(bv))]:
+                                if key in df_opt.columns:
+                                    cut_map[bv] = opt_row[key]
+                                    break
+                            else:
+                                cut_map[bv] = np.inf if (inv_vars and var1 in inv_vars) else -np.inf
+                        df_sum["cut_limit"] = df_sum[var0].map(cut_map)
+                        if inv_vars and var1 in inv_vars:
+                            df_sum["passes_cut"] = df_sum[var1] >= df_sum["cut_limit"]
+                        else:
+                            df_sum["passes_cut"] = df_sum[var1] <= df_sum["cut_limit"]
+                    else:
+                        df_sum = None
+        except Exception:
+            logger.warning(
+                "Failed to construct audit summary (passes_cut / cut_map); "
+                "audit tab for this segment/scenario will be skipped.",
+                exc_info=True,
+            )
+            df_sum = None
+
+    # ── Income bin labels ──
+    ib_vals = sorted(pd.to_numeric(audit["income_bin"], errors="coerce").dropna().unique())
+    if not ib_vals:
+        return None
+
+    # ── Compute risk per (income_bin, category) from desagregado ──
+    risk_lookup: dict[tuple[float, str], float | None] = {}
+    if df_sum is not None and "passes_cut" in df_sum.columns:
+        ib_col_ds = pd.to_numeric(df_sum["income_bin"], errors="coerce")
+        for iv in ib_vals:
+            sub = df_sum.loc[ib_col_ds == iv]
+            for cat, filt, suffix in [
+                ("Keep", sub[sub["passes_cut"]], "_boo"),
+                ("Swap-out", sub[~sub["passes_cut"]], "_boo"),
+                ("Swap-in", sub[sub["passes_cut"]], "_rep"),
+            ]:
+                rn_col = f"todu_30ever_h6{suffix}"
+                rd_col = f"todu_amt_pile_h6{suffix}"
+                rn = filt[rn_col].sum() if rn_col in filt.columns else 0
+                rd = filt[rd_col].sum() if rd_col in filt.columns else 0
+                risk = None
+                if rd > 0:
+                    r_raw = calculate_b2_ever_h6(rn, rd, multiplier=multiplier, as_percentage=True, decimals=4)
+                    risk = float(r_raw) if pd.notna(r_raw) else None
+                risk_lookup[(iv, cat)] = risk
+            # Optimum risk = combined kept_boo + swap_in_rep
+            sub_pass = sub[sub["passes_cut"]]
+            o_rn = (sub_pass["todu_30ever_h6_boo"].sum() if "todu_30ever_h6_boo" in sub_pass.columns else 0) + (
+                sub_pass["todu_30ever_h6_rep"].sum() if "todu_30ever_h6_rep" in sub_pass.columns else 0
+            )
+            o_rd = (sub_pass["todu_amt_pile_h6_boo"].sum() if "todu_amt_pile_h6_boo" in sub_pass.columns else 0) + (
+                sub_pass["todu_amt_pile_h6_rep"].sum() if "todu_amt_pile_h6_rep" in sub_pass.columns else 0
+            )
+            opt_risk = None
+            if o_rd > 0:
+                or_raw = calculate_b2_ever_h6(o_rn, o_rd, multiplier=multiplier, as_percentage=True, decimals=4)
+                opt_risk = float(or_raw) if pd.notna(or_raw) else None
+            risk_lookup[(iv, "Optimum")] = opt_risk
+
+    # ── Build grid rows from audit (volumes/counts) + risk lookup ──
+    cls_col = audit["classification"].astype(str).str.strip()
+    ib_col_a = pd.to_numeric(audit["income_bin"], errors="coerce")
+    # Map audit classification names to grid categories
+    cat_map = {"keep": "Keep", "swap_in": "Swap-in", "swap_out": "Swap-out"}
+
+    rows: list[dict] = []
+    for iv in ib_vals:
+        label = _ib_label(iv, income_threshold)
+        ib_mask = ib_col_a == iv
+        for audit_cls, grid_cat in cat_map.items():
+            cls_mask = cls_col == audit_cls
+            subset = audit.loc[ib_mask & cls_mask]
+            vol = float(subset[amt_col].sum()) if not subset.empty else 0.0
+            cnt = len(subset)
+            risk = risk_lookup.get((iv, grid_cat))
+            rows.append(
+                {
+                    "category": grid_cat,
+                    "income_bin": iv,
+                    "income_label": label,
+                    "volume": vol,
+                    "risk": risk,
+                    "count": cnt,
+                }
+            )
+        # Optimum = Keep + Swap-in
+        keep_r = next(r for r in rows if r["category"] == "Keep" and r["income_bin"] == iv)
+        si_r = next(r for r in rows if r["category"] == "Swap-in" and r["income_bin"] == iv)
+        rows.append(
+            {
+                "category": "Optimum",
+                "income_bin": iv,
+                "income_label": label,
+                "volume": keep_r["volume"] + si_r["volume"],
+                "risk": risk_lookup.get((iv, "Optimum")),
+                "count": keep_r["count"] + si_r["count"],
+            }
+        )
+    return rows if rows else None
+
+
+# _write_single_pivot_grid is now a module-level helper (R2b-ii todo #57 step 8).
+
+# _write_acceptance_strip_1d and _write_acceptance_grid are now
+# module-level helpers (R2b-ii todo #57 step 9).
+
+
 def export_consolidated_excel(
     consolidated_df: pd.DataFrame,
     output_base: str | Path,
@@ -3123,339 +3476,8 @@ def export_consolidated_excel(
 
     # _load_segment_settings is now a module-level helper (R2b-ii todo #57 step 6).
 
-    def _build_income_bin_tables(
-        seg_name: str, period: str, template_cols: list[str]
-    ) -> list[tuple[str, pd.DataFrame]]:
-        data_dir = output_base / seg_name / "data"
-        accepted_cells_path = data_dir / "accepted_cells_base.csv"
-        if not accepted_cells_path.exists():
-            return []
-        try:
-            variables = list(pd.read_csv(accepted_cells_path, nrows=1).columns)
-        except (pd.errors.ParserError, OSError, ValueError):
-            return []
-        if not variables:
-            return []
-
-        if period == "mr":
-            ds_path = data_dir / "data_summary_desagregado_mr_base.csv"
-            if not ds_path.exists():
-                ds_path = data_dir / "data_summary_desagregado_mr.csv"
-            # Use MR-specific optimal solution (has re-optimized mask after recalibration);
-            # fall back to main-period if MR-specific doesn't exist (pre-fix runs).
-            opt_path = data_dir / "optimal_solution_mr_base.csv"
-            if not opt_path.exists():
-                opt_path = data_dir / "optimal_solution_mr.csv"
-            if not opt_path.exists():
-                opt_path = data_dir / "optimal_solution_base.csv"
-        else:
-            ds_path = data_dir / "data_summary_desagregado_base.csv"
-            opt_path = data_dir / "optimal_solution_base.csv"
-        if not ds_path.exists() or not opt_path.exists():
-            return []
-        try:
-            df_sum = pd.read_csv(ds_path)
-            df_opt = pd.read_csv(opt_path)
-        except (pd.errors.ParserError, OSError, ValueError):
-            return []
-        if df_sum.empty or df_opt.empty or "income_bin" not in df_sum.columns:
-            return []
-
-        mask = None
-        grid = None
-        if "acceptance_mask" in df_opt.columns and pd.notna(df_opt.iloc[0].get("acceptance_mask")):
-            try:
-                from src.optimization_utils import CellGrid, decode_mask
-
-                grid = CellGrid.from_summary(df_sum, variables)
-                mask = decode_mask(str(df_opt.iloc[0]["acceptance_mask"]))
-                if len(mask) != len(grid.cell_data):
-                    logger.warning(
-                        f"[{seg_name}] acceptance_mask length ({len(mask)}) does not match grid cells ({len(grid.cell_data)})"
-                    )
-                    mask = None
-                    grid = None
-            except Exception as e:
-                logger.warning(f"[{seg_name}] Could not decode acceptance_mask for income-bin RP tables: {e}")
-                mask = None
-                grid = None
-
-        from src.mr_pipeline import calculate_metrics_from_cuts
-
-        seg_settings = _load_segment_settings(output_base, seg_name)
-
-        # _extract_binary_income_threshold and _resolve_income_threshold are
-        # now module-level helpers (R2b-ii todo #57 step 6).
-        income_threshold = _resolve_income_threshold(output_base, segments, supersegments, seg_name)
-
-        # _income_bin_title is now a module-level helper (R2b-ii todo #57 step 10).
-
-        audit_path = data_dir / ("audit_base_mr.csv" if period == "mr" else "audit_base.csv")
-        audit_full: pd.DataFrame | None = None
-        if audit_path.exists():
-            try:
-                audit_full = pd.read_csv(audit_path, skipinitialspace=True)
-                audit_full.columns = audit_full.columns.str.strip()
-            except (pd.errors.ParserError, OSError, ValueError):
-                audit_full = None
-
-        # _audit_slice_for_income_bin and _empty_rp_skeleton are now
-        # module-level helpers (R2b-ii todo #57 step 7).
-
-        out_tables: list[tuple[str, pd.DataFrame]] = []
-        # Keep deterministic order with 1 first, then 2.
-        income_values = sorted(pd.Series(df_sum["income_bin"]).dropna().unique().tolist(), key=lambda x: float(x))
-        ib_grid = pd.to_numeric(df_sum["income_bin"], errors="coerce")
-        for income_val in income_values:
-            try:
-                iv = float(income_val)
-            except (TypeError, ValueError):
-                continue
-            df_bin = df_sum.loc[ib_grid == iv].copy()
-            if df_bin.empty:
-                continue
-            tbl = calculate_metrics_from_cuts(
-                data_summary_desagregado=df_bin,
-                optimal_solution_df=df_opt,
-                variables=variables,
-                inv_vars=seg_settings["inv_vars"],
-                mask=mask,
-                grid=grid,
-                multiplier=seg_settings["multiplier"],
-                multiplier_h3=seg_settings["multiplier_h3"],
-            )
-            if tbl is None or tbl.empty:
-                continue
-            tbl = _append_summary_row_if_missing(tbl)
-            # Match main RP sheet: production € from loan-level audit for this income_bin.
-            # Skip in baseline mode — the accept-all mask makes the audit classify all
-            # rejected applicants as swap-in, which would overwrite the correct zero values.
-            if audit_full is not None and not audit_full.empty and not seg_settings["baseline_mode"]:
-                audit_bin = _audit_slice_for_income_bin(audit_full, income_val)
-                if not audit_bin.empty:
-                    tbl = reconcile_risk_production_summary_with_audit(tbl, audit_bin, silent=True)
-            # Match the same shape/columns as the total RP table in Excel.
-            for c in template_cols:
-                if c not in tbl.columns:
-                    tbl[c] = np.nan
-            tbl = tbl[template_cols]
-            out_tables.append((_income_bin_title(income_val, income_threshold), tbl))
-
-        # Rows with missing or out-of-grid income_bin (audit-only; closes sum vs main RP)
-        if audit_full is not None and "income_bin" in audit_full.columns and income_values:
-            iba = pd.to_numeric(audit_full["income_bin"], errors="coerce")
-            targets = {float(x) for x in income_values}
-            uncovered = iba.isna() | (~iba.isin(list(targets)))
-            if uncovered.any():
-                au_rest = audit_full.loc[uncovered].copy()
-                if not au_rest.empty:
-                    tbl_u = _empty_rp_skeleton(template_cols)
-                    tbl_u = reconcile_risk_production_summary_with_audit(tbl_u, au_rest, silent=True)
-                    for c in template_cols:
-                        if c not in tbl_u.columns:
-                            tbl_u[c] = np.nan
-                    tbl_u = tbl_u[template_cols]
-                    out_tables.append(("Income bin — unassigned / outside grid bins", tbl_u))
-
-        return out_tables
-
-    def _build_classification_grid(
-        seg_name: str,
-        period: str,
-        variables: list[str],
-        multiplier: float,
-        multiplier_h3: float | None,
-        inv_vars: list[str] | None,
-        income_threshold: float | None,
-    ) -> list[dict] | None:
-        """Build volume/risk breakdown by income_bin and classification (keep/swap-in/swap-out).
-
-        Uses audit data for volumes and counts (matching the RP summary tables which are
-        reconciled against the audit), and desagregado data for risk calculations.
-
-        Returns a list of dicts, one per row, with keys:
-            category, income_bin, income_label, volume, risk, count
-        or None if data is unavailable.
-        """
-        data_dir = output_base / seg_name / "data"
-        is_mr = period == "mr"
-
-        # ── Load audit file (source of truth for volumes/counts) ──
-        audit_path = data_dir / ("audit_base_mr.csv" if is_mr else "audit_base.csv")
-        if not audit_path.exists():
-            return None
-        try:
-            audit = pd.read_csv(audit_path, skipinitialspace=True)
-            audit.columns = audit.columns.str.strip()
-        except (pd.errors.ParserError, OSError, ValueError):
-            return None
-        if audit.empty or "classification" not in audit.columns or "income_bin" not in audit.columns:
-            return None
-
-        amt_col = "oa_amt_adjusted" if "oa_amt_adjusted" in audit.columns else "oa_amt_h0"
-        if amt_col not in audit.columns:
-            return None
-
-        # ── Load desagregado for risk (grid-level todu values) ──
-        if is_mr:
-            ds_path = data_dir / "data_summary_desagregado_mr_base.csv"
-            if not ds_path.exists():
-                ds_path = data_dir / "data_summary_desagregado_mr.csv"
-            opt_path = data_dir / "optimal_solution_mr_base.csv"
-            if not opt_path.exists():
-                opt_path = data_dir / "optimal_solution_mr.csv"
-            if not opt_path.exists():
-                opt_path = data_dir / "optimal_solution_base.csv"
-        else:
-            ds_path = data_dir / "data_summary_desagregado_base.csv"
-            opt_path = data_dir / "optimal_solution_base.csv"
-
-        # Risk from desagregado (optional — volumes work without it)
-        df_sum = None
-        if not is_mr and ds_path.exists() and opt_path.exists():
-            try:
-                df_sum = pd.read_csv(ds_path)
-                df_opt = pd.read_csv(opt_path)
-                if df_sum.empty or df_opt.empty or "income_bin" not in df_sum.columns:
-                    df_sum = None
-                else:
-                    # Determine passes_cut
-                    _mask = None
-                    _grid = None
-                    if "acceptance_mask" in df_opt.columns and pd.notna(df_opt.iloc[0].get("acceptance_mask")):
-                        try:
-                            from src.optimization_utils import CellGrid, decode_mask
-
-                            _grid = CellGrid.from_summary(df_sum, variables)
-                            _mask = decode_mask(str(df_opt.iloc[0]["acceptance_mask"]))
-                            if len(_mask) != len(_grid.cell_data):
-                                _mask = None
-                                _grid = None
-                        except Exception:
-                            logger.warning(
-                                "Failed to decode acceptance_mask or construct CellGrid; "
-                                "falling back to legacy 2-var cut_map path. Downstream audit "
-                                "tables may use a different cutoff interpretation.",
-                                exc_info=True,
-                            )
-                            _mask = None
-                            _grid = None
-                    if _mask is not None and _grid is not None:
-                        from src.optimization_utils import classify_by_mask
-
-                        df_sum["passes_cut"] = classify_by_mask(df_sum, _mask, _grid)
-                    else:
-                        var0 = variables[0]
-                        var1 = variables[1] if len(variables) > 1 else None
-                        if var1 is not None:
-                            opt_row = df_opt.iloc[0]
-                            cut_map = {}
-                            for bv in sorted(df_sum[var0].unique()):
-                                for key in [bv, str(bv), str(float(bv))]:
-                                    if key in df_opt.columns:
-                                        cut_map[bv] = opt_row[key]
-                                        break
-                                else:
-                                    cut_map[bv] = np.inf if (inv_vars and var1 in inv_vars) else -np.inf
-                            df_sum["cut_limit"] = df_sum[var0].map(cut_map)
-                            if inv_vars and var1 in inv_vars:
-                                df_sum["passes_cut"] = df_sum[var1] >= df_sum["cut_limit"]
-                            else:
-                                df_sum["passes_cut"] = df_sum[var1] <= df_sum["cut_limit"]
-                        else:
-                            df_sum = None
-            except Exception:
-                logger.warning(
-                    "Failed to construct audit summary (passes_cut / cut_map); "
-                    "audit tab for this segment/scenario will be skipped.",
-                    exc_info=True,
-                )
-                df_sum = None
-
-        # ── Income bin labels ──
-        ib_vals = sorted(pd.to_numeric(audit["income_bin"], errors="coerce").dropna().unique())
-        if not ib_vals:
-            return None
-
-        # ── Compute risk per (income_bin, category) from desagregado ──
-        risk_lookup: dict[tuple[float, str], float | None] = {}
-        if df_sum is not None and "passes_cut" in df_sum.columns:
-            ib_col_ds = pd.to_numeric(df_sum["income_bin"], errors="coerce")
-            for iv in ib_vals:
-                sub = df_sum.loc[ib_col_ds == iv]
-                for cat, filt, suffix in [
-                    ("Keep", sub[sub["passes_cut"]], "_boo"),
-                    ("Swap-out", sub[~sub["passes_cut"]], "_boo"),
-                    ("Swap-in", sub[sub["passes_cut"]], "_rep"),
-                ]:
-                    rn_col = f"todu_30ever_h6{suffix}"
-                    rd_col = f"todu_amt_pile_h6{suffix}"
-                    rn = filt[rn_col].sum() if rn_col in filt.columns else 0
-                    rd = filt[rd_col].sum() if rd_col in filt.columns else 0
-                    risk = None
-                    if rd > 0:
-                        r_raw = calculate_b2_ever_h6(rn, rd, multiplier=multiplier, as_percentage=True, decimals=4)
-                        risk = float(r_raw) if pd.notna(r_raw) else None
-                    risk_lookup[(iv, cat)] = risk
-                # Optimum risk = combined kept_boo + swap_in_rep
-                sub_pass = sub[sub["passes_cut"]]
-                o_rn = (sub_pass["todu_30ever_h6_boo"].sum() if "todu_30ever_h6_boo" in sub_pass.columns else 0) + (
-                    sub_pass["todu_30ever_h6_rep"].sum() if "todu_30ever_h6_rep" in sub_pass.columns else 0
-                )
-                o_rd = (sub_pass["todu_amt_pile_h6_boo"].sum() if "todu_amt_pile_h6_boo" in sub_pass.columns else 0) + (
-                    sub_pass["todu_amt_pile_h6_rep"].sum() if "todu_amt_pile_h6_rep" in sub_pass.columns else 0
-                )
-                opt_risk = None
-                if o_rd > 0:
-                    or_raw = calculate_b2_ever_h6(o_rn, o_rd, multiplier=multiplier, as_percentage=True, decimals=4)
-                    opt_risk = float(or_raw) if pd.notna(or_raw) else None
-                risk_lookup[(iv, "Optimum")] = opt_risk
-
-        # ── Build grid rows from audit (volumes/counts) + risk lookup ──
-        cls_col = audit["classification"].astype(str).str.strip()
-        ib_col_a = pd.to_numeric(audit["income_bin"], errors="coerce")
-        # Map audit classification names to grid categories
-        cat_map = {"keep": "Keep", "swap_in": "Swap-in", "swap_out": "Swap-out"}
-
-        rows: list[dict] = []
-        for iv in ib_vals:
-            label = _ib_label(iv, income_threshold)
-            ib_mask = ib_col_a == iv
-            for audit_cls, grid_cat in cat_map.items():
-                cls_mask = cls_col == audit_cls
-                subset = audit.loc[ib_mask & cls_mask]
-                vol = float(subset[amt_col].sum()) if not subset.empty else 0.0
-                cnt = len(subset)
-                risk = risk_lookup.get((iv, grid_cat))
-                rows.append(
-                    {
-                        "category": grid_cat,
-                        "income_bin": iv,
-                        "income_label": label,
-                        "volume": vol,
-                        "risk": risk,
-                        "count": cnt,
-                    }
-                )
-            # Optimum = Keep + Swap-in
-            keep_r = next(r for r in rows if r["category"] == "Keep" and r["income_bin"] == iv)
-            si_r = next(r for r in rows if r["category"] == "Swap-in" and r["income_bin"] == iv)
-            rows.append(
-                {
-                    "category": "Optimum",
-                    "income_bin": iv,
-                    "income_label": label,
-                    "volume": keep_r["volume"] + si_r["volume"],
-                    "risk": risk_lookup.get((iv, "Optimum")),
-                    "count": keep_r["count"] + si_r["count"],
-                }
-            )
-        return rows if rows else None
-
-    # _write_single_pivot_grid is now a module-level helper (R2b-ii todo #57 step 8).
-
-    # _write_acceptance_strip_1d and _write_acceptance_grid are now
-    # module-level helpers (R2b-ii todo #57 step 9).
+    # _build_income_bin_tables and _build_classification_grid are now
+    # module-level helpers (R2b-iii todo #57 step 11).
 
     # =====================================================================
     # Build workbook
@@ -3870,10 +3892,13 @@ def export_consolidated_excel(
             if df_rp.empty:
                 continue
             df_rp = df_rp.drop(columns=[c for c in _rp_exclude_cols if c in df_rp.columns])
-            rp_extra_tables = _build_income_bin_tables(seg_name, period="main", template_cols=list(df_rp.columns))
+            rp_extra_tables = _build_income_bin_tables(
+                output_base, segments, supersegments, seg_name, period="main", template_cols=list(df_rp.columns)
+            )
 
             # Build classification grid for main period
             main_grid = _build_classification_grid(
+                output_base,
                 seg_name,
                 period="main",
                 variables=seg_vars_full,
@@ -3909,10 +3934,13 @@ def export_consolidated_excel(
             if df_mr.empty:
                 continue
             df_mr = df_mr.drop(columns=[c for c in _rp_exclude_cols_mr if c in df_mr.columns])
-            mr_extra_tables = _build_income_bin_tables(seg_name, period="mr", template_cols=list(df_mr.columns))
+            mr_extra_tables = _build_income_bin_tables(
+                output_base, segments, supersegments, seg_name, period="mr", template_cols=list(df_mr.columns)
+            )
 
             # Build classification grid for MR period (volumes only)
             mr_grid = _build_classification_grid(
+                output_base,
                 seg_name,
                 period="mr",
                 variables=seg_vars_full,
