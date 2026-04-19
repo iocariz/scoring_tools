@@ -3490,6 +3490,39 @@ def _write_sheet_segment_detail(writer, consolidated_df: pd.DataFrame) -> None:
         _apply_page_setup(writer.sheets["Segment Detail"])
 
 
+def _write_per_segment_grid_sheets(wb, cutoff_data: dict) -> None:
+    """Create one 'Grid {seg_name}' sheet per segment with its acceptance grids.
+
+    Each sheet gets a title bar + one sub-grid per scenario
+    (pessimistic/base/optimistic). Extracted in R2b-iii step 13.
+    """
+    for seg_name, df_cut in cutoff_data.items():
+        sheet_name = f"Grid {seg_name}"[:31]
+        ws_grid = wb.create_sheet(sheet_name)
+        ws_grid.sheet_properties.tabColor = _CLR_TAB_GRID
+        ws_grid.sheet_view.showGridLines = False
+
+        # Title bar
+        title_fill = PatternFill(start_color=_CLR_PRIMARY, end_color=_CLR_PRIMARY, fill_type="solid")
+        ws_grid.merge_cells(start_row=1, start_column=1, end_row=1, end_column=14)
+        t = ws_grid.cell(row=1, column=1)
+        t.value = f"  Acceptance Grid — {seg_name}"
+        t.font = Font(bold=True, color=_CLR_WHITE, size=16, name=_FN)
+        t.fill = title_fill
+        t.alignment = _ALIGN_LEFT
+        ws_grid.row_dimensions[1].height = 36
+        for gc in range(1, 15):
+            ws_grid.cell(row=2, column=gc).border = Border(top=Side(style="medium", color=_CLR_ACCENT))
+        ws_grid.row_dimensions[2].height = 4
+
+        # Draw grids per scenario
+        cur_row = 4
+        for scen in ["pessimistic", "base", "optimistic"]:
+            if "scenario" in df_cut.columns and scen in df_cut["scenario"].values:
+                cur_row = _write_acceptance_grid(ws_grid, df_cut, f"{scen.title()}", cur_row, scenario=scen)
+        _apply_page_setup(ws_grid)
+
+
 def _write_sheet_cutoff_comparison(writer, cutoff_data: dict) -> None:
     """Write the Cutoff Comparison sheet: concatenated per-segment cutoffs."""
     if cutoff_data:
@@ -3785,31 +3818,7 @@ def export_consolidated_excel(
         # =============================================================
         # Per-segment acceptance grid sheets
         # =============================================================
-        for seg_name, df_cut in cutoff_data.items():
-            sheet_name = f"Grid {seg_name}"[:31]
-            ws_grid = wb.create_sheet(sheet_name)
-            ws_grid.sheet_properties.tabColor = _CLR_TAB_GRID
-            ws_grid.sheet_view.showGridLines = False
-
-            # Title bar
-            title_fill = PatternFill(start_color=_CLR_PRIMARY, end_color=_CLR_PRIMARY, fill_type="solid")
-            ws_grid.merge_cells(start_row=1, start_column=1, end_row=1, end_column=14)
-            t = ws_grid.cell(row=1, column=1)
-            t.value = f"  Acceptance Grid — {seg_name}"
-            t.font = Font(bold=True, color=_CLR_WHITE, size=16, name=_FN)
-            t.fill = title_fill
-            t.alignment = _ALIGN_LEFT
-            ws_grid.row_dimensions[1].height = 36
-            for gc in range(1, 15):
-                ws_grid.cell(row=2, column=gc).border = Border(top=Side(style="medium", color=_CLR_ACCENT))
-            ws_grid.row_dimensions[2].height = 4
-
-            # Draw grids per scenario
-            cur_row = 4
-            for scen in ["pessimistic", "base", "optimistic"]:
-                if "scenario" in df_cut.columns and scen in df_cut["scenario"].values:
-                    cur_row = _write_acceptance_grid(ws_grid, df_cut, f"{scen.title()}", cur_row, scenario=scen)
-            _apply_page_setup(ws_grid)
+        _write_per_segment_grid_sheets(wb, cutoff_data)
 
         # =============================================================
         # Per-segment RP summary sheets (Main + MR)
