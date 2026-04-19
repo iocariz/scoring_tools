@@ -1265,6 +1265,81 @@ def _write_mr_visualization(
         logger.info(f"MR per-slice visualization saved to {output_plot_path_mr}")
 
 
+def _write_mr_summary_table(
+    *,
+    data_demand_mr: pd.DataFrame,
+    data_summary_desagregado_mr: pd.DataFrame,
+    optimal_solution_df: pd.DataFrame | None,
+    settings: "PreprocessingSettings",
+    mask: np.ndarray | None,
+    grid: object | None,
+    audit_mr_df: pd.DataFrame | None,
+    file_suffix: str,
+    output: OutputPaths,
+) -> None:
+    """Build and persist the MR Risk Production Summary Table + MR optimal-solution CSV.
+
+    Steps:
+      1. Compute total demand from ``data_demand_mr`` (excluding cancelled).
+      2. Call :func:`calculate_metrics_from_cuts` with the current mask/grid.
+      3. Reconcile against audit (unless baseline mode).
+      4. Save the MR-period optimal-solution CSV so downstream consolidated
+         per-income-bin tables use the correct re-optimized mask.
+      5. Write the summary table CSV and log it.
+
+    All state flows through explicit parameters — no closures over
+    process_mr_period locals.
+    """
+    logger.info("Generating Risk Production Summary Table for MR period...")
+    VARIABLES = settings.variables
+
+    if "status_name" in data_demand_mr.columns and "oa_amt_h0" in data_demand_mr.columns:
+        mr_total_demand = data_demand_mr.loc[data_demand_mr["status_name"] != "canceled", "oa_amt_h0"].sum()
+    else:
+        mr_total_demand = data_demand_mr["oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0.0
+
+    mr_summary_table = calculate_metrics_from_cuts(
+        data_summary_desagregado_mr,
+        optimal_solution_df,
+        VARIABLES,
+        settings.inv_vars,
+        mask=mask,
+        grid=grid,
+        multiplier_h3=settings.multiplier_h3,
+        multiplier=settings.multiplier,
+        total_demand=mr_total_demand,
+    )
+
+    if (
+        mr_summary_table is not None
+        and audit_mr_df is not None
+        and not audit_mr_df.empty
+        and not settings.baseline_mode
+    ):
+        from src.audit import reconcile_risk_production_summary_with_audit
+
+        mr_summary_table = reconcile_risk_production_summary_with_audit(mr_summary_table, audit_mr_df)
+
+    # Save MR-period optimal solution so consolidated per-income-bin tables
+    # use the correct (possibly re-optimized) mask, not the main-period one.
+    if mask is not None and grid is not None:
+        from src.optimization_utils import CellGrid
+
+        mr_opt_data: dict[str, Any] = {"sol_fac": 0}
+        if isinstance(grid, CellGrid):
+            mr_opt_data["acceptance_mask"] = ",".join(str(int(v)) for v in mask)
+        mr_opt_df = pd.DataFrame([mr_opt_data])
+        mr_opt_path = output.mr_optimal_solution_csv(file_suffix)
+        mr_opt_df.to_csv(mr_opt_path, index=False)
+        logger.debug(f"MR optimal solution saved to {mr_opt_path}")
+
+    if mr_summary_table is not None:
+        mr_summary_path = output.mr_risk_production_summary_csv(file_suffix)
+        mr_summary_table.to_csv(mr_summary_path, index=False)
+        logger.info(f"MR Risk Production Summary Table saved to {mr_summary_path}")
+        logger.info(f"MR Table:\n{mr_summary_table.to_string()}")
+
+
 def _compute_mr_stability_metrics(
     data_booked: pd.DataFrame,
     data_booked_mr: pd.DataFrame,
@@ -2058,7 +2133,6 @@ def process_mr_period(
 
         # --- Visualize b2_ever_h6 for MR ---
         _write_mr_visualization(data_summary_desagregado_mr, settings, file_suffix, output)
-        VARIABLES = settings.variables
 
         # --- Cleanup ---
         if "b2_ever_h6_tmp" in data_demand_mr.columns:
@@ -2085,53 +2159,17 @@ def process_mr_period(
             grid = mr_grid
 
         # --- Generate Risk Production Summary Table for MR ---
-        logger.info("Generating Risk Production Summary Table for MR period...")
-
-        if "status_name" in data_demand_mr.columns and "oa_amt_h0" in data_demand_mr.columns:
-            mr_total_demand = data_demand_mr.loc[data_demand_mr["status_name"] != "canceled", "oa_amt_h0"].sum()
-        else:
-            mr_total_demand = data_demand_mr["oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0.0
-
-        mr_summary_table = calculate_metrics_from_cuts(
-            data_summary_desagregado_mr,
-            optimal_solution_df,
-            VARIABLES,
-            settings.inv_vars,
+        _write_mr_summary_table(
+            data_demand_mr=data_demand_mr,
+            data_summary_desagregado_mr=data_summary_desagregado_mr,
+            optimal_solution_df=optimal_solution_df,
+            settings=settings,
             mask=mask,
             grid=grid,
-            multiplier_h3=settings.multiplier_h3,
-            multiplier=settings.multiplier,
-            total_demand=mr_total_demand,
+            audit_mr_df=audit_mr_df,
+            file_suffix=file_suffix,
+            output=output,
         )
-
-        if (
-            mr_summary_table is not None
-            and audit_mr_df is not None
-            and not audit_mr_df.empty
-            and not settings.baseline_mode
-        ):
-            from src.audit import reconcile_risk_production_summary_with_audit
-
-            mr_summary_table = reconcile_risk_production_summary_with_audit(mr_summary_table, audit_mr_df)
-
-        # Save MR-period optimal solution so consolidated per-income-bin tables
-        # use the correct (possibly re-optimized) mask, not the main-period one.
-        if mask is not None and grid is not None:
-            from src.optimization_utils import CellGrid
-
-            mr_opt_data: dict[str, Any] = {"sol_fac": 0}
-            if isinstance(grid, CellGrid):
-                mr_opt_data["acceptance_mask"] = ",".join(str(int(v)) for v in mask)
-            mr_opt_df = pd.DataFrame([mr_opt_data])
-            mr_opt_path = output.mr_optimal_solution_csv(file_suffix)
-            mr_opt_df.to_csv(mr_opt_path, index=False)
-            logger.debug(f"MR optimal solution saved to {mr_opt_path}")
-
-        if mr_summary_table is not None:
-            mr_summary_path = output.mr_risk_production_summary_csv(file_suffix)
-            mr_summary_table.to_csv(mr_summary_path, index=False)
-            logger.info(f"MR Risk Production Summary Table saved to {mr_summary_path}")
-            logger.info(f"MR Table:\n{mr_summary_table.to_string()}")
 
         # --- Calculate PSI/CSI Stability Metrics ---
         _compute_mr_stability_metrics(data_booked, data_booked_mr, settings, file_suffix, output)
