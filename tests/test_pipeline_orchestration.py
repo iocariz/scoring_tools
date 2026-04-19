@@ -4,8 +4,14 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+import src.pipeline.cutoff_optimization as optimization_module
 import src.pipeline.inference as inference_module
-import src.pipeline.optimization as optimization_module
+
+# After R2b-iv (#63), run_optimization_phase + its helper imports live in
+# src.pipeline.cutoff_optimization. The legacy `src.pipeline.optimization`
+# shim re-exports for backward compat but does NOT re-expose the module's
+# internal imports (run_optimization_pipeline, trace_pareto_frontier, etc.),
+# so test monkey-patches must target the new module.
 import src.pipeline.preprocessing as preprocessing_module
 import src.pipeline.reporting as reporting_module
 from src.config import OutputPaths, PreprocessingSettings
