@@ -3422,6 +3422,84 @@ def _build_classification_grid(
 # module-level helpers (R2b-ii todo #57 step 9).
 
 
+# =============================================================================
+# Per-sheet builders for the static sheets (R2b-iii todo #57 step 12)
+# =============================================================================
+# Extracted from the main orchestration block. Each takes the openpyxl
+# writer and the data it needs; no segment-level closures.
+
+
+def _write_sheet_portfolio_summary(writer, consolidated_df: pd.DataFrame) -> None:
+    """Write the Portfolio Summary sheet: TOTAL + supersegment rows."""
+    portfolio_mask = consolidated_df["group"].str.match(r"^(TOTAL|supersegment_)")
+    portfolio_cols = [
+        "group",
+        "period",
+        "scenario",
+        "n_segments",
+        "actual_production",
+        "optimum_production",
+        "production_delta",
+        "production_delta_pct",
+        "actual_risk_pct",
+        "optimum_risk_pct",
+        "risk_delta_pct",
+        "actual_rejection_rate_pct",
+        "optimum_rejection_rate_pct",
+        "total_demand",
+        "production_ci_lower",
+        "production_ci_upper",
+        "risk_ci_lower",
+        "risk_ci_upper",
+    ]
+    portfolio_df = _prepare_export_df(consolidated_df[portfolio_mask], portfolio_cols)
+    if not portfolio_df.empty:
+        portfolio_df.to_excel(writer, sheet_name="Portfolio Summary", index=False)
+        _style_table(writer.sheets["Portfolio Summary"], portfolio_df.columns)
+        writer.sheets["Portfolio Summary"].sheet_properties.tabColor = _CLR_TAB_PORTFOLIO
+        _apply_page_setup(writer.sheets["Portfolio Summary"])
+
+
+def _write_sheet_segment_detail(writer, consolidated_df: pd.DataFrame) -> None:
+    """Write the Segment Detail sheet: per-segment rows."""
+    segment_mask = ~consolidated_df["group"].str.match(r"^(TOTAL|supersegment_)")
+    segment_cols = [
+        "group",
+        "period",
+        "scenario",
+        "segments",
+        "actual_production",
+        "optimum_production",
+        "production_delta",
+        "production_delta_pct",
+        "actual_risk_pct",
+        "optimum_risk_pct",
+        "risk_delta_pct",
+        "actual_risk_h3_pct",
+        "optimum_risk_h3_pct",
+        "actual_rejection_rate_pct",
+        "optimum_rejection_rate_pct",
+        "swap_in_production",
+        "swap_out_production",
+    ]
+    segment_df = _prepare_export_df(consolidated_df[segment_mask], segment_cols)
+    if not segment_df.empty:
+        segment_df.to_excel(writer, sheet_name="Segment Detail", index=False)
+        _style_table(writer.sheets["Segment Detail"], segment_df.columns)
+        writer.sheets["Segment Detail"].sheet_properties.tabColor = _CLR_TAB_SEGMENT
+        _apply_page_setup(writer.sheets["Segment Detail"])
+
+
+def _write_sheet_cutoff_comparison(writer, cutoff_data: dict) -> None:
+    """Write the Cutoff Comparison sheet: concatenated per-segment cutoffs."""
+    if cutoff_data:
+        all_cutoffs = pd.concat(cutoff_data.values(), ignore_index=True)
+        all_cutoffs.to_excel(writer, sheet_name="Cutoff Comparison", index=False)
+        _style_table(writer.sheets["Cutoff Comparison"], all_cutoffs.columns, highlight_total=False)
+        writer.sheets["Cutoff Comparison"].sheet_properties.tabColor = _CLR_TAB_CUTOFF
+        _apply_page_setup(writer.sheets["Cutoff Comparison"])
+
+
 def export_consolidated_excel(
     consolidated_df: pd.DataFrame,
     output_base: str | Path,
@@ -3698,75 +3776,11 @@ def export_consolidated_excel(
         _apply_page_setup(ws_exec)
 
         # =============================================================
-        # Sheet 2: Portfolio Summary
+        # Sheets 2–4: Portfolio Summary, Segment Detail, Cutoff Comparison
         # =============================================================
-        portfolio_mask = consolidated_df["group"].str.match(r"^(TOTAL|supersegment_)")
-        portfolio_cols = [
-            "group",
-            "period",
-            "scenario",
-            "n_segments",
-            "actual_production",
-            "optimum_production",
-            "production_delta",
-            "production_delta_pct",
-            "actual_risk_pct",
-            "optimum_risk_pct",
-            "risk_delta_pct",
-            "actual_rejection_rate_pct",
-            "optimum_rejection_rate_pct",
-            "total_demand",
-            "production_ci_lower",
-            "production_ci_upper",
-            "risk_ci_lower",
-            "risk_ci_upper",
-        ]
-        portfolio_df = _prepare_export_df(consolidated_df[portfolio_mask], portfolio_cols)
-        if not portfolio_df.empty:
-            portfolio_df.to_excel(writer, sheet_name="Portfolio Summary", index=False)
-            _style_table(writer.sheets["Portfolio Summary"], portfolio_df.columns)
-            writer.sheets["Portfolio Summary"].sheet_properties.tabColor = _CLR_TAB_PORTFOLIO
-            _apply_page_setup(writer.sheets["Portfolio Summary"])
-
-        # =============================================================
-        # Sheet 3: Segment Detail
-        # =============================================================
-        segment_mask = ~consolidated_df["group"].str.match(r"^(TOTAL|supersegment_)")
-        segment_cols = [
-            "group",
-            "period",
-            "scenario",
-            "segments",
-            "actual_production",
-            "optimum_production",
-            "production_delta",
-            "production_delta_pct",
-            "actual_risk_pct",
-            "optimum_risk_pct",
-            "risk_delta_pct",
-            "actual_risk_h3_pct",
-            "optimum_risk_h3_pct",
-            "actual_rejection_rate_pct",
-            "optimum_rejection_rate_pct",
-            "swap_in_production",
-            "swap_out_production",
-        ]
-        segment_df = _prepare_export_df(consolidated_df[segment_mask], segment_cols)
-        if not segment_df.empty:
-            segment_df.to_excel(writer, sheet_name="Segment Detail", index=False)
-            _style_table(writer.sheets["Segment Detail"], segment_df.columns)
-            writer.sheets["Segment Detail"].sheet_properties.tabColor = _CLR_TAB_SEGMENT
-            _apply_page_setup(writer.sheets["Segment Detail"])
-
-        # =============================================================
-        # Sheet 4: Cutoff Comparison (raw data table)
-        # =============================================================
-        if cutoff_data:
-            all_cutoffs = pd.concat(cutoff_data.values(), ignore_index=True)
-            all_cutoffs.to_excel(writer, sheet_name="Cutoff Comparison", index=False)
-            _style_table(writer.sheets["Cutoff Comparison"], all_cutoffs.columns, highlight_total=False)
-            writer.sheets["Cutoff Comparison"].sheet_properties.tabColor = _CLR_TAB_CUTOFF
-            _apply_page_setup(writer.sheets["Cutoff Comparison"])
+        _write_sheet_portfolio_summary(writer, consolidated_df)
+        _write_sheet_segment_detail(writer, consolidated_df)
+        _write_sheet_cutoff_comparison(writer, cutoff_data)
 
         # =============================================================
         # Per-segment acceptance grid sheets
