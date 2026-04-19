@@ -3490,6 +3490,214 @@ def _write_sheet_segment_detail(writer, consolidated_df: pd.DataFrame) -> None:
         _apply_page_setup(writer.sheets["Segment Detail"])
 
 
+def _write_per_segment_rp_sheets(
+    writer,
+    wb,
+    output_base: Path,
+    segments: dict[str, dict[str, Any]],
+    supersegments: dict[str, dict[str, Any]],
+) -> None:
+    """Write the per-segment RP (Risk Production) summary sheets: Main + MR.
+
+    For each segment, resolves the variables list and income threshold from
+    the segment / supersegment / global config (4-tier fallback), loads the
+    RP summary CSV, builds the income-bin tables and classification grid,
+    and writes one sheet per period via :func:`_write_rp_sheet`.
+
+    Extracted from export_consolidated_excel body in R2b-iii step 14.
+    """
+    _rp_exclude_cols = {"todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)"}
+    _rp_exclude_cols_mr = _rp_exclude_cols | {"todu_30ever_h3", "todu_amt_pile_h3"}
+
+    for seg_name in segments:
+        seg_settings = _load_segment_settings(output_base, seg_name)
+
+        # Resolve variables list — fall back to global config
+        seg_vars_full = _resolve_segment_variables(output_base, segments, seg_name)
+
+        # Resolve income threshold for labels
+        _income_th = _resolve_segment_income_threshold(output_base, segments, supersegments, seg_name)
+
+        # --- Main period ---
+        csv_path = output_base / seg_name / "data" / "risk_production_summary_table_base.csv"
+        if not csv_path.exists():
+            continue
+        try:
+            df_rp = pd.read_csv(csv_path)
+        except (pd.errors.ParserError, OSError, ValueError):
+            continue
+        if df_rp.empty:
+            continue
+        df_rp = df_rp.drop(columns=[c for c in _rp_exclude_cols if c in df_rp.columns])
+        rp_extra_tables = _build_income_bin_tables(
+            output_base, segments, supersegments, seg_name, period="main", template_cols=list(df_rp.columns)
+        )
+
+        # Build classification grid for main period
+        main_grid = _build_classification_grid(
+            output_base,
+            seg_name,
+            period="main",
+            variables=seg_vars_full,
+            multiplier=seg_settings["multiplier"],
+            multiplier_h3=seg_settings.get("multiplier_h3"),
+            inv_vars=seg_settings.get("inv_vars"),
+            income_threshold=_income_th,
+        )
+
+        sheet_name = f"RP {seg_name}"[:31]
+        _write_rp_sheet(
+            writer,
+            df_rp,
+            sheet_name,
+            seg_name,
+            "Main Period — Base Scenario",
+            _CLR_TAB_SEGMENT,
+            extra_tables=rp_extra_tables,
+            classification_grid=main_grid,
+            is_mr=False,
+        )
+
+        # --- MR period ---
+        mr_csv_path = output_base / seg_name / "data" / "risk_production_summary_table_mr_base.csv"
+        if not mr_csv_path.exists():
+            mr_csv_path = output_base / seg_name / "data" / "risk_production_summary_table_mr.csv"
+        if not mr_csv_path.exists():
+            continue
+        try:
+            df_mr = pd.read_csv(mr_csv_path)
+        except (pd.errors.ParserError, OSError, ValueError):
+            continue
+        if df_mr.empty:
+            continue
+        df_mr = df_mr.drop(columns=[c for c in _rp_exclude_cols_mr if c in df_mr.columns])
+        mr_extra_tables = _build_income_bin_tables(
+            output_base, segments, supersegments, seg_name, period="mr", template_cols=list(df_mr.columns)
+        )
+
+        # Build classification grid for MR period (volumes only)
+        mr_grid = _build_classification_grid(
+            output_base,
+            seg_name,
+            period="mr",
+            variables=seg_vars_full,
+            multiplier=seg_settings["multiplier"],
+            multiplier_h3=seg_settings.get("multiplier_h3"),
+            inv_vars=seg_settings.get("inv_vars"),
+            income_threshold=_income_th,
+        )
+
+        mr_sheet_name = f"RP MR {seg_name}"[:31]
+        _write_rp_sheet(
+            writer,
+            df_mr,
+            mr_sheet_name,
+            seg_name,
+            "MR Period — Base Scenario",
+            _CLR_TAB_SEGMENT_MR,
+            extra_tables=mr_extra_tables,
+            classification_grid=mr_grid,
+            is_mr=True,
+        )
+
+    # Remove default "Sheet" if auto-created
+    if "Sheet" in wb.sheetnames and len(wb.sheetnames) > 1:
+        del wb["Sheet"]
+
+
+def _resolve_segment_variables(
+    output_base: Path,
+    segments: dict[str, dict[str, Any]],
+    seg_name: str,
+) -> list[str]:
+    """Resolve the segment's variables list via a 4-tier fallback:
+    segment config → segments.toml → global config.toml → hardcoded default.
+
+    Extracted from export_consolidated_excel in R2b-iii step 14.
+    """
+    seg_vars_full: list[str] | None = None
+    try:
+        import tomllib as _tomllib
+
+        _seg_cfg_path = output_base / seg_name / "config_segment.toml"
+        if _seg_cfg_path.exists():
+            _scfg = _tomllib.loads(_seg_cfg_path.read_text(encoding="utf-8"))
+            _prep = _scfg.get("preprocessing", _scfg)
+            seg_vars_full = _prep.get("variables") or _prep.get("inference_variables")
+            if seg_vars_full:
+                seg_vars_full = list(seg_vars_full)
+            else:
+                seg_vars_full = None
+    except Exception:
+        logger.warning(
+            f"Failed to read variables from segment config for '{seg_name}'; "
+            f"will fall back to segments.toml / config.toml",
+            exc_info=True,
+        )
+        seg_vars_full = None
+
+    if not seg_vars_full:
+        seg_cfg = segments.get(seg_name, {})
+        seg_vars_full = seg_cfg.get("variables")
+    if not seg_vars_full:
+        try:
+            import tomllib as _tomllib
+
+            _gcfg_path = Path("config.toml")
+            if _gcfg_path.exists():
+                _gcfg = _tomllib.loads(_gcfg_path.read_text(encoding="utf-8"))
+                seg_vars_full = _gcfg.get("preprocessing", {}).get("variables")
+        except Exception:
+            logger.warning(
+                f"Failed to read variables from global config.toml for '{seg_name}'; will use hardcoded default list",
+                exc_info=True,
+            )
+    if not seg_vars_full:
+        seg_vars_full = list(_FALLBACK_REPORTING_VARIABLES)
+    return seg_vars_full
+
+
+def _resolve_segment_income_threshold(
+    output_base: Path,
+    segments: dict[str, dict[str, Any]],
+    supersegments: dict[str, dict[str, Any]],
+    seg_name: str,
+) -> float | None:
+    """Resolve the binary income-bin threshold for segment labels via
+    segment config then reporting supersegment. Returns None if neither
+    source yields a single finite edge.
+
+    Extracted from export_consolidated_excel in R2b-iii step 14.
+    """
+    _income_th: float | None = None
+    try:
+        import tomllib as _tomllib
+
+        _seg_cfg_path2 = output_base / seg_name / "config_segment.toml"
+        if _seg_cfg_path2.exists():
+            _scfg2 = _tomllib.loads(_seg_cfg_path2.read_text(encoding="utf-8"))
+            _edges = _scfg2.get("preprocessing", _scfg2).get("bins", {}).get("income_bin", {}).get("bin_edges")
+            if _edges and isinstance(_edges, list) and len(_edges) >= 3:
+                finite = [float(e) for e in _edges if np.isfinite(float(e))]
+                if len(finite) == 1:
+                    _income_th = finite[0]
+    except Exception:
+        logger.warning(
+            f"Failed to resolve income threshold from segment config for '{seg_name}'; "
+            f"will try reporting supersegment edges next",
+            exc_info=True,
+        )
+    if _income_th is None:
+        _rs = segments.get(seg_name, {}).get("reporting_supersegment") or segments.get(seg_name, {}).get("supersegment")
+        if _rs and _rs in supersegments:
+            _edges = supersegments[_rs].get("bin_edges", {}).get("income_bin")
+            if _edges and isinstance(_edges, list) and len(_edges) >= 3:
+                finite = [float(e) for e in _edges if np.isfinite(float(e))]
+                if len(finite) == 1:
+                    _income_th = finite[0]
+    return _income_th
+
+
 def _write_per_segment_grid_sheets(wb, cutoff_data: dict) -> None:
     """Create one 'Grid {seg_name}' sheet per segment with its acceptance grids.
 
@@ -3823,172 +4031,7 @@ def export_consolidated_excel(
         # =============================================================
         # Per-segment RP summary sheets (Main + MR)
         # =============================================================
-        _rp_exclude_cols = {"todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)"}
-        _rp_exclude_cols_mr = _rp_exclude_cols | {"todu_30ever_h3", "todu_amt_pile_h3"}
-
-        for seg_name in segments:
-            seg_settings = _load_segment_settings(output_base, seg_name)
-
-            # Resolve variables list — fall back to global config
-            try:
-                import tomllib as _tomllib
-
-                _seg_cfg_path = output_base / seg_name / "config_segment.toml"
-                if _seg_cfg_path.exists():
-                    _scfg = _tomllib.loads(_seg_cfg_path.read_text(encoding="utf-8"))
-                    _prep = _scfg.get("preprocessing", _scfg)
-                    seg_vars_full = _prep.get("variables") or _prep.get("inference_variables")
-                    if seg_vars_full:
-                        seg_vars_full = list(seg_vars_full)
-                    else:
-                        seg_vars_full = None
-                else:
-                    seg_vars_full = None
-            except Exception:
-                logger.warning(
-                    f"Failed to read variables from segment config for '{seg_name}'; "
-                    f"will fall back to segments.toml / config.toml",
-                    exc_info=True,
-                )
-                seg_vars_full = None
-            # Fall back to global variables from segments.toml / config.toml
-            if not seg_vars_full:
-                seg_cfg = segments.get(seg_name, {})
-                seg_vars_full = seg_cfg.get("variables")
-            if not seg_vars_full:
-                try:
-                    import tomllib as _tomllib
-
-                    _gcfg_path = Path("config.toml")
-                    if _gcfg_path.exists():
-                        _gcfg = _tomllib.loads(_gcfg_path.read_text(encoding="utf-8"))
-                        seg_vars_full = _gcfg.get("preprocessing", {}).get("variables")
-                except Exception:
-                    logger.warning(
-                        f"Failed to read variables from global config.toml for '{seg_name}'; "
-                        f"will use hardcoded default list",
-                        exc_info=True,
-                    )
-            if not seg_vars_full:
-                # All config sources unreadable; use the documented fallback.
-                seg_vars_full = list(_FALLBACK_REPORTING_VARIABLES)
-
-            # Resolve income threshold for labels
-            _income_th = None
-            try:
-                import tomllib as _tomllib
-
-                _seg_cfg_path2 = output_base / seg_name / "config_segment.toml"
-                if _seg_cfg_path2.exists():
-                    _scfg2 = _tomllib.loads(_seg_cfg_path2.read_text(encoding="utf-8"))
-                    _edges = _scfg2.get("preprocessing", _scfg2).get("bins", {}).get("income_bin", {}).get("bin_edges")
-                    if _edges and isinstance(_edges, list) and len(_edges) >= 3:
-                        finite = [float(e) for e in _edges if np.isfinite(float(e))]
-                        if len(finite) == 1:
-                            _income_th = finite[0]
-            except Exception:
-                logger.warning(
-                    f"Failed to resolve income threshold from segment config for '{seg_name}'; "
-                    f"will try reporting supersegment edges next",
-                    exc_info=True,
-                )
-            if _income_th is None:
-                # Try reporting supersegment edges
-                _rs = segments.get(seg_name, {}).get("reporting_supersegment") or segments.get(seg_name, {}).get(
-                    "supersegment"
-                )
-                if _rs and _rs in supersegments:
-                    _edges = supersegments[_rs].get("bin_edges", {}).get("income_bin")
-                    if _edges and isinstance(_edges, list) and len(_edges) >= 3:
-                        finite = [float(e) for e in _edges if np.isfinite(float(e))]
-                        if len(finite) == 1:
-                            _income_th = finite[0]
-
-            # --- Main period ---
-            csv_path = output_base / seg_name / "data" / "risk_production_summary_table_base.csv"
-            if not csv_path.exists():
-                continue
-            try:
-                df_rp = pd.read_csv(csv_path)
-            except (pd.errors.ParserError, OSError, ValueError):
-                continue
-            if df_rp.empty:
-                continue
-            df_rp = df_rp.drop(columns=[c for c in _rp_exclude_cols if c in df_rp.columns])
-            rp_extra_tables = _build_income_bin_tables(
-                output_base, segments, supersegments, seg_name, period="main", template_cols=list(df_rp.columns)
-            )
-
-            # Build classification grid for main period
-            main_grid = _build_classification_grid(
-                output_base,
-                seg_name,
-                period="main",
-                variables=seg_vars_full,
-                multiplier=seg_settings["multiplier"],
-                multiplier_h3=seg_settings.get("multiplier_h3"),
-                inv_vars=seg_settings.get("inv_vars"),
-                income_threshold=_income_th,
-            )
-
-            sheet_name = f"RP {seg_name}"[:31]
-            _write_rp_sheet(
-                writer,
-                df_rp,
-                sheet_name,
-                seg_name,
-                "Main Period — Base Scenario",
-                _CLR_TAB_SEGMENT,
-                extra_tables=rp_extra_tables,
-                classification_grid=main_grid,
-                is_mr=False,
-            )
-
-            # --- MR period ---
-            mr_csv_path = output_base / seg_name / "data" / "risk_production_summary_table_mr_base.csv"
-            if not mr_csv_path.exists():
-                mr_csv_path = output_base / seg_name / "data" / "risk_production_summary_table_mr.csv"
-            if not mr_csv_path.exists():
-                continue
-            try:
-                df_mr = pd.read_csv(mr_csv_path)
-            except (pd.errors.ParserError, OSError, ValueError):
-                continue
-            if df_mr.empty:
-                continue
-            df_mr = df_mr.drop(columns=[c for c in _rp_exclude_cols_mr if c in df_mr.columns])
-            mr_extra_tables = _build_income_bin_tables(
-                output_base, segments, supersegments, seg_name, period="mr", template_cols=list(df_mr.columns)
-            )
-
-            # Build classification grid for MR period (volumes only)
-            mr_grid = _build_classification_grid(
-                output_base,
-                seg_name,
-                period="mr",
-                variables=seg_vars_full,
-                multiplier=seg_settings["multiplier"],
-                multiplier_h3=seg_settings.get("multiplier_h3"),
-                inv_vars=seg_settings.get("inv_vars"),
-                income_threshold=_income_th,
-            )
-
-            mr_sheet_name = f"RP MR {seg_name}"[:31]
-            _write_rp_sheet(
-                writer,
-                df_mr,
-                mr_sheet_name,
-                seg_name,
-                "MR Period — Base Scenario",
-                _CLR_TAB_SEGMENT_MR,
-                extra_tables=mr_extra_tables,
-                classification_grid=mr_grid,
-                is_mr=True,
-            )
-
-        # Remove default "Sheet" if auto-created
-        if "Sheet" in wb.sheetnames and len(wb.sheetnames) > 1:
-            del wb["Sheet"]
+        _write_per_segment_rp_sheets(writer, wb, output_base, segments, supersegments)
 
     logger.debug(f"Excel workbook written to {xlsx_path}")
     return xlsx_path
