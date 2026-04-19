@@ -1110,6 +1110,241 @@ def _assign_tiered_risk(
     return data_demand_mr
 
 
+# =============================================================================
+# Phase helpers extracted from process_mr_period (R2b-v todo #57)
+# =============================================================================
+
+
+def _write_mr_visualization(
+    data_summary_desagregado_mr: pd.DataFrame,
+    settings: "PreprocessingSettings",
+    file_suffix: str,
+    output: OutputPaths,
+) -> None:
+    """Write the MR-period b2_ever_h6 visualization to disk.
+
+    Dispatches on ``len(settings.variables)``:
+      - 1 variable → bar chart
+      - 2 variables → 3D surface
+      - 3+ variables → per-slice heatmap subplots (sliced by the 3rd var)
+
+    Computes ``b2_ever_h6`` (and optionally ``b2_ever_h3``) from the
+    aggregated MR summary DataFrame and writes the result to
+    ``output.mr_b2_visualization_html(file_suffix)``. Pure writer —
+    returns None; all state flows through parameters.
+    """
+    VARIABLES = settings.variables
+
+    data_surf_mr = data_summary_desagregado_mr.copy()
+    data_surf_mr["b2_ever_h6"] = calculate_b2_ever_h6(
+        data_surf_mr["todu_30ever_h6"],
+        data_surf_mr["todu_amt_pile_h6"],
+        multiplier=settings.multiplier,
+        as_percentage=True,
+    )
+    # Compute complementary H3 metric on MR surface when columns are available
+    if "todu_30ever_h3" in data_surf_mr.columns and "todu_amt_pile_h3" in data_surf_mr.columns:
+        data_surf_mr["b2_ever_h3"] = calculate_b2_ever_h6(
+            data_surf_mr["todu_30ever_h3"],
+            data_surf_mr["todu_amt_pile_h3"],
+            multiplier=settings.multiplier_h3,
+            as_percentage=True,
+        )
+
+    if len(VARIABLES) == 1:
+        logger.info("Generating b2_ever_h6 bar chart for MR dataset (1-variable)...")
+        var0 = VARIABLES[0]
+        data_bar = data_surf_mr.sort_values(var0)
+
+        fig_mr = go.Figure()
+        fig_mr.add_trace(
+            go.Bar(
+                x=data_bar[var0].astype(str),
+                y=data_bar["b2_ever_h6"],
+                marker_color="indianred",
+                text=data_bar["b2_ever_h6"].round(2),
+                textposition="outside",
+            )
+        )
+        styles.apply_plotly_style(
+            fig_mr,
+            title=f"B2 Ever H6 by {var0} (MR Period){file_suffix}",
+            width=900,
+            height=500,
+        )
+        fig_mr.update_layout(xaxis_title=var0, yaxis_title="b2_ever_h6 (%)")
+
+        output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
+        fig_mr.write_html(output_plot_path_mr)
+        logger.info(f"MR 1D visualization saved to {output_plot_path_mr}")
+
+    elif len(VARIABLES) == 2:
+        logger.info("Generating b2_ever_h6 visualization for MR dataset...")
+
+        fig_mr = go.Figure()
+
+        data_surf_pivot_mr = data_surf_mr.pivot(index=VARIABLES[1], columns=VARIABLES[0], values="b2_ever_h6")
+
+        fig_mr.add_trace(
+            go.Surface(
+                x=data_surf_pivot_mr.columns,
+                y=data_surf_pivot_mr.index,
+                z=data_surf_pivot_mr.values,
+                colorscale="turbo",
+            )
+        )
+
+        styles.apply_plotly_style(
+            fig_mr,
+            title=f"B2 Ever H6 vs. Octroi and Risk Score (MR Period - Aggregated){file_suffix}",
+            width=1500,
+            height=700,
+        )
+
+        fig_mr.update_layout(
+            scene=dict(
+                xaxis=dict(title=VARIABLES[0]),
+                yaxis=dict(title=VARIABLES[1]),
+                zaxis=dict(title="b2_ever_h6"),
+                aspectratio=dict(x=1, y=1, z=1),
+            )
+        )
+
+        output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
+        fig_mr.write_html(output_plot_path_mr)
+        logger.info(f"MR Visualization saved to {output_plot_path_mr}")
+    elif len(VARIABLES) >= 3:
+        logger.info(f"Generating per-slice MR heatmaps for {len(VARIABLES)}-variable grid...")
+        from plotly.subplots import make_subplots
+
+        var0, var1, var2 = VARIABLES[0], VARIABLES[1], VARIABLES[2]
+        v2_vals = sorted(data_surf_mr[var2].unique())
+
+        fig_mr = make_subplots(
+            rows=1,
+            cols=len(v2_vals),
+            subplot_titles=[f"{var2} = {v}" for v in v2_vals],
+        )
+
+        for col_idx, v2 in enumerate(v2_vals, start=1):
+            slice_df = data_surf_mr[data_surf_mr[var2] == v2]
+            pivot = slice_df.pivot(index=var1, columns=var0, values="b2_ever_h6").sort_index(ascending=True)
+            text_pivot = slice_df.copy()
+            text_pivot["_text"] = text_pivot.apply(
+                lambda r: f"{r.get('oa_amt_h0', 0) / 1e6:,.1f}M\n{r['b2_ever_h6']:.1f}%", axis=1
+            )
+            text_piv = text_pivot.pivot(index=var1, columns=var0, values="_text").sort_index(ascending=True)
+
+            fig_mr.add_trace(
+                go.Heatmap(
+                    x=[str(c) for c in pivot.columns],
+                    y=[str(r) for r in pivot.index],
+                    z=pivot.values,
+                    text=text_piv.values if not text_piv.empty else None,
+                    texttemplate="%{text}",
+                    colorscale=[(0, "rgba(255,255,255,1)"), (1, "rgba(157,13,20,1)")],
+                    zmin=0,
+                    showscale=col_idx == len(v2_vals),
+                ),
+                row=1,
+                col=col_idx,
+            )
+            fig_mr.update_xaxes(title_text=var0, row=1, col=col_idx)
+            if col_idx == 1:
+                fig_mr.update_yaxes(title_text=var1, row=1, col=col_idx)
+
+        styles.apply_plotly_style(
+            fig_mr,
+            title=f"B2 Ever H6 — MR Period (Aggregated){file_suffix}",
+            width=max(500 * len(v2_vals), 800),
+            height=500,
+        )
+
+        output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
+        fig_mr.write_html(output_plot_path_mr)
+        logger.info(f"MR per-slice visualization saved to {output_plot_path_mr}")
+
+
+def _compute_mr_stability_metrics(
+    data_booked: pd.DataFrame,
+    data_booked_mr: pd.DataFrame,
+    settings: "PreprocessingSettings",
+    file_suffix: str,
+    output: OutputPaths,
+) -> None:
+    """Compute and persist PSI/CSI stability metrics (Main vs MR).
+
+    Picks up to 5 numeric columns shared between *data_booked* and
+    *data_booked_mr* (prefers ``score_rf`` / ``risk_score_rf`` /
+    ``oa_amt``), calls :func:`compare_main_vs_mr`, writes the HTML report
+    + CSV, generates drift alerts JSON, and logs a warning if any
+    variable exceeds ``PSI_UNSTABLE_THRESHOLD``.
+
+    Errors downgrade to a warning — stability metrics are informational,
+    never block the pipeline.
+    """
+    logger.info("Calculating PSI/CSI stability metrics (Main vs MR)...")
+    VARIABLES = settings.variables
+    try:
+        # Prefer known score columns, fall back to any shared numeric columns
+        requested_vars = ["score_rf", "risk_score_rf", "oa_amt"]
+        stability_vars = [v for v in requested_vars if v in data_booked.columns and v in data_booked_mr.columns]
+        if not stability_vars:
+            shared_cols = set(data_booked.columns) & set(data_booked_mr.columns)
+            stability_vars = [c for c in shared_cols if data_booked[c].dtype.kind in ("f", "i") and c not in VARIABLES][
+                :5
+            ]
+            if stability_vars:
+                logger.info(f"Stability: using fallback numeric columns: {stability_vars}")
+
+        if stability_vars:
+            # Determine main score variable for overall PSI
+            score_var = "risk_score_rf" if "risk_score_rf" in stability_vars else stability_vars[0]
+
+            stability_report = compare_main_vs_mr(
+                main_df=data_booked,
+                mr_df=data_booked_mr,
+                variables=stability_vars,
+                score_variable=score_var,
+                output_path=output.stability_report_html(file_suffix),
+                verbose=True,
+            )
+
+            # Save stability results to CSV
+            stability_df = stability_report.to_dataframe()
+            stability_csv_path = output.stability_psi_csv(file_suffix)
+            stability_df.to_csv(stability_csv_path, index=False)
+            logger.info(f"Stability metrics saved to {stability_csv_path}")
+
+            # Generate structured drift alerts
+            try:
+                from src.alerts import generate_drift_alerts
+
+                alert_report = generate_drift_alerts(
+                    stability_report,
+                    segment=settings.segment_filter,
+                    period="MR",
+                )
+                alert_json_path = output.drift_alerts_json(file_suffix)
+                alert_report.to_json(alert_json_path)
+                logger.info(f"Drift alerts saved to {alert_json_path}")
+            except (ImportError, ValueError) as e:
+                logger.warning(f"Failed to generate drift alerts: {e}")
+
+            # Log summary
+            if stability_report.unstable_vars:
+                logger.warning(
+                    f"STABILITY WARNING: {len(stability_report.unstable_vars)} variables "
+                    f"show significant drift (PSI >= {PSI_UNSTABLE_THRESHOLD}): "
+                    f"{[r.variable for r in stability_report.unstable_vars]}"
+                )
+        else:
+            logger.warning("No numeric variables found for stability analysis")
+
+    except (ValueError, KeyError) as e:
+        logger.opt(exception=True).warning(f"Error calculating stability metrics: {e}")
+
+
 def process_mr_period(
     data_clean: pd.DataFrame,
     data_booked: pd.DataFrame,
@@ -1822,136 +2057,8 @@ def process_mr_period(
         logger.info(f"MR summary data saved to {summary_path}")
 
         # --- Visualize b2_ever_h6 for MR ---
+        _write_mr_visualization(data_summary_desagregado_mr, settings, file_suffix, output)
         VARIABLES = settings.variables
-
-        data_surf_mr = data_summary_desagregado_mr.copy()
-        data_surf_mr["b2_ever_h6"] = calculate_b2_ever_h6(
-            data_surf_mr["todu_30ever_h6"],
-            data_surf_mr["todu_amt_pile_h6"],
-            multiplier=settings.multiplier,
-            as_percentage=True,
-        )
-        # Compute complementary H3 metric on MR surface when columns are available
-        if "todu_30ever_h3" in data_surf_mr.columns and "todu_amt_pile_h3" in data_surf_mr.columns:
-            data_surf_mr["b2_ever_h3"] = calculate_b2_ever_h6(
-                data_surf_mr["todu_30ever_h3"],
-                data_surf_mr["todu_amt_pile_h3"],
-                multiplier=settings.multiplier_h3,
-                as_percentage=True,
-            )
-
-        if len(VARIABLES) == 1:
-            logger.info("Generating b2_ever_h6 bar chart for MR dataset (1-variable)...")
-            var0 = VARIABLES[0]
-            data_bar = data_surf_mr.sort_values(var0)
-
-            fig_mr = go.Figure()
-            fig_mr.add_trace(
-                go.Bar(
-                    x=data_bar[var0].astype(str),
-                    y=data_bar["b2_ever_h6"],
-                    marker_color="indianred",
-                    text=data_bar["b2_ever_h6"].round(2),
-                    textposition="outside",
-                )
-            )
-            styles.apply_plotly_style(
-                fig_mr,
-                title=f"B2 Ever H6 by {var0} (MR Period){file_suffix}",
-                width=900,
-                height=500,
-            )
-            fig_mr.update_layout(xaxis_title=var0, yaxis_title="b2_ever_h6 (%)")
-
-            output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
-            fig_mr.write_html(output_plot_path_mr)
-            logger.info(f"MR 1D visualization saved to {output_plot_path_mr}")
-
-        elif len(VARIABLES) == 2:
-            logger.info("Generating b2_ever_h6 visualization for MR dataset...")
-
-            fig_mr = go.Figure()
-
-            data_surf_pivot_mr = data_surf_mr.pivot(index=VARIABLES[1], columns=VARIABLES[0], values="b2_ever_h6")
-
-            fig_mr.add_trace(
-                go.Surface(
-                    x=data_surf_pivot_mr.columns,
-                    y=data_surf_pivot_mr.index,
-                    z=data_surf_pivot_mr.values,
-                    colorscale="turbo",
-                )
-            )
-
-            styles.apply_plotly_style(
-                fig_mr,
-                title=f"B2 Ever H6 vs. Octroi and Risk Score (MR Period - Aggregated){file_suffix}",
-                width=1500,
-                height=700,
-            )
-
-            fig_mr.update_layout(
-                scene=dict(
-                    xaxis=dict(title=VARIABLES[0]),
-                    yaxis=dict(title=VARIABLES[1]),
-                    zaxis=dict(title="b2_ever_h6"),
-                    aspectratio=dict(x=1, y=1, z=1),
-                )
-            )
-
-            output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
-            fig_mr.write_html(output_plot_path_mr)
-            logger.info(f"MR Visualization saved to {output_plot_path_mr}")
-        elif len(VARIABLES) >= 3:
-            logger.info(f"Generating per-slice MR heatmaps for {len(VARIABLES)}-variable grid...")
-            from plotly.subplots import make_subplots
-
-            var0, var1, var2 = VARIABLES[0], VARIABLES[1], VARIABLES[2]
-            v2_vals = sorted(data_surf_mr[var2].unique())
-
-            fig_mr = make_subplots(
-                rows=1,
-                cols=len(v2_vals),
-                subplot_titles=[f"{var2} = {v}" for v in v2_vals],
-            )
-
-            for col_idx, v2 in enumerate(v2_vals, start=1):
-                slice_df = data_surf_mr[data_surf_mr[var2] == v2]
-                pivot = slice_df.pivot(index=var1, columns=var0, values="b2_ever_h6").sort_index(ascending=True)
-                text_pivot = slice_df.copy()
-                text_pivot["_text"] = text_pivot.apply(
-                    lambda r: f"{r.get('oa_amt_h0', 0) / 1e6:,.1f}M\n{r['b2_ever_h6']:.1f}%", axis=1
-                )
-                text_piv = text_pivot.pivot(index=var1, columns=var0, values="_text").sort_index(ascending=True)
-
-                fig_mr.add_trace(
-                    go.Heatmap(
-                        x=[str(c) for c in pivot.columns],
-                        y=[str(r) for r in pivot.index],
-                        z=pivot.values,
-                        text=text_piv.values if not text_piv.empty else None,
-                        texttemplate="%{text}",
-                        colorscale=[(0, "rgba(255,255,255,1)"), (1, "rgba(157,13,20,1)")],
-                        zmin=0,
-                        showscale=col_idx == len(v2_vals),
-                    ),
-                    row=1,
-                    col=col_idx,
-                )
-                fig_mr.update_xaxes(title_text=var0, row=1, col=col_idx)
-                if col_idx == 1:
-                    fig_mr.update_yaxes(title_text=var1, row=1, col=col_idx)
-
-            styles.apply_plotly_style(
-                fig_mr,
-                title=f"B2 Ever H6 — MR Period (Aggregated){file_suffix}",
-                width=max(500 * len(v2_vals), 800),
-                height=500,
-            )
-
-            output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
-            fig_mr.write_html(output_plot_path_mr)
-            logger.info(f"MR per-slice visualization saved to {output_plot_path_mr}")
 
         # --- Cleanup ---
         if "b2_ever_h6_tmp" in data_demand_mr.columns:
@@ -2027,65 +2134,7 @@ def process_mr_period(
             logger.info(f"MR Table:\n{mr_summary_table.to_string()}")
 
         # --- Calculate PSI/CSI Stability Metrics ---
-        logger.info("Calculating PSI/CSI stability metrics (Main vs MR)...")
-        try:
-            # Prefer known score columns, fall back to any shared numeric columns
-            requested_vars = ["score_rf", "risk_score_rf", "oa_amt"]
-            stability_vars = [v for v in requested_vars if v in data_booked.columns and v in data_booked_mr.columns]
-            if not stability_vars:
-                shared_cols = set(data_booked.columns) & set(data_booked_mr.columns)
-                stability_vars = [
-                    c for c in shared_cols if data_booked[c].dtype.kind in ("f", "i") and c not in VARIABLES
-                ][:5]
-                if stability_vars:
-                    logger.info(f"Stability: using fallback numeric columns: {stability_vars}")
-
-            if stability_vars:
-                # Determine main score variable for overall PSI
-                score_var = "risk_score_rf" if "risk_score_rf" in stability_vars else stability_vars[0]
-
-                stability_report = compare_main_vs_mr(
-                    main_df=data_booked,
-                    mr_df=data_booked_mr,
-                    variables=stability_vars,
-                    score_variable=score_var,
-                    output_path=output.stability_report_html(file_suffix),
-                    verbose=True,
-                )
-
-                # Save stability results to CSV
-                stability_df = stability_report.to_dataframe()
-                stability_csv_path = output.stability_psi_csv(file_suffix)
-                stability_df.to_csv(stability_csv_path, index=False)
-                logger.info(f"Stability metrics saved to {stability_csv_path}")
-
-                # Generate structured drift alerts
-                try:
-                    from src.alerts import generate_drift_alerts
-
-                    alert_report = generate_drift_alerts(
-                        stability_report,
-                        segment=settings.segment_filter,
-                        period="MR",
-                    )
-                    alert_json_path = output.drift_alerts_json(file_suffix)
-                    alert_report.to_json(alert_json_path)
-                    logger.info(f"Drift alerts saved to {alert_json_path}")
-                except (ImportError, ValueError) as e:
-                    logger.warning(f"Failed to generate drift alerts: {e}")
-
-                # Log summary
-                if stability_report.unstable_vars:
-                    logger.warning(
-                        f"STABILITY WARNING: {len(stability_report.unstable_vars)} variables "
-                        f"show significant drift (PSI >= {PSI_UNSTABLE_THRESHOLD}): "
-                        f"{[r.variable for r in stability_report.unstable_vars]}"
-                    )
-            else:
-                logger.warning("No numeric variables found for stability analysis")
-
-        except (ValueError, KeyError) as e:
-            logger.opt(exception=True).warning(f"Error calculating stability metrics: {e}")
+        _compute_mr_stability_metrics(data_booked, data_booked_mr, settings, file_suffix, output)
 
     except (ValueError, KeyError, RuntimeError) as e:
         logger.opt(exception=True).error(f"Error processing MR period: {e}")
