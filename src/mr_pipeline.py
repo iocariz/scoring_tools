@@ -1681,6 +1681,356 @@ def _log_mr_risk_diagnostic(
         )
 
 
+# -----------------------------------------------------------------------------
+# MR b2_ever_h6_tmp computation (R2b-vi step 2, todo #57)
+# -----------------------------------------------------------------------------
+
+
+def _compute_b2_ever_h6_tmp(
+    data_demand_mr: pd.DataFrame,
+    data_booked: pd.DataFrame,
+    merge_keys: list[str],
+    settings: "PreprocessingSettings",
+    risk_inference: dict[str, Any],
+    reg_todu_amt_pile: Any,
+    stress_factor: float,
+    file_suffix: str,
+    output: OutputPaths,
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """Compute the per-record b2_ever_h6_tmp risk value for the MR period.
+
+    Three-way dispatch:
+      1. Hybrid (use_mr_outcomes=True and MR outcomes available):
+         Use MR observed risk where n_obs >= mr_min_obs_per_bin,
+         fall back to main-period for sparse bins.  Also saves an
+         MR-vs-main risk comparison CSV.
+      2. Default (main-period columns available):
+         Aggregate main-period b2 by merge_keys and merge into data_demand_mr.
+         Applies tiered-risk assignment for robustness.
+      3. Else: log warning, skip.
+
+    Returns the updated *data_demand_mr* (with a ``b2_ever_h6_tmp`` column
+    when computable) and the hybrid-mode ``comparison_df`` (or None).
+    """
+    # --- Calculate b2_ever_h6_tmp ---
+    required_agg_cols = merge_keys + ["todu_30ever_h6", "todu_amt_pile_h6"]
+
+    comparison_df = None  # set in hybrid path; used by recalibration below
+
+    if settings.use_mr_outcomes and _mr_outcomes_available(data_demand_mr):
+        # Hybrid mode: use MR observed risk where sufficient, else main-period
+        logger.info(
+            f"Hybrid MR risk: using MR outcomes where n_obs >= {settings.mr_min_obs_per_bin}, "
+            f"falling back to main-period for sparse bins."
+        )
+        merge_df, comparison_df = _compute_hybrid_mr_risk(
+            data_booked,
+            data_demand_mr,
+            merge_keys,
+            settings.mr_min_obs_per_bin,
+            multiplier=settings.multiplier,
+            multiplier_h3=settings.multiplier_h3,
+            mr_extrapolation_method=settings.mr_extrapolation_method,
+            mr_extrapolation_curvature=settings.mr_extrapolation_curvature,
+            mr_maturity_months=settings.mr_maturity_months,
+            maturity_reference_date=settings.get_date("date_fin_book_obs_mr"),
+        )
+
+        # Save comparison CSV
+        comp_path = output.mr_risk_comparison_csv(file_suffix)
+        comparison_df.to_csv(comp_path, index=False)
+        logger.info(f"MR risk comparison saved to {comp_path}")
+
+        # Log bins with large deviations
+        has_both = comparison_df["b2_delta_pct"].notna()
+        large_dev = comparison_df.loc[has_both & (comparison_df["b2_delta_pct"].abs() > 20)]
+        if not large_dev.empty:
+            logger.warning(f"RISK DRIFT: {len(large_dev)} bins show >20% deviation between main and MR risk:")
+            for _, row in large_dev.iterrows():
+                keys_str = ", ".join(f"{k}={row[k]}" for k in merge_keys)
+                logger.warning(
+                    f"  {keys_str}: main={row['b2_main']:.4f}, mr={row['b2_mr']:.4f}, "
+                    f"delta={row['b2_delta_pct']:+.1f}%, source={row['risk_source']}"
+                )
+
+        mr_source_counts = comparison_df["risk_source"].value_counts().to_dict()
+        logger.info(f"Hybrid risk sources: {mr_source_counts}")
+
+        logger.info("Merging b2_ever_h6_tmp into data_demand_mr...")
+        # Save actual H6 before dropping so Tier 1 (mature accounts) can use them
+        if "todu_30ever_h6" in data_demand_mr.columns:
+            data_demand_mr["_actual_todu_30ever_h6"] = data_demand_mr["todu_30ever_h6"]
+        if "todu_amt_pile_h6" in data_demand_mr.columns:
+            data_demand_mr["_actual_todu_amt_pile_h6"] = data_demand_mr["todu_amt_pile_h6"]
+        n_before_merge = len(data_demand_mr)
+
+        # Drop MR outcome columns — todu_amt_pile_h6 is near-zero for immature
+        # accounts (MR period < 6 months) and todu_30ever_h6 must be
+        # reconstructed using mature-only risk rates.  The exposure model
+        # predicts what full-horizon exposure WOULD be based on oa_amt.
+        data_demand_mr = data_demand_mr.drop(columns=["todu_30ever_h6", "todu_amt_pile_h6"], errors="ignore")
+        data_demand_mr = pd.merge(data_demand_mr, merge_df, on=merge_keys, how="left")
+        if len(data_demand_mr) != n_before_merge:
+            # High severity guard: if merge_df had non-unique keys, left-merge can
+            # expand rows and silently corrupt downstream counts.
+            logger.error(
+                "MR hybrid merge: row expansion detected while merging b2_ever_h6_tmp "
+                f"into data_demand_mr (before={n_before_merge}, after={len(data_demand_mr)}). "
+                "Collapsing merge_df by merge_keys and re-merging."
+            )
+            merge_df = merge_df.groupby(merge_keys, as_index=False)["b2_ever_h6_tmp"].mean()
+            data_demand_mr = pd.merge(
+                data_demand_mr.drop(columns=["b2_ever_h6_tmp"], errors="ignore"),
+                merge_df,
+                on=merge_keys,
+                how="left",
+            )
+
+        # Keep variable only for booked accounts
+        non_booked_mask = data_demand_mr["status_name"] != StatusName.BOOKED.value
+        data_demand_mr.loc[non_booked_mask, "b2_ever_h6_tmp"] = np.nan
+
+        # --- Tiered account-level risk reconstruction ---
+        # Use resolved method/curvature from comparison_df (auto → concrete)
+        resolved_method = comparison_df["fitted_method"].iloc[0] if len(comparison_df) > 0 else "linear"
+        resolved_curvature = comparison_df["fitted_curvature"].iloc[0] if len(comparison_df) > 0 else 1.0
+        data_demand_mr = _assign_tiered_risk(
+            data_demand_mr,
+            merge_df,
+            comparison_df,
+            merge_keys,
+            multiplier=settings.multiplier,
+            multiplier_h3=settings.multiplier_h3,
+            mr_extrapolation_method=resolved_method,
+            mr_extrapolation_curvature=resolved_curvature,
+            mr_maturity_months=settings.mr_maturity_months,
+            min_obs_per_bin=settings.mr_min_obs_per_bin,
+        )
+
+        # --- Infer risk for model_fallback bins using trained model ---
+        booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
+        null_b2_mask = booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()
+        null_count = null_b2_mask.sum()
+
+        if null_count > 0:
+            missing_bins = data_demand_mr.loc[null_b2_mask, merge_keys].drop_duplicates()
+            logger.warning(
+                f"Hybrid MR: {null_count:,} booked accounts in {len(missing_bins)} model_fallback bins "
+                f"have no risk estimate. Inferring b2_ever_h6 using the risk model..."
+            )
+            for bin_combo in missing_bins.itertuples(index=False):
+                logger.warning(f"  model_fallback bin: {bin_combo._asdict()}")
+
+            try:
+                best_model_info = risk_inference.get("best_model_info")
+                if best_model_info is None:
+                    raise KeyError("'best_model_info' not found in risk_inference")
+                final_model = best_model_info.get("model")
+                if final_model is None:
+                    raise KeyError("'model' not found in risk_inference['best_model_info']")
+                final_features = risk_inference.get("features")
+                if final_features is None:
+                    raise KeyError("'features' not found in risk_inference")
+
+                model_vars = risk_inference.get("model_variables", merge_keys)
+                missing_bins_df = missing_bins.copy()
+                missing_bins_df = calculate_B2(missing_bins_df, final_model, model_vars, stress_factor, final_features)
+
+                # Clip inferred risk using observed risk range from comparison_df
+                observed_risk = comparison_df.loc[
+                    comparison_df["risk_source"] != "model_fallback", "b2_ever_h6_tmp"
+                ].dropna()
+                if len(observed_risk) > 0:
+                    risk_floor = float(observed_risk.min())
+                    risk_ceil_base = float(observed_risk.max())
+                    risk_ceil_scaled = risk_ceil_base * settings.mr_extrapolation_risk_multiplier
+                    risk_ceil = min(risk_ceil_scaled, settings.mr_extrapolation_hard_cap)
+                    missing_bins_df["b2_ever_h6"] = missing_bins_df["b2_ever_h6"].clip(
+                        lower=risk_floor, upper=risk_ceil
+                    )
+                    logger.info(
+                        f"  Clipped model-imputed risk to [{risk_floor:.4f}, {risk_ceil:.4f}] "
+                        f"(base max={risk_ceil_base:.4f}, mult={settings.mr_extrapolation_risk_multiplier}, "
+                        f"cap={settings.mr_extrapolation_hard_cap})"
+                    )
+
+                inferred_b2 = missing_bins_df[merge_keys + ["b2_ever_h6"]].rename(
+                    columns={"b2_ever_h6": "b2_ever_h6_inferred"}
+                )
+                data_demand_mr = pd.merge(data_demand_mr, inferred_b2, on=merge_keys, how="left")
+
+                fill_mask = data_demand_mr["b2_ever_h6_tmp"].isna() & data_demand_mr["b2_ever_h6_inferred"].notna()
+                data_demand_mr.loc[fill_mask, "b2_ever_h6_tmp"] = data_demand_mr.loc[fill_mask, "b2_ever_h6_inferred"]
+                data_demand_mr = data_demand_mr.drop(columns=["b2_ever_h6_inferred"], errors="ignore")
+
+                booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
+                remaining_nulls = (booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()).sum()
+                if remaining_nulls > 0:
+                    logger.error(
+                        f"Still have {remaining_nulls:,} booked accounts with null b2_ever_h6_tmp "
+                        f"after model_fallback inference"
+                    )
+
+                logger.info(
+                    f"Successfully inferred b2_ever_h6 for {null_count:,} booked accounts "
+                    f"across {len(missing_bins)} model_fallback bins using risk model"
+                )
+
+            except (ValueError, KeyError, RuntimeError) as e:
+                logger.error(f"Error inferring b2_ever_h6 for model_fallback bins: {e}")
+                logger.warning(
+                    "model_fallback bins will have NaN risk — they will be excluded "
+                    "from weighted risk calculations but may affect production totals."
+                )
+
+    elif all(col in data_booked.columns for col in required_agg_cols):
+        # Default mode: use main-period risk for all bins
+        logger.info(f"Calculating b2_ever_h6_tmp aggregated by {merge_keys} from initial period...")
+        agg_data = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
+
+        # Calculate b2_ever_h6_tmp — NaN means "no usable H6 data" (zero exposure);
+        # preserve to distinguish from genuine zero risk.  Downstream model_fallback
+        # fills these via the inference model.
+        agg_data["b2_ever_h6_tmp"] = calculate_b2_ever_h6(
+            agg_data["todu_30ever_h6"], agg_data["todu_amt_pile_h6"], multiplier=settings.multiplier
+        )
+
+        merge_df = agg_data[merge_keys + ["b2_ever_h6_tmp"]]
+
+        logger.info("Merging b2_ever_h6_tmp into data_demand_mr...")
+        data_demand_mr = pd.merge(data_demand_mr, merge_df, on=merge_keys, how="left")
+
+        # Keep variable only for booked accounts
+        non_booked_mask = data_demand_mr["status_name"] != StatusName.BOOKED.value
+        data_demand_mr.loc[non_booked_mask, "b2_ever_h6_tmp"] = np.nan
+
+        # Check for booked accounts with null b2_ever_h6_tmp
+        booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
+        null_b2_mask = booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()
+        null_count = null_b2_mask.sum()
+
+        if null_count > 0:
+            # Get the missing bin combinations for logging
+            missing_bins = data_demand_mr.loc[null_b2_mask, merge_keys].drop_duplicates()
+            logger.warning(
+                f"Found {null_count:,} booked accounts with null b2_ever_h6_tmp. "
+                f"These bin combinations exist in MR period but not in initial period. "
+                f"Inferring b2_ever_h6 using the risk model..."
+            )
+            for bin_combo in missing_bins.itertuples(index=False):
+                logger.warning(f"  Missing bin: {bin_combo._asdict()}")
+
+            # Use inference model to predict b2_ever_h6 for missing bins
+            try:
+                best_model_info = risk_inference.get("best_model_info")
+                if best_model_info is None:
+                    raise KeyError("'best_model_info' not found in risk_inference")
+                final_model = best_model_info.get("model")
+                if final_model is None:
+                    raise KeyError("'model' not found in risk_inference['best_model_info']")
+                final_features = risk_inference.get("features")
+                if final_features is None:
+                    raise KeyError("'features' not found in risk_inference")
+
+                # Use the model's actual training variables (inference_variables),
+                # not merge_keys (settings.variables) which may include extra
+                # dimensions the model was not trained on.
+                model_vars = risk_inference.get("model_variables", merge_keys)
+
+                # Create a DataFrame with missing bin combinations for prediction
+                missing_bins_df = missing_bins.copy()
+
+                # Apply calculate_B2 to predict b2_ever_h6 for missing bins
+                missing_bins_df = calculate_B2(missing_bins_df, final_model, model_vars, stress_factor, final_features)
+
+                # Clip inferred risk to prevent unbounded extrapolation
+                observed_risk = agg_data["b2_ever_h6_tmp"].dropna()
+                if len(observed_risk) > 0:
+                    risk_floor = float(observed_risk.min())
+                    risk_ceil_base = float(observed_risk.max())
+
+                    risk_ceil_scaled = risk_ceil_base * settings.mr_extrapolation_risk_multiplier
+                    risk_ceil = min(risk_ceil_scaled, settings.mr_extrapolation_hard_cap)
+
+                    missing_bins_df["b2_ever_h6"] = missing_bins_df["b2_ever_h6"].clip(
+                        lower=risk_floor, upper=risk_ceil
+                    )
+                    logger.info(
+                        f"  Clipped model-imputed risk to [{risk_floor:.4f}, {risk_ceil:.4f}] "
+                        f"(base max={risk_ceil_base:.4f}, mult={settings.mr_extrapolation_risk_multiplier}, "
+                        f"cap={settings.mr_extrapolation_hard_cap})"
+                    )
+
+                # Merge clipped inferred values into data_demand_mr
+                inferred_b2 = missing_bins_df[merge_keys + ["b2_ever_h6"]].rename(
+                    columns={"b2_ever_h6": "b2_ever_h6_inferred"}
+                )
+                data_demand_mr = pd.merge(data_demand_mr, inferred_b2, on=merge_keys, how="left")
+
+                # Fill missing b2_ever_h6_tmp with inferred values
+                fill_mask = data_demand_mr["b2_ever_h6_tmp"].isna() & data_demand_mr["b2_ever_h6_inferred"].notna()
+                data_demand_mr.loc[fill_mask, "b2_ever_h6_tmp"] = data_demand_mr.loc[fill_mask, "b2_ever_h6_inferred"]
+                # Track which rows were imputed (for diagnostics below)
+                imputed_mask = fill_mask.copy()
+
+                # Drop the helper column
+                data_demand_mr = data_demand_mr.drop(columns=["b2_ever_h6_inferred"], errors="ignore")
+
+                # Recompute booked_mask after merge to avoid stale index alignment
+                booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
+
+                # Verify all booked accounts now have values
+                remaining_nulls = (booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()).sum()
+                if remaining_nulls > 0:
+                    logger.error(
+                        f"Still have {remaining_nulls:,} booked accounts with null b2_ever_h6_tmp after inference"
+                    )
+                    raise ValueError("Inference failed to fill all missing b2_ever_h6_tmp values")
+
+                logger.info(
+                    f"Successfully inferred b2_ever_h6 for {null_count:,} booked accounts "
+                    f"across {len(missing_bins)} bin combinations using risk model"
+                )
+
+                # Diagnostic: fraction of MR production from imputed cells
+                total_booked = booked_mask.sum()
+                imputed_pct = null_count / max(total_booked, 1) * 100
+                imputed_prod = (
+                    data_demand_mr.loc[imputed_mask, "oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0
+                )
+                total_prod = (
+                    data_demand_mr.loc[booked_mask, "oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0
+                )
+                prod_pct = imputed_prod / max(total_prod, 1) * 100
+                logger.info(
+                    f"  Imputed accounts: {null_count:,}/{total_booked:,} ({imputed_pct:.1f}%) "
+                    f"| Imputed production: {prod_pct:.1f}% of MR total"
+                )
+                if prod_pct > 20:
+                    logger.warning(
+                        f"HIGH IMPUTATION RATIO: {prod_pct:.1f}% of MR production comes from "
+                        f"imputed cells ({len(missing_bins)} missing bin combinations). "
+                        f"MR results may be unreliable — consider coarser binning or validating "
+                        f"imputed risk values against out-of-sample benchmarks."
+                    )
+
+            except (ValueError, KeyError, RuntimeError) as e:
+                logger.error(f"Error inferring b2_ever_h6 for missing bins: {e}")
+                raise ValueError(
+                    f"Data integrity error: {null_count:,} booked accounts in MR period "
+                    f"have no matching b2_ever_h6 from initial period, and inference failed: {e}"
+                ) from e
+        else:
+            logger.info(f"Validation passed: all {booked_mask.sum():,} booked accounts have b2_ever_h6_tmp values")
+
+    else:
+        logger.warning(
+            f"Missing columns for aggregation. Required: {required_agg_cols}. Skipping b2_ever_h6_tmp calculation."
+        )
+
+    return data_demand_mr, comparison_df
+
+
 def process_mr_period(
     data_clean: pd.DataFrame,
     data_booked: pd.DataFrame,
@@ -1743,333 +2093,17 @@ def process_mr_period(
         data_demand_mr = data_mr_period[available_mr_cols].copy()
 
         # --- Calculate b2_ever_h6_tmp ---
-        required_agg_cols = merge_keys + ["todu_30ever_h6", "todu_amt_pile_h6"]
-
-        comparison_df = None  # set in hybrid path; used by recalibration below
-        recalibration_applied = False
-
-        if settings.use_mr_outcomes and _mr_outcomes_available(data_demand_mr):
-            # Hybrid mode: use MR observed risk where sufficient, else main-period
-            logger.info(
-                f"Hybrid MR risk: using MR outcomes where n_obs >= {settings.mr_min_obs_per_bin}, "
-                f"falling back to main-period for sparse bins."
-            )
-            merge_df, comparison_df = _compute_hybrid_mr_risk(
-                data_booked,
-                data_demand_mr,
-                merge_keys,
-                settings.mr_min_obs_per_bin,
-                multiplier=settings.multiplier,
-                multiplier_h3=settings.multiplier_h3,
-                mr_extrapolation_method=settings.mr_extrapolation_method,
-                mr_extrapolation_curvature=settings.mr_extrapolation_curvature,
-                mr_maturity_months=settings.mr_maturity_months,
-                maturity_reference_date=settings.get_date("date_fin_book_obs_mr"),
-            )
-
-            # Save comparison CSV
-            comp_path = output.mr_risk_comparison_csv(file_suffix)
-            comparison_df.to_csv(comp_path, index=False)
-            logger.info(f"MR risk comparison saved to {comp_path}")
-
-            # Log bins with large deviations
-            has_both = comparison_df["b2_delta_pct"].notna()
-            large_dev = comparison_df.loc[has_both & (comparison_df["b2_delta_pct"].abs() > 20)]
-            if not large_dev.empty:
-                logger.warning(f"RISK DRIFT: {len(large_dev)} bins show >20% deviation between main and MR risk:")
-                for _, row in large_dev.iterrows():
-                    keys_str = ", ".join(f"{k}={row[k]}" for k in merge_keys)
-                    logger.warning(
-                        f"  {keys_str}: main={row['b2_main']:.4f}, mr={row['b2_mr']:.4f}, "
-                        f"delta={row['b2_delta_pct']:+.1f}%, source={row['risk_source']}"
-                    )
-
-            mr_source_counts = comparison_df["risk_source"].value_counts().to_dict()
-            logger.info(f"Hybrid risk sources: {mr_source_counts}")
-
-            logger.info("Merging b2_ever_h6_tmp into data_demand_mr...")
-            # Save actual H6 before dropping so Tier 1 (mature accounts) can use them
-            if "todu_30ever_h6" in data_demand_mr.columns:
-                data_demand_mr["_actual_todu_30ever_h6"] = data_demand_mr["todu_30ever_h6"]
-            if "todu_amt_pile_h6" in data_demand_mr.columns:
-                data_demand_mr["_actual_todu_amt_pile_h6"] = data_demand_mr["todu_amt_pile_h6"]
-            n_before_merge = len(data_demand_mr)
-
-            # Drop MR outcome columns — todu_amt_pile_h6 is near-zero for immature
-            # accounts (MR period < 6 months) and todu_30ever_h6 must be
-            # reconstructed using mature-only risk rates.  The exposure model
-            # predicts what full-horizon exposure WOULD be based on oa_amt.
-            data_demand_mr = data_demand_mr.drop(columns=["todu_30ever_h6", "todu_amt_pile_h6"], errors="ignore")
-            data_demand_mr = pd.merge(data_demand_mr, merge_df, on=merge_keys, how="left")
-            if len(data_demand_mr) != n_before_merge:
-                # High severity guard: if merge_df had non-unique keys, left-merge can
-                # expand rows and silently corrupt downstream counts.
-                logger.error(
-                    "MR hybrid merge: row expansion detected while merging b2_ever_h6_tmp "
-                    f"into data_demand_mr (before={n_before_merge}, after={len(data_demand_mr)}). "
-                    "Collapsing merge_df by merge_keys and re-merging."
-                )
-                merge_df = merge_df.groupby(merge_keys, as_index=False)["b2_ever_h6_tmp"].mean()
-                data_demand_mr = pd.merge(
-                    data_demand_mr.drop(columns=["b2_ever_h6_tmp"], errors="ignore"),
-                    merge_df,
-                    on=merge_keys,
-                    how="left",
-                )
-
-            # Keep variable only for booked accounts
-            non_booked_mask = data_demand_mr["status_name"] != StatusName.BOOKED.value
-            data_demand_mr.loc[non_booked_mask, "b2_ever_h6_tmp"] = np.nan
-
-            # --- Tiered account-level risk reconstruction ---
-            # Use resolved method/curvature from comparison_df (auto → concrete)
-            resolved_method = comparison_df["fitted_method"].iloc[0] if len(comparison_df) > 0 else "linear"
-            resolved_curvature = comparison_df["fitted_curvature"].iloc[0] if len(comparison_df) > 0 else 1.0
-            data_demand_mr = _assign_tiered_risk(
-                data_demand_mr,
-                merge_df,
-                comparison_df,
-                merge_keys,
-                multiplier=settings.multiplier,
-                multiplier_h3=settings.multiplier_h3,
-                mr_extrapolation_method=resolved_method,
-                mr_extrapolation_curvature=resolved_curvature,
-                mr_maturity_months=settings.mr_maturity_months,
-                min_obs_per_bin=settings.mr_min_obs_per_bin,
-            )
-
-            # --- Infer risk for model_fallback bins using trained model ---
-            booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
-            null_b2_mask = booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()
-            null_count = null_b2_mask.sum()
-
-            if null_count > 0:
-                missing_bins = data_demand_mr.loc[null_b2_mask, merge_keys].drop_duplicates()
-                logger.warning(
-                    f"Hybrid MR: {null_count:,} booked accounts in {len(missing_bins)} model_fallback bins "
-                    f"have no risk estimate. Inferring b2_ever_h6 using the risk model..."
-                )
-                for bin_combo in missing_bins.itertuples(index=False):
-                    logger.warning(f"  model_fallback bin: {bin_combo._asdict()}")
-
-                try:
-                    best_model_info = risk_inference.get("best_model_info")
-                    if best_model_info is None:
-                        raise KeyError("'best_model_info' not found in risk_inference")
-                    final_model = best_model_info.get("model")
-                    if final_model is None:
-                        raise KeyError("'model' not found in risk_inference['best_model_info']")
-                    final_features = risk_inference.get("features")
-                    if final_features is None:
-                        raise KeyError("'features' not found in risk_inference")
-
-                    model_vars = risk_inference.get("model_variables", merge_keys)
-                    missing_bins_df = missing_bins.copy()
-                    missing_bins_df = calculate_B2(
-                        missing_bins_df, final_model, model_vars, stress_factor, final_features
-                    )
-
-                    # Clip inferred risk using observed risk range from comparison_df
-                    observed_risk = comparison_df.loc[
-                        comparison_df["risk_source"] != "model_fallback", "b2_ever_h6_tmp"
-                    ].dropna()
-                    if len(observed_risk) > 0:
-                        risk_floor = float(observed_risk.min())
-                        risk_ceil_base = float(observed_risk.max())
-                        risk_ceil_scaled = risk_ceil_base * settings.mr_extrapolation_risk_multiplier
-                        risk_ceil = min(risk_ceil_scaled, settings.mr_extrapolation_hard_cap)
-                        missing_bins_df["b2_ever_h6"] = missing_bins_df["b2_ever_h6"].clip(
-                            lower=risk_floor, upper=risk_ceil
-                        )
-                        logger.info(
-                            f"  Clipped model-imputed risk to [{risk_floor:.4f}, {risk_ceil:.4f}] "
-                            f"(base max={risk_ceil_base:.4f}, mult={settings.mr_extrapolation_risk_multiplier}, "
-                            f"cap={settings.mr_extrapolation_hard_cap})"
-                        )
-
-                    inferred_b2 = missing_bins_df[merge_keys + ["b2_ever_h6"]].rename(
-                        columns={"b2_ever_h6": "b2_ever_h6_inferred"}
-                    )
-                    data_demand_mr = pd.merge(data_demand_mr, inferred_b2, on=merge_keys, how="left")
-
-                    fill_mask = data_demand_mr["b2_ever_h6_tmp"].isna() & data_demand_mr["b2_ever_h6_inferred"].notna()
-                    data_demand_mr.loc[fill_mask, "b2_ever_h6_tmp"] = data_demand_mr.loc[
-                        fill_mask, "b2_ever_h6_inferred"
-                    ]
-                    data_demand_mr = data_demand_mr.drop(columns=["b2_ever_h6_inferred"], errors="ignore")
-
-                    booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
-                    remaining_nulls = (booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()).sum()
-                    if remaining_nulls > 0:
-                        logger.error(
-                            f"Still have {remaining_nulls:,} booked accounts with null b2_ever_h6_tmp "
-                            f"after model_fallback inference"
-                        )
-
-                    logger.info(
-                        f"Successfully inferred b2_ever_h6 for {null_count:,} booked accounts "
-                        f"across {len(missing_bins)} model_fallback bins using risk model"
-                    )
-
-                except (ValueError, KeyError, RuntimeError) as e:
-                    logger.error(f"Error inferring b2_ever_h6 for model_fallback bins: {e}")
-                    logger.warning(
-                        "model_fallback bins will have NaN risk — they will be excluded "
-                        "from weighted risk calculations but may affect production totals."
-                    )
-
-        elif all(col in data_booked.columns for col in required_agg_cols):
-            # Default mode: use main-period risk for all bins
-            logger.info(f"Calculating b2_ever_h6_tmp aggregated by {merge_keys} from initial period...")
-            agg_data = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
-
-            # Calculate b2_ever_h6_tmp — NaN means "no usable H6 data" (zero exposure);
-            # preserve to distinguish from genuine zero risk.  Downstream model_fallback
-            # fills these via the inference model.
-            agg_data["b2_ever_h6_tmp"] = calculate_b2_ever_h6(
-                agg_data["todu_30ever_h6"], agg_data["todu_amt_pile_h6"], multiplier=settings.multiplier
-            )
-
-            merge_df = agg_data[merge_keys + ["b2_ever_h6_tmp"]]
-
-            logger.info("Merging b2_ever_h6_tmp into data_demand_mr...")
-            data_demand_mr = pd.merge(data_demand_mr, merge_df, on=merge_keys, how="left")
-
-            # Keep variable only for booked accounts
-            non_booked_mask = data_demand_mr["status_name"] != StatusName.BOOKED.value
-            data_demand_mr.loc[non_booked_mask, "b2_ever_h6_tmp"] = np.nan
-
-            # Check for booked accounts with null b2_ever_h6_tmp
-            booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
-            null_b2_mask = booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()
-            null_count = null_b2_mask.sum()
-
-            if null_count > 0:
-                # Get the missing bin combinations for logging
-                missing_bins = data_demand_mr.loc[null_b2_mask, merge_keys].drop_duplicates()
-                logger.warning(
-                    f"Found {null_count:,} booked accounts with null b2_ever_h6_tmp. "
-                    f"These bin combinations exist in MR period but not in initial period. "
-                    f"Inferring b2_ever_h6 using the risk model..."
-                )
-                for bin_combo in missing_bins.itertuples(index=False):
-                    logger.warning(f"  Missing bin: {bin_combo._asdict()}")
-
-                # Use inference model to predict b2_ever_h6 for missing bins
-                try:
-                    best_model_info = risk_inference.get("best_model_info")
-                    if best_model_info is None:
-                        raise KeyError("'best_model_info' not found in risk_inference")
-                    final_model = best_model_info.get("model")
-                    if final_model is None:
-                        raise KeyError("'model' not found in risk_inference['best_model_info']")
-                    final_features = risk_inference.get("features")
-                    if final_features is None:
-                        raise KeyError("'features' not found in risk_inference")
-
-                    # Use the model's actual training variables (inference_variables),
-                    # not merge_keys (settings.variables) which may include extra
-                    # dimensions the model was not trained on.
-                    model_vars = risk_inference.get("model_variables", merge_keys)
-
-                    # Create a DataFrame with missing bin combinations for prediction
-                    missing_bins_df = missing_bins.copy()
-
-                    # Apply calculate_B2 to predict b2_ever_h6 for missing bins
-                    missing_bins_df = calculate_B2(
-                        missing_bins_df, final_model, model_vars, stress_factor, final_features
-                    )
-
-                    # Clip inferred risk to prevent unbounded extrapolation
-                    observed_risk = agg_data["b2_ever_h6_tmp"].dropna()
-                    if len(observed_risk) > 0:
-                        risk_floor = float(observed_risk.min())
-                        risk_ceil_base = float(observed_risk.max())
-
-                        risk_ceil_scaled = risk_ceil_base * settings.mr_extrapolation_risk_multiplier
-                        risk_ceil = min(risk_ceil_scaled, settings.mr_extrapolation_hard_cap)
-
-                        missing_bins_df["b2_ever_h6"] = missing_bins_df["b2_ever_h6"].clip(
-                            lower=risk_floor, upper=risk_ceil
-                        )
-                        logger.info(
-                            f"  Clipped model-imputed risk to [{risk_floor:.4f}, {risk_ceil:.4f}] "
-                            f"(base max={risk_ceil_base:.4f}, mult={settings.mr_extrapolation_risk_multiplier}, "
-                            f"cap={settings.mr_extrapolation_hard_cap})"
-                        )
-
-                    # Merge clipped inferred values into data_demand_mr
-                    inferred_b2 = missing_bins_df[merge_keys + ["b2_ever_h6"]].rename(
-                        columns={"b2_ever_h6": "b2_ever_h6_inferred"}
-                    )
-                    data_demand_mr = pd.merge(data_demand_mr, inferred_b2, on=merge_keys, how="left")
-
-                    # Fill missing b2_ever_h6_tmp with inferred values
-                    fill_mask = data_demand_mr["b2_ever_h6_tmp"].isna() & data_demand_mr["b2_ever_h6_inferred"].notna()
-                    data_demand_mr.loc[fill_mask, "b2_ever_h6_tmp"] = data_demand_mr.loc[
-                        fill_mask, "b2_ever_h6_inferred"
-                    ]
-                    # Track which rows were imputed (for diagnostics below)
-                    imputed_mask = fill_mask.copy()
-
-                    # Drop the helper column
-                    data_demand_mr = data_demand_mr.drop(columns=["b2_ever_h6_inferred"], errors="ignore")
-
-                    # Recompute booked_mask after merge to avoid stale index alignment
-                    booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
-
-                    # Verify all booked accounts now have values
-                    remaining_nulls = (booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()).sum()
-                    if remaining_nulls > 0:
-                        logger.error(
-                            f"Still have {remaining_nulls:,} booked accounts with null b2_ever_h6_tmp after inference"
-                        )
-                        raise ValueError("Inference failed to fill all missing b2_ever_h6_tmp values")
-
-                    logger.info(
-                        f"Successfully inferred b2_ever_h6 for {null_count:,} booked accounts "
-                        f"across {len(missing_bins)} bin combinations using risk model"
-                    )
-
-                    # Diagnostic: fraction of MR production from imputed cells
-                    total_booked = booked_mask.sum()
-                    imputed_pct = null_count / max(total_booked, 1) * 100
-                    imputed_prod = (
-                        data_demand_mr.loc[imputed_mask, "oa_amt_h0"].sum()
-                        if "oa_amt_h0" in data_demand_mr.columns
-                        else 0
-                    )
-                    total_prod = (
-                        data_demand_mr.loc[booked_mask, "oa_amt_h0"].sum()
-                        if "oa_amt_h0" in data_demand_mr.columns
-                        else 0
-                    )
-                    prod_pct = imputed_prod / max(total_prod, 1) * 100
-                    logger.info(
-                        f"  Imputed accounts: {null_count:,}/{total_booked:,} ({imputed_pct:.1f}%) "
-                        f"| Imputed production: {prod_pct:.1f}% of MR total"
-                    )
-                    if prod_pct > 20:
-                        logger.warning(
-                            f"HIGH IMPUTATION RATIO: {prod_pct:.1f}% of MR production comes from "
-                            f"imputed cells ({len(missing_bins)} missing bin combinations). "
-                            f"MR results may be unreliable — consider coarser binning or validating "
-                            f"imputed risk values against out-of-sample benchmarks."
-                        )
-
-                except (ValueError, KeyError, RuntimeError) as e:
-                    logger.error(f"Error inferring b2_ever_h6 for missing bins: {e}")
-                    raise ValueError(
-                        f"Data integrity error: {null_count:,} booked accounts in MR period "
-                        f"have no matching b2_ever_h6 from initial period, and inference failed: {e}"
-                    ) from e
-            else:
-                logger.info(f"Validation passed: all {booked_mask.sum():,} booked accounts have b2_ever_h6_tmp values")
-
-        else:
-            logger.warning(
-                f"Missing columns for aggregation. Required: {required_agg_cols}. Skipping b2_ever_h6_tmp calculation."
-            )
+        data_demand_mr, comparison_df = _compute_b2_ever_h6_tmp(
+            data_demand_mr,
+            data_booked,
+            merge_keys,
+            settings,
+            risk_inference,
+            reg_todu_amt_pile,
+            stress_factor,
+            file_suffix,
+            output,
+        )
 
         # --- Calculate todu_amt_pile_h6 using inference model ---
         # Always use the model for MR exposure prediction.  Actual MR
