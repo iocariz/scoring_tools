@@ -1420,6 +1420,267 @@ def _compute_mr_stability_metrics(
         logger.opt(exception=True).warning(f"Error calculating stability metrics: {e}")
 
 
+# -----------------------------------------------------------------------------
+# MR repesca recalibration + consistency-fix helpers (R2b-vi, todo #57)
+# -----------------------------------------------------------------------------
+
+
+def _recalibrate_mr_repesca(
+    data_summary_desagregado_mr: pd.DataFrame,
+    data_booked: pd.DataFrame,
+    merge_keys: list[str],
+    comparison_df: pd.DataFrame | None,
+    settings: "PreprocessingSettings",
+) -> tuple[pd.DataFrame, bool]:
+    """Recalibrate repesca risk to the MR risk level.
+
+    The risk model predicts repesca risk at main-period calibration
+    (~b2_main). MR booked risk uses hybrid rates (~b2_ever_h6_tmp),
+    which may be lower if MR conditions improved.
+
+    Fix: scale repesca todu_30ever_h6_rep per bin by (MR rate / main
+    rate). Also recalibrates H3 repesca using an H3-specific factor
+    (b2_mr_h3 / b2_main_h3) when available.
+
+    Returns the (possibly updated) data_summary_desagregado_mr and a
+    flag indicating whether recalibration was applied.
+    """
+    recalibration_applied = False
+    # --- Recalibrate repesca risk to MR level ---
+    # The risk model predicts repesca risk at main-period calibration (~b2_main).
+    # But the MR booked risk uses hybrid rates (~b2_ever_h6_tmp), which may be
+    # lower if MR conditions improved.  Without recalibration, swap-in brings
+    # inflated risk and the optimum paradoxically shows HIGHER risk than actual.
+    #
+    # Fix: scale repesca todu_30ever_h6_rep per bin by (MR rate / main rate),
+    # preserving the reject-inference multiplier and stressor proportionally.
+    if comparison_df is not None and "b2_ever_h6_tmp" in comparison_df.columns:
+        recalibration_applied = True
+        main_bin_agg = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
+        main_bin_agg["_main_b2"] = calculate_b2_ever_h6(
+            main_bin_agg["todu_30ever_h6"],
+            main_bin_agg["todu_amt_pile_h6"],
+            multiplier=settings.multiplier,
+        )
+        mr_bin_b2 = comparison_df[merge_keys + ["b2_ever_h6_tmp"]].rename(columns={"b2_ever_h6_tmp": "_mr_b2"})
+
+        # Recompute calibration factor per *bin* and merge it back by merge_keys.
+        # This avoids relying on row-order alignment assumptions (`cal_factor.values`).
+        if main_bin_agg.duplicated(merge_keys).any():
+            logger.warning("MR recalibration: main_bin_agg has non-unique merge_keys; results may be inconsistent.")
+        if mr_bin_b2.duplicated(merge_keys).any():
+            dup_count = int(mr_bin_b2.duplicated(merge_keys).sum())
+            logger.warning(
+                "MR recalibration: mr_bin_b2 has non-unique merge_keys; collapsing duplicates "
+                f"(keys duplicated={dup_count})."
+            )
+            mr_bin_b2 = mr_bin_b2.groupby(merge_keys, as_index=False)["_mr_b2"].mean()
+
+        cal_factor_by_bin = main_bin_agg[merge_keys + ["_main_b2"]].merge(mr_bin_b2, on=merge_keys, how="left")
+        safe_main_b2 = cal_factor_by_bin["_main_b2"].clip(lower=1e-9)
+        cal_factor_by_bin["_mr_cal_factor"] = (
+            (cal_factor_by_bin["_mr_b2"] / safe_main_b2).clip(lower=0.1, upper=10.0).fillna(1.0)
+        )
+
+        n_before_recal_merge = len(data_summary_desagregado_mr)
+        data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
+            cal_factor_by_bin[merge_keys + ["_mr_cal_factor"]],
+            on=merge_keys,
+            how="left",
+        )
+        if len(data_summary_desagregado_mr) != n_before_recal_merge:
+            logger.error(
+                "MR recalibration merge: row expansion detected while merging _mr_cal_factor "
+                f"(before={n_before_recal_merge}, after={len(data_summary_desagregado_mr)}). "
+                "Collapsing calibration factors by merge_keys and re-merging."
+            )
+            cal_factor_by_bin = cal_factor_by_bin.groupby(merge_keys, as_index=False)["_mr_cal_factor"].mean()
+            data_summary_desagregado_mr = data_summary_desagregado_mr.drop(columns=["_mr_cal_factor"], errors="ignore")
+            data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
+                cal_factor_by_bin[merge_keys + ["_mr_cal_factor"]],
+                on=merge_keys,
+                how="left",
+            )
+        data_summary_desagregado_mr["_mr_cal_factor"] = data_summary_desagregado_mr["_mr_cal_factor"].fillna(1.0)
+
+        rep_col = "todu_30ever_h6_rep"
+        if rep_col in data_summary_desagregado_mr.columns:
+            before_avg = calculate_b2_ever_h6(
+                data_summary_desagregado_mr[rep_col].sum(),
+                data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
+                multiplier=settings.multiplier,
+                as_percentage=True,
+            )
+            data_summary_desagregado_mr[rep_col] = (
+                data_summary_desagregado_mr[rep_col] * data_summary_desagregado_mr["_mr_cal_factor"]
+            )
+            after_avg = calculate_b2_ever_h6(
+                data_summary_desagregado_mr[rep_col].sum(),
+                data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
+                multiplier=settings.multiplier,
+                as_percentage=True,
+            )
+            logger.info(
+                f"MR repesca recalibration: avg factor={data_summary_desagregado_mr['_mr_cal_factor'].mean():.3f} "
+                f"(range [{data_summary_desagregado_mr['_mr_cal_factor'].min():.3f}, {data_summary_desagregado_mr['_mr_cal_factor'].max():.3f}]). "
+                f"Repesca risk: {before_avg:.2f}% → {after_avg:.2f}%"
+            )
+
+        # Also recalibrate H3 repesca if present — using an H3-specific
+        # calibration factor (b2_mr_h3 / b2_main_h3) rather than the H6 one,
+        # because H3 (early delinquency) and H6 (later defaults) can drift
+        # differently between periods.
+        rep_h3_col = "todu_30ever_h3_rep"
+        if rep_h3_col in data_summary_desagregado_mr.columns:
+            has_h3_cal = (
+                comparison_df is not None
+                and "b2_mr_h3" in comparison_df.columns
+                and "b2_main_h3" in comparison_df.columns
+            )
+            if has_h3_cal:
+                h3_cal = comparison_df[merge_keys + ["b2_mr_h3", "b2_main_h3"]].drop_duplicates(subset=merge_keys)
+                safe_main_h3 = h3_cal["b2_main_h3"].clip(lower=1e-9)
+                h3_cal["_mr_cal_factor_h3"] = (
+                    (h3_cal["b2_mr_h3"] / safe_main_h3).clip(lower=0.1, upper=10.0).fillna(1.0)
+                )
+                data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
+                    h3_cal[merge_keys + ["_mr_cal_factor_h3"]],
+                    on=merge_keys,
+                    how="left",
+                )
+                data_summary_desagregado_mr["_mr_cal_factor_h3"] = data_summary_desagregado_mr[
+                    "_mr_cal_factor_h3"
+                ].fillna(1.0)
+                data_summary_desagregado_mr[rep_h3_col] = (
+                    data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor_h3"]
+                )
+                logger.info(
+                    f"MR H3 repesca recalibration: avg factor={data_summary_desagregado_mr['_mr_cal_factor_h3'].mean():.3f} "
+                    f"(range [{data_summary_desagregado_mr['_mr_cal_factor_h3'].min():.3f}, "
+                    f"{data_summary_desagregado_mr['_mr_cal_factor_h3'].max():.3f}])"
+                )
+                data_summary_desagregado_mr = data_summary_desagregado_mr.drop(
+                    columns=["_mr_cal_factor_h3"], errors="ignore"
+                )
+            else:
+                # Fall back to H6 factor when H3 calibration data unavailable
+                data_summary_desagregado_mr[rep_h3_col] = (
+                    data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor"]
+                )
+                logger.info("MR H3 repesca recalibration: using H6 factor (H3-specific data unavailable)")
+
+        # Drop helper calibration factor column
+        data_summary_desagregado_mr = data_summary_desagregado_mr.drop(columns=["_mr_cal_factor"], errors="ignore")
+
+        # Recompute merged total columns after recalibration
+        for suffix_pair in [("todu_30ever_h6", "_boo", "_rep"), ("todu_30ever_h3", "_boo", "_rep")]:
+            base, boo, rep = suffix_pair
+            boo_col, rep_col_name = base + boo, base + rep
+            if boo_col in data_summary_desagregado_mr.columns and rep_col_name in data_summary_desagregado_mr.columns:
+                data_summary_desagregado_mr[base] = (
+                    data_summary_desagregado_mr[boo_col] + data_summary_desagregado_mr[rep_col_name]
+                )
+    return data_summary_desagregado_mr, recalibration_applied
+
+
+def _reoptimize_mr_mask_after_recalibration(
+    data_summary_desagregado_mr: pd.DataFrame,
+    settings: "PreprocessingSettings",
+    optimal_solution_df: pd.DataFrame | None,
+    mask: np.ndarray | None,
+    grid: object | None,
+    recalibration_applied: bool,
+) -> tuple[np.ndarray | None, object | None, pd.DataFrame | None]:
+    """Re-optimize the MR acceptance mask after repesca recalibration.
+
+    Decisions/mask were optimized on the pre-recalibrated MR risk
+    surface but metrics are reported after scaling repesca risk to MR
+    hybrid rates. Re-optimize so reported metrics are consistent with
+    the cutoffs used. Non-blocking: on failure, keeps the passed
+    mask/grid.
+    """
+
+    # ------------------------------------------------------------------
+    # Consistency fix (High severity):
+    # decisions/mask were optimized on the pre-recalibrated MR risk surface
+    # but we report metrics after scaling repesca risk to MR hybrid rates.
+    # Re-optimize the mask on the post-recalibration MR risk surface so
+    # reported metrics are consistent with the cutoffs used.
+    # ------------------------------------------------------------------
+    if recalibration_applied and not settings.baseline_mode:
+        try:
+            from src.optimization_utils import CellGrid, milp_solve_cutoffs
+
+            target_risk = settings.optimum_risk
+            if (
+                optimal_solution_df is not None
+                and not optimal_solution_df.empty
+                and "b2_ever_h6" in optimal_solution_df.columns
+            ):
+                target_risk = float(optimal_solution_df["b2_ever_h6"].iloc[0])
+
+            mr_grid = CellGrid.from_summary(data_summary_desagregado_mr, settings.variables)
+            new_mask = milp_solve_cutoffs(
+                mr_grid,
+                target_risk=target_risk,
+                inv_vars=settings.inv_vars,
+                multiplier=settings.multiplier,
+                max_swapin_production_pct=settings.max_swapin_production_pct,
+                max_swapin_risk=settings.max_swapin_risk,
+                time_limit=settings.milp_time_limit,
+                monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
+                monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
+                monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
+            )
+
+            if new_mask is not None:
+                logger.info(
+                    "MR consistency fix: re-optimized acceptance mask after repesca recalibration "
+                    f"(target_risk={target_risk:.3f}%)."
+                )
+                mask = new_mask
+                grid = mr_grid
+                # calculate_metrics_from_cuts requires optimal_solution_df non-empty
+                optimal_solution_df = pd.DataFrame({"sol_fac": [0]})
+            else:
+                logger.warning(
+                    "MR consistency fix: re-optimization after recalibration infeasible; keeping passed mask/grid."
+                )
+        except Exception as e:
+            logger.warning(f"MR consistency fix failed (non-blocking). Keeping passed mask/grid. Error: {e}")
+
+    return mask, grid, optimal_solution_df
+
+
+def _log_mr_risk_diagnostic(
+    data_summary_desagregado_mr: pd.DataFrame,
+    settings: "PreprocessingSettings",
+) -> None:
+    """Log booked-vs-repesca risk after all MR adjustments."""
+    # --- Diagnostic: booked vs repesca risk after all adjustments ---
+    dsm = data_summary_desagregado_mr
+    if "todu_30ever_h6_boo" in dsm.columns and "todu_30ever_h6_rep" in dsm.columns:
+        boo_b2 = calculate_b2_ever_h6(
+            dsm["todu_30ever_h6_boo"].sum(),
+            dsm["todu_amt_pile_h6_boo"].sum(),
+            multiplier=settings.multiplier,
+            as_percentage=True,
+        )
+        rep_b2 = calculate_b2_ever_h6(
+            dsm["todu_30ever_h6_rep"].sum(),
+            dsm.get("todu_amt_pile_h6_rep", pd.Series([0])).sum(),
+            multiplier=settings.multiplier,
+            as_percentage=True,
+        )
+        logger.info(
+            f"MR risk diagnostic — booked (b2_boo): {boo_b2:.2f}%, "
+            f"repesca (b2_rep after RI+recal): {rep_b2:.2f}%, "
+            f"ratio rep/boo: {rep_b2 / boo_b2:.2f}x"
+            if boo_b2 > 0
+            else f"MR risk diagnostic — booked (b2_boo): {boo_b2:.2f}%, repesca: {rep_b2:.2f}%"
+        )
+
+
 def process_mr_period(
     data_clean: pd.DataFrame,
     data_booked: pd.DataFrame,
@@ -1914,217 +2175,23 @@ def process_mr_period(
             per_bin_tasa_fin=per_bin_tasa_fin,
         )
 
-        # --- Recalibrate repesca risk to MR level ---
-        # The risk model predicts repesca risk at main-period calibration (~b2_main).
-        # But the MR booked risk uses hybrid rates (~b2_ever_h6_tmp), which may be
-        # lower if MR conditions improved.  Without recalibration, swap-in brings
-        # inflated risk and the optimum paradoxically shows HIGHER risk than actual.
-        #
-        # Fix: scale repesca todu_30ever_h6_rep per bin by (MR rate / main rate),
-        # preserving the reject-inference multiplier and stressor proportionally.
-        if comparison_df is not None and "b2_ever_h6_tmp" in comparison_df.columns:
-            recalibration_applied = True
-            main_bin_agg = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
-            main_bin_agg["_main_b2"] = calculate_b2_ever_h6(
-                main_bin_agg["todu_30ever_h6"],
-                main_bin_agg["todu_amt_pile_h6"],
-                multiplier=settings.multiplier,
-            )
-            mr_bin_b2 = comparison_df[merge_keys + ["b2_ever_h6_tmp"]].rename(columns={"b2_ever_h6_tmp": "_mr_b2"})
-
-            # Recompute calibration factor per *bin* and merge it back by merge_keys.
-            # This avoids relying on row-order alignment assumptions (`cal_factor.values`).
-            if main_bin_agg.duplicated(merge_keys).any():
-                logger.warning("MR recalibration: main_bin_agg has non-unique merge_keys; results may be inconsistent.")
-            if mr_bin_b2.duplicated(merge_keys).any():
-                dup_count = int(mr_bin_b2.duplicated(merge_keys).sum())
-                logger.warning(
-                    "MR recalibration: mr_bin_b2 has non-unique merge_keys; collapsing duplicates "
-                    f"(keys duplicated={dup_count})."
-                )
-                mr_bin_b2 = mr_bin_b2.groupby(merge_keys, as_index=False)["_mr_b2"].mean()
-
-            cal_factor_by_bin = main_bin_agg[merge_keys + ["_main_b2"]].merge(mr_bin_b2, on=merge_keys, how="left")
-            safe_main_b2 = cal_factor_by_bin["_main_b2"].clip(lower=1e-9)
-            cal_factor_by_bin["_mr_cal_factor"] = (
-                (cal_factor_by_bin["_mr_b2"] / safe_main_b2).clip(lower=0.1, upper=10.0).fillna(1.0)
-            )
-
-            n_before_recal_merge = len(data_summary_desagregado_mr)
-            data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
-                cal_factor_by_bin[merge_keys + ["_mr_cal_factor"]],
-                on=merge_keys,
-                how="left",
-            )
-            if len(data_summary_desagregado_mr) != n_before_recal_merge:
-                logger.error(
-                    "MR recalibration merge: row expansion detected while merging _mr_cal_factor "
-                    f"(before={n_before_recal_merge}, after={len(data_summary_desagregado_mr)}). "
-                    "Collapsing calibration factors by merge_keys and re-merging."
-                )
-                cal_factor_by_bin = cal_factor_by_bin.groupby(merge_keys, as_index=False)["_mr_cal_factor"].mean()
-                data_summary_desagregado_mr = data_summary_desagregado_mr.drop(
-                    columns=["_mr_cal_factor"], errors="ignore"
-                )
-                data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
-                    cal_factor_by_bin[merge_keys + ["_mr_cal_factor"]],
-                    on=merge_keys,
-                    how="left",
-                )
-            data_summary_desagregado_mr["_mr_cal_factor"] = data_summary_desagregado_mr["_mr_cal_factor"].fillna(1.0)
-
-            rep_col = "todu_30ever_h6_rep"
-            if rep_col in data_summary_desagregado_mr.columns:
-                before_avg = calculate_b2_ever_h6(
-                    data_summary_desagregado_mr[rep_col].sum(),
-                    data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
-                    multiplier=settings.multiplier,
-                    as_percentage=True,
-                )
-                data_summary_desagregado_mr[rep_col] = (
-                    data_summary_desagregado_mr[rep_col] * data_summary_desagregado_mr["_mr_cal_factor"]
-                )
-                after_avg = calculate_b2_ever_h6(
-                    data_summary_desagregado_mr[rep_col].sum(),
-                    data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
-                    multiplier=settings.multiplier,
-                    as_percentage=True,
-                )
-                logger.info(
-                    f"MR repesca recalibration: avg factor={data_summary_desagregado_mr['_mr_cal_factor'].mean():.3f} "
-                    f"(range [{data_summary_desagregado_mr['_mr_cal_factor'].min():.3f}, {data_summary_desagregado_mr['_mr_cal_factor'].max():.3f}]). "
-                    f"Repesca risk: {before_avg:.2f}% → {after_avg:.2f}%"
-                )
-
-            # Also recalibrate H3 repesca if present — using an H3-specific
-            # calibration factor (b2_mr_h3 / b2_main_h3) rather than the H6 one,
-            # because H3 (early delinquency) and H6 (later defaults) can drift
-            # differently between periods.
-            rep_h3_col = "todu_30ever_h3_rep"
-            if rep_h3_col in data_summary_desagregado_mr.columns:
-                has_h3_cal = (
-                    comparison_df is not None
-                    and "b2_mr_h3" in comparison_df.columns
-                    and "b2_main_h3" in comparison_df.columns
-                )
-                if has_h3_cal:
-                    h3_cal = comparison_df[merge_keys + ["b2_mr_h3", "b2_main_h3"]].drop_duplicates(subset=merge_keys)
-                    safe_main_h3 = h3_cal["b2_main_h3"].clip(lower=1e-9)
-                    h3_cal["_mr_cal_factor_h3"] = (
-                        (h3_cal["b2_mr_h3"] / safe_main_h3).clip(lower=0.1, upper=10.0).fillna(1.0)
-                    )
-                    data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
-                        h3_cal[merge_keys + ["_mr_cal_factor_h3"]],
-                        on=merge_keys,
-                        how="left",
-                    )
-                    data_summary_desagregado_mr["_mr_cal_factor_h3"] = data_summary_desagregado_mr[
-                        "_mr_cal_factor_h3"
-                    ].fillna(1.0)
-                    data_summary_desagregado_mr[rep_h3_col] = (
-                        data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor_h3"]
-                    )
-                    logger.info(
-                        f"MR H3 repesca recalibration: avg factor={data_summary_desagregado_mr['_mr_cal_factor_h3'].mean():.3f} "
-                        f"(range [{data_summary_desagregado_mr['_mr_cal_factor_h3'].min():.3f}, "
-                        f"{data_summary_desagregado_mr['_mr_cal_factor_h3'].max():.3f}])"
-                    )
-                    data_summary_desagregado_mr = data_summary_desagregado_mr.drop(
-                        columns=["_mr_cal_factor_h3"], errors="ignore"
-                    )
-                else:
-                    # Fall back to H6 factor when H3 calibration data unavailable
-                    data_summary_desagregado_mr[rep_h3_col] = (
-                        data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor"]
-                    )
-                    logger.info("MR H3 repesca recalibration: using H6 factor (H3-specific data unavailable)")
-
-            # Drop helper calibration factor column
-            data_summary_desagregado_mr = data_summary_desagregado_mr.drop(columns=["_mr_cal_factor"], errors="ignore")
-
-            # Recompute merged total columns after recalibration
-            for suffix_pair in [("todu_30ever_h6", "_boo", "_rep"), ("todu_30ever_h3", "_boo", "_rep")]:
-                base, boo, rep = suffix_pair
-                boo_col, rep_col_name = base + boo, base + rep
-                if (
-                    boo_col in data_summary_desagregado_mr.columns
-                    and rep_col_name in data_summary_desagregado_mr.columns
-                ):
-                    data_summary_desagregado_mr[base] = (
-                        data_summary_desagregado_mr[boo_col] + data_summary_desagregado_mr[rep_col_name]
-                    )
-
-        # ------------------------------------------------------------------
-        # Consistency fix (High severity):
-        # decisions/mask were optimized on the pre-recalibrated MR risk surface
-        # but we report metrics after scaling repesca risk to MR hybrid rates.
-        # Re-optimize the mask on the post-recalibration MR risk surface so
-        # reported metrics are consistent with the cutoffs used.
-        # ------------------------------------------------------------------
-        if recalibration_applied and not settings.baseline_mode:
-            try:
-                from src.optimization_utils import CellGrid, milp_solve_cutoffs
-
-                target_risk = settings.optimum_risk
-                if (
-                    optimal_solution_df is not None
-                    and not optimal_solution_df.empty
-                    and "b2_ever_h6" in optimal_solution_df.columns
-                ):
-                    target_risk = float(optimal_solution_df["b2_ever_h6"].iloc[0])
-
-                mr_grid = CellGrid.from_summary(data_summary_desagregado_mr, settings.variables)
-                new_mask = milp_solve_cutoffs(
-                    mr_grid,
-                    target_risk=target_risk,
-                    inv_vars=settings.inv_vars,
-                    multiplier=settings.multiplier,
-                    max_swapin_production_pct=settings.max_swapin_production_pct,
-                    max_swapin_risk=settings.max_swapin_risk,
-                    time_limit=settings.milp_time_limit,
-                    monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
-                    monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
-                    monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
-                )
-
-                if new_mask is not None:
-                    logger.info(
-                        "MR consistency fix: re-optimized acceptance mask after repesca recalibration "
-                        f"(target_risk={target_risk:.3f}%)."
-                    )
-                    mask = new_mask
-                    grid = mr_grid
-                    # calculate_metrics_from_cuts requires optimal_solution_df non-empty
-                    optimal_solution_df = pd.DataFrame({"sol_fac": [0]})
-                else:
-                    logger.warning(
-                        "MR consistency fix: re-optimization after recalibration infeasible; keeping passed mask/grid."
-                    )
-            except Exception as e:
-                logger.warning(f"MR consistency fix failed (non-blocking). Keeping passed mask/grid. Error: {e}")
-
-        # --- Diagnostic: booked vs repesca risk after all adjustments ---
-        dsm = data_summary_desagregado_mr
-        if "todu_30ever_h6_boo" in dsm.columns and "todu_30ever_h6_rep" in dsm.columns:
-            boo_b2 = calculate_b2_ever_h6(
-                dsm["todu_30ever_h6_boo"].sum(),
-                dsm["todu_amt_pile_h6_boo"].sum(),
-                multiplier=settings.multiplier,
-                as_percentage=True,
-            )
-            rep_b2 = calculate_b2_ever_h6(
-                dsm["todu_30ever_h6_rep"].sum(),
-                dsm.get("todu_amt_pile_h6_rep", pd.Series([0])).sum(),
-                multiplier=settings.multiplier,
-                as_percentage=True,
-            )
-            logger.info(
-                f"MR risk diagnostic — booked (b2_boo): {boo_b2:.2f}%, "
-                f"repesca (b2_rep after RI+recal): {rep_b2:.2f}%, "
-                f"ratio rep/boo: {rep_b2 / boo_b2:.2f}x"
-                if boo_b2 > 0
-                else f"MR risk diagnostic — booked (b2_boo): {boo_b2:.2f}%, repesca: {rep_b2:.2f}%"
-            )
+        # --- Recalibrate repesca risk + re-optimize mask + log diagnostic ---
+        data_summary_desagregado_mr, recalibration_applied = _recalibrate_mr_repesca(
+            data_summary_desagregado_mr,
+            data_booked,
+            merge_keys,
+            comparison_df,
+            settings,
+        )
+        mask, grid, optimal_solution_df = _reoptimize_mr_mask_after_recalibration(
+            data_summary_desagregado_mr,
+            settings,
+            optimal_solution_df,
+            mask,
+            grid,
+            recalibration_applied,
+        )
+        _log_mr_risk_diagnostic(data_summary_desagregado_mr, settings)
 
         # Save MR summary
         summary_path = output.mr_summary_csv(file_suffix)
