@@ -50,9 +50,6 @@ def calculate_metrics_from_cuts(
     the 2-variable cut_map approach.
     """
     try:
-        var0_col = variables[0]
-        var1_col = variables[1] if len(variables) > 1 else None
-
         # Verify we have the optimal solution
         if optimal_solution_df is None or optimal_solution_df.empty:
             logger.warning("optimal_solution_df is missing or empty. Cannot calculate summary table.")
@@ -60,41 +57,17 @@ def calculate_metrics_from_cuts(
 
         df = data_summary_desagregado.copy()
 
-        # Determine passes_cut via mask (N-d) or cut_map (2-var)
-        if mask is not None and grid is not None:
-            from src.optimization_utils import classify_by_mask
+        from src.optimization_utils import CutoffSpec
 
-            df["passes_cut"] = classify_by_mask(df, mask, grid)
-        else:
-            if var1_col is None:
-                raise ValueError("2-var cut_map path requires at least 2 variables; use mask/grid for 1-var configs")
-            opt_sol_row = optimal_solution_df.iloc[0]
-
-            # Get unique bins from data
-            bins = sorted(data_summary_desagregado[var0_col].unique())
-            cut_map = {}
-
-            for bin_val in bins:
-                if bin_val in optimal_solution_df.columns:
-                    cut_map[bin_val] = opt_sol_row[bin_val]
-                elif str(bin_val) in optimal_solution_df.columns:
-                    cut_map[bin_val] = opt_sol_row[str(bin_val)]
-                elif str(float(bin_val)) in optimal_solution_df.columns:
-                    cut_map[bin_val] = opt_sol_row[str(float(bin_val))]
-                else:
-                    logger.warning(
-                        f"Warning: Bin {bin_val} not found in optimal solution columns. Defaulting to strict rejection."
-                    )
-                    cut_map[bin_val] = np.inf if (inv_vars and var1_col in inv_vars) else -np.inf
-
-            logger.debug(f"Optimal Cuts: {cut_map}")
-
-            df["cut_limit"] = df[var0_col].map(cut_map)
-
-            if inv_vars and var1_col in inv_vars:
-                df["passes_cut"] = df[var1_col] >= df["cut_limit"]
-            else:
-                df["passes_cut"] = df[var1_col] <= df["cut_limit"]
+        spec = CutoffSpec.from_optimal_solution(
+            optimal_solution_df,
+            variables,
+            data_summary=data_summary_desagregado,
+            mask=mask,
+            grid=grid,
+            inv_vars=inv_vars,
+        )
+        df["passes_cut"] = spec.classify(df)
 
         summary_data = []
 
