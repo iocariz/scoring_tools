@@ -2592,6 +2592,483 @@ def _build_top_movers_df(source_df, *, period: str) -> pd.DataFrame:
     return movers
 
 
+# =============================================================================
+# Config-loading helpers for the Excel exporter (R2b-ii todo #57 step 6)
+# =============================================================================
+# Previously nested inside export_consolidated_excel / _build_income_bin_tables,
+# these read segment/global config files to derive multipliers, inv_vars,
+# baseline_mode, and income-bin thresholds. Lifted to module level with
+# explicit output_base / segments / supersegments parameters so the
+# function body shrinks further and these are independently testable.
+
+
+def _load_segment_settings(output_base: Path, seg_name_local: str) -> dict[str, Any]:
+    """Load multiplier, multiplier_h3, inv_vars, baseline_mode from the segment's saved config."""
+    defaults: dict[str, Any] = {
+        "multiplier": float(DEFAULT_RISK_MULTIPLIER),
+        "multiplier_h3": None,
+        "inv_vars": None,
+        "baseline_mode": False,
+    }
+    try:
+        import tomllib
+
+        seg_cfg_path = output_base / seg_name_local / "config_segment.toml"
+        if seg_cfg_path.exists():
+            cfg = tomllib.loads(seg_cfg_path.read_text(encoding="utf-8"))
+            prep = cfg.get("preprocessing", cfg)
+            if "multiplier" in prep:
+                defaults["multiplier"] = float(prep["multiplier"])
+            if "multiplier_h3" in prep:
+                defaults["multiplier_h3"] = float(prep["multiplier_h3"])
+            if "inv_vars" in prep:
+                defaults["inv_vars"] = list(prep["inv_vars"])
+            if "baseline_mode" in prep:
+                defaults["baseline_mode"] = bool(prep["baseline_mode"])
+    except Exception:
+        logger.warning(
+            f"_get_segment_defaults: failed to read segment config for '{seg_name_local}'; using global defaults",
+            exc_info=True,
+        )
+    return defaults
+
+
+def _extract_binary_income_threshold(bin_edges: Any) -> float | None:
+    if not isinstance(bin_edges, list) or len(bin_edges) < 3:
+        return None
+    finite_edges = []
+    for e in bin_edges:
+        try:
+            ef = float(e)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(ef):
+            finite_edges.append(ef)
+    if len(finite_edges) != 1:
+        return None
+    return float(finite_edges[0])
+
+
+def _resolve_income_threshold(
+    output_base: Path,
+    segments: dict[str, dict[str, Any]],
+    supersegments: dict[str, dict[str, Any]],
+    seg_name_local: str,
+) -> float | None:
+    # 0) Segment run config snapshot (contains learned/injected edges in batch mode)
+    try:
+        import tomllib
+
+        seg_cfg_path = output_base / seg_name_local / "config_segment.toml"
+        if seg_cfg_path.exists():
+            cfg = tomllib.loads(seg_cfg_path.read_text(encoding="utf-8"))
+            prep = cfg.get("preprocessing", cfg)
+            seg_file_edges = prep.get("bins", {}).get("income_bin", {}).get("bin_edges")
+            th = _extract_binary_income_threshold(seg_file_edges)
+            if th is not None:
+                return th
+    except Exception:
+        logger.warning(
+            f"_resolve_income_threshold: failed to read segment-file edges for "
+            f"'{seg_name_local}'; falling back to segments.toml",
+            exc_info=True,
+        )
+
+    seg_cfg = segments.get(seg_name_local, {})
+    # 1) Segment-level bins override
+    seg_edges = seg_cfg.get("bins", {}).get("income_bin", {}).get("bin_edges")
+    th = _extract_binary_income_threshold(seg_edges)
+    if th is not None:
+        return th
+
+    # 2) Reporting supersegment-level fixed bin edges
+    reporting_ss = seg_cfg.get("reporting_supersegment") or seg_cfg.get("supersegment")
+    if reporting_ss and reporting_ss in supersegments:
+        ss_edges = supersegments[reporting_ss].get("bin_edges", {}).get("income_bin")
+        th = _extract_binary_income_threshold(ss_edges)
+        if th is not None:
+            return th
+
+    # 3) Global config fallback (config.toml)
+    try:
+        cfg_path = Path("config.toml")
+        if cfg_path.exists():
+            cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+            global_edges = cfg.get("preprocessing", {}).get("bins", {}).get("income_bin", {}).get("bin_edges")
+            th = _extract_binary_income_threshold(global_edges)
+            if th is not None:
+                return th
+    except Exception:
+        logger.warning(
+            f"_resolve_income_threshold: failed to read global config.toml edges for "
+            f"'{seg_name_local}'; no threshold will be resolved",
+            exc_info=True,
+        )
+    return None
+
+
+# =============================================================================
+# Small helpers extracted from income-bin tables (R2b-ii todo #57 step 7)
+# =============================================================================
+
+
+def _sort_pivot(pivot):
+    """Sort pivot index and columns numerically where possible."""
+    try:
+        pivot = pivot.sort_index(key=lambda x: pd.to_numeric(x, errors="coerce"))
+    except (TypeError, ValueError):
+        pass
+    try:
+        pivot = pivot[
+            sorted(
+                pivot.columns,
+                key=lambda x: float(x) if str(x).replace(".", "").replace("-", "").isdigit() else x,
+            )
+        ]
+    except (TypeError, ValueError):
+        pass
+    return pivot
+
+
+def _audit_slice_for_income_bin(audit_df: pd.DataFrame, income_val: Any) -> pd.DataFrame:
+    if "income_bin" not in audit_df.columns:
+        return pd.DataFrame()
+    ib = pd.to_numeric(audit_df["income_bin"], errors="coerce")
+    try:
+        target = float(income_val)
+    except (TypeError, ValueError):
+        return pd.DataFrame()
+    return audit_df.loc[ib == target].copy()
+
+
+def _empty_rp_skeleton(template_cols: list[str]) -> pd.DataFrame:
+    base = dict.fromkeys(template_cols, np.nan)
+    rows = []
+    for m in ["Actual", "Swap-in", "Swap-out", "Optimum selected", "Summary"]:
+        r = dict(base)
+        r["Metric"] = m
+        rows.append(r)
+    return pd.DataFrame(rows)
+
+
+# =============================================================================
+# Pivot-grid writer (R2b-ii todo #57 step 8)
+# =============================================================================
+
+
+def _write_single_pivot_grid(ws, pivot, col_var, row_var, start_row, col_offset=0):
+    """Draw one pivot grid at (start_row, col_offset+1). Returns bottom row used."""
+    c0 = col_offset + 1
+
+    # Corner label
+    corner = ws.cell(row=start_row, column=c0)
+    corner.value = f"{row_var} \\ {col_var}"
+    corner.font = _FONT_GRID_LABEL
+    corner.fill = _FILL_GRID_HEADER
+    corner.alignment = _ALIGN_CENTER
+    corner.border = _BORDER_GRID
+    ws.column_dimensions[_get_column_letter(c0)].width = max(
+        ws.column_dimensions[_get_column_letter(c0)].width or 8, len(str(corner.value)) + 4
+    )
+    ws.row_dimensions[start_row].height = 26
+
+    # Column headers
+    for ci, col_val in enumerate(pivot.columns, c0 + 1):
+        c = ws.cell(row=start_row, column=ci)
+        c.value = col_val
+        c.font = _FONT_GRID_HEADER
+        c.fill = _FILL_GRID_HEADER
+        c.alignment = _ALIGN_CENTER
+        c.border = _BORDER_GRID
+        ws.column_dimensions[_get_column_letter(ci)].width = max(
+            ws.column_dimensions[_get_column_letter(ci)].width or 0, 7
+        )
+
+    # Data rows
+    for ri, idx_val in enumerate(pivot.index, start_row + 1):
+        rh = ws.cell(row=ri, column=c0)
+        rh.value = idx_val
+        rh.font = _FONT_GRID_HEADER
+        rh.fill = _FILL_GRID_HEADER
+        rh.alignment = _ALIGN_CENTER
+        rh.border = _BORDER_GRID
+        ws.row_dimensions[ri].height = 26
+
+        for ci, col_val in enumerate(pivot.columns, c0 + 1):
+            cell = ws.cell(row=ri, column=ci)
+            val = pivot.loc[idx_val, col_val]
+            if pd.isna(val):
+                cell.fill = _FILL_NA
+                cell.value = "—"
+                cell.font = Font(bold=False, color=_CLR_NEUTRAL_MID, size=10, name=_FN)
+            elif val == 1:
+                cell.fill = _FILL_ACCEPT
+                cell.value = "A"
+                cell.font = _FONT_GRID_CELL
+            else:
+                cell.fill = _FILL_REJECT
+                cell.value = "R"
+                cell.font = _FONT_GRID_CELL
+            cell.alignment = _ALIGN_CENTER
+            cell.border = _BORDER_GRID
+
+    return start_row + len(pivot.index)
+
+
+# =============================================================================
+# Acceptance grid writers (R2b-ii todo #57 step 9)
+# =============================================================================
+
+
+def _write_acceptance_strip_1d(ws, cutoff_df, seg_name, start_row, scenario="base"):
+    """Draw a horizontal 1D acceptance strip on *ws* starting at *start_row*.
+
+    For single-variable optimization, shows each bin as a colored cell (green=A, red=R)
+    in a horizontal row, with a summary header and legend.
+    Returns next free row.
+    """
+    variable_cols = [c for c in cutoff_df.columns if c not in _CUTOFF_FIXED_COLS]
+    if not variable_cols:
+        return start_row
+    var_col = variable_cols[0]
+
+    scen_df = cutoff_df
+    if "scenario" in cutoff_df.columns:
+        scen_df = cutoff_df[cutoff_df["scenario"] == scenario]
+    if scen_df.empty:
+        return start_row
+
+    scen_sorted = scen_df.sort_values(var_col)
+    bins = scen_sorted[var_col].values
+    accepted = scen_sorted["accepted"].values
+    n_accepted = int(accepted.sum())
+    n_total = len(accepted)
+
+    # Section header
+    ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=max(len(bins) + 1, 12))
+    lbl = ws.cell(row=start_row, column=1)
+    lbl.value = f"  {seg_name}  |  {scenario.title()}  —  {n_accepted}/{n_total} bins accepted ({100 * n_accepted / n_total:.0f}%)"
+    lbl.font = _FONT_SECTION
+    lbl.fill = _FILL_SECTION
+    lbl.alignment = _ALIGN_LEFT
+    lbl.border = Border(left=Side(style="thick", color=_CLR_SECTION_BAR), bottom=_HAIR)
+    ws.row_dimensions[start_row].height = 28
+    start_row += 1
+
+    # Variable name label
+    label_cell = ws.cell(row=start_row, column=1)
+    label_cell.value = var_col
+    label_cell.font = _FONT_GRID_LABEL
+    label_cell.fill = _FILL_GRID_HEADER
+    label_cell.alignment = _ALIGN_CENTER
+    label_cell.border = _BORDER_GRID
+    ws.column_dimensions[_get_column_letter(1)].width = max(
+        ws.column_dimensions[_get_column_letter(1)].width or 8, len(var_col) + 4
+    )
+
+    # Bin header row
+    for ci, bv in enumerate(bins, 2):
+        c = ws.cell(row=start_row, column=ci)
+        c.value = int(bv) if isinstance(bv, float) and bv == int(bv) else bv
+        c.font = _FONT_GRID_HEADER
+        c.fill = _FILL_GRID_HEADER
+        c.alignment = _ALIGN_CENTER
+        c.border = _BORDER_GRID
+        ws.column_dimensions[_get_column_letter(ci)].width = max(
+            ws.column_dimensions[_get_column_letter(ci)].width or 0, 7
+        )
+    ws.row_dimensions[start_row].height = 26
+    start_row += 1
+
+    # Status label
+    status_cell = ws.cell(row=start_row, column=1)
+    status_cell.value = "Status"
+    status_cell.font = _FONT_GRID_LABEL
+    status_cell.fill = _FILL_GRID_HEADER
+    status_cell.alignment = _ALIGN_CENTER
+    status_cell.border = _BORDER_GRID
+
+    # Acceptance cells
+    for ci, acc in enumerate(accepted, 2):
+        cell = ws.cell(row=start_row, column=ci)
+        if pd.isna(acc):
+            cell.fill = _FILL_NA
+            cell.value = "—"
+            cell.font = Font(bold=False, color=_CLR_NEUTRAL_MID, size=11, name=_FN)
+        elif acc == 1:
+            cell.fill = _FILL_ACCEPT
+            cell.value = "A"
+            cell.font = _FONT_GRID_CELL
+        else:
+            cell.fill = _FILL_REJECT
+            cell.value = "R"
+            cell.font = _FONT_GRID_CELL
+        cell.alignment = _ALIGN_CENTER
+        cell.border = _BORDER_GRID
+    ws.row_dimensions[start_row].height = 30
+    start_row += 1
+
+    # Legend
+    start_row += 1
+    legend_items = [
+        ("  A  Accept  ", _FILL_ACCEPT, _CLR_WHITE),
+        ("  R  Reject  ", _FILL_REJECT, _CLR_WHITE),
+        ("  —  N/A  ", _FILL_NA, _CLR_TEXT),
+    ]
+    for ci, (label, fill, fg) in enumerate(legend_items, 1):
+        c = ws.cell(row=start_row, column=ci)
+        c.value = label
+        c.font = Font(bold=True, color=fg, size=9, name=_FN)
+        c.fill = fill
+        c.alignment = _ALIGN_CENTER
+        c.border = _BORDER_GRID
+
+    return start_row + 2
+
+
+def _write_acceptance_grid(ws, cutoff_df, seg_name, start_row, scenario="base"):
+    """Draw coloured acceptance/rejection grids on *ws* starting at *start_row*.
+
+    For N>2 variables (e.g. octroi_bin x efx_bin x income_bin), creates one
+    sub-grid per slice of the 3rd+ variables, laid out side by side.
+    For 1D, draws a horizontal acceptance strip.
+    Returns next free row.
+    """
+    variable_cols = [c for c in cutoff_df.columns if c not in _CUTOFF_FIXED_COLS]
+    if "accepted" not in cutoff_df.columns or len(variable_cols) < 1:
+        return start_row
+
+    # 1D: delegate to strip renderer
+    if len(variable_cols) == 1:
+        return _write_acceptance_strip_1d(ws, cutoff_df, seg_name, start_row, scenario)
+
+    scen_df = cutoff_df
+    if "scenario" in cutoff_df.columns:
+        scen_df = cutoff_df[cutoff_df["scenario"] == scenario]
+    if scen_df.empty:
+        return start_row
+
+    col_var = variable_cols[0]  # columns of each pivot
+    row_var = variable_cols[1]  # rows of each pivot
+    slice_vars = variable_cols[2:]  # additional dimensions (e.g. income_bin)
+
+    # Section label with left accent bar
+    slice_info = f"  —  sliced by {', '.join(slice_vars)}" if slice_vars else ""
+    ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=12)
+    lbl = ws.cell(row=start_row, column=1)
+    lbl.value = f"  {seg_name}  |  {scenario.title()}{slice_info}"
+    lbl.font = _FONT_SECTION
+    lbl.fill = _FILL_SECTION
+    lbl.alignment = _ALIGN_LEFT
+    lbl.border = Border(left=Side(style="thick", color=_CLR_SECTION_BAR), bottom=_HAIR)
+    ws.row_dimensions[start_row].height = 28
+    start_row += 1
+
+    # Build list of (label, slice_df) pairs
+    if slice_vars:
+        groups = scen_df.groupby(slice_vars, sort=True)
+        group_items = list(groups)[:12]  # cap at 12 sub-grids
+    else:
+        group_items = [(None, scen_df)]
+
+    # Lay out sub-grids side by side (horizontally)
+    col_offset = 0
+    grid_bottom = start_row
+    for slice_key, slice_df in group_items:
+        try:
+            pivot = slice_df.pivot_table(index=row_var, columns=col_var, values="accepted", aggfunc="first")
+            pivot = _sort_pivot(pivot)
+        except (TypeError, ValueError, KeyError):
+            continue
+        if pivot.empty:
+            continue
+
+        # Slice label above the sub-grid
+        if slice_key is not None:
+            if isinstance(slice_key, tuple):
+                label = ", ".join(f"{v}={k}" for v, k in zip(slice_vars, slice_key))
+            else:
+                label = f"{slice_vars[0]}={slice_key}"
+            lbl_cell = ws.cell(row=start_row, column=col_offset + 1)
+            lbl_cell.value = label
+            lbl_cell.font = Font(bold=True, color=_CLR_ACCENT, size=9, name=_FN)
+            lbl_cell.alignment = _ALIGN_LEFT
+            grid_start = start_row + 1
+        else:
+            grid_start = start_row
+
+        bottom = _write_single_pivot_grid(ws, pivot, col_var, row_var, grid_start, col_offset)
+        grid_bottom = max(grid_bottom, bottom)
+
+        # Advance column offset for next sub-grid (grid width + 1 gap column)
+        col_offset += len(pivot.columns) + 2  # +1 for row header, +1 gap
+
+    # Legend row
+    legend_row = grid_bottom + 2
+    legend_items = [
+        ("  A  Accept  ", _FILL_ACCEPT, _CLR_WHITE),
+        ("  R  Reject  ", _FILL_REJECT, _CLR_WHITE),
+        ("  —  N/A  ", _FILL_NA, _CLR_TEXT),
+    ]
+    for ci, (label, fill, fg) in enumerate(legend_items, 1):
+        c = ws.cell(row=legend_row, column=ci)
+        c.value = label
+        c.font = Font(bold=True, color=fg, size=9, name=_FN)
+        c.fill = fill
+        c.alignment = _ALIGN_CENTER
+        c.border = _BORDER_GRID
+
+    return legend_row + 2
+
+
+# =============================================================================
+# Income-bin label + total-row lookup helpers (R2b-ii todo #57 step 10)
+# =============================================================================
+
+
+def _income_bin_title(income_val: Any, income_threshold: float | None) -> str:
+    """Portfolio-owner labels based on configured income_bin threshold."""
+    try:
+        iv = int(float(income_val))
+    except (TypeError, ValueError):
+        return f"Income Bin {income_val}"
+    if iv == 1:
+        if income_threshold is not None:
+            return f"income_bin <= {income_threshold:,.0f}€"
+        return "Income Bin 1"
+    if iv == 2:
+        if income_threshold is not None:
+            return f"income_bin > {income_threshold:,.0f}€"
+        return "Income Bin 2"
+    return f"Income Bin {income_val}"
+
+
+def _ib_label(iv: float, income_threshold: float | None) -> str:
+    try:
+        iv_int = int(iv)
+    except (TypeError, ValueError):
+        return f"Bin {iv}"
+    if income_threshold is not None:
+        if iv_int == 1:
+            return f"≤ {income_threshold:,.0f}€"
+        if iv_int == 2:
+            return f"> {income_threshold:,.0f}€"
+    return f"Bin {iv_int}"
+
+
+def _get_total_row(consolidated_df: pd.DataFrame, period: str, scenario: str = "base"):
+    mask = (
+        (consolidated_df["group"] == "TOTAL")
+        & (consolidated_df["period"] == period)
+        & (consolidated_df["scenario"] == scenario)
+    )
+    rows = consolidated_df[mask]
+    if not rows.empty:
+        return rows.iloc[0]
+    fallback = consolidated_df[(consolidated_df["group"] == "TOTAL") & (consolidated_df["period"] == period)]
+    return fallback.iloc[0] if not fallback.empty else None
+
+
 def export_consolidated_excel(
     consolidated_df: pd.DataFrame,
     output_base: str | Path,
@@ -2644,35 +3121,7 @@ def export_consolidated_excel(
     # _write_rp_sheet and _write_classification_grid are now module-level
     # helpers (R2b todo #57 step 4).
 
-    def _load_segment_settings(seg_name_local: str) -> dict[str, Any]:
-        """Load multiplier, multiplier_h3, inv_vars, baseline_mode from the segment's saved config."""
-        defaults: dict[str, Any] = {
-            "multiplier": float(DEFAULT_RISK_MULTIPLIER),
-            "multiplier_h3": None,
-            "inv_vars": None,
-            "baseline_mode": False,
-        }
-        try:
-            import tomllib
-
-            seg_cfg_path = output_base / seg_name_local / "config_segment.toml"
-            if seg_cfg_path.exists():
-                cfg = tomllib.loads(seg_cfg_path.read_text(encoding="utf-8"))
-                prep = cfg.get("preprocessing", cfg)
-                if "multiplier" in prep:
-                    defaults["multiplier"] = float(prep["multiplier"])
-                if "multiplier_h3" in prep:
-                    defaults["multiplier_h3"] = float(prep["multiplier_h3"])
-                if "inv_vars" in prep:
-                    defaults["inv_vars"] = list(prep["inv_vars"])
-                if "baseline_mode" in prep:
-                    defaults["baseline_mode"] = bool(prep["baseline_mode"])
-        except Exception:
-            logger.warning(
-                f"_get_segment_defaults: failed to read segment config for '{seg_name_local}'; using global defaults",
-                exc_info=True,
-            )
-        return defaults
+    # _load_segment_settings is now a module-level helper (R2b-ii todo #57 step 6).
 
     def _build_income_bin_tables(
         seg_name: str, period: str, template_cols: list[str]
@@ -2733,92 +3182,13 @@ def export_consolidated_excel(
 
         from src.mr_pipeline import calculate_metrics_from_cuts
 
-        seg_settings = _load_segment_settings(seg_name)
+        seg_settings = _load_segment_settings(output_base, seg_name)
 
-        def _extract_binary_income_threshold(bin_edges: Any) -> float | None:
-            if not isinstance(bin_edges, list) or len(bin_edges) < 3:
-                return None
-            finite_edges = []
-            for e in bin_edges:
-                try:
-                    ef = float(e)
-                except (TypeError, ValueError):
-                    continue
-                if np.isfinite(ef):
-                    finite_edges.append(ef)
-            if len(finite_edges) != 1:
-                return None
-            return float(finite_edges[0])
+        # _extract_binary_income_threshold and _resolve_income_threshold are
+        # now module-level helpers (R2b-ii todo #57 step 6).
+        income_threshold = _resolve_income_threshold(output_base, segments, supersegments, seg_name)
 
-        def _resolve_income_threshold(seg_name_local: str) -> float | None:
-            # 0) Segment run config snapshot (contains learned/injected edges in batch mode)
-            try:
-                import tomllib
-
-                seg_cfg_path = output_base / seg_name_local / "config_segment.toml"
-                if seg_cfg_path.exists():
-                    cfg = tomllib.loads(seg_cfg_path.read_text(encoding="utf-8"))
-                    prep = cfg.get("preprocessing", cfg)
-                    seg_file_edges = prep.get("bins", {}).get("income_bin", {}).get("bin_edges")
-                    th = _extract_binary_income_threshold(seg_file_edges)
-                    if th is not None:
-                        return th
-            except Exception:
-                logger.warning(
-                    f"_resolve_income_threshold: failed to read segment-file edges for "
-                    f"'{seg_name_local}'; falling back to segments.toml",
-                    exc_info=True,
-                )
-
-            seg_cfg = segments.get(seg_name_local, {})
-            # 1) Segment-level bins override
-            seg_edges = seg_cfg.get("bins", {}).get("income_bin", {}).get("bin_edges")
-            th = _extract_binary_income_threshold(seg_edges)
-            if th is not None:
-                return th
-
-            # 2) Reporting supersegment-level fixed bin edges
-            reporting_ss = seg_cfg.get("reporting_supersegment") or seg_cfg.get("supersegment")
-            if reporting_ss and reporting_ss in supersegments:
-                ss_edges = supersegments[reporting_ss].get("bin_edges", {}).get("income_bin")
-                th = _extract_binary_income_threshold(ss_edges)
-                if th is not None:
-                    return th
-
-            # 3) Global config fallback (config.toml)
-            try:
-                cfg_path = Path("config.toml")
-                if cfg_path.exists():
-                    cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
-                    global_edges = cfg.get("preprocessing", {}).get("bins", {}).get("income_bin", {}).get("bin_edges")
-                    th = _extract_binary_income_threshold(global_edges)
-                    if th is not None:
-                        return th
-            except Exception:
-                logger.warning(
-                    f"_resolve_income_threshold: failed to read global config.toml edges for "
-                    f"'{seg_name_local}'; no threshold will be resolved",
-                    exc_info=True,
-                )
-            return None
-
-        income_threshold = _resolve_income_threshold(seg_name)
-
-        def _income_bin_title(income_val: Any) -> str:
-            """Portfolio-owner labels based on configured income_bin threshold."""
-            try:
-                iv = int(float(income_val))
-            except (TypeError, ValueError):
-                return f"Income Bin {income_val}"
-            if iv == 1:
-                if income_threshold is not None:
-                    return f"income_bin <= {income_threshold:,.0f}€"
-                return "Income Bin 1"
-            if iv == 2:
-                if income_threshold is not None:
-                    return f"income_bin > {income_threshold:,.0f}€"
-                return "Income Bin 2"
-            return f"Income Bin {income_val}"
+        # _income_bin_title is now a module-level helper (R2b-ii todo #57 step 10).
 
         audit_path = data_dir / ("audit_base_mr.csv" if period == "mr" else "audit_base.csv")
         audit_full: pd.DataFrame | None = None
@@ -2829,24 +3199,8 @@ def export_consolidated_excel(
             except (pd.errors.ParserError, OSError, ValueError):
                 audit_full = None
 
-        def _audit_slice_for_income_bin(audit_df: pd.DataFrame, income_val: Any) -> pd.DataFrame:
-            if "income_bin" not in audit_df.columns:
-                return pd.DataFrame()
-            ib = pd.to_numeric(audit_df["income_bin"], errors="coerce")
-            try:
-                target = float(income_val)
-            except (TypeError, ValueError):
-                return pd.DataFrame()
-            return audit_df.loc[ib == target].copy()
-
-        def _empty_rp_skeleton() -> pd.DataFrame:
-            base = dict.fromkeys(template_cols, np.nan)
-            rows = []
-            for m in ["Actual", "Swap-in", "Swap-out", "Optimum selected", "Summary"]:
-                r = dict(base)
-                r["Metric"] = m
-                rows.append(r)
-            return pd.DataFrame(rows)
+        # _audit_slice_for_income_bin and _empty_rp_skeleton are now
+        # module-level helpers (R2b-ii todo #57 step 7).
 
         out_tables: list[tuple[str, pd.DataFrame]] = []
         # Keep deterministic order with 1 first, then 2.
@@ -2885,7 +3239,7 @@ def export_consolidated_excel(
                 if c not in tbl.columns:
                     tbl[c] = np.nan
             tbl = tbl[template_cols]
-            out_tables.append((_income_bin_title(income_val), tbl))
+            out_tables.append((_income_bin_title(income_val, income_threshold), tbl))
 
         # Rows with missing or out-of-grid income_bin (audit-only; closes sum vs main RP)
         if audit_full is not None and "income_bin" in audit_full.columns and income_values:
@@ -2895,7 +3249,7 @@ def export_consolidated_excel(
             if uncovered.any():
                 au_rest = audit_full.loc[uncovered].copy()
                 if not au_rest.empty:
-                    tbl_u = _empty_rp_skeleton()
+                    tbl_u = _empty_rp_skeleton(template_cols)
                     tbl_u = reconcile_risk_production_summary_with_audit(tbl_u, au_rest, silent=True)
                     for c in template_cols:
                         if c not in tbl_u.columns:
@@ -3023,18 +3377,6 @@ def export_consolidated_excel(
         if not ib_vals:
             return None
 
-        def _ib_label(iv: float) -> str:
-            try:
-                iv_int = int(iv)
-            except (TypeError, ValueError):
-                return f"Bin {iv}"
-            if income_threshold is not None:
-                if iv_int == 1:
-                    return f"≤ {income_threshold:,.0f}€"
-                if iv_int == 2:
-                    return f"> {income_threshold:,.0f}€"
-            return f"Bin {iv_int}"
-
         # ── Compute risk per (income_bin, category) from desagregado ──
         risk_lookup: dict[tuple[float, str], float | None] = {}
         if df_sum is not None and "passes_cut" in df_sum.columns:
@@ -3077,7 +3419,7 @@ def export_consolidated_excel(
 
         rows: list[dict] = []
         for iv in ib_vals:
-            label = _ib_label(iv)
+            label = _ib_label(iv, income_threshold)
             ib_mask = ib_col_a == iv
             for audit_cls, grid_cat in cat_map.items():
                 cls_mask = cls_col == audit_cls
@@ -3110,291 +3452,10 @@ def export_consolidated_excel(
             )
         return rows if rows else None
 
-    def _write_single_pivot_grid(ws, pivot, col_var, row_var, start_row, col_offset=0):
-        """Draw one pivot grid at (start_row, col_offset+1). Returns bottom row used."""
-        c0 = col_offset + 1
+    # _write_single_pivot_grid is now a module-level helper (R2b-ii todo #57 step 8).
 
-        # Corner label
-        corner = ws.cell(row=start_row, column=c0)
-        corner.value = f"{row_var} \\ {col_var}"
-        corner.font = _FONT_GRID_LABEL
-        corner.fill = _FILL_GRID_HEADER
-        corner.alignment = _ALIGN_CENTER
-        corner.border = _BORDER_GRID
-        ws.column_dimensions[get_column_letter(c0)].width = max(
-            ws.column_dimensions[get_column_letter(c0)].width or 8, len(str(corner.value)) + 4
-        )
-        ws.row_dimensions[start_row].height = 26
-
-        # Column headers
-        for ci, col_val in enumerate(pivot.columns, c0 + 1):
-            c = ws.cell(row=start_row, column=ci)
-            c.value = col_val
-            c.font = _FONT_GRID_HEADER
-            c.fill = _FILL_GRID_HEADER
-            c.alignment = _ALIGN_CENTER
-            c.border = _BORDER_GRID
-            ws.column_dimensions[get_column_letter(ci)].width = max(
-                ws.column_dimensions[get_column_letter(ci)].width or 0, 7
-            )
-
-        # Data rows
-        for ri, idx_val in enumerate(pivot.index, start_row + 1):
-            rh = ws.cell(row=ri, column=c0)
-            rh.value = idx_val
-            rh.font = _FONT_GRID_HEADER
-            rh.fill = _FILL_GRID_HEADER
-            rh.alignment = _ALIGN_CENTER
-            rh.border = _BORDER_GRID
-            ws.row_dimensions[ri].height = 26
-
-            for ci, col_val in enumerate(pivot.columns, c0 + 1):
-                cell = ws.cell(row=ri, column=ci)
-                val = pivot.loc[idx_val, col_val]
-                if pd.isna(val):
-                    cell.fill = _FILL_NA
-                    cell.value = "—"
-                    cell.font = Font(bold=False, color=_CLR_NEUTRAL_MID, size=10, name=_FN)
-                elif val == 1:
-                    cell.fill = _FILL_ACCEPT
-                    cell.value = "A"
-                    cell.font = _FONT_GRID_CELL
-                else:
-                    cell.fill = _FILL_REJECT
-                    cell.value = "R"
-                    cell.font = _FONT_GRID_CELL
-                cell.alignment = _ALIGN_CENTER
-                cell.border = _BORDER_GRID
-
-        return start_row + len(pivot.index)
-
-    def _sort_pivot(pivot):
-        """Sort pivot index and columns numerically where possible."""
-        try:
-            pivot = pivot.sort_index(key=lambda x: pd.to_numeric(x, errors="coerce"))
-        except (TypeError, ValueError):
-            pass
-        try:
-            pivot = pivot[
-                sorted(
-                    pivot.columns,
-                    key=lambda x: float(x) if str(x).replace(".", "").replace("-", "").isdigit() else x,
-                )
-            ]
-        except (TypeError, ValueError):
-            pass
-        return pivot
-
-    def _write_acceptance_strip_1d(ws, cutoff_df, seg_name, start_row, scenario="base"):
-        """Draw a horizontal 1D acceptance strip on *ws* starting at *start_row*.
-
-        For single-variable optimization, shows each bin as a colored cell (green=A, red=R)
-        in a horizontal row, with a summary header and legend.
-        Returns next free row.
-        """
-        variable_cols = [c for c in cutoff_df.columns if c not in _CUTOFF_FIXED_COLS]
-        if not variable_cols:
-            return start_row
-        var_col = variable_cols[0]
-
-        scen_df = cutoff_df
-        if "scenario" in cutoff_df.columns:
-            scen_df = cutoff_df[cutoff_df["scenario"] == scenario]
-        if scen_df.empty:
-            return start_row
-
-        scen_sorted = scen_df.sort_values(var_col)
-        bins = scen_sorted[var_col].values
-        accepted = scen_sorted["accepted"].values
-        n_accepted = int(accepted.sum())
-        n_total = len(accepted)
-
-        # Section header
-        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=max(len(bins) + 1, 12))
-        lbl = ws.cell(row=start_row, column=1)
-        lbl.value = f"  {seg_name}  |  {scenario.title()}  —  {n_accepted}/{n_total} bins accepted ({100 * n_accepted / n_total:.0f}%)"
-        lbl.font = _FONT_SECTION
-        lbl.fill = _FILL_SECTION
-        lbl.alignment = _ALIGN_LEFT
-        lbl.border = Border(left=Side(style="thick", color=_CLR_SECTION_BAR), bottom=_HAIR)
-        ws.row_dimensions[start_row].height = 28
-        start_row += 1
-
-        # Variable name label
-        label_cell = ws.cell(row=start_row, column=1)
-        label_cell.value = var_col
-        label_cell.font = _FONT_GRID_LABEL
-        label_cell.fill = _FILL_GRID_HEADER
-        label_cell.alignment = _ALIGN_CENTER
-        label_cell.border = _BORDER_GRID
-        ws.column_dimensions[get_column_letter(1)].width = max(
-            ws.column_dimensions[get_column_letter(1)].width or 8, len(var_col) + 4
-        )
-
-        # Bin header row
-        for ci, bv in enumerate(bins, 2):
-            c = ws.cell(row=start_row, column=ci)
-            c.value = int(bv) if isinstance(bv, float) and bv == int(bv) else bv
-            c.font = _FONT_GRID_HEADER
-            c.fill = _FILL_GRID_HEADER
-            c.alignment = _ALIGN_CENTER
-            c.border = _BORDER_GRID
-            ws.column_dimensions[get_column_letter(ci)].width = max(
-                ws.column_dimensions[get_column_letter(ci)].width or 0, 7
-            )
-        ws.row_dimensions[start_row].height = 26
-        start_row += 1
-
-        # Status label
-        status_cell = ws.cell(row=start_row, column=1)
-        status_cell.value = "Status"
-        status_cell.font = _FONT_GRID_LABEL
-        status_cell.fill = _FILL_GRID_HEADER
-        status_cell.alignment = _ALIGN_CENTER
-        status_cell.border = _BORDER_GRID
-
-        # Acceptance cells
-        for ci, acc in enumerate(accepted, 2):
-            cell = ws.cell(row=start_row, column=ci)
-            if pd.isna(acc):
-                cell.fill = _FILL_NA
-                cell.value = "—"
-                cell.font = Font(bold=False, color=_CLR_NEUTRAL_MID, size=11, name=_FN)
-            elif acc == 1:
-                cell.fill = _FILL_ACCEPT
-                cell.value = "A"
-                cell.font = _FONT_GRID_CELL
-            else:
-                cell.fill = _FILL_REJECT
-                cell.value = "R"
-                cell.font = _FONT_GRID_CELL
-            cell.alignment = _ALIGN_CENTER
-            cell.border = _BORDER_GRID
-        ws.row_dimensions[start_row].height = 30
-        start_row += 1
-
-        # Legend
-        start_row += 1
-        legend_items = [
-            ("  A  Accept  ", _FILL_ACCEPT, _CLR_WHITE),
-            ("  R  Reject  ", _FILL_REJECT, _CLR_WHITE),
-            ("  —  N/A  ", _FILL_NA, _CLR_TEXT),
-        ]
-        for ci, (label, fill, fg) in enumerate(legend_items, 1):
-            c = ws.cell(row=start_row, column=ci)
-            c.value = label
-            c.font = Font(bold=True, color=fg, size=9, name=_FN)
-            c.fill = fill
-            c.alignment = _ALIGN_CENTER
-            c.border = _BORDER_GRID
-
-        return start_row + 2
-
-    def _write_acceptance_grid(ws, cutoff_df, seg_name, start_row, scenario="base"):
-        """Draw coloured acceptance/rejection grids on *ws* starting at *start_row*.
-
-        For N>2 variables (e.g. octroi_bin x efx_bin x income_bin), creates one
-        sub-grid per slice of the 3rd+ variables, laid out side by side.
-        For 1D, draws a horizontal acceptance strip.
-        Returns next free row.
-        """
-        variable_cols = [c for c in cutoff_df.columns if c not in _CUTOFF_FIXED_COLS]
-        if "accepted" not in cutoff_df.columns or len(variable_cols) < 1:
-            return start_row
-
-        # 1D: delegate to strip renderer
-        if len(variable_cols) == 1:
-            return _write_acceptance_strip_1d(ws, cutoff_df, seg_name, start_row, scenario)
-
-        scen_df = cutoff_df
-        if "scenario" in cutoff_df.columns:
-            scen_df = cutoff_df[cutoff_df["scenario"] == scenario]
-        if scen_df.empty:
-            return start_row
-
-        col_var = variable_cols[0]  # columns of each pivot
-        row_var = variable_cols[1]  # rows of each pivot
-        slice_vars = variable_cols[2:]  # additional dimensions (e.g. income_bin)
-
-        # Section label with left accent bar
-        slice_info = f"  —  sliced by {', '.join(slice_vars)}" if slice_vars else ""
-        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=12)
-        lbl = ws.cell(row=start_row, column=1)
-        lbl.value = f"  {seg_name}  |  {scenario.title()}{slice_info}"
-        lbl.font = _FONT_SECTION
-        lbl.fill = _FILL_SECTION
-        lbl.alignment = _ALIGN_LEFT
-        lbl.border = Border(left=Side(style="thick", color=_CLR_SECTION_BAR), bottom=_HAIR)
-        ws.row_dimensions[start_row].height = 28
-        start_row += 1
-
-        # Build list of (label, slice_df) pairs
-        if slice_vars:
-            groups = scen_df.groupby(slice_vars, sort=True)
-            group_items = list(groups)[:12]  # cap at 12 sub-grids
-        else:
-            group_items = [(None, scen_df)]
-
-        # Lay out sub-grids side by side (horizontally)
-        col_offset = 0
-        grid_bottom = start_row
-        for slice_key, slice_df in group_items:
-            try:
-                pivot = slice_df.pivot_table(index=row_var, columns=col_var, values="accepted", aggfunc="first")
-                pivot = _sort_pivot(pivot)
-            except (TypeError, ValueError, KeyError):
-                continue
-            if pivot.empty:
-                continue
-
-            # Slice label above the sub-grid
-            if slice_key is not None:
-                if isinstance(slice_key, tuple):
-                    label = ", ".join(f"{v}={k}" for v, k in zip(slice_vars, slice_key))
-                else:
-                    label = f"{slice_vars[0]}={slice_key}"
-                lbl_cell = ws.cell(row=start_row, column=col_offset + 1)
-                lbl_cell.value = label
-                lbl_cell.font = Font(bold=True, color=_CLR_ACCENT, size=9, name=_FN)
-                lbl_cell.alignment = _ALIGN_LEFT
-                grid_start = start_row + 1
-            else:
-                grid_start = start_row
-
-            bottom = _write_single_pivot_grid(ws, pivot, col_var, row_var, grid_start, col_offset)
-            grid_bottom = max(grid_bottom, bottom)
-
-            # Advance column offset for next sub-grid (grid width + 1 gap column)
-            col_offset += len(pivot.columns) + 2  # +1 for row header, +1 gap
-
-        # Legend row
-        legend_row = grid_bottom + 2
-        legend_items = [
-            ("  A  Accept  ", _FILL_ACCEPT, _CLR_WHITE),
-            ("  R  Reject  ", _FILL_REJECT, _CLR_WHITE),
-            ("  —  N/A  ", _FILL_NA, _CLR_TEXT),
-        ]
-        for ci, (label, fill, fg) in enumerate(legend_items, 1):
-            c = ws.cell(row=legend_row, column=ci)
-            c.value = label
-            c.font = Font(bold=True, color=fg, size=9, name=_FN)
-            c.fill = fill
-            c.alignment = _ALIGN_CENTER
-            c.border = _BORDER_GRID
-
-        return legend_row + 2
-
-    def _get_total_row(period: str, scenario: str = "base"):
-        mask = (
-            (consolidated_df["group"] == "TOTAL")
-            & (consolidated_df["period"] == period)
-            & (consolidated_df["scenario"] == scenario)
-        )
-        rows = consolidated_df[mask]
-        if not rows.empty:
-            return rows.iloc[0]
-        fallback = consolidated_df[(consolidated_df["group"] == "TOTAL") & (consolidated_df["period"] == period)]
-        return fallback.iloc[0] if not fallback.empty else None
+    # _write_acceptance_strip_1d and _write_acceptance_grid are now
+    # module-level helpers (R2b-ii todo #57 step 9).
 
     # =====================================================================
     # Build workbook
@@ -3440,7 +3501,7 @@ def export_consolidated_excel(
         ws_exec.row_dimensions[3].height = 6
 
         # --- MAIN PERIOD KPI cards (rows 4-5) ---
-        tr_main = _get_total_row("main")
+        tr_main = _get_total_row(consolidated_df, "main")
         kpi_row = 4
         ws_exec.row_dimensions[kpi_row].height = 38
         ws_exec.row_dimensions[kpi_row + 1].height = 22
@@ -3479,7 +3540,7 @@ def export_consolidated_excel(
             ws_exec.cell(row=kpi_row, column=1).font = _FONT_SUBTITLE
 
         # --- MR PERIOD KPI cards (rows 6-7) ---
-        tr_mr = _get_total_row("mr")
+        tr_mr = _get_total_row(consolidated_df, "mr")
         mr_row = 6
         ws_exec.row_dimensions[mr_row].height = 38
         ws_exec.row_dimensions[mr_row + 1].height = 22
@@ -3721,7 +3782,7 @@ def export_consolidated_excel(
         _rp_exclude_cols_mr = _rp_exclude_cols | {"todu_30ever_h3", "todu_amt_pile_h3"}
 
         for seg_name in segments:
-            seg_settings = _load_segment_settings(seg_name)
+            seg_settings = _load_segment_settings(output_base, seg_name)
 
             # Resolve variables list — fall back to global config
             try:
