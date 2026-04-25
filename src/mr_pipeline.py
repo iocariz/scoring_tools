@@ -1110,6 +1110,927 @@ def _assign_tiered_risk(
     return data_demand_mr
 
 
+# =============================================================================
+# Phase helpers extracted from process_mr_period (R2b-v todo #57)
+# =============================================================================
+
+
+def _write_mr_visualization(
+    data_summary_desagregado_mr: pd.DataFrame,
+    settings: "PreprocessingSettings",
+    file_suffix: str,
+    output: OutputPaths,
+) -> None:
+    """Write the MR-period b2_ever_h6 visualization to disk.
+
+    Dispatches on ``len(settings.variables)``:
+      - 1 variable → bar chart
+      - 2 variables → 3D surface
+      - 3+ variables → per-slice heatmap subplots (sliced by the 3rd var)
+
+    Computes ``b2_ever_h6`` (and optionally ``b2_ever_h3``) from the
+    aggregated MR summary DataFrame and writes the result to
+    ``output.mr_b2_visualization_html(file_suffix)``. Pure writer —
+    returns None; all state flows through parameters.
+    """
+    VARIABLES = settings.variables
+
+    data_surf_mr = data_summary_desagregado_mr.copy()
+    data_surf_mr["b2_ever_h6"] = calculate_b2_ever_h6(
+        data_surf_mr["todu_30ever_h6"],
+        data_surf_mr["todu_amt_pile_h6"],
+        multiplier=settings.multiplier,
+        as_percentage=True,
+    )
+    # Compute complementary H3 metric on MR surface when columns are available
+    if "todu_30ever_h3" in data_surf_mr.columns and "todu_amt_pile_h3" in data_surf_mr.columns:
+        data_surf_mr["b2_ever_h3"] = calculate_b2_ever_h6(
+            data_surf_mr["todu_30ever_h3"],
+            data_surf_mr["todu_amt_pile_h3"],
+            multiplier=settings.multiplier_h3,
+            as_percentage=True,
+        )
+
+    if len(VARIABLES) == 1:
+        logger.info("Generating b2_ever_h6 bar chart for MR dataset (1-variable)...")
+        var0 = VARIABLES[0]
+        data_bar = data_surf_mr.sort_values(var0)
+
+        fig_mr = go.Figure()
+        fig_mr.add_trace(
+            go.Bar(
+                x=data_bar[var0].astype(str),
+                y=data_bar["b2_ever_h6"],
+                marker_color="indianred",
+                text=data_bar["b2_ever_h6"].round(2),
+                textposition="outside",
+            )
+        )
+        styles.apply_plotly_style(
+            fig_mr,
+            title=f"B2 Ever H6 by {var0} (MR Period){file_suffix}",
+            width=900,
+            height=500,
+        )
+        fig_mr.update_layout(xaxis_title=var0, yaxis_title="b2_ever_h6 (%)")
+
+        output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
+        fig_mr.write_html(output_plot_path_mr)
+        logger.info(f"MR 1D visualization saved to {output_plot_path_mr}")
+
+    elif len(VARIABLES) == 2:
+        logger.info("Generating b2_ever_h6 visualization for MR dataset...")
+
+        fig_mr = go.Figure()
+
+        data_surf_pivot_mr = data_surf_mr.pivot(index=VARIABLES[1], columns=VARIABLES[0], values="b2_ever_h6")
+
+        fig_mr.add_trace(
+            go.Surface(
+                x=data_surf_pivot_mr.columns,
+                y=data_surf_pivot_mr.index,
+                z=data_surf_pivot_mr.values,
+                colorscale="turbo",
+            )
+        )
+
+        styles.apply_plotly_style(
+            fig_mr,
+            title=f"B2 Ever H6 vs. Octroi and Risk Score (MR Period - Aggregated){file_suffix}",
+            width=1500,
+            height=700,
+        )
+
+        fig_mr.update_layout(
+            scene=dict(
+                xaxis=dict(title=VARIABLES[0]),
+                yaxis=dict(title=VARIABLES[1]),
+                zaxis=dict(title="b2_ever_h6"),
+                aspectratio=dict(x=1, y=1, z=1),
+            )
+        )
+
+        output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
+        fig_mr.write_html(output_plot_path_mr)
+        logger.info(f"MR Visualization saved to {output_plot_path_mr}")
+    elif len(VARIABLES) >= 3:
+        logger.info(f"Generating per-slice MR heatmaps for {len(VARIABLES)}-variable grid...")
+        from plotly.subplots import make_subplots
+
+        var0, var1, var2 = VARIABLES[0], VARIABLES[1], VARIABLES[2]
+        v2_vals = sorted(data_surf_mr[var2].unique())
+
+        fig_mr = make_subplots(
+            rows=1,
+            cols=len(v2_vals),
+            subplot_titles=[f"{var2} = {v}" for v in v2_vals],
+        )
+
+        for col_idx, v2 in enumerate(v2_vals, start=1):
+            slice_df = data_surf_mr[data_surf_mr[var2] == v2]
+            pivot = slice_df.pivot(index=var1, columns=var0, values="b2_ever_h6").sort_index(ascending=True)
+            text_pivot = slice_df.copy()
+            text_pivot["_text"] = text_pivot.apply(
+                lambda r: f"{r.get('oa_amt_h0', 0) / 1e6:,.1f}M\n{r['b2_ever_h6']:.1f}%", axis=1
+            )
+            text_piv = text_pivot.pivot(index=var1, columns=var0, values="_text").sort_index(ascending=True)
+
+            fig_mr.add_trace(
+                go.Heatmap(
+                    x=[str(c) for c in pivot.columns],
+                    y=[str(r) for r in pivot.index],
+                    z=pivot.values,
+                    text=text_piv.values if not text_piv.empty else None,
+                    texttemplate="%{text}",
+                    colorscale=[(0, "rgba(255,255,255,1)"), (1, "rgba(157,13,20,1)")],
+                    zmin=0,
+                    showscale=col_idx == len(v2_vals),
+                ),
+                row=1,
+                col=col_idx,
+            )
+            fig_mr.update_xaxes(title_text=var0, row=1, col=col_idx)
+            if col_idx == 1:
+                fig_mr.update_yaxes(title_text=var1, row=1, col=col_idx)
+
+        styles.apply_plotly_style(
+            fig_mr,
+            title=f"B2 Ever H6 — MR Period (Aggregated){file_suffix}",
+            width=max(500 * len(v2_vals), 800),
+            height=500,
+        )
+
+        output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
+        fig_mr.write_html(output_plot_path_mr)
+        logger.info(f"MR per-slice visualization saved to {output_plot_path_mr}")
+
+
+def _write_mr_summary_table(
+    *,
+    data_demand_mr: pd.DataFrame,
+    data_summary_desagregado_mr: pd.DataFrame,
+    optimal_solution_df: pd.DataFrame | None,
+    settings: "PreprocessingSettings",
+    mask: np.ndarray | None,
+    grid: object | None,
+    audit_mr_df: pd.DataFrame | None,
+    file_suffix: str,
+    output: OutputPaths,
+) -> None:
+    """Build and persist the MR Risk Production Summary Table + MR optimal-solution CSV.
+
+    Steps:
+      1. Compute total demand from ``data_demand_mr`` (excluding cancelled).
+      2. Call :func:`calculate_metrics_from_cuts` with the current mask/grid.
+      3. Reconcile against audit (unless baseline mode).
+      4. Save the MR-period optimal-solution CSV so downstream consolidated
+         per-income-bin tables use the correct re-optimized mask.
+      5. Write the summary table CSV and log it.
+
+    All state flows through explicit parameters — no closures over
+    process_mr_period locals.
+    """
+    logger.info("Generating Risk Production Summary Table for MR period...")
+    VARIABLES = settings.variables
+
+    if "status_name" in data_demand_mr.columns and "oa_amt_h0" in data_demand_mr.columns:
+        mr_total_demand = data_demand_mr.loc[data_demand_mr["status_name"] != "canceled", "oa_amt_h0"].sum()
+    else:
+        mr_total_demand = data_demand_mr["oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0.0
+
+    mr_summary_table = calculate_metrics_from_cuts(
+        data_summary_desagregado_mr,
+        optimal_solution_df,
+        VARIABLES,
+        settings.inv_vars,
+        mask=mask,
+        grid=grid,
+        multiplier_h3=settings.multiplier_h3,
+        multiplier=settings.multiplier,
+        total_demand=mr_total_demand,
+    )
+
+    if (
+        mr_summary_table is not None
+        and audit_mr_df is not None
+        and not audit_mr_df.empty
+        and not settings.baseline_mode
+    ):
+        from src.audit import reconcile_risk_production_summary_with_audit
+
+        mr_summary_table = reconcile_risk_production_summary_with_audit(mr_summary_table, audit_mr_df)
+
+    # Save MR-period optimal solution so consolidated per-income-bin tables
+    # use the correct (possibly re-optimized) mask, not the main-period one.
+    if mask is not None and grid is not None:
+        from src.optimization_utils import CellGrid
+
+        mr_opt_data: dict[str, Any] = {"sol_fac": 0}
+        if isinstance(grid, CellGrid):
+            mr_opt_data["acceptance_mask"] = ",".join(str(int(v)) for v in mask)
+        mr_opt_df = pd.DataFrame([mr_opt_data])
+        mr_opt_path = output.mr_optimal_solution_csv(file_suffix)
+        mr_opt_df.to_csv(mr_opt_path, index=False)
+        logger.debug(f"MR optimal solution saved to {mr_opt_path}")
+
+    if mr_summary_table is not None:
+        mr_summary_path = output.mr_risk_production_summary_csv(file_suffix)
+        mr_summary_table.to_csv(mr_summary_path, index=False)
+        logger.info(f"MR Risk Production Summary Table saved to {mr_summary_path}")
+        logger.info(f"MR Table:\n{mr_summary_table.to_string()}")
+
+
+def _compute_mr_stability_metrics(
+    data_booked: pd.DataFrame,
+    data_booked_mr: pd.DataFrame,
+    settings: "PreprocessingSettings",
+    file_suffix: str,
+    output: OutputPaths,
+) -> None:
+    """Compute and persist PSI/CSI stability metrics (Main vs MR).
+
+    Picks up to 5 numeric columns shared between *data_booked* and
+    *data_booked_mr* (prefers ``score_rf`` / ``risk_score_rf`` /
+    ``oa_amt``), calls :func:`compare_main_vs_mr`, writes the HTML report
+    + CSV, generates drift alerts JSON, and logs a warning if any
+    variable exceeds ``PSI_UNSTABLE_THRESHOLD``.
+
+    Errors downgrade to a warning — stability metrics are informational,
+    never block the pipeline.
+    """
+    logger.info("Calculating PSI/CSI stability metrics (Main vs MR)...")
+    VARIABLES = settings.variables
+    try:
+        # Prefer known score columns, fall back to any shared numeric columns
+        requested_vars = ["score_rf", "risk_score_rf", "oa_amt"]
+        stability_vars = [v for v in requested_vars if v in data_booked.columns and v in data_booked_mr.columns]
+        if not stability_vars:
+            shared_cols = set(data_booked.columns) & set(data_booked_mr.columns)
+            stability_vars = [c for c in shared_cols if data_booked[c].dtype.kind in ("f", "i") and c not in VARIABLES][
+                :5
+            ]
+            if stability_vars:
+                logger.info(f"Stability: using fallback numeric columns: {stability_vars}")
+
+        if stability_vars:
+            # Determine main score variable for overall PSI
+            score_var = "risk_score_rf" if "risk_score_rf" in stability_vars else stability_vars[0]
+
+            stability_report = compare_main_vs_mr(
+                main_df=data_booked,
+                mr_df=data_booked_mr,
+                variables=stability_vars,
+                score_variable=score_var,
+                output_path=output.stability_report_html(file_suffix),
+                verbose=True,
+            )
+
+            # Save stability results to CSV
+            stability_df = stability_report.to_dataframe()
+            stability_csv_path = output.stability_psi_csv(file_suffix)
+            stability_df.to_csv(stability_csv_path, index=False)
+            logger.info(f"Stability metrics saved to {stability_csv_path}")
+
+            # Generate structured drift alerts
+            try:
+                from src.alerts import generate_drift_alerts
+
+                alert_report = generate_drift_alerts(
+                    stability_report,
+                    segment=settings.segment_filter,
+                    period="MR",
+                )
+                alert_json_path = output.drift_alerts_json(file_suffix)
+                alert_report.to_json(alert_json_path)
+                logger.info(f"Drift alerts saved to {alert_json_path}")
+            except (ImportError, ValueError) as e:
+                logger.warning(f"Failed to generate drift alerts: {e}")
+
+            # Log summary
+            if stability_report.unstable_vars:
+                logger.warning(
+                    f"STABILITY WARNING: {len(stability_report.unstable_vars)} variables "
+                    f"show significant drift (PSI >= {PSI_UNSTABLE_THRESHOLD}): "
+                    f"{[r.variable for r in stability_report.unstable_vars]}"
+                )
+        else:
+            logger.warning("No numeric variables found for stability analysis")
+
+    except (ValueError, KeyError) as e:
+        logger.opt(exception=True).warning(f"Error calculating stability metrics: {e}")
+
+
+# -----------------------------------------------------------------------------
+# MR repesca recalibration + consistency-fix helpers (R2b-vi, todo #57)
+# -----------------------------------------------------------------------------
+
+
+def _recalibrate_mr_repesca(
+    data_summary_desagregado_mr: pd.DataFrame,
+    data_booked: pd.DataFrame,
+    merge_keys: list[str],
+    comparison_df: pd.DataFrame | None,
+    settings: "PreprocessingSettings",
+) -> tuple[pd.DataFrame, bool]:
+    """Recalibrate repesca risk to the MR risk level.
+
+    The risk model predicts repesca risk at main-period calibration
+    (~b2_main). MR booked risk uses hybrid rates (~b2_ever_h6_tmp),
+    which may be lower if MR conditions improved.
+
+    Fix: scale repesca todu_30ever_h6_rep per bin by (MR rate / main
+    rate). Also recalibrates H3 repesca using an H3-specific factor
+    (b2_mr_h3 / b2_main_h3) when available.
+
+    Returns the (possibly updated) data_summary_desagregado_mr and a
+    flag indicating whether recalibration was applied.
+    """
+    recalibration_applied = False
+    # --- Recalibrate repesca risk to MR level ---
+    # The risk model predicts repesca risk at main-period calibration (~b2_main).
+    # But the MR booked risk uses hybrid rates (~b2_ever_h6_tmp), which may be
+    # lower if MR conditions improved.  Without recalibration, swap-in brings
+    # inflated risk and the optimum paradoxically shows HIGHER risk than actual.
+    #
+    # Fix: scale repesca todu_30ever_h6_rep per bin by (MR rate / main rate),
+    # preserving the reject-inference multiplier and stressor proportionally.
+    if comparison_df is not None and "b2_ever_h6_tmp" in comparison_df.columns:
+        recalibration_applied = True
+        main_bin_agg = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
+        main_bin_agg["_main_b2"] = calculate_b2_ever_h6(
+            main_bin_agg["todu_30ever_h6"],
+            main_bin_agg["todu_amt_pile_h6"],
+            multiplier=settings.multiplier,
+        )
+        mr_bin_b2 = comparison_df[merge_keys + ["b2_ever_h6_tmp"]].rename(columns={"b2_ever_h6_tmp": "_mr_b2"})
+
+        # Recompute calibration factor per *bin* and merge it back by merge_keys.
+        # This avoids relying on row-order alignment assumptions (`cal_factor.values`).
+        if main_bin_agg.duplicated(merge_keys).any():
+            logger.warning("MR recalibration: main_bin_agg has non-unique merge_keys; results may be inconsistent.")
+        if mr_bin_b2.duplicated(merge_keys).any():
+            dup_count = int(mr_bin_b2.duplicated(merge_keys).sum())
+            logger.warning(
+                "MR recalibration: mr_bin_b2 has non-unique merge_keys; collapsing duplicates "
+                f"(keys duplicated={dup_count})."
+            )
+            mr_bin_b2 = mr_bin_b2.groupby(merge_keys, as_index=False)["_mr_b2"].mean()
+
+        cal_factor_by_bin = main_bin_agg[merge_keys + ["_main_b2"]].merge(mr_bin_b2, on=merge_keys, how="left")
+        safe_main_b2 = cal_factor_by_bin["_main_b2"].clip(lower=1e-9)
+        cal_factor_by_bin["_mr_cal_factor"] = (
+            (cal_factor_by_bin["_mr_b2"] / safe_main_b2).clip(lower=0.1, upper=10.0).fillna(1.0)
+        )
+
+        n_before_recal_merge = len(data_summary_desagregado_mr)
+        data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
+            cal_factor_by_bin[merge_keys + ["_mr_cal_factor"]],
+            on=merge_keys,
+            how="left",
+        )
+        if len(data_summary_desagregado_mr) != n_before_recal_merge:
+            logger.error(
+                "MR recalibration merge: row expansion detected while merging _mr_cal_factor "
+                f"(before={n_before_recal_merge}, after={len(data_summary_desagregado_mr)}). "
+                "Collapsing calibration factors by merge_keys and re-merging."
+            )
+            cal_factor_by_bin = cal_factor_by_bin.groupby(merge_keys, as_index=False)["_mr_cal_factor"].mean()
+            data_summary_desagregado_mr = data_summary_desagregado_mr.drop(columns=["_mr_cal_factor"], errors="ignore")
+            data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
+                cal_factor_by_bin[merge_keys + ["_mr_cal_factor"]],
+                on=merge_keys,
+                how="left",
+            )
+        data_summary_desagregado_mr["_mr_cal_factor"] = data_summary_desagregado_mr["_mr_cal_factor"].fillna(1.0)
+
+        rep_col = "todu_30ever_h6_rep"
+        if rep_col in data_summary_desagregado_mr.columns:
+            before_avg = calculate_b2_ever_h6(
+                data_summary_desagregado_mr[rep_col].sum(),
+                data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
+                multiplier=settings.multiplier,
+                as_percentage=True,
+            )
+            data_summary_desagregado_mr[rep_col] = (
+                data_summary_desagregado_mr[rep_col] * data_summary_desagregado_mr["_mr_cal_factor"]
+            )
+            after_avg = calculate_b2_ever_h6(
+                data_summary_desagregado_mr[rep_col].sum(),
+                data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
+                multiplier=settings.multiplier,
+                as_percentage=True,
+            )
+            logger.info(
+                f"MR repesca recalibration: avg factor={data_summary_desagregado_mr['_mr_cal_factor'].mean():.3f} "
+                f"(range [{data_summary_desagregado_mr['_mr_cal_factor'].min():.3f}, {data_summary_desagregado_mr['_mr_cal_factor'].max():.3f}]). "
+                f"Repesca risk: {before_avg:.2f}% → {after_avg:.2f}%"
+            )
+
+        # Also recalibrate H3 repesca if present — using an H3-specific
+        # calibration factor (b2_mr_h3 / b2_main_h3) rather than the H6 one,
+        # because H3 (early delinquency) and H6 (later defaults) can drift
+        # differently between periods.
+        rep_h3_col = "todu_30ever_h3_rep"
+        if rep_h3_col in data_summary_desagregado_mr.columns:
+            has_h3_cal = (
+                comparison_df is not None
+                and "b2_mr_h3" in comparison_df.columns
+                and "b2_main_h3" in comparison_df.columns
+            )
+            if has_h3_cal:
+                h3_cal = comparison_df[merge_keys + ["b2_mr_h3", "b2_main_h3"]].drop_duplicates(subset=merge_keys)
+                safe_main_h3 = h3_cal["b2_main_h3"].clip(lower=1e-9)
+                h3_cal["_mr_cal_factor_h3"] = (
+                    (h3_cal["b2_mr_h3"] / safe_main_h3).clip(lower=0.1, upper=10.0).fillna(1.0)
+                )
+                data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
+                    h3_cal[merge_keys + ["_mr_cal_factor_h3"]],
+                    on=merge_keys,
+                    how="left",
+                )
+                data_summary_desagregado_mr["_mr_cal_factor_h3"] = data_summary_desagregado_mr[
+                    "_mr_cal_factor_h3"
+                ].fillna(1.0)
+                data_summary_desagregado_mr[rep_h3_col] = (
+                    data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor_h3"]
+                )
+                logger.info(
+                    f"MR H3 repesca recalibration: avg factor={data_summary_desagregado_mr['_mr_cal_factor_h3'].mean():.3f} "
+                    f"(range [{data_summary_desagregado_mr['_mr_cal_factor_h3'].min():.3f}, "
+                    f"{data_summary_desagregado_mr['_mr_cal_factor_h3'].max():.3f}])"
+                )
+                data_summary_desagregado_mr = data_summary_desagregado_mr.drop(
+                    columns=["_mr_cal_factor_h3"], errors="ignore"
+                )
+            else:
+                # Fall back to H6 factor when H3 calibration data unavailable
+                data_summary_desagregado_mr[rep_h3_col] = (
+                    data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor"]
+                )
+                logger.info("MR H3 repesca recalibration: using H6 factor (H3-specific data unavailable)")
+
+        # Drop helper calibration factor column
+        data_summary_desagregado_mr = data_summary_desagregado_mr.drop(columns=["_mr_cal_factor"], errors="ignore")
+
+        # Recompute merged total columns after recalibration
+        for suffix_pair in [("todu_30ever_h6", "_boo", "_rep"), ("todu_30ever_h3", "_boo", "_rep")]:
+            base, boo, rep = suffix_pair
+            boo_col, rep_col_name = base + boo, base + rep
+            if boo_col in data_summary_desagregado_mr.columns and rep_col_name in data_summary_desagregado_mr.columns:
+                data_summary_desagregado_mr[base] = (
+                    data_summary_desagregado_mr[boo_col] + data_summary_desagregado_mr[rep_col_name]
+                )
+    return data_summary_desagregado_mr, recalibration_applied
+
+
+def _reoptimize_mr_mask_after_recalibration(
+    data_summary_desagregado_mr: pd.DataFrame,
+    settings: "PreprocessingSettings",
+    optimal_solution_df: pd.DataFrame | None,
+    mask: np.ndarray | None,
+    grid: object | None,
+    recalibration_applied: bool,
+) -> tuple[np.ndarray | None, object | None, pd.DataFrame | None]:
+    """Re-optimize the MR acceptance mask after repesca recalibration.
+
+    Decisions/mask were optimized on the pre-recalibrated MR risk
+    surface but metrics are reported after scaling repesca risk to MR
+    hybrid rates. Re-optimize so reported metrics are consistent with
+    the cutoffs used. Non-blocking: on failure, keeps the passed
+    mask/grid.
+    """
+
+    # ------------------------------------------------------------------
+    # Consistency fix (High severity):
+    # decisions/mask were optimized on the pre-recalibrated MR risk surface
+    # but we report metrics after scaling repesca risk to MR hybrid rates.
+    # Re-optimize the mask on the post-recalibration MR risk surface so
+    # reported metrics are consistent with the cutoffs used.
+    # ------------------------------------------------------------------
+    if recalibration_applied and not settings.baseline_mode:
+        try:
+            from src.optimization_utils import CellGrid, milp_solve_cutoffs
+
+            target_risk = settings.optimum_risk
+            if (
+                optimal_solution_df is not None
+                and not optimal_solution_df.empty
+                and "b2_ever_h6" in optimal_solution_df.columns
+            ):
+                target_risk = float(optimal_solution_df["b2_ever_h6"].iloc[0])
+
+            mr_grid = CellGrid.from_summary(data_summary_desagregado_mr, settings.variables)
+            new_mask = milp_solve_cutoffs(
+                mr_grid,
+                target_risk=target_risk,
+                inv_vars=settings.inv_vars,
+                multiplier=settings.multiplier,
+                max_swapin_production_pct=settings.max_swapin_production_pct,
+                max_swapin_risk=settings.max_swapin_risk,
+                time_limit=settings.milp_time_limit,
+                monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
+                monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
+                monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
+            )
+
+            if new_mask is not None:
+                logger.info(
+                    "MR consistency fix: re-optimized acceptance mask after repesca recalibration "
+                    f"(target_risk={target_risk:.3f}%)."
+                )
+                mask = new_mask
+                grid = mr_grid
+                # calculate_metrics_from_cuts requires optimal_solution_df non-empty
+                optimal_solution_df = pd.DataFrame({"sol_fac": [0]})
+            else:
+                logger.warning(
+                    "MR consistency fix: re-optimization after recalibration infeasible; keeping passed mask/grid."
+                )
+        except Exception as e:
+            logger.warning(f"MR consistency fix failed (non-blocking). Keeping passed mask/grid. Error: {e}")
+
+    return mask, grid, optimal_solution_df
+
+
+def _log_mr_risk_diagnostic(
+    data_summary_desagregado_mr: pd.DataFrame,
+    settings: "PreprocessingSettings",
+) -> None:
+    """Log booked-vs-repesca risk after all MR adjustments."""
+    # --- Diagnostic: booked vs repesca risk after all adjustments ---
+    dsm = data_summary_desagregado_mr
+    if "todu_30ever_h6_boo" in dsm.columns and "todu_30ever_h6_rep" in dsm.columns:
+        boo_b2 = calculate_b2_ever_h6(
+            dsm["todu_30ever_h6_boo"].sum(),
+            dsm["todu_amt_pile_h6_boo"].sum(),
+            multiplier=settings.multiplier,
+            as_percentage=True,
+        )
+        rep_b2 = calculate_b2_ever_h6(
+            dsm["todu_30ever_h6_rep"].sum(),
+            dsm.get("todu_amt_pile_h6_rep", pd.Series([0])).sum(),
+            multiplier=settings.multiplier,
+            as_percentage=True,
+        )
+        logger.info(
+            f"MR risk diagnostic — booked (b2_boo): {boo_b2:.2f}%, "
+            f"repesca (b2_rep after RI+recal): {rep_b2:.2f}%, "
+            f"ratio rep/boo: {rep_b2 / boo_b2:.2f}x"
+            if boo_b2 > 0
+            else f"MR risk diagnostic — booked (b2_boo): {boo_b2:.2f}%, repesca: {rep_b2:.2f}%"
+        )
+
+
+# -----------------------------------------------------------------------------
+# MR b2_ever_h6_tmp computation (R2b-vi step 2, todo #57)
+# -----------------------------------------------------------------------------
+
+
+def _compute_b2_ever_h6_tmp(
+    data_demand_mr: pd.DataFrame,
+    data_booked: pd.DataFrame,
+    merge_keys: list[str],
+    settings: "PreprocessingSettings",
+    risk_inference: dict[str, Any],
+    reg_todu_amt_pile: Any,
+    stress_factor: float,
+    file_suffix: str,
+    output: OutputPaths,
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """Compute the per-record b2_ever_h6_tmp risk value for the MR period.
+
+    Three-way dispatch:
+      1. Hybrid (use_mr_outcomes=True and MR outcomes available):
+         Use MR observed risk where n_obs >= mr_min_obs_per_bin,
+         fall back to main-period for sparse bins.  Also saves an
+         MR-vs-main risk comparison CSV.
+      2. Default (main-period columns available):
+         Aggregate main-period b2 by merge_keys and merge into data_demand_mr.
+         Applies tiered-risk assignment for robustness.
+      3. Else: log warning, skip.
+
+    Returns the updated *data_demand_mr* (with a ``b2_ever_h6_tmp`` column
+    when computable) and the hybrid-mode ``comparison_df`` (or None).
+    """
+    # --- Calculate b2_ever_h6_tmp ---
+    required_agg_cols = merge_keys + ["todu_30ever_h6", "todu_amt_pile_h6"]
+
+    comparison_df = None  # set in hybrid path; used by recalibration below
+
+    if settings.use_mr_outcomes and _mr_outcomes_available(data_demand_mr):
+        # Hybrid mode: use MR observed risk where sufficient, else main-period
+        logger.info(
+            f"Hybrid MR risk: using MR outcomes where n_obs >= {settings.mr_min_obs_per_bin}, "
+            f"falling back to main-period for sparse bins."
+        )
+        merge_df, comparison_df = _compute_hybrid_mr_risk(
+            data_booked,
+            data_demand_mr,
+            merge_keys,
+            settings.mr_min_obs_per_bin,
+            multiplier=settings.multiplier,
+            multiplier_h3=settings.multiplier_h3,
+            mr_extrapolation_method=settings.mr_extrapolation_method,
+            mr_extrapolation_curvature=settings.mr_extrapolation_curvature,
+            mr_maturity_months=settings.mr_maturity_months,
+            maturity_reference_date=settings.get_date("date_fin_book_obs_mr"),
+        )
+
+        # Save comparison CSV
+        comp_path = output.mr_risk_comparison_csv(file_suffix)
+        comparison_df.to_csv(comp_path, index=False)
+        logger.info(f"MR risk comparison saved to {comp_path}")
+
+        # Log bins with large deviations
+        has_both = comparison_df["b2_delta_pct"].notna()
+        large_dev = comparison_df.loc[has_both & (comparison_df["b2_delta_pct"].abs() > 20)]
+        if not large_dev.empty:
+            logger.warning(f"RISK DRIFT: {len(large_dev)} bins show >20% deviation between main and MR risk:")
+            for _, row in large_dev.iterrows():
+                keys_str = ", ".join(f"{k}={row[k]}" for k in merge_keys)
+                logger.warning(
+                    f"  {keys_str}: main={row['b2_main']:.4f}, mr={row['b2_mr']:.4f}, "
+                    f"delta={row['b2_delta_pct']:+.1f}%, source={row['risk_source']}"
+                )
+
+        mr_source_counts = comparison_df["risk_source"].value_counts().to_dict()
+        logger.info(f"Hybrid risk sources: {mr_source_counts}")
+
+        logger.info("Merging b2_ever_h6_tmp into data_demand_mr...")
+        # Save actual H6 before dropping so Tier 1 (mature accounts) can use them
+        if "todu_30ever_h6" in data_demand_mr.columns:
+            data_demand_mr["_actual_todu_30ever_h6"] = data_demand_mr["todu_30ever_h6"]
+        if "todu_amt_pile_h6" in data_demand_mr.columns:
+            data_demand_mr["_actual_todu_amt_pile_h6"] = data_demand_mr["todu_amt_pile_h6"]
+        n_before_merge = len(data_demand_mr)
+
+        # Drop MR outcome columns — todu_amt_pile_h6 is near-zero for immature
+        # accounts (MR period < 6 months) and todu_30ever_h6 must be
+        # reconstructed using mature-only risk rates.  The exposure model
+        # predicts what full-horizon exposure WOULD be based on oa_amt.
+        data_demand_mr = data_demand_mr.drop(columns=["todu_30ever_h6", "todu_amt_pile_h6"], errors="ignore")
+        data_demand_mr = pd.merge(data_demand_mr, merge_df, on=merge_keys, how="left")
+        if len(data_demand_mr) != n_before_merge:
+            # High severity guard: if merge_df had non-unique keys, left-merge can
+            # expand rows and silently corrupt downstream counts.
+            logger.error(
+                "MR hybrid merge: row expansion detected while merging b2_ever_h6_tmp "
+                f"into data_demand_mr (before={n_before_merge}, after={len(data_demand_mr)}). "
+                "Collapsing merge_df by merge_keys and re-merging."
+            )
+            merge_df = merge_df.groupby(merge_keys, as_index=False)["b2_ever_h6_tmp"].mean()
+            data_demand_mr = pd.merge(
+                data_demand_mr.drop(columns=["b2_ever_h6_tmp"], errors="ignore"),
+                merge_df,
+                on=merge_keys,
+                how="left",
+            )
+
+        # Keep variable only for booked accounts
+        non_booked_mask = data_demand_mr["status_name"] != StatusName.BOOKED.value
+        data_demand_mr.loc[non_booked_mask, "b2_ever_h6_tmp"] = np.nan
+
+        # --- Tiered account-level risk reconstruction ---
+        # Use resolved method/curvature from comparison_df (auto → concrete)
+        resolved_method = comparison_df["fitted_method"].iloc[0] if len(comparison_df) > 0 else "linear"
+        resolved_curvature = comparison_df["fitted_curvature"].iloc[0] if len(comparison_df) > 0 else 1.0
+        data_demand_mr = _assign_tiered_risk(
+            data_demand_mr,
+            merge_df,
+            comparison_df,
+            merge_keys,
+            multiplier=settings.multiplier,
+            multiplier_h3=settings.multiplier_h3,
+            mr_extrapolation_method=resolved_method,
+            mr_extrapolation_curvature=resolved_curvature,
+            mr_maturity_months=settings.mr_maturity_months,
+            min_obs_per_bin=settings.mr_min_obs_per_bin,
+        )
+
+        # --- Infer risk for model_fallback bins using trained model ---
+        booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
+        null_b2_mask = booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()
+        null_count = null_b2_mask.sum()
+
+        if null_count > 0:
+            missing_bins = data_demand_mr.loc[null_b2_mask, merge_keys].drop_duplicates()
+            logger.warning(
+                f"Hybrid MR: {null_count:,} booked accounts in {len(missing_bins)} model_fallback bins "
+                f"have no risk estimate. Inferring b2_ever_h6 using the risk model..."
+            )
+            for bin_combo in missing_bins.itertuples(index=False):
+                logger.warning(f"  model_fallback bin: {bin_combo._asdict()}")
+
+            try:
+                best_model_info = risk_inference.get("best_model_info")
+                if best_model_info is None:
+                    raise KeyError("'best_model_info' not found in risk_inference")
+                final_model = best_model_info.get("model")
+                if final_model is None:
+                    raise KeyError("'model' not found in risk_inference['best_model_info']")
+                final_features = risk_inference.get("features")
+                if final_features is None:
+                    raise KeyError("'features' not found in risk_inference")
+
+                model_vars = risk_inference.get("model_variables", merge_keys)
+                missing_bins_df = missing_bins.copy()
+                missing_bins_df = calculate_B2(missing_bins_df, final_model, model_vars, stress_factor, final_features)
+
+                # Clip inferred risk using observed risk range from comparison_df
+                observed_risk = comparison_df.loc[
+                    comparison_df["risk_source"] != "model_fallback", "b2_ever_h6_tmp"
+                ].dropna()
+                if len(observed_risk) > 0:
+                    risk_floor = float(observed_risk.min())
+                    risk_ceil_base = float(observed_risk.max())
+                    risk_ceil_scaled = risk_ceil_base * settings.mr_extrapolation_risk_multiplier
+                    risk_ceil = min(risk_ceil_scaled, settings.mr_extrapolation_hard_cap)
+                    missing_bins_df["b2_ever_h6"] = missing_bins_df["b2_ever_h6"].clip(
+                        lower=risk_floor, upper=risk_ceil
+                    )
+                    logger.info(
+                        f"  Clipped model-imputed risk to [{risk_floor:.4f}, {risk_ceil:.4f}] "
+                        f"(base max={risk_ceil_base:.4f}, mult={settings.mr_extrapolation_risk_multiplier}, "
+                        f"cap={settings.mr_extrapolation_hard_cap})"
+                    )
+
+                inferred_b2 = missing_bins_df[merge_keys + ["b2_ever_h6"]].rename(
+                    columns={"b2_ever_h6": "b2_ever_h6_inferred"}
+                )
+                data_demand_mr = pd.merge(data_demand_mr, inferred_b2, on=merge_keys, how="left")
+
+                fill_mask = data_demand_mr["b2_ever_h6_tmp"].isna() & data_demand_mr["b2_ever_h6_inferred"].notna()
+                data_demand_mr.loc[fill_mask, "b2_ever_h6_tmp"] = data_demand_mr.loc[fill_mask, "b2_ever_h6_inferred"]
+                data_demand_mr = data_demand_mr.drop(columns=["b2_ever_h6_inferred"], errors="ignore")
+
+                booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
+                remaining_nulls = (booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()).sum()
+                if remaining_nulls > 0:
+                    logger.error(
+                        f"Still have {remaining_nulls:,} booked accounts with null b2_ever_h6_tmp "
+                        f"after model_fallback inference"
+                    )
+
+                logger.info(
+                    f"Successfully inferred b2_ever_h6 for {null_count:,} booked accounts "
+                    f"across {len(missing_bins)} model_fallback bins using risk model"
+                )
+
+            except (ValueError, KeyError, RuntimeError) as e:
+                logger.error(f"Error inferring b2_ever_h6 for model_fallback bins: {e}")
+                logger.warning(
+                    "model_fallback bins will have NaN risk — they will be excluded "
+                    "from weighted risk calculations but may affect production totals."
+                )
+
+    elif all(col in data_booked.columns for col in required_agg_cols):
+        # Default mode: use main-period risk for all bins
+        logger.info(f"Calculating b2_ever_h6_tmp aggregated by {merge_keys} from initial period...")
+        agg_data = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
+
+        # Calculate b2_ever_h6_tmp — NaN means "no usable H6 data" (zero exposure);
+        # preserve to distinguish from genuine zero risk.  Downstream model_fallback
+        # fills these via the inference model.
+        agg_data["b2_ever_h6_tmp"] = calculate_b2_ever_h6(
+            agg_data["todu_30ever_h6"], agg_data["todu_amt_pile_h6"], multiplier=settings.multiplier
+        )
+
+        merge_df = agg_data[merge_keys + ["b2_ever_h6_tmp"]]
+
+        logger.info("Merging b2_ever_h6_tmp into data_demand_mr...")
+        data_demand_mr = pd.merge(data_demand_mr, merge_df, on=merge_keys, how="left")
+
+        # Keep variable only for booked accounts
+        non_booked_mask = data_demand_mr["status_name"] != StatusName.BOOKED.value
+        data_demand_mr.loc[non_booked_mask, "b2_ever_h6_tmp"] = np.nan
+
+        # Check for booked accounts with null b2_ever_h6_tmp
+        booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
+        null_b2_mask = booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()
+        null_count = null_b2_mask.sum()
+
+        if null_count > 0:
+            # Get the missing bin combinations for logging
+            missing_bins = data_demand_mr.loc[null_b2_mask, merge_keys].drop_duplicates()
+            logger.warning(
+                f"Found {null_count:,} booked accounts with null b2_ever_h6_tmp. "
+                f"These bin combinations exist in MR period but not in initial period. "
+                f"Inferring b2_ever_h6 using the risk model..."
+            )
+            for bin_combo in missing_bins.itertuples(index=False):
+                logger.warning(f"  Missing bin: {bin_combo._asdict()}")
+
+            # Use inference model to predict b2_ever_h6 for missing bins
+            try:
+                best_model_info = risk_inference.get("best_model_info")
+                if best_model_info is None:
+                    raise KeyError("'best_model_info' not found in risk_inference")
+                final_model = best_model_info.get("model")
+                if final_model is None:
+                    raise KeyError("'model' not found in risk_inference['best_model_info']")
+                final_features = risk_inference.get("features")
+                if final_features is None:
+                    raise KeyError("'features' not found in risk_inference")
+
+                # Use the model's actual training variables (inference_variables),
+                # not merge_keys (settings.variables) which may include extra
+                # dimensions the model was not trained on.
+                model_vars = risk_inference.get("model_variables", merge_keys)
+
+                # Create a DataFrame with missing bin combinations for prediction
+                missing_bins_df = missing_bins.copy()
+
+                # Apply calculate_B2 to predict b2_ever_h6 for missing bins
+                missing_bins_df = calculate_B2(missing_bins_df, final_model, model_vars, stress_factor, final_features)
+
+                # Clip inferred risk to prevent unbounded extrapolation
+                observed_risk = agg_data["b2_ever_h6_tmp"].dropna()
+                if len(observed_risk) > 0:
+                    risk_floor = float(observed_risk.min())
+                    risk_ceil_base = float(observed_risk.max())
+
+                    risk_ceil_scaled = risk_ceil_base * settings.mr_extrapolation_risk_multiplier
+                    risk_ceil = min(risk_ceil_scaled, settings.mr_extrapolation_hard_cap)
+
+                    missing_bins_df["b2_ever_h6"] = missing_bins_df["b2_ever_h6"].clip(
+                        lower=risk_floor, upper=risk_ceil
+                    )
+                    logger.info(
+                        f"  Clipped model-imputed risk to [{risk_floor:.4f}, {risk_ceil:.4f}] "
+                        f"(base max={risk_ceil_base:.4f}, mult={settings.mr_extrapolation_risk_multiplier}, "
+                        f"cap={settings.mr_extrapolation_hard_cap})"
+                    )
+
+                # Merge clipped inferred values into data_demand_mr
+                inferred_b2 = missing_bins_df[merge_keys + ["b2_ever_h6"]].rename(
+                    columns={"b2_ever_h6": "b2_ever_h6_inferred"}
+                )
+                data_demand_mr = pd.merge(data_demand_mr, inferred_b2, on=merge_keys, how="left")
+
+                # Fill missing b2_ever_h6_tmp with inferred values
+                fill_mask = data_demand_mr["b2_ever_h6_tmp"].isna() & data_demand_mr["b2_ever_h6_inferred"].notna()
+                data_demand_mr.loc[fill_mask, "b2_ever_h6_tmp"] = data_demand_mr.loc[fill_mask, "b2_ever_h6_inferred"]
+                # Track which rows were imputed (for diagnostics below)
+                imputed_mask = fill_mask.copy()
+
+                # Drop the helper column
+                data_demand_mr = data_demand_mr.drop(columns=["b2_ever_h6_inferred"], errors="ignore")
+
+                # Recompute booked_mask after merge to avoid stale index alignment
+                booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
+
+                # Verify all booked accounts now have values
+                remaining_nulls = (booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()).sum()
+                if remaining_nulls > 0:
+                    logger.error(
+                        f"Still have {remaining_nulls:,} booked accounts with null b2_ever_h6_tmp after inference"
+                    )
+                    raise ValueError("Inference failed to fill all missing b2_ever_h6_tmp values")
+
+                logger.info(
+                    f"Successfully inferred b2_ever_h6 for {null_count:,} booked accounts "
+                    f"across {len(missing_bins)} bin combinations using risk model"
+                )
+
+                # Diagnostic: fraction of MR production from imputed cells
+                total_booked = booked_mask.sum()
+                imputed_pct = null_count / max(total_booked, 1) * 100
+                imputed_prod = (
+                    data_demand_mr.loc[imputed_mask, "oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0
+                )
+                total_prod = (
+                    data_demand_mr.loc[booked_mask, "oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0
+                )
+                prod_pct = imputed_prod / max(total_prod, 1) * 100
+                logger.info(
+                    f"  Imputed accounts: {null_count:,}/{total_booked:,} ({imputed_pct:.1f}%) "
+                    f"| Imputed production: {prod_pct:.1f}% of MR total"
+                )
+                if prod_pct > 20:
+                    logger.warning(
+                        f"HIGH IMPUTATION RATIO: {prod_pct:.1f}% of MR production comes from "
+                        f"imputed cells ({len(missing_bins)} missing bin combinations). "
+                        f"MR results may be unreliable — consider coarser binning or validating "
+                        f"imputed risk values against out-of-sample benchmarks."
+                    )
+
+            except (ValueError, KeyError, RuntimeError) as e:
+                logger.error(f"Error inferring b2_ever_h6 for missing bins: {e}")
+                raise ValueError(
+                    f"Data integrity error: {null_count:,} booked accounts in MR period "
+                    f"have no matching b2_ever_h6 from initial period, and inference failed: {e}"
+                ) from e
+        else:
+            logger.info(f"Validation passed: all {booked_mask.sum():,} booked accounts have b2_ever_h6_tmp values")
+
+    else:
+        logger.warning(
+            f"Missing columns for aggregation. Required: {required_agg_cols}. Skipping b2_ever_h6_tmp calculation."
+        )
+
+    return data_demand_mr, comparison_df
+
+
 def process_mr_period(
     data_clean: pd.DataFrame,
     data_booked: pd.DataFrame,
@@ -1172,333 +2093,17 @@ def process_mr_period(
         data_demand_mr = data_mr_period[available_mr_cols].copy()
 
         # --- Calculate b2_ever_h6_tmp ---
-        required_agg_cols = merge_keys + ["todu_30ever_h6", "todu_amt_pile_h6"]
-
-        comparison_df = None  # set in hybrid path; used by recalibration below
-        recalibration_applied = False
-
-        if settings.use_mr_outcomes and _mr_outcomes_available(data_demand_mr):
-            # Hybrid mode: use MR observed risk where sufficient, else main-period
-            logger.info(
-                f"Hybrid MR risk: using MR outcomes where n_obs >= {settings.mr_min_obs_per_bin}, "
-                f"falling back to main-period for sparse bins."
-            )
-            merge_df, comparison_df = _compute_hybrid_mr_risk(
-                data_booked,
-                data_demand_mr,
-                merge_keys,
-                settings.mr_min_obs_per_bin,
-                multiplier=settings.multiplier,
-                multiplier_h3=settings.multiplier_h3,
-                mr_extrapolation_method=settings.mr_extrapolation_method,
-                mr_extrapolation_curvature=settings.mr_extrapolation_curvature,
-                mr_maturity_months=settings.mr_maturity_months,
-                maturity_reference_date=settings.get_date("date_fin_book_obs_mr"),
-            )
-
-            # Save comparison CSV
-            comp_path = output.mr_risk_comparison_csv(file_suffix)
-            comparison_df.to_csv(comp_path, index=False)
-            logger.info(f"MR risk comparison saved to {comp_path}")
-
-            # Log bins with large deviations
-            has_both = comparison_df["b2_delta_pct"].notna()
-            large_dev = comparison_df.loc[has_both & (comparison_df["b2_delta_pct"].abs() > 20)]
-            if not large_dev.empty:
-                logger.warning(f"RISK DRIFT: {len(large_dev)} bins show >20% deviation between main and MR risk:")
-                for _, row in large_dev.iterrows():
-                    keys_str = ", ".join(f"{k}={row[k]}" for k in merge_keys)
-                    logger.warning(
-                        f"  {keys_str}: main={row['b2_main']:.4f}, mr={row['b2_mr']:.4f}, "
-                        f"delta={row['b2_delta_pct']:+.1f}%, source={row['risk_source']}"
-                    )
-
-            mr_source_counts = comparison_df["risk_source"].value_counts().to_dict()
-            logger.info(f"Hybrid risk sources: {mr_source_counts}")
-
-            logger.info("Merging b2_ever_h6_tmp into data_demand_mr...")
-            # Save actual H6 before dropping so Tier 1 (mature accounts) can use them
-            if "todu_30ever_h6" in data_demand_mr.columns:
-                data_demand_mr["_actual_todu_30ever_h6"] = data_demand_mr["todu_30ever_h6"]
-            if "todu_amt_pile_h6" in data_demand_mr.columns:
-                data_demand_mr["_actual_todu_amt_pile_h6"] = data_demand_mr["todu_amt_pile_h6"]
-            n_before_merge = len(data_demand_mr)
-
-            # Drop MR outcome columns — todu_amt_pile_h6 is near-zero for immature
-            # accounts (MR period < 6 months) and todu_30ever_h6 must be
-            # reconstructed using mature-only risk rates.  The exposure model
-            # predicts what full-horizon exposure WOULD be based on oa_amt.
-            data_demand_mr = data_demand_mr.drop(columns=["todu_30ever_h6", "todu_amt_pile_h6"], errors="ignore")
-            data_demand_mr = pd.merge(data_demand_mr, merge_df, on=merge_keys, how="left")
-            if len(data_demand_mr) != n_before_merge:
-                # High severity guard: if merge_df had non-unique keys, left-merge can
-                # expand rows and silently corrupt downstream counts.
-                logger.error(
-                    "MR hybrid merge: row expansion detected while merging b2_ever_h6_tmp "
-                    f"into data_demand_mr (before={n_before_merge}, after={len(data_demand_mr)}). "
-                    "Collapsing merge_df by merge_keys and re-merging."
-                )
-                merge_df = merge_df.groupby(merge_keys, as_index=False)["b2_ever_h6_tmp"].mean()
-                data_demand_mr = pd.merge(
-                    data_demand_mr.drop(columns=["b2_ever_h6_tmp"], errors="ignore"),
-                    merge_df,
-                    on=merge_keys,
-                    how="left",
-                )
-
-            # Keep variable only for booked accounts
-            non_booked_mask = data_demand_mr["status_name"] != StatusName.BOOKED.value
-            data_demand_mr.loc[non_booked_mask, "b2_ever_h6_tmp"] = np.nan
-
-            # --- Tiered account-level risk reconstruction ---
-            # Use resolved method/curvature from comparison_df (auto → concrete)
-            resolved_method = comparison_df["fitted_method"].iloc[0] if len(comparison_df) > 0 else "linear"
-            resolved_curvature = comparison_df["fitted_curvature"].iloc[0] if len(comparison_df) > 0 else 1.0
-            data_demand_mr = _assign_tiered_risk(
-                data_demand_mr,
-                merge_df,
-                comparison_df,
-                merge_keys,
-                multiplier=settings.multiplier,
-                multiplier_h3=settings.multiplier_h3,
-                mr_extrapolation_method=resolved_method,
-                mr_extrapolation_curvature=resolved_curvature,
-                mr_maturity_months=settings.mr_maturity_months,
-                min_obs_per_bin=settings.mr_min_obs_per_bin,
-            )
-
-            # --- Infer risk for model_fallback bins using trained model ---
-            booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
-            null_b2_mask = booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()
-            null_count = null_b2_mask.sum()
-
-            if null_count > 0:
-                missing_bins = data_demand_mr.loc[null_b2_mask, merge_keys].drop_duplicates()
-                logger.warning(
-                    f"Hybrid MR: {null_count:,} booked accounts in {len(missing_bins)} model_fallback bins "
-                    f"have no risk estimate. Inferring b2_ever_h6 using the risk model..."
-                )
-                for bin_combo in missing_bins.itertuples(index=False):
-                    logger.warning(f"  model_fallback bin: {bin_combo._asdict()}")
-
-                try:
-                    best_model_info = risk_inference.get("best_model_info")
-                    if best_model_info is None:
-                        raise KeyError("'best_model_info' not found in risk_inference")
-                    final_model = best_model_info.get("model")
-                    if final_model is None:
-                        raise KeyError("'model' not found in risk_inference['best_model_info']")
-                    final_features = risk_inference.get("features")
-                    if final_features is None:
-                        raise KeyError("'features' not found in risk_inference")
-
-                    model_vars = risk_inference.get("model_variables", merge_keys)
-                    missing_bins_df = missing_bins.copy()
-                    missing_bins_df = calculate_B2(
-                        missing_bins_df, final_model, model_vars, stress_factor, final_features
-                    )
-
-                    # Clip inferred risk using observed risk range from comparison_df
-                    observed_risk = comparison_df.loc[
-                        comparison_df["risk_source"] != "model_fallback", "b2_ever_h6_tmp"
-                    ].dropna()
-                    if len(observed_risk) > 0:
-                        risk_floor = float(observed_risk.min())
-                        risk_ceil_base = float(observed_risk.max())
-                        risk_ceil_scaled = risk_ceil_base * settings.mr_extrapolation_risk_multiplier
-                        risk_ceil = min(risk_ceil_scaled, settings.mr_extrapolation_hard_cap)
-                        missing_bins_df["b2_ever_h6"] = missing_bins_df["b2_ever_h6"].clip(
-                            lower=risk_floor, upper=risk_ceil
-                        )
-                        logger.info(
-                            f"  Clipped model-imputed risk to [{risk_floor:.4f}, {risk_ceil:.4f}] "
-                            f"(base max={risk_ceil_base:.4f}, mult={settings.mr_extrapolation_risk_multiplier}, "
-                            f"cap={settings.mr_extrapolation_hard_cap})"
-                        )
-
-                    inferred_b2 = missing_bins_df[merge_keys + ["b2_ever_h6"]].rename(
-                        columns={"b2_ever_h6": "b2_ever_h6_inferred"}
-                    )
-                    data_demand_mr = pd.merge(data_demand_mr, inferred_b2, on=merge_keys, how="left")
-
-                    fill_mask = data_demand_mr["b2_ever_h6_tmp"].isna() & data_demand_mr["b2_ever_h6_inferred"].notna()
-                    data_demand_mr.loc[fill_mask, "b2_ever_h6_tmp"] = data_demand_mr.loc[
-                        fill_mask, "b2_ever_h6_inferred"
-                    ]
-                    data_demand_mr = data_demand_mr.drop(columns=["b2_ever_h6_inferred"], errors="ignore")
-
-                    booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
-                    remaining_nulls = (booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()).sum()
-                    if remaining_nulls > 0:
-                        logger.error(
-                            f"Still have {remaining_nulls:,} booked accounts with null b2_ever_h6_tmp "
-                            f"after model_fallback inference"
-                        )
-
-                    logger.info(
-                        f"Successfully inferred b2_ever_h6 for {null_count:,} booked accounts "
-                        f"across {len(missing_bins)} model_fallback bins using risk model"
-                    )
-
-                except (ValueError, KeyError, RuntimeError) as e:
-                    logger.error(f"Error inferring b2_ever_h6 for model_fallback bins: {e}")
-                    logger.warning(
-                        "model_fallback bins will have NaN risk — they will be excluded "
-                        "from weighted risk calculations but may affect production totals."
-                    )
-
-        elif all(col in data_booked.columns for col in required_agg_cols):
-            # Default mode: use main-period risk for all bins
-            logger.info(f"Calculating b2_ever_h6_tmp aggregated by {merge_keys} from initial period...")
-            agg_data = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
-
-            # Calculate b2_ever_h6_tmp — NaN means "no usable H6 data" (zero exposure);
-            # preserve to distinguish from genuine zero risk.  Downstream model_fallback
-            # fills these via the inference model.
-            agg_data["b2_ever_h6_tmp"] = calculate_b2_ever_h6(
-                agg_data["todu_30ever_h6"], agg_data["todu_amt_pile_h6"], multiplier=settings.multiplier
-            )
-
-            merge_df = agg_data[merge_keys + ["b2_ever_h6_tmp"]]
-
-            logger.info("Merging b2_ever_h6_tmp into data_demand_mr...")
-            data_demand_mr = pd.merge(data_demand_mr, merge_df, on=merge_keys, how="left")
-
-            # Keep variable only for booked accounts
-            non_booked_mask = data_demand_mr["status_name"] != StatusName.BOOKED.value
-            data_demand_mr.loc[non_booked_mask, "b2_ever_h6_tmp"] = np.nan
-
-            # Check for booked accounts with null b2_ever_h6_tmp
-            booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
-            null_b2_mask = booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()
-            null_count = null_b2_mask.sum()
-
-            if null_count > 0:
-                # Get the missing bin combinations for logging
-                missing_bins = data_demand_mr.loc[null_b2_mask, merge_keys].drop_duplicates()
-                logger.warning(
-                    f"Found {null_count:,} booked accounts with null b2_ever_h6_tmp. "
-                    f"These bin combinations exist in MR period but not in initial period. "
-                    f"Inferring b2_ever_h6 using the risk model..."
-                )
-                for bin_combo in missing_bins.itertuples(index=False):
-                    logger.warning(f"  Missing bin: {bin_combo._asdict()}")
-
-                # Use inference model to predict b2_ever_h6 for missing bins
-                try:
-                    best_model_info = risk_inference.get("best_model_info")
-                    if best_model_info is None:
-                        raise KeyError("'best_model_info' not found in risk_inference")
-                    final_model = best_model_info.get("model")
-                    if final_model is None:
-                        raise KeyError("'model' not found in risk_inference['best_model_info']")
-                    final_features = risk_inference.get("features")
-                    if final_features is None:
-                        raise KeyError("'features' not found in risk_inference")
-
-                    # Use the model's actual training variables (inference_variables),
-                    # not merge_keys (settings.variables) which may include extra
-                    # dimensions the model was not trained on.
-                    model_vars = risk_inference.get("model_variables", merge_keys)
-
-                    # Create a DataFrame with missing bin combinations for prediction
-                    missing_bins_df = missing_bins.copy()
-
-                    # Apply calculate_B2 to predict b2_ever_h6 for missing bins
-                    missing_bins_df = calculate_B2(
-                        missing_bins_df, final_model, model_vars, stress_factor, final_features
-                    )
-
-                    # Clip inferred risk to prevent unbounded extrapolation
-                    observed_risk = agg_data["b2_ever_h6_tmp"].dropna()
-                    if len(observed_risk) > 0:
-                        risk_floor = float(observed_risk.min())
-                        risk_ceil_base = float(observed_risk.max())
-
-                        risk_ceil_scaled = risk_ceil_base * settings.mr_extrapolation_risk_multiplier
-                        risk_ceil = min(risk_ceil_scaled, settings.mr_extrapolation_hard_cap)
-
-                        missing_bins_df["b2_ever_h6"] = missing_bins_df["b2_ever_h6"].clip(
-                            lower=risk_floor, upper=risk_ceil
-                        )
-                        logger.info(
-                            f"  Clipped model-imputed risk to [{risk_floor:.4f}, {risk_ceil:.4f}] "
-                            f"(base max={risk_ceil_base:.4f}, mult={settings.mr_extrapolation_risk_multiplier}, "
-                            f"cap={settings.mr_extrapolation_hard_cap})"
-                        )
-
-                    # Merge clipped inferred values into data_demand_mr
-                    inferred_b2 = missing_bins_df[merge_keys + ["b2_ever_h6"]].rename(
-                        columns={"b2_ever_h6": "b2_ever_h6_inferred"}
-                    )
-                    data_demand_mr = pd.merge(data_demand_mr, inferred_b2, on=merge_keys, how="left")
-
-                    # Fill missing b2_ever_h6_tmp with inferred values
-                    fill_mask = data_demand_mr["b2_ever_h6_tmp"].isna() & data_demand_mr["b2_ever_h6_inferred"].notna()
-                    data_demand_mr.loc[fill_mask, "b2_ever_h6_tmp"] = data_demand_mr.loc[
-                        fill_mask, "b2_ever_h6_inferred"
-                    ]
-                    # Track which rows were imputed (for diagnostics below)
-                    imputed_mask = fill_mask.copy()
-
-                    # Drop the helper column
-                    data_demand_mr = data_demand_mr.drop(columns=["b2_ever_h6_inferred"], errors="ignore")
-
-                    # Recompute booked_mask after merge to avoid stale index alignment
-                    booked_mask = data_demand_mr["status_name"] == StatusName.BOOKED.value
-
-                    # Verify all booked accounts now have values
-                    remaining_nulls = (booked_mask & data_demand_mr["b2_ever_h6_tmp"].isna()).sum()
-                    if remaining_nulls > 0:
-                        logger.error(
-                            f"Still have {remaining_nulls:,} booked accounts with null b2_ever_h6_tmp after inference"
-                        )
-                        raise ValueError("Inference failed to fill all missing b2_ever_h6_tmp values")
-
-                    logger.info(
-                        f"Successfully inferred b2_ever_h6 for {null_count:,} booked accounts "
-                        f"across {len(missing_bins)} bin combinations using risk model"
-                    )
-
-                    # Diagnostic: fraction of MR production from imputed cells
-                    total_booked = booked_mask.sum()
-                    imputed_pct = null_count / max(total_booked, 1) * 100
-                    imputed_prod = (
-                        data_demand_mr.loc[imputed_mask, "oa_amt_h0"].sum()
-                        if "oa_amt_h0" in data_demand_mr.columns
-                        else 0
-                    )
-                    total_prod = (
-                        data_demand_mr.loc[booked_mask, "oa_amt_h0"].sum()
-                        if "oa_amt_h0" in data_demand_mr.columns
-                        else 0
-                    )
-                    prod_pct = imputed_prod / max(total_prod, 1) * 100
-                    logger.info(
-                        f"  Imputed accounts: {null_count:,}/{total_booked:,} ({imputed_pct:.1f}%) "
-                        f"| Imputed production: {prod_pct:.1f}% of MR total"
-                    )
-                    if prod_pct > 20:
-                        logger.warning(
-                            f"HIGH IMPUTATION RATIO: {prod_pct:.1f}% of MR production comes from "
-                            f"imputed cells ({len(missing_bins)} missing bin combinations). "
-                            f"MR results may be unreliable — consider coarser binning or validating "
-                            f"imputed risk values against out-of-sample benchmarks."
-                        )
-
-                except (ValueError, KeyError, RuntimeError) as e:
-                    logger.error(f"Error inferring b2_ever_h6 for missing bins: {e}")
-                    raise ValueError(
-                        f"Data integrity error: {null_count:,} booked accounts in MR period "
-                        f"have no matching b2_ever_h6 from initial period, and inference failed: {e}"
-                    ) from e
-            else:
-                logger.info(f"Validation passed: all {booked_mask.sum():,} booked accounts have b2_ever_h6_tmp values")
-
-        else:
-            logger.warning(
-                f"Missing columns for aggregation. Required: {required_agg_cols}. Skipping b2_ever_h6_tmp calculation."
-            )
+        data_demand_mr, comparison_df = _compute_b2_ever_h6_tmp(
+            data_demand_mr,
+            data_booked,
+            merge_keys,
+            settings,
+            risk_inference,
+            reg_todu_amt_pile,
+            stress_factor,
+            file_suffix,
+            output,
+        )
 
         # --- Calculate todu_amt_pile_h6 using inference model ---
         # Always use the model for MR exposure prediction.  Actual MR
@@ -1604,217 +2209,23 @@ def process_mr_period(
             per_bin_tasa_fin=per_bin_tasa_fin,
         )
 
-        # --- Recalibrate repesca risk to MR level ---
-        # The risk model predicts repesca risk at main-period calibration (~b2_main).
-        # But the MR booked risk uses hybrid rates (~b2_ever_h6_tmp), which may be
-        # lower if MR conditions improved.  Without recalibration, swap-in brings
-        # inflated risk and the optimum paradoxically shows HIGHER risk than actual.
-        #
-        # Fix: scale repesca todu_30ever_h6_rep per bin by (MR rate / main rate),
-        # preserving the reject-inference multiplier and stressor proportionally.
-        if comparison_df is not None and "b2_ever_h6_tmp" in comparison_df.columns:
-            recalibration_applied = True
-            main_bin_agg = data_booked.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
-            main_bin_agg["_main_b2"] = calculate_b2_ever_h6(
-                main_bin_agg["todu_30ever_h6"],
-                main_bin_agg["todu_amt_pile_h6"],
-                multiplier=settings.multiplier,
-            )
-            mr_bin_b2 = comparison_df[merge_keys + ["b2_ever_h6_tmp"]].rename(columns={"b2_ever_h6_tmp": "_mr_b2"})
-
-            # Recompute calibration factor per *bin* and merge it back by merge_keys.
-            # This avoids relying on row-order alignment assumptions (`cal_factor.values`).
-            if main_bin_agg.duplicated(merge_keys).any():
-                logger.warning("MR recalibration: main_bin_agg has non-unique merge_keys; results may be inconsistent.")
-            if mr_bin_b2.duplicated(merge_keys).any():
-                dup_count = int(mr_bin_b2.duplicated(merge_keys).sum())
-                logger.warning(
-                    "MR recalibration: mr_bin_b2 has non-unique merge_keys; collapsing duplicates "
-                    f"(keys duplicated={dup_count})."
-                )
-                mr_bin_b2 = mr_bin_b2.groupby(merge_keys, as_index=False)["_mr_b2"].mean()
-
-            cal_factor_by_bin = main_bin_agg[merge_keys + ["_main_b2"]].merge(mr_bin_b2, on=merge_keys, how="left")
-            safe_main_b2 = cal_factor_by_bin["_main_b2"].clip(lower=1e-9)
-            cal_factor_by_bin["_mr_cal_factor"] = (
-                (cal_factor_by_bin["_mr_b2"] / safe_main_b2).clip(lower=0.1, upper=10.0).fillna(1.0)
-            )
-
-            n_before_recal_merge = len(data_summary_desagregado_mr)
-            data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
-                cal_factor_by_bin[merge_keys + ["_mr_cal_factor"]],
-                on=merge_keys,
-                how="left",
-            )
-            if len(data_summary_desagregado_mr) != n_before_recal_merge:
-                logger.error(
-                    "MR recalibration merge: row expansion detected while merging _mr_cal_factor "
-                    f"(before={n_before_recal_merge}, after={len(data_summary_desagregado_mr)}). "
-                    "Collapsing calibration factors by merge_keys and re-merging."
-                )
-                cal_factor_by_bin = cal_factor_by_bin.groupby(merge_keys, as_index=False)["_mr_cal_factor"].mean()
-                data_summary_desagregado_mr = data_summary_desagregado_mr.drop(
-                    columns=["_mr_cal_factor"], errors="ignore"
-                )
-                data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
-                    cal_factor_by_bin[merge_keys + ["_mr_cal_factor"]],
-                    on=merge_keys,
-                    how="left",
-                )
-            data_summary_desagregado_mr["_mr_cal_factor"] = data_summary_desagregado_mr["_mr_cal_factor"].fillna(1.0)
-
-            rep_col = "todu_30ever_h6_rep"
-            if rep_col in data_summary_desagregado_mr.columns:
-                before_avg = calculate_b2_ever_h6(
-                    data_summary_desagregado_mr[rep_col].sum(),
-                    data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
-                    multiplier=settings.multiplier,
-                    as_percentage=True,
-                )
-                data_summary_desagregado_mr[rep_col] = (
-                    data_summary_desagregado_mr[rep_col] * data_summary_desagregado_mr["_mr_cal_factor"]
-                )
-                after_avg = calculate_b2_ever_h6(
-                    data_summary_desagregado_mr[rep_col].sum(),
-                    data_summary_desagregado_mr.get("todu_amt_pile_h6_rep", pd.Series([1])).sum(),
-                    multiplier=settings.multiplier,
-                    as_percentage=True,
-                )
-                logger.info(
-                    f"MR repesca recalibration: avg factor={data_summary_desagregado_mr['_mr_cal_factor'].mean():.3f} "
-                    f"(range [{data_summary_desagregado_mr['_mr_cal_factor'].min():.3f}, {data_summary_desagregado_mr['_mr_cal_factor'].max():.3f}]). "
-                    f"Repesca risk: {before_avg:.2f}% → {after_avg:.2f}%"
-                )
-
-            # Also recalibrate H3 repesca if present — using an H3-specific
-            # calibration factor (b2_mr_h3 / b2_main_h3) rather than the H6 one,
-            # because H3 (early delinquency) and H6 (later defaults) can drift
-            # differently between periods.
-            rep_h3_col = "todu_30ever_h3_rep"
-            if rep_h3_col in data_summary_desagregado_mr.columns:
-                has_h3_cal = (
-                    comparison_df is not None
-                    and "b2_mr_h3" in comparison_df.columns
-                    and "b2_main_h3" in comparison_df.columns
-                )
-                if has_h3_cal:
-                    h3_cal = comparison_df[merge_keys + ["b2_mr_h3", "b2_main_h3"]].drop_duplicates(subset=merge_keys)
-                    safe_main_h3 = h3_cal["b2_main_h3"].clip(lower=1e-9)
-                    h3_cal["_mr_cal_factor_h3"] = (
-                        (h3_cal["b2_mr_h3"] / safe_main_h3).clip(lower=0.1, upper=10.0).fillna(1.0)
-                    )
-                    data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
-                        h3_cal[merge_keys + ["_mr_cal_factor_h3"]],
-                        on=merge_keys,
-                        how="left",
-                    )
-                    data_summary_desagregado_mr["_mr_cal_factor_h3"] = data_summary_desagregado_mr[
-                        "_mr_cal_factor_h3"
-                    ].fillna(1.0)
-                    data_summary_desagregado_mr[rep_h3_col] = (
-                        data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor_h3"]
-                    )
-                    logger.info(
-                        f"MR H3 repesca recalibration: avg factor={data_summary_desagregado_mr['_mr_cal_factor_h3'].mean():.3f} "
-                        f"(range [{data_summary_desagregado_mr['_mr_cal_factor_h3'].min():.3f}, "
-                        f"{data_summary_desagregado_mr['_mr_cal_factor_h3'].max():.3f}])"
-                    )
-                    data_summary_desagregado_mr = data_summary_desagregado_mr.drop(
-                        columns=["_mr_cal_factor_h3"], errors="ignore"
-                    )
-                else:
-                    # Fall back to H6 factor when H3 calibration data unavailable
-                    data_summary_desagregado_mr[rep_h3_col] = (
-                        data_summary_desagregado_mr[rep_h3_col] * data_summary_desagregado_mr["_mr_cal_factor"]
-                    )
-                    logger.info("MR H3 repesca recalibration: using H6 factor (H3-specific data unavailable)")
-
-            # Drop helper calibration factor column
-            data_summary_desagregado_mr = data_summary_desagregado_mr.drop(columns=["_mr_cal_factor"], errors="ignore")
-
-            # Recompute merged total columns after recalibration
-            for suffix_pair in [("todu_30ever_h6", "_boo", "_rep"), ("todu_30ever_h3", "_boo", "_rep")]:
-                base, boo, rep = suffix_pair
-                boo_col, rep_col_name = base + boo, base + rep
-                if (
-                    boo_col in data_summary_desagregado_mr.columns
-                    and rep_col_name in data_summary_desagregado_mr.columns
-                ):
-                    data_summary_desagregado_mr[base] = (
-                        data_summary_desagregado_mr[boo_col] + data_summary_desagregado_mr[rep_col_name]
-                    )
-
-        # ------------------------------------------------------------------
-        # Consistency fix (High severity):
-        # decisions/mask were optimized on the pre-recalibrated MR risk surface
-        # but we report metrics after scaling repesca risk to MR hybrid rates.
-        # Re-optimize the mask on the post-recalibration MR risk surface so
-        # reported metrics are consistent with the cutoffs used.
-        # ------------------------------------------------------------------
-        if recalibration_applied and not settings.baseline_mode:
-            try:
-                from src.optimization_utils import CellGrid, milp_solve_cutoffs
-
-                target_risk = settings.optimum_risk
-                if (
-                    optimal_solution_df is not None
-                    and not optimal_solution_df.empty
-                    and "b2_ever_h6" in optimal_solution_df.columns
-                ):
-                    target_risk = float(optimal_solution_df["b2_ever_h6"].iloc[0])
-
-                mr_grid = CellGrid.from_summary(data_summary_desagregado_mr, settings.variables)
-                new_mask = milp_solve_cutoffs(
-                    mr_grid,
-                    target_risk=target_risk,
-                    inv_vars=settings.inv_vars,
-                    multiplier=settings.multiplier,
-                    max_swapin_production_pct=settings.max_swapin_production_pct,
-                    max_swapin_risk=settings.max_swapin_risk,
-                    time_limit=settings.milp_time_limit,
-                    monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
-                    monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
-                    monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
-                )
-
-                if new_mask is not None:
-                    logger.info(
-                        "MR consistency fix: re-optimized acceptance mask after repesca recalibration "
-                        f"(target_risk={target_risk:.3f}%)."
-                    )
-                    mask = new_mask
-                    grid = mr_grid
-                    # calculate_metrics_from_cuts requires optimal_solution_df non-empty
-                    optimal_solution_df = pd.DataFrame({"sol_fac": [0]})
-                else:
-                    logger.warning(
-                        "MR consistency fix: re-optimization after recalibration infeasible; keeping passed mask/grid."
-                    )
-            except Exception as e:
-                logger.warning(f"MR consistency fix failed (non-blocking). Keeping passed mask/grid. Error: {e}")
-
-        # --- Diagnostic: booked vs repesca risk after all adjustments ---
-        dsm = data_summary_desagregado_mr
-        if "todu_30ever_h6_boo" in dsm.columns and "todu_30ever_h6_rep" in dsm.columns:
-            boo_b2 = calculate_b2_ever_h6(
-                dsm["todu_30ever_h6_boo"].sum(),
-                dsm["todu_amt_pile_h6_boo"].sum(),
-                multiplier=settings.multiplier,
-                as_percentage=True,
-            )
-            rep_b2 = calculate_b2_ever_h6(
-                dsm["todu_30ever_h6_rep"].sum(),
-                dsm.get("todu_amt_pile_h6_rep", pd.Series([0])).sum(),
-                multiplier=settings.multiplier,
-                as_percentage=True,
-            )
-            logger.info(
-                f"MR risk diagnostic — booked (b2_boo): {boo_b2:.2f}%, "
-                f"repesca (b2_rep after RI+recal): {rep_b2:.2f}%, "
-                f"ratio rep/boo: {rep_b2 / boo_b2:.2f}x"
-                if boo_b2 > 0
-                else f"MR risk diagnostic — booked (b2_boo): {boo_b2:.2f}%, repesca: {rep_b2:.2f}%"
-            )
+        # --- Recalibrate repesca risk + re-optimize mask + log diagnostic ---
+        data_summary_desagregado_mr, recalibration_applied = _recalibrate_mr_repesca(
+            data_summary_desagregado_mr,
+            data_booked,
+            merge_keys,
+            comparison_df,
+            settings,
+        )
+        mask, grid, optimal_solution_df = _reoptimize_mr_mask_after_recalibration(
+            data_summary_desagregado_mr,
+            settings,
+            optimal_solution_df,
+            mask,
+            grid,
+            recalibration_applied,
+        )
+        _log_mr_risk_diagnostic(data_summary_desagregado_mr, settings)
 
         # Save MR summary
         summary_path = output.mr_summary_csv(file_suffix)
@@ -1822,136 +2233,7 @@ def process_mr_period(
         logger.info(f"MR summary data saved to {summary_path}")
 
         # --- Visualize b2_ever_h6 for MR ---
-        VARIABLES = settings.variables
-
-        data_surf_mr = data_summary_desagregado_mr.copy()
-        data_surf_mr["b2_ever_h6"] = calculate_b2_ever_h6(
-            data_surf_mr["todu_30ever_h6"],
-            data_surf_mr["todu_amt_pile_h6"],
-            multiplier=settings.multiplier,
-            as_percentage=True,
-        )
-        # Compute complementary H3 metric on MR surface when columns are available
-        if "todu_30ever_h3" in data_surf_mr.columns and "todu_amt_pile_h3" in data_surf_mr.columns:
-            data_surf_mr["b2_ever_h3"] = calculate_b2_ever_h6(
-                data_surf_mr["todu_30ever_h3"],
-                data_surf_mr["todu_amt_pile_h3"],
-                multiplier=settings.multiplier_h3,
-                as_percentage=True,
-            )
-
-        if len(VARIABLES) == 1:
-            logger.info("Generating b2_ever_h6 bar chart for MR dataset (1-variable)...")
-            var0 = VARIABLES[0]
-            data_bar = data_surf_mr.sort_values(var0)
-
-            fig_mr = go.Figure()
-            fig_mr.add_trace(
-                go.Bar(
-                    x=data_bar[var0].astype(str),
-                    y=data_bar["b2_ever_h6"],
-                    marker_color="indianred",
-                    text=data_bar["b2_ever_h6"].round(2),
-                    textposition="outside",
-                )
-            )
-            styles.apply_plotly_style(
-                fig_mr,
-                title=f"B2 Ever H6 by {var0} (MR Period){file_suffix}",
-                width=900,
-                height=500,
-            )
-            fig_mr.update_layout(xaxis_title=var0, yaxis_title="b2_ever_h6 (%)")
-
-            output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
-            fig_mr.write_html(output_plot_path_mr)
-            logger.info(f"MR 1D visualization saved to {output_plot_path_mr}")
-
-        elif len(VARIABLES) == 2:
-            logger.info("Generating b2_ever_h6 visualization for MR dataset...")
-
-            fig_mr = go.Figure()
-
-            data_surf_pivot_mr = data_surf_mr.pivot(index=VARIABLES[1], columns=VARIABLES[0], values="b2_ever_h6")
-
-            fig_mr.add_trace(
-                go.Surface(
-                    x=data_surf_pivot_mr.columns,
-                    y=data_surf_pivot_mr.index,
-                    z=data_surf_pivot_mr.values,
-                    colorscale="turbo",
-                )
-            )
-
-            styles.apply_plotly_style(
-                fig_mr,
-                title=f"B2 Ever H6 vs. Octroi and Risk Score (MR Period - Aggregated){file_suffix}",
-                width=1500,
-                height=700,
-            )
-
-            fig_mr.update_layout(
-                scene=dict(
-                    xaxis=dict(title=VARIABLES[0]),
-                    yaxis=dict(title=VARIABLES[1]),
-                    zaxis=dict(title="b2_ever_h6"),
-                    aspectratio=dict(x=1, y=1, z=1),
-                )
-            )
-
-            output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
-            fig_mr.write_html(output_plot_path_mr)
-            logger.info(f"MR Visualization saved to {output_plot_path_mr}")
-        elif len(VARIABLES) >= 3:
-            logger.info(f"Generating per-slice MR heatmaps for {len(VARIABLES)}-variable grid...")
-            from plotly.subplots import make_subplots
-
-            var0, var1, var2 = VARIABLES[0], VARIABLES[1], VARIABLES[2]
-            v2_vals = sorted(data_surf_mr[var2].unique())
-
-            fig_mr = make_subplots(
-                rows=1,
-                cols=len(v2_vals),
-                subplot_titles=[f"{var2} = {v}" for v in v2_vals],
-            )
-
-            for col_idx, v2 in enumerate(v2_vals, start=1):
-                slice_df = data_surf_mr[data_surf_mr[var2] == v2]
-                pivot = slice_df.pivot(index=var1, columns=var0, values="b2_ever_h6").sort_index(ascending=True)
-                text_pivot = slice_df.copy()
-                text_pivot["_text"] = text_pivot.apply(
-                    lambda r: f"{r.get('oa_amt_h0', 0) / 1e6:,.1f}M\n{r['b2_ever_h6']:.1f}%", axis=1
-                )
-                text_piv = text_pivot.pivot(index=var1, columns=var0, values="_text").sort_index(ascending=True)
-
-                fig_mr.add_trace(
-                    go.Heatmap(
-                        x=[str(c) for c in pivot.columns],
-                        y=[str(r) for r in pivot.index],
-                        z=pivot.values,
-                        text=text_piv.values if not text_piv.empty else None,
-                        texttemplate="%{text}",
-                        colorscale=[(0, "rgba(255,255,255,1)"), (1, "rgba(157,13,20,1)")],
-                        zmin=0,
-                        showscale=col_idx == len(v2_vals),
-                    ),
-                    row=1,
-                    col=col_idx,
-                )
-                fig_mr.update_xaxes(title_text=var0, row=1, col=col_idx)
-                if col_idx == 1:
-                    fig_mr.update_yaxes(title_text=var1, row=1, col=col_idx)
-
-            styles.apply_plotly_style(
-                fig_mr,
-                title=f"B2 Ever H6 — MR Period (Aggregated){file_suffix}",
-                width=max(500 * len(v2_vals), 800),
-                height=500,
-            )
-
-            output_plot_path_mr = output.mr_b2_visualization_html(file_suffix)
-            fig_mr.write_html(output_plot_path_mr)
-            logger.info(f"MR per-slice visualization saved to {output_plot_path_mr}")
+        _write_mr_visualization(data_summary_desagregado_mr, settings, file_suffix, output)
 
         # --- Cleanup ---
         if "b2_ever_h6_tmp" in data_demand_mr.columns:
@@ -1978,114 +2260,20 @@ def process_mr_period(
             grid = mr_grid
 
         # --- Generate Risk Production Summary Table for MR ---
-        logger.info("Generating Risk Production Summary Table for MR period...")
-
-        if "status_name" in data_demand_mr.columns and "oa_amt_h0" in data_demand_mr.columns:
-            mr_total_demand = data_demand_mr.loc[data_demand_mr["status_name"] != "canceled", "oa_amt_h0"].sum()
-        else:
-            mr_total_demand = data_demand_mr["oa_amt_h0"].sum() if "oa_amt_h0" in data_demand_mr.columns else 0.0
-
-        mr_summary_table = calculate_metrics_from_cuts(
-            data_summary_desagregado_mr,
-            optimal_solution_df,
-            VARIABLES,
-            settings.inv_vars,
+        _write_mr_summary_table(
+            data_demand_mr=data_demand_mr,
+            data_summary_desagregado_mr=data_summary_desagregado_mr,
+            optimal_solution_df=optimal_solution_df,
+            settings=settings,
             mask=mask,
             grid=grid,
-            multiplier_h3=settings.multiplier_h3,
-            multiplier=settings.multiplier,
-            total_demand=mr_total_demand,
+            audit_mr_df=audit_mr_df,
+            file_suffix=file_suffix,
+            output=output,
         )
 
-        if (
-            mr_summary_table is not None
-            and audit_mr_df is not None
-            and not audit_mr_df.empty
-            and not settings.baseline_mode
-        ):
-            from src.audit import reconcile_risk_production_summary_with_audit
-
-            mr_summary_table = reconcile_risk_production_summary_with_audit(mr_summary_table, audit_mr_df)
-
-        # Save MR-period optimal solution so consolidated per-income-bin tables
-        # use the correct (possibly re-optimized) mask, not the main-period one.
-        if mask is not None and grid is not None:
-            from src.optimization_utils import CellGrid
-
-            mr_opt_data: dict[str, Any] = {"sol_fac": 0}
-            if isinstance(grid, CellGrid):
-                mr_opt_data["acceptance_mask"] = ",".join(str(int(v)) for v in mask)
-            mr_opt_df = pd.DataFrame([mr_opt_data])
-            mr_opt_path = output.mr_optimal_solution_csv(file_suffix)
-            mr_opt_df.to_csv(mr_opt_path, index=False)
-            logger.debug(f"MR optimal solution saved to {mr_opt_path}")
-
-        if mr_summary_table is not None:
-            mr_summary_path = output.mr_risk_production_summary_csv(file_suffix)
-            mr_summary_table.to_csv(mr_summary_path, index=False)
-            logger.info(f"MR Risk Production Summary Table saved to {mr_summary_path}")
-            logger.info(f"MR Table:\n{mr_summary_table.to_string()}")
-
         # --- Calculate PSI/CSI Stability Metrics ---
-        logger.info("Calculating PSI/CSI stability metrics (Main vs MR)...")
-        try:
-            # Prefer known score columns, fall back to any shared numeric columns
-            requested_vars = ["score_rf", "risk_score_rf", "oa_amt"]
-            stability_vars = [v for v in requested_vars if v in data_booked.columns and v in data_booked_mr.columns]
-            if not stability_vars:
-                shared_cols = set(data_booked.columns) & set(data_booked_mr.columns)
-                stability_vars = [
-                    c for c in shared_cols if data_booked[c].dtype.kind in ("f", "i") and c not in VARIABLES
-                ][:5]
-                if stability_vars:
-                    logger.info(f"Stability: using fallback numeric columns: {stability_vars}")
-
-            if stability_vars:
-                # Determine main score variable for overall PSI
-                score_var = "risk_score_rf" if "risk_score_rf" in stability_vars else stability_vars[0]
-
-                stability_report = compare_main_vs_mr(
-                    main_df=data_booked,
-                    mr_df=data_booked_mr,
-                    variables=stability_vars,
-                    score_variable=score_var,
-                    output_path=output.stability_report_html(file_suffix),
-                    verbose=True,
-                )
-
-                # Save stability results to CSV
-                stability_df = stability_report.to_dataframe()
-                stability_csv_path = output.stability_psi_csv(file_suffix)
-                stability_df.to_csv(stability_csv_path, index=False)
-                logger.info(f"Stability metrics saved to {stability_csv_path}")
-
-                # Generate structured drift alerts
-                try:
-                    from src.alerts import generate_drift_alerts
-
-                    alert_report = generate_drift_alerts(
-                        stability_report,
-                        segment=settings.segment_filter,
-                        period="MR",
-                    )
-                    alert_json_path = output.drift_alerts_json(file_suffix)
-                    alert_report.to_json(alert_json_path)
-                    logger.info(f"Drift alerts saved to {alert_json_path}")
-                except (ImportError, ValueError) as e:
-                    logger.warning(f"Failed to generate drift alerts: {e}")
-
-                # Log summary
-                if stability_report.unstable_vars:
-                    logger.warning(
-                        f"STABILITY WARNING: {len(stability_report.unstable_vars)} variables "
-                        f"show significant drift (PSI >= {PSI_UNSTABLE_THRESHOLD}): "
-                        f"{[r.variable for r in stability_report.unstable_vars]}"
-                    )
-            else:
-                logger.warning("No numeric variables found for stability analysis")
-
-        except (ValueError, KeyError) as e:
-            logger.opt(exception=True).warning(f"Error calculating stability metrics: {e}")
+        _compute_mr_stability_metrics(data_booked, data_booked_mr, settings, file_suffix, output)
 
     except (ValueError, KeyError, RuntimeError) as e:
         logger.opt(exception=True).error(f"Error processing MR period: {e}")
