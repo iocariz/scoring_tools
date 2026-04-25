@@ -16,6 +16,15 @@ from loguru import logger
 from src.constants import RejectReason, StatusName
 
 
+def _is_numeric_like(value: object) -> bool:
+    """True if *value* can be parsed as a float (covers int/float/str-numbers)."""
+    try:
+        float(value)  # type: ignore[arg-type]
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def primary_amount_column(df: pd.DataFrame) -> str:
     """Column used for production amounts in audit: prefer ``oa_amt_h0`` (grid-aligned), else ``oa_amt``."""
     if "oa_amt_h0" in df.columns:
@@ -123,48 +132,34 @@ def generate_audit_table(
         logger.warning(f"Audit columns not found in data: {missing_columns}")
 
     # Determine passes_cut via mask (N-d) or cut_map (2-var)
-    if mask is not None and grid is not None:
-        from src.optimization_utils import classify_by_mask
+    from src.optimization_utils import CutoffSpec
 
-        passes_cut = classify_by_mask(data, mask, grid)
-        # Create audit DataFrame
-        audit_df = data[available_columns].copy()
-        audit_df["cut_limit"] = np.nan  # not applicable for N-d
-        audit_df["decision_source"] = "mask"
-    else:
-        if var1_col is None:
-            raise ValueError("2-var cut_map audit path requires at least 2 variables; use mask/grid for 1-var configs")
-        # Extract cutoffs from optimal solution (first row)
-        opt_sol_row = optimal_solution_df.iloc[0]
-
-        # Build cut_map: var0_bin -> var1_cutoff
-        cut_map = {}
-        for col in optimal_solution_df.columns:
-            if col == "sol_fac":
-                continue
-            try:
-                bin_val = float(col)
-                cut_map[bin_val] = opt_sol_row[col]
-            except (ValueError, TypeError):
-                continue
-
-        if not cut_map:
+    if mask is None or grid is None:
+        # Guardrail: require at least one parseable bin column in optimal_solution_df
+        has_bin_col = any(col != "sol_fac" and _is_numeric_like(col) for col in optimal_solution_df.columns)
+        if not has_bin_col:
             raise ValueError("No valid cutoff bins found in optimal_solution_df")
 
+    spec = CutoffSpec.from_optimal_solution(
+        optimal_solution_df,
+        variables,
+        data_summary=data,
+        mask=mask,
+        grid=grid,
+        inv_vars=[variables[1]] if (inv_var1 and len(variables) > 1) else None,
+    )
+    passes_cut = spec.classify(data)
+
+    audit_df = data[available_columns].copy()
+    if spec.is_2d:
+        assert var1_col is not None  # narrowed: is_2d implies ≥ 2 variables
+        cut_map = spec.as_2d_cut_map()
         logger.info(f"Cutoff map: {cut_map}")
-
-        # Create audit DataFrame
-        audit_df = data[available_columns].copy()
-
-        # Add cutoff limit for each record
         audit_df["cut_limit"] = data[var0_col].astype(float).map(cut_map)
         audit_df["decision_source"] = "cutoff"
-
-        # Vectorized classification
-        if inv_var1:
-            passes_cut = data[var1_col] >= audit_df["cut_limit"]
-        else:
-            passes_cut = data[var1_col] <= audit_df["cut_limit"]
+    else:
+        audit_df["cut_limit"] = np.nan
+        audit_df["decision_source"] = "mask"
 
     is_booked = data["status_name"] == StatusName.BOOKED.value
     if "reject_reason" in data.columns:

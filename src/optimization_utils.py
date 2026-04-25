@@ -212,6 +212,62 @@ class CutoffSpec:
             grid=grid,
         )
 
+    @classmethod
+    def from_optimal_solution(
+        cls,
+        optimal_solution_df: pd.DataFrame,
+        variables: Sequence[str],
+        *,
+        data_summary: pd.DataFrame | None = None,
+        mask: np.ndarray | None = None,
+        grid: CellGrid | None = None,
+        inv_vars: list[str] | None = None,
+    ) -> "CutoffSpec":
+        """Build a spec from an optimal-solution DataFrame.
+
+        Captures the pattern previously duplicated across
+        ``calculate_metrics_from_cuts`` (mr_pipeline), ``generate_audit_table``
+        (audit), ``run_scenario_analysis`` (pipeline/scenarios), and the audit
+        block inside ``export_consolidated_excel`` (consolidation):
+
+          1. If *mask* and *grid* are both provided → N-var ``from_mask``.
+          2. Otherwise build a 2-var ``cut_map`` from the first row of
+             *optimal_solution_df*, using the unique ``variables[0]`` values
+             from *data_summary* as the bin set. Tries multiple key shapes
+             (int/str/float-str) because upstream serialization is inconsistent.
+             Missing bins default to strict rejection (±inf per ``inv_var1``).
+
+        Raises ``ValueError`` when the 2-var path is requested with fewer
+        than 2 variables or without *data_summary*.
+        """
+        if mask is not None and grid is not None:
+            return cls.from_mask(mask, grid)
+
+        if len(variables) < 2:
+            raise ValueError("2-var cut_map path requires at least 2 variables; pass mask/grid for 1-var configs")
+        if data_summary is None:
+            raise ValueError("data_summary is required when building a 2-var cut_map (needed to enumerate var0 bins)")
+
+        var0_col, var1_col = variables[0], variables[1]
+        inv_var1 = bool(inv_vars and var1_col in inv_vars)
+
+        opt_sol_row = optimal_solution_df.iloc[0]
+        bins = sorted(data_summary[var0_col].unique())
+        cut_map: dict[float, float] = {}
+
+        for bin_val in bins:
+            if bin_val in optimal_solution_df.columns:
+                cut_map[bin_val] = opt_sol_row[bin_val]
+            elif str(bin_val) in optimal_solution_df.columns:
+                cut_map[bin_val] = opt_sol_row[str(bin_val)]
+            elif str(float(bin_val)) in optimal_solution_df.columns:
+                cut_map[bin_val] = opt_sol_row[str(float(bin_val))]
+            else:
+                logger.warning(f"Bin {bin_val} not found in optimal solution columns. Defaulting to strict rejection.")
+                cut_map[bin_val] = np.inf if inv_var1 else -np.inf
+
+        return cls.from_cut_map(cut_map, variables, inv_var1=inv_var1)
+
     @property
     def is_2d(self) -> bool:
         """True iff this spec uses the legacy 2-var cut_map encoding."""

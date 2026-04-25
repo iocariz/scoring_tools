@@ -20,7 +20,7 @@ from src.config import OutputPaths, PreprocessingSettings
 from src.mr_pipeline import process_mr_period
 from src.optimization_utils import (
     CellGrid,
-    classify_by_mask,
+    CutoffSpec,
 )
 from src.plots import RiskProductionVisualizer
 from src.preprocess_improved import filter_by_date
@@ -86,9 +86,6 @@ def run_scenario_analysis(
     segment = settings.segment_filter
     current_risk = float(round(scenario_risk, 1))
 
-    # Extract values_var0 for 2-var backward compat (bootstrap, cutoff extraction)
-    values_var0 = values_per_var[settings.variables[0]]
-
     visualizer = RiskProductionVisualizer(
         data_summary=data_summary,
         data_summary_disaggregated=data_summary_desagregado,
@@ -140,34 +137,24 @@ def run_scenario_analysis(
         if 0 <= selected_sol_fac < len(pareto_masks):
             selected_mask = pareto_masks[selected_sol_fac]
 
-    # Build cut_map for 2-var path (also used even in N-d as fallback for cut_map consumers)
-    cut_map: dict[float, float] = {}
-    if not is_nd:
-        row = opt_sol.iloc[0]
-        for bin_val in values_var0:
-            if bin_val in row:
-                cut_map[float(bin_val)] = float(row[bin_val])
-            elif str(bin_val) in row:
-                cut_map[float(bin_val)] = float(row[str(bin_val)])
-            elif str(float(bin_val)) in row:
-                cut_map[float(bin_val)] = float(row[str(float(bin_val))])
+    # Build unified CutoffSpec (mask for N-d, cut_map for 2-var).
+    spec: CutoffSpec | None = None
+    if is_nd and selected_mask is not None and grid is not None:
+        spec = CutoffSpec.from_mask(selected_mask, grid)
+    elif not is_nd:
+        spec = CutoffSpec.from_optimal_solution(
+            opt_sol,
+            settings.variables,
+            data_summary=data_summary_desagregado,
+            inv_vars=settings.inv_vars,
+        )
+    cut_map: dict[float, float] = (spec.as_2d_cut_map() or {}) if spec is not None else {}
 
     # Calculate repesca_production from data_summary_desagregado
     repesca_production = 0.0
-    if "oa_amt_h0_rep" in data_summary_desagregado.columns:
-        if is_nd and selected_mask is not None and grid is not None:
-            passes = classify_by_mask(data_summary_desagregado, selected_mask, grid)
-            repesca_production = data_summary_desagregado.loc[passes, "oa_amt_h0_rep"].sum()
-        elif not is_nd and len(settings.variables) > 1:
-            var0 = settings.variables[0]
-            var1 = settings.variables[1]
-            fallback = float("inf") if inv_var1 else float("-inf")
-            full_cut_series = data_summary_desagregado[var0].map(cut_map).fillna(fallback)
-            if inv_var1:
-                passes_2d = data_summary_desagregado[var1] >= full_cut_series
-            else:
-                passes_2d = data_summary_desagregado[var1] <= full_cut_series
-            repesca_production = data_summary_desagregado.loc[passes_2d, "oa_amt_h0_rep"].sum()
+    if "oa_amt_h0_rep" in data_summary_desagregado.columns and spec is not None:
+        passes = spec.classify(data_summary_desagregado)
+        repesca_production = data_summary_desagregado.loc[passes, "oa_amt_h0_rep"].sum()
 
     # Pass model CV SE so bootstrap CI accounts for model prediction uncertainty
     model_cv_se = None

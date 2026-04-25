@@ -3303,30 +3303,22 @@ def _build_classification_grid(
                         )
                         _mask = None
                         _grid = None
-                if _mask is not None and _grid is not None:
-                    from src.optimization_utils import classify_by_mask
-
-                    df_sum["passes_cut"] = classify_by_mask(df_sum, _mask, _grid)
+                if _mask is None and (len(variables) < 2):
+                    df_sum = None
                 else:
-                    var0 = variables[0]
-                    var1 = variables[1] if len(variables) > 1 else None
-                    if var1 is not None:
-                        opt_row = df_opt.iloc[0]
-                        cut_map = {}
-                        for bv in sorted(df_sum[var0].unique()):
-                            for key in [bv, str(bv), str(float(bv))]:
-                                if key in df_opt.columns:
-                                    cut_map[bv] = opt_row[key]
-                                    break
-                            else:
-                                cut_map[bv] = np.inf if (inv_vars and var1 in inv_vars) else -np.inf
-                        df_sum["cut_limit"] = df_sum[var0].map(cut_map)
-                        if inv_vars and var1 in inv_vars:
-                            df_sum["passes_cut"] = df_sum[var1] >= df_sum["cut_limit"]
-                        else:
-                            df_sum["passes_cut"] = df_sum[var1] <= df_sum["cut_limit"]
-                    else:
-                        df_sum = None
+                    from src.optimization_utils import CutoffSpec
+
+                    spec = CutoffSpec.from_optimal_solution(
+                        df_opt,
+                        variables,
+                        data_summary=df_sum,
+                        mask=_mask,
+                        grid=_grid,
+                        inv_vars=inv_vars,
+                    )
+                    df_sum["passes_cut"] = spec.classify(df_sum)
+                    if spec.is_2d:
+                        df_sum["cut_limit"] = df_sum[variables[0]].map(spec.as_2d_cut_map())
         except Exception:
             logger.warning(
                 "Failed to construct audit summary (passes_cut / cut_map); "
