@@ -68,15 +68,15 @@ jobs:
         run: uv pip install --system -e . pytest-cov
 
       - name: Run tests with coverage
-        # --cov-fail-under=60 sets an R1 floor (todo #59). Baseline at R1
-        # ship was 62%; ratchet upward as R2 decomposition + R3 methodology
-        # pass add tests. Do not lower without discussion.
+        # --cov-fail-under=70 ratchets the R1 floor (60%) upward following the
+        # R2 decomposition + targeted helper tests (R2b-viii, todo #58).
+        # Baseline after R2b-viii was 70.12%. Do not lower without discussion.
         run: |
           uv run pytest tests/ \
             --cov=src \
             --cov-report=xml \
             --cov-report=term-missing \
-            --cov-fail-under=60 \
+            --cov-fail-under=70 \
             -v
 
       - name: Upload coverage reports
