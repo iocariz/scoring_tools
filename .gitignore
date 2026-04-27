@@ -27,7 +27,6 @@ allocation_results.csv
 *.log
 *.pdf
 *.pptx
-*.docx
 coverage.xml
 .coverage
 .coverage.*
