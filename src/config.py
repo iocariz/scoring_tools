@@ -384,6 +384,17 @@ class PreprocessingSettings(BaseModel):
     monotonicity_uncertainty_min_exposure: float = Field(default=0.0, ge=0.0)
     monotonicity_uncertainty_z_threshold: float = Field(default=1.0, ge=0.0)
 
+    # --- Knob tiers (M3 config-complexity audit; see todo-list.md M3) ---
+    # The defaults below ARE the simple/safe path: every fragile feature defaults
+    # off (RI "none", optimizer off, MR off, smoothing off, decay None, monotonicity
+    # strict, extrapolation "linear", gamma 1.0). The complexity lives in config.toml,
+    # not here. Sensitivity ranking (no_premium_cd): stress_mode ±29%, multiplier ±22%,
+    # run_ri_optimizer toggle ±19%, ri_calibration_gamma ±24% (only when optimizer on),
+    # parceling_method ±10%. NOTE: with run_ri_optimizer=true the manual
+    # reject_uplift_factor / reject_max_risk_multiplier are OVERRIDDEN (inert); the
+    # active RI levers are then ri_calibration_gamma + ri_*_range. MR knobs are
+    # validation-only and do not affect cutoffs (see M3a).
+
     # Reject inference settings
     reject_inference_method: Literal["none", "parceling"] = "none"
     reject_parceling_method: Literal["linear", "power", "sigmoid"] = "linear"
