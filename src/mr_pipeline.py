@@ -319,7 +319,8 @@ def _compute_hybrid_mr_risk(
     mr_booked = data_demand_mr[data_demand_mr["status_name"] == StatusName.BOOKED.value]
     mr_h6_valid = mr_booked[mr_booked["todu_30ever_h6"].notna() & mr_booked["todu_amt_pile_h6"].notna()]
 
-    # Filter for mature H6 observations: maturity = max(mis_date) - mis_date.
+    # Filter for mature H6 observations: maturity = reference_date - mis_date,
+    # where reference_date is the observation horizon (booking-window end).
     # Only accounts with at least mr_maturity_months of seasoning are included
     # in b2_mr to avoid diluting risk with immature zeros.
     if mr_maturity_months > 0 and "mis_date" in mr_h6_valid.columns:
@@ -404,20 +405,25 @@ def _compute_hybrid_mr_risk(
         # MR-period H3 — only accounts with mature H3 (maturity >= 3 months)
         if all(c in mr_booked.columns for c in h3_cols):
             mr_h3_valid = mr_booked[mr_booked["todu_30ever_h3"].notna() & mr_booked["todu_amt_pile_h3"].notna()]
-            # Filter for H3 maturity: maturity = max(mis_date) - mis_date >= 3 months
+            # Filter for H3 maturity (>= 3 months of seasoning).  Anchor to the
+            # observation horizon (maturity_reference_date, i.e. the booking-window
+            # end) for consistency with the H6 maturity filter — not max(mis_date),
+            # which drifts earlier when the latest cohorts are sparse and over-excludes.
             h3_maturity_months = 3
             if "mis_date" in mr_h3_valid.columns and len(mr_h3_valid) > 0:
-                max_date_h3 = mr_h3_valid["mis_date"].max()
-                h3_maturity = (max_date_h3.year - mr_h3_valid["mis_date"].dt.year) * 12 + (
-                    max_date_h3.month - mr_h3_valid["mis_date"].dt.month
+                h3_ref_date = (
+                    pd.to_datetime(maturity_reference_date)
+                    if maturity_reference_date is not None
+                    else mr_h3_valid["mis_date"].max()
                 )
+                h3_maturity = _compute_account_maturity(mr_h3_valid["mis_date"], h3_ref_date)
                 h3_mature_mask = h3_maturity >= h3_maturity_months
                 n_h3_total = len(mr_h3_valid)
                 n_h3_mature = h3_mature_mask.sum()
                 if n_h3_mature > 0:
                     logger.info(
                         f"H3 maturity filter: {n_h3_mature:,}/{n_h3_total:,} accounts with "
-                        f">={h3_maturity_months}mo maturity (max_date={max_date_h3.date()})"
+                        f">={h3_maturity_months}mo maturity (ref_date={h3_ref_date.date()})"
                     )
                     mr_h3_valid = mr_h3_valid[h3_mature_mask]
                 else:
@@ -893,6 +899,7 @@ def _assign_tiered_risk(
     mr_extrapolation_curvature: float = 1.0,
     mr_maturity_months: int = 6,
     min_obs_per_bin: int = 30,
+    maturity_reference_date: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Assign per-account tiered MR risk based on maturity.
 
@@ -936,7 +943,9 @@ def _assign_tiered_risk(
     # --- Compute maturity ---
     data_demand_mr["_mr_tier"] = 0  # default: not assigned
     if "mis_date" in data_demand_mr.columns:
-        maturity = _compute_account_maturity(data_demand_mr["mis_date"])
+        # Anchor maturity to the observation horizon (booking-window end) for
+        # consistency with the H6/H3 maturity filters, not max(mis_date).
+        maturity = _compute_account_maturity(data_demand_mr["mis_date"], maturity_reference_date)
     else:
         maturity = pd.Series(np.nan, index=data_demand_mr.index)
 
@@ -1778,6 +1787,7 @@ def _compute_b2_ever_h6_tmp(
             mr_extrapolation_curvature=resolved_curvature,
             mr_maturity_months=settings.mr_maturity_months,
             min_obs_per_bin=settings.mr_min_obs_per_bin,
+            maturity_reference_date=settings.get_date("date_fin_book_obs_mr"),
         )
 
         # --- Infer risk for model_fallback bins using trained model ---

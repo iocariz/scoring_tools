@@ -821,6 +821,57 @@ class TestComputeHybridMRRisk:
         assert row["risk_source"] == "main_imputed"
         assert np.isnan(row["n_obs_mr_h3"]) or row["n_obs_mr_h3"] == 0
 
+    def test_h3_maturity_honors_reference_date(self, merge_keys):
+        """H3 maturity filter uses the supplied horizon, not max(mis_date).
+
+        Regression for #2: with bookings 2025-10/11/12 and the default
+        max(mis_date)=2025-12-15 anchor, maturities are [2,1,0] → none reach the
+        3mo H3 threshold.  Anchored to the observation horizon 2026-03-01,
+        maturities are [5,4,3] → all mature and counted.
+        """
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1, 1],
+                "bin_b": [1, 1],
+                "todu_30ever_h6": [10.0, 10.0],
+                "todu_amt_pile_h6": [100.0, 100.0],
+                "todu_30ever_h3": [5.0, 5.0],
+                "todu_amt_pile_h3": [90.0, 90.0],
+                "status_name": ["booked"] * 2,
+            }
+        )
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1, 1, 1],
+                "bin_b": [1, 1, 1],
+                "mis_date": pd.to_datetime(["2025-10-15", "2025-11-15", "2025-12-15"]),
+                "todu_30ever_h6": [np.nan] * 3,
+                "todu_amt_pile_h6": [np.nan] * 3,
+                "todu_30ever_h3": [4.0, 5.0, 6.0],
+                "todu_amt_pile_h3": [100.0, 100.0, 100.0],
+                "oa_amt_h0": [1000.0] * 3,
+                "status_name": ["booked"] * 3,
+            }
+        )
+
+        # Default anchor (max(mis_date)) → maturities [2,1,0] < 3 → none mature.
+        _, comp_default = _compute_hybrid_mr_risk(
+            data_booked, data_demand_mr.copy(), merge_keys, min_obs=1, multiplier_h3=4
+        )
+        n_default = comp_default.iloc[0]["n_obs_mr_h3"]
+        assert np.isnan(n_default) or n_default == 0
+
+        # Observation horizon 2026-03-01 → maturities [5,4,3] >= 3 → all mature.
+        _, comp_ref = _compute_hybrid_mr_risk(
+            data_booked,
+            data_demand_mr.copy(),
+            merge_keys,
+            min_obs=1,
+            multiplier_h3=4,
+            maturity_reference_date=pd.Timestamp("2026-03-01"),
+        )
+        assert comp_ref.iloc[0]["n_obs_mr_h3"] == 3
+
     def test_h6_h3_ratio_in_comparison_df(self, merge_keys):
         """When H3 is available, h6_h3_ratio column appears in comparison_df with correct values."""
         rng_main = np.random.RandomState(99)
@@ -2117,6 +2168,43 @@ class TestTieredReconstruction:
         dates = pd.Series(pd.to_datetime(["2025-01-15", "2025-06-15"]))
         mat = _compute_account_maturity(dates)
         assert list(mat) == [5, 0]
+
+    def test_assign_tiered_risk_honors_reference_date(self, merge_keys, merge_df):
+        """Tier maturity must use the supplied observation horizon, not max(mis_date).
+
+        Regression for #2: anchoring to max(mis_date) understates maturity and
+        over-excludes mature accounts.  A single account booked 2025-07-15 is
+        immature (maturity 0) under the max(mis_date) anchor but mature (7mo)
+        under the true observation horizon.
+        """
+        data = pd.DataFrame(
+            {
+                "bin_a": [1],
+                "bin_b": [1],
+                "status_name": ["booked"],
+                "mis_date": pd.to_datetime(["2025-07-15"]),
+                "_actual_todu_30ever_h6": [8.0],
+                "_actual_todu_amt_pile_h6": [100.0],
+                "b2_ever_h6_tmp": [0.05],
+                "oa_amt": [1000.0],
+            }
+        )
+
+        # Default anchor = max(mis_date) = 2025-07-15 → maturity 0 → Tier 3 (bin-level).
+        default_res = _assign_tiered_risk(data.copy(), merge_df, None, merge_keys, multiplier=7.0)
+        assert default_res.iloc[0]["_mr_tier"] == 3
+
+        # Observation horizon 2026-02-01 → maturity 7 → Tier 1 (actual H6: 7*8/100 = 0.56).
+        ref_res = _assign_tiered_risk(
+            data.copy(),
+            merge_df,
+            None,
+            merge_keys,
+            multiplier=7.0,
+            maturity_reference_date=pd.Timestamp("2026-02-01"),
+        )
+        assert ref_res.iloc[0]["_mr_tier"] == 1
+        assert ref_res.iloc[0]["b2_ever_h6_tmp"] == pytest.approx(0.56)
 
     def test_tier2_uses_account_h3_extrapolation(self, merge_keys, merge_df, comparison_df_with_ratio):
         """Tier 2 accounts use account-level H3 × bin ratio, not bin-level risk."""
