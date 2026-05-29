@@ -1,0 +1,68 @@
+# =============================================================================
+# SIMPLE starting config (M3 config-complexity audit)
+# =============================================================================
+# Minimal, recommended starting point. It sets only the CORE knobs (the ones
+# that define the problem and drive the answer) and relies on the safe defaults
+# for everything else. Every fragile/Expert feature is OFF by default and is
+# intentionally omitted here:
+#   reject inference (reject_inference_method="none"), RI optimizer
+#   (run_ri_optimizer=false), MR outcomes (use_mr_outcomes=false), Bayesian
+#   smoothing, time-decay, monotonicity relaxation, per-bin tasa_fin.
+# Add those back one at a time (see config.toml — the full/advanced example)
+# only when you need them. Sensitivity ranking that motivates this split is in
+# todo-list.md (M3).
+# =============================================================================
+
+[preprocessing]
+
+# --- Core: data + columns ---
+keep_vars = [
+    "authorization_id", "mis_date", "status_name", "risk_score_rf", "se_decision_id",
+    "reject_reason", "score_rf", "segment_cut_off", "early_bad",
+    "todu_30ever_h3", "todu_amt_pile_h3", "income_t1t2_m"
+]
+indicators = [
+    "acct_booked_h0", "oa_amt", "todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0",
+    "todu_30ever_h3", "todu_amt_pile_h3"
+]
+data_path = "data/demanda_direct_out.sas7bdat"
+segment_filter = "no_premium_cd"   # <-- set to your segment (must match segment_cut_off exactly)
+score_measures = [
+    "m_ct_direct_sc_nov23", "m_ct_direct_sc_jan23", "m_ct_direct_sc_conso25",
+    "m_ct_direct_sc_precon25", "m_ct_direct_sc_fintonic25", "m_ct_direct_sc_direct25",
+    "m_ct_direct_sc_openb"
+]
+log_level = "INFO"
+n_months = 12
+
+# --- Core: observation period ---
+date_ini_book_obs = "2024-06-01"
+date_fin_book_obs = "2025-05-01"
+
+# --- Core: risk scaling + target (high-impact knobs — see M3 ranking) ---
+multiplier = 7        # H6 annualization factor (sensitivity: ~±22% production)
+optimum_risk = 1.1    # base risk target (%) the optimizer aims for
+risk_step = 0.1
+
+# --- Core: optimization grid (2 score variables, explicit bin edges) ---
+variables = ['sc_octroi_new_clus', 'new_efx_clus']
+
+# Simplest stress setting: no stress transformation (avoids needing cz_config and
+# any stress x reject-inference double-counting). Raise to "global"/"per_bin" only
+# deliberately. NOTE: stress_mode is the single biggest production lever (~±29%).
+stress_mode = "disabled"
+
+[preprocessing.bins.sc_octroi_new_clus]
+source_col = "score_rf"
+output_col = "sc_octroi_new_clus"
+bin_edges = [-inf, 364.0, 370.0, 379.0, 382.0, 389.0, 397.0, 404.0, 416.0, 431.0, inf]
+
+[preprocessing.bins.new_efx_clus]
+source_col = "risk_score_rf"
+output_col = "new_efx_clus"
+bin_edges = [-inf, 2.0, 7.0, 11.0, 16.0, 22.0, 27.0, 33.0, 38.0, 43.0, 47.0, 51.0, 56.0, 62.0, 68.0, 73.0, 78.0, 83.0, 89.0, 94.0, inf]
+
+[preprocessing.directions]
+# Monotonicity: higher score bin = safer (descending risk).
+sc_octroi_new_clus = -1
+new_efx_clus = -1
