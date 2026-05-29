@@ -32,3 +32,7 @@ coverage.xml
 .coverage.*
 *_suggested.toml
 allocation_results_*.csv
+
+# Config-sensitivity harness scratch artefacts (run dirs live under output/)
+config_sens_demo.toml
+config_sensitivity_report*.csv
