@@ -9,6 +9,22 @@ items shift headline risk/production numbers.
 
 ---
 
+## Production-Hardening Milestone
+
+**Goal:** raise the codebase from "production-grade software" to "production-grade credit-decisioning system" — i.e. trustworthy enough to drive live cutoffs and survive independent model validation. The engineering hygiene is already strong (≈1,130 tests, ruff, CI, typed/validated config, MR + PSI/CSI + bootstrap diagnostics). The gap is methodological correctness in decision-critical paths and decisioning governance: bugs here don't crash, they silently bias the risk/production numbers that set lending cutoffs.
+
+Exit criteria:
+
+- [ ] **M1 — Clear decision-critical HIGH findings.** Resolve the open Tier-1 items that touch numbers feeding cutoffs, prioritizing model training/selection (#6 Hurdle degeneracy, #7 holdout reuse + 1-SE degeneracy, #8 Tweedie offset) and the RI/aggregation logic (#4, #5). Each fix verified on real data with the before/after delta reported.
+- [ ] **M2 — Data quality becomes a hard gate (#18).** Date-coverage gaps/parse failures, negative counts/amounts, and per-segment booked-ratio checks FAIL the run (not warn) by default; add a documented `--allow-dq-warnings` escape hatch for analysts. Capture the data snapshot/extraction date + basic lineage with each run.
+- [ ] **M3 — Config-complexity audit.** Inventory which features are load-bearing vs. experimental; set safe defaults; ship a documented "simple mode" with the fragile features (RI optimizer, MR auto-extrapolation, monotonicity relaxation, optimization binning) off by default. Rationale: the live config stacks many interacting knobs on exactly the most fragile paths, and two live-config footguns (`method="optimization"`, `reject_include_all_rejections=true`) were already found and fixed.
+- [ ] **M4 — Independent out-of-time backtest of cutoffs.** Backtest proposed cutoffs against a held-out period (beyond the existing MR check); compare realized vs. predicted risk/production. Make this a repeatable artifact, not a one-off.
+- [ ] **M5 — Validation & reproducibility trail.** Someone who didn't write the pipeline attempts to reproduce and break the headline numbers; document assumptions (multiplier, gamma, maturity anchor, stress mode), pin the data snapshot, and record a model-risk-management style sign-off. Required before the tool stands in front of a regulator or drives cutoffs automatically.
+
+**Current stance:** fine to run **today as analyst decision-support with a human in the loop**; do not let it set live cutoffs automatically until M1–M5 are met. Note: the audit list below is a prioritized hypothesis set, not gospel — 2 of the original HIGH findings (#2, #3) were overstated on close reading, so confirm each before acting.
+
+---
+
 ## Done
 - [x] **#1 — Bin-edge target leakage + wrong population.** `learn_optimization_bins` deprecated (forced quantile); edges now learned on the date-filtered demand population in all 3 call sites (`preprocess_improved.py`, `run_batch.py`). Verified: income edge shifted −20.8% (booked→demand) on real data.
 - [x] **#2 — MR maturity anchored to `max(mis_date)`.** H3 path (`mr_pipeline.py:410`) and `_assign_tiered_risk` (`:939`) now use the observation-horizon anchor (`date_fin_book_obs_mr`), consistent with the H6 path. (H6 path was already correct given the end-of-month-next-month data convention.)
