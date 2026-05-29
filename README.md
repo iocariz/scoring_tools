@@ -15,7 +15,7 @@ A credit risk scoring and portfolio optimization pipeline that processes loan ap
 - **Sensitivity Analysis**: Measures cutoff stability under risk perturbations, identifying per-cell flip thresholds.
 - **Marginal Impact**: Analytical O(N) computation of the production and risk impact of flipping each cell's accept/reject status.
 - **Cell-Level Confidence Intervals**: K-fold CV prediction intervals per grid cell, quantifying model uncertainty.
-- **Optimization-Aware Binning**: Supervised bin splitting using production-weighted risk differentiation, giving the optimizer maximal leverage from additional dimensions (e.g., income).
+- **Unsupervised Binning**: Equal-count (quantile) bin splitting learned on the demand population, keeping the optimization grid free of target leakage. (A legacy supervised "optimization" method is deprecated — it leaked the risk target the optimizer maximizes.)
 - **Fixed Cutoffs**: Bypasses optimization to evaluate predefined cutoff configurations. Supports both 2-variable (paired bins/cutoffs) and N>2 (per-variable accepted bin lists).
 - **Swap-In Constraints**: Optional MILP constraints that cap the swap-in (repesca) population's production share and/or risk directly inside the solver, so the Pareto frontier only contains solutions with controlled swap-in exposure.
 - **Fixed-Cell Constraints**: Pin individual cells as forced-accept or forced-reject before re-optimizing.
@@ -255,7 +255,7 @@ Loads SAS data (`.sas7bdat`), standardizes column names (lowercase, underscores)
 
 1. **Data Quality Checks** -- Schema validation, missing values, outlier detection (Z-score), date range validation, categorical consistency.
 2. **Filtering** -- By segment (regex), date range, and application status (booked / score-rejected / other).
-3. **Feature Engineering** -- Bins continuous scores into cluster variables using configured bin edges. When edges are learned automatically (`max_bins` without `bin_edges`), two methods are available: `"quantile"` (equal-count splits, default) and `"optimization"` (production-weighted risk split via `DecisionTreeRegressor`).
+3. **Feature Engineering** -- Bins continuous scores into cluster variables using configured bin edges. When edges are learned automatically (`max_bins` without `bin_edges`), they are computed via `"quantile"` (unsupervised equal-count splits) on the date-filtered demand population. The legacy `"optimization"` method (supervised `DecisionTreeRegressor` split) is deprecated and falls back to quantile, because it fit bins on the same risk target the optimizer later maximizes (target leakage).
 4. **Stress Factor** -- Risk correction for the rejected population. Three modes: `"global"` (single scalar from the worst 5% of booked, default), `"per_bin"` (separate factor per grid cell), or `"disabled"` (no stress adjustment, recommended when parceling is active).
 5. **Transformation Rate** -- Monthly financing rate over a rolling window (`n_months`). When `per_bin_tasa_fin = true`, computed per grid cell instead of as a global scalar.
 
@@ -348,8 +348,8 @@ Each scoring variable is discretized into ordered bins. Two methods are availabl
 
 | Method | Description | When to use |
 |---|---|---|
-| **Quantile** | Equal-count bins from the empirical distribution | Basic 2D models where you want statistical stability in every cell |
-| **Optimization** | Production-weighted risk splits via `DecisionTreeRegressor`, finding cut points that maximize separation of the risk metric | Critical for N>2 variables (e.g., adding income) — finds the bin boundaries where risk/production diverges most |
+| **Quantile** | Equal-count bins from the empirical distribution of the demand population (unsupervised) | All models — the only supported learned-edge method; leakage-free and gives statistical stability in every cell |
+| **Optimization** _(deprecated)_ | Was production-weighted risk splits via `DecisionTreeRegressor`. Now falls back to quantile | Deprecated — fit bins on the risk target the optimizer maximizes (target leakage); do not use |
 
 Bin configuration is specified per variable via `BinConfig`, which includes `source_col`, `output_col`, `bin_edges` or `max_bins`, and `method`.
 
@@ -1042,7 +1042,7 @@ N-variable binning (under `[preprocessing.bins.VAR_NAME]`):
 | `output_col` | str | *(required)* | Name of the binned column to create |
 | `bin_edges` | list[float] | `[]` | Fixed bin edges (>= 2 values). When empty, edges are learned via `max_bins` |
 | `max_bins` | int | `None` | Max bins for supervised edge learning. Required if `bin_edges` is empty |
-| `method` | str | `"quantile"` | `"quantile"` (equal-count) or `"optimization"` (production-weighted risk split via DecisionTreeRegressor) |
+| `method` | str | `"quantile"` | `"quantile"` (unsupervised equal-count, learned on the demand population). `"optimization"` is deprecated (target leakage) and falls back to quantile |
 
 Monotonicity directions (under `[preprocessing.directions]`):
 
@@ -1050,7 +1050,7 @@ Monotonicity directions (under `[preprocessing.directions]`):
 |:----|:-----|:--------|:------------|
 | `<variable_name>` | int | *(auto-inferred)* | `1` = ascending risk (higher bin = riskier), `-1` = descending risk (higher bin = safer). Auto-inferred from data if not set |
 
-**Practical guidance**: Use explicit `bin_edges` when you have established legacy tiers. Use `"quantile"` for basic 2D models where you want equal-count distributions. Use `"optimization"` when adding N>2 variables — it trains decision trees to split boundaries where risk/production diverges most.
+**Practical guidance**: Use explicit `bin_edges` when you have established legacy tiers. Otherwise use `"quantile"` — edges are learned as equal-count splits on the demand population, which keeps the optimization grid free of target leakage. The old `"optimization"` method is deprecated and silently falls back to quantile; if `"quantile"` produces flat risk across an extra dimension (e.g. income), that dimension genuinely lacks discriminating power rather than something to engineer around with supervised splits.
 
 ##### Economic Parameters
 

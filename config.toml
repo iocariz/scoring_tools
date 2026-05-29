@@ -123,9 +123,9 @@ mr_extrapolation_hard_cap = 15.0        # Absolute ceiling: ensure risk never go
 source_col = "income_t1t2_m"
 output_col = "income_bin"
 max_bins = 2
-method = "quantile"     # "quantile" (default) or "optimization" (production-weighted risk split)
+method = "quantile"     # "quantile" (default, unsupervised). "optimization" is DEPRECATED (target leakage) and falls back to quantile.
 
-# # bin_edges = [-inf, 3000.0, inf]  # Optional: override with fixed edges (skips supervised learning)
+# # bin_edges = [-inf, 3000.0, inf]  # Optional: override with fixed edges (skips edge learning)
 
 
 [preprocessing.directions]

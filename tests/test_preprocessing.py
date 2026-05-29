@@ -469,17 +469,20 @@ def test_complete_pipeline_returns_three_dataframes(sample_data, config):
     assert all(isinstance(df, pd.DataFrame) for df in result)
 
 
-def test_bin_edge_learning_uses_updated_booked_mask():
-    """Edge learning must use the post-update booked label definition.
+def test_bin_edge_learning_uses_demand_population():
+    """Edge learning must use the full demand population, not booked-only.
 
-    Regression for: learning edges from pre-update booked mask, then
-    relabeling status_name later via update_status_and_reject_reason.
+    Bins are applied to the demand population (booked + rejected + canceled)
+    and rejects feed reject inference, so edges are learned on demand.  This
+    is a regression for the prior bug where edges were learned on booked-only
+    (a selected, risk-truncated subset), violating the equal-count guarantee
+    on the graded population.
     """
     n_booked = 10
     n_rejected = 10
 
-    # Risk values are intentionally separated so quantile threshold differs
-    # depending on whether rejected rows are (incorrectly) included.
+    # Booked and rejected values are intentionally separated so the demand
+    # median (includes rejected) differs sharply from the booked-only median.
     booked_values = np.arange(0, n_booked, dtype=float)
     rejected_values = np.arange(100, 100 + n_rejected, dtype=float)
 
@@ -537,11 +540,87 @@ def test_bin_edge_learning_uses_updated_booked_mask():
     _run_data_transformations(df, settings)
     learned_edges = settings.bins["sc_octroi_new_clus"].bin_edges
 
-    expected_median = pd.Series(booked_values).quantile(0.5)
+    # Demand median (booked + rejected) — NOT the booked-only median.
+    demand_median = pd.Series(np.concatenate([booked_values, rejected_values])).quantile(0.5)
+    booked_only_median = pd.Series(booked_values).quantile(0.5)
     assert len(learned_edges) == 3
     assert np.isneginf(learned_edges[0])
     assert np.isposinf(learned_edges[-1])
-    assert np.isclose(learned_edges[1], expected_median)
+    assert np.isclose(learned_edges[1], demand_median)
+    assert not np.isclose(learned_edges[1], booked_only_median)
+
+
+def test_bin_method_optimization_falls_back_to_quantile():
+    """Deprecated method='optimization' must produce quantile edges (no leakage).
+
+    The supervised optimization split is deprecated; the dispatcher should
+    ignore it and learn unsupervised quantile edges on the demand population.
+    """
+    n = 40
+    values = np.arange(0, n, dtype=float)
+
+    df = pd.DataFrame(
+        {
+            "mis_date": pd.to_datetime(["2024-06-01"] * n),
+            "fuera_norma": ["n"] * n,
+            "fraud_flag": ["n"] * n,
+            "nature_holder": ["physical"] * n,
+            "segment_cut_off": ["test_segment"] * n,
+            "status_name": [StatusName.BOOKED.value] * n,
+            "reject_reason": [None] * n,
+            "risk_score_rf": values,
+            "oa_amt": np.ones(n, dtype=float) * 1000.0,
+            "oa_amt_h0": np.ones(n, dtype=float) * 1000.0,
+            "m_ct_direct_sc_nov23": ["n"] * n,
+        }
+    )
+
+    common = dict(
+        keep_vars=[
+            "mis_date",
+            "status_name",
+            "reject_reason",
+            "risk_score_rf",
+            "oa_amt",
+            "oa_amt_h0",
+            "fuera_norma",
+            "fraud_flag",
+            "nature_holder",
+            "segment_cut_off",
+        ],
+        indicators=["oa_amt", "oa_amt_h0"],
+        segment_filter="test_segment",
+        date_ini_book_obs="2024-01-01",
+        date_fin_book_obs="2024-12-31",
+        variables=["sc_octroi_new_clus"],
+        score_measures=["m_ct_direct_sc_nov23"],
+        log_level="WARNING",
+        octroi_bins=[],
+        efx_bins=[],
+    )
+
+    def _learn(method: str) -> list[float]:
+        settings = PreprocessingSettings(
+            bins={
+                "sc_octroi_new_clus": BinConfig(
+                    source_col="risk_score_rf",
+                    output_col="sc_octroi_new_clus",
+                    bin_edges=[],
+                    max_bins=2,
+                    method=method,
+                )
+            },
+            **common,
+        )
+        _run_data_transformations(df.copy(), settings)
+        return settings.bins["sc_octroi_new_clus"].bin_edges
+
+    opt_edges = _learn("optimization")
+    quantile_edges = _learn("quantile")
+
+    # Fallback: optimization yields the same edges as quantile.
+    assert opt_edges == quantile_edges
+    assert np.isclose(opt_edges[1], pd.Series(values).quantile(0.5))
 
 
 # =============================================================================

@@ -210,7 +210,12 @@ def learn_quantile_bins(
     Parameters
     ----------
     data : pd.DataFrame
-        Population to compute quantiles on (typically all booked records).
+        Population to compute quantiles on.  This should be the **demand**
+        population (all applications: booked + rejected + canceled) that the
+        bins are later applied to — not booked-only.  Booked is a selected,
+        risk-truncated subset, so quantiles computed on it would not yield
+        equal counts on the graded population, and rejects (which feed reject
+        inference) would be binned by edges that never saw their distribution.
     source_col : str
         Raw column name (default ``"income_t1_m"``).
     max_bins : int
@@ -349,6 +354,16 @@ def learn_optimization_bins(
     min_samples_leaf: int = 500,
 ) -> list[float]:
     """Learn bin edges that maximize production-weighted risk differentiation.
+
+    .. deprecated::
+        No longer used by the pipeline.  This method fits bin edges on the
+        same risk target (``early_bad``) that the downstream optimizer later
+        maximizes (``b2_ever_h6``), so the bins are tuned to in-sample risk
+        separation and the resulting risk/production frontier looks better than
+        it generalizes (target leakage / circularity).  The pipeline now always
+        uses unsupervised :func:`learn_quantile_bins`; configs requesting
+        ``method = "optimization"`` fall back to quantile with a warning.  This
+        function is retained for backward compatibility only.
 
     Fits a ``DecisionTreeRegressor`` on *booked* data with ``sample_weight``
     set to the production column (``oa_amt_h0``), so the split maximizes the
@@ -914,33 +929,33 @@ def _run_data_transformations(df: pd.DataFrame, settings: "PreprocessingSettings
     if settings.bins:
         from src.constants import StatusName
 
-        # Learn bin edges for any BinConfig with max_bins but no bin_edges
-        # Use date-filtered booked data to avoid look-ahead bias
+        # Learn bin edges for any BinConfig with max_bins but no bin_edges.
+        # Bins are learned (unsupervised quantiles) on the date-filtered DEMAND
+        # population — the same population they are applied to — so the
+        # equal-count guarantee holds on the graded population and rejects
+        # (which feed reject inference) are binned by edges that saw their
+        # distribution.  Learning on booked-only would be a selected, truncated
+        # subset.  Supervised ("optimization") binning is deprecated because it
+        # leaks the risk target the optimizer later maximizes.
+        data_demand_for_bins = data_clean
+        if settings.date_ini_book_obs and settings.date_fin_book_obs:
+            data_demand_for_bins = filter_by_date(
+                data_clean, "mis_date", settings.date_ini_book_obs, settings.date_fin_book_obs
+            )
+
         for var_name, bc in settings.bins.items():
             if not bc.bin_edges and bc.max_bins is not None:
-                booked_mask = data_clean["status_name"] == StatusName.BOOKED.value
-                data_booked_for_bins = data_clean[booked_mask]
-                if settings.date_ini_book_obs and settings.date_fin_book_obs:
-                    data_booked_for_bins = filter_by_date(
-                        data_booked_for_bins, "mis_date", settings.date_ini_book_obs, settings.date_fin_book_obs
-                    )
-
                 if bc.method == "optimization":
-                    logger.info(
-                        f"Learning bin edges for '{var_name}' using optimization splits (max_bins={bc.max_bins})"
+                    logger.warning(
+                        f"Bin method 'optimization' for '{var_name}' is deprecated (target leakage); "
+                        f"falling back to quantile splits."
                     )
-                    learned_edges = learn_optimization_bins(
-                        data_booked_for_bins,
-                        source_col=bc.source_col,
-                        max_bins=bc.max_bins,
-                    )
-                else:
-                    logger.info(f"Learning bin edges for '{var_name}' using quantile splits (max_bins={bc.max_bins})")
-                    learned_edges = learn_quantile_bins(
-                        data_booked_for_bins,
-                        source_col=bc.source_col,
-                        max_bins=bc.max_bins,
-                    )
+                logger.info(f"Learning bin edges for '{var_name}' using quantile splits (max_bins={bc.max_bins})")
+                learned_edges = learn_quantile_bins(
+                    data_demand_for_bins,
+                    source_col=bc.source_col,
+                    max_bins=bc.max_bins,
+                )
                 # Replace BinConfig with one that has learned edges
                 settings.bins[var_name] = BinConfig(
                     source_col=bc.source_col,

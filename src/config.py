@@ -198,10 +198,15 @@ class BinConfig:
         source_col: Raw column name in the data (e.g. 'score_rf').
         output_col: Name of the binned column created (e.g. 'sc_octroi_new_clus').
         bin_edges: Bin boundary values (must have >= 2 elements).
-            When empty and ``max_bins`` is set, edges are learned via supervised
-            splitting (``learn_income_bins``).
-        max_bins: Optional maximum number of bins for supervised edge learning.
-            Only used when ``bin_edges`` is empty. Triggers ``learn_income_bins``.
+            When empty and ``max_bins`` is set, edges are learned via
+            unsupervised quantiles on the demand population
+            (``learn_quantile_bins``).
+        max_bins: Optional maximum number of bins for edge learning.
+            Only used when ``bin_edges`` is empty.
+        method: Edge-learning method. ``"quantile"`` (default, unsupervised
+            equal-count splits). ``"optimization"`` is deprecated — it leaked
+            the risk target the optimizer maximizes and now falls back to
+            quantile with a warning.
     """
 
     source_col: str

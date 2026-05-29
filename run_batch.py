@@ -99,10 +99,12 @@ def load_and_standardize_data(data_path: str) -> pd.DataFrame | None:
 def learn_global_bin_edges(data: pd.DataFrame, base_config: dict[str, Any]) -> dict[str, list[float]]:
     """Learn bin edges on the full dataset (all segments) for consistency.
 
-    When bins use ``method = "optimization"`` or ``"quantile"`` with ``max_bins``
-    instead of fixed ``bin_edges``, edges are learned from data.  In batch mode
-    we want a single set of edges shared across all segments, so we learn them
-    here on the full (unfiltered) booked population before any segment run.
+    When bins use ``max_bins`` instead of fixed ``bin_edges``, edges are learned
+    (unsupervised quantiles) from data.  In batch mode we want a single set of
+    edges shared across all segments, so we learn them here on the full demand
+    population (all statuses, date-filtered to the observation window) before
+    any segment run.  ``method = "optimization"`` is deprecated and falls back
+    to quantile (see :func:`src.preprocess_improved.learn_optimization_bins`).
 
     Parameters
     ----------
@@ -117,21 +119,27 @@ def learn_global_bin_edges(data: pd.DataFrame, base_config: dict[str, Any]) -> d
         Mapping of variable name → learned bin edges.  Empty if no bins
         require learning.
     """
-    from src.preprocess_improved import learn_optimization_bins, learn_quantile_bins
+    from src.preprocess_improved import filter_by_date, learn_quantile_bins
 
     bins_config = base_config.get("bins", {})
     if not bins_config:
         return {}
 
-    # Basic quality filters (NO segment filter) + booked only
+    # Basic quality filters (NO segment filter).  Learn on the DEMAND population
+    # (all statuses) the bins are applied to — not booked-only, which is a
+    # selected, risk-truncated subset.  Date-filter to the observation window to
+    # avoid look-ahead bias.
     mask = (
         (data["fuera_norma"] == "n")
         & (data["fraud_flag"] == "n")
         & (data["nature_holder"] != "legal")
-        & (data["status_name"] == "booked")
     )
-    data_booked = data[mask]
-    logger.info(f"Global bin learning: {len(data_booked):,} booked records across all segments")
+    data_demand = data[mask]
+    date_ini = base_config.get("date_ini_book_obs")
+    date_fin = base_config.get("date_fin_book_obs")
+    if date_ini and date_fin:
+        data_demand = filter_by_date(data_demand, "mis_date", date_ini, date_fin)
+    logger.info(f"Global bin learning: {len(data_demand):,} demand records across all segments")
 
     global_edges: dict[str, list[float]] = {}
     for var_name, bc_raw in bins_config.items():
@@ -144,9 +152,11 @@ def learn_global_bin_edges(data: pd.DataFrame, base_config: dict[str, Any]) -> d
         max_bins = bc_raw["max_bins"]
 
         if method == "optimization":
-            edges = learn_optimization_bins(data_booked, source_col=source_col, max_bins=max_bins)
-        else:
-            edges = learn_quantile_bins(data_booked, source_col=source_col, max_bins=max_bins)
+            logger.warning(
+                f"Bin method 'optimization' for '{var_name}' is deprecated (target leakage); "
+                f"falling back to quantile splits."
+            )
+        edges = learn_quantile_bins(data_demand, source_col=source_col, max_bins=max_bins)
 
         global_edges[var_name] = edges
         logger.info(f"Global bin edges for '{var_name}': {edges}")
@@ -161,10 +171,11 @@ def learn_supersegment_bin_edges(
 ) -> dict[str, dict[str, list[float]]]:
     """Learn bin edges per reporting supersegment population.
 
-    For each reporting supersegment, filters the booked data to only the
-    segments in that supersegment and learns bin edges from that subpopulation.
-    This allows different supersegments to have bin splits tuned to their
-    own data distribution.
+    For each reporting supersegment, filters the demand data (all statuses,
+    date-filtered to the observation window) to only the segments in that
+    supersegment and learns bin edges from that subpopulation.  This allows
+    different supersegments to have bin splits tuned to their own data
+    distribution.
 
     Parameters
     ----------
@@ -180,7 +191,7 @@ def learn_supersegment_bin_edges(
     dict[str, dict[str, list[float]]]
         Mapping of supersegment name → {variable name → learned bin edges}.
     """
-    from src.preprocess_improved import learn_optimization_bins, learn_quantile_bins
+    from src.preprocess_improved import filter_by_date, learn_quantile_bins
 
     bins_config = base_config.get("bins", {})
     if not bins_config:
@@ -195,13 +206,15 @@ def learn_supersegment_bin_edges(
     if not learnable:
         return {}
 
-    # Basic quality filters (no segment filter yet)
+    # Basic quality filters (no segment filter yet).  Learn on the DEMAND
+    # population (all statuses) the bins are applied to — not booked-only.
     quality_mask = (
         (data["fuera_norma"] == "n")
         & (data["fraud_flag"] == "n")
         & (data["nature_holder"] != "legal")
-        & (data["status_name"] == "booked")
     )
+    date_ini = base_config.get("date_ini_book_obs")
+    date_fin = base_config.get("date_fin_book_obs")
 
     result: dict[str, dict[str, list[float]]] = {}
     for ss_name, ss_config in supersegments.items():
@@ -227,10 +240,12 @@ def learn_supersegment_bin_edges(
         # Filter to this supersegment's population
         pattern = "|".join(re.escape(sf) for sf in segment_filters)
         ss_mask = quality_mask & data["segment_cut_off"].str.contains(pattern, regex=True, na=False)
-        ss_booked = data[ss_mask]
+        ss_demand = data[ss_mask]
+        if date_ini and date_fin:
+            ss_demand = filter_by_date(ss_demand, "mis_date", date_ini, date_fin)
 
-        if len(ss_booked) == 0:
-            logger.warning(f"Supersegment '{ss_name}': no booked records for bin learning")
+        if len(ss_demand) == 0:
+            logger.warning(f"Supersegment '{ss_name}': no demand records for bin learning")
             continue
 
         ss_edges = {}
@@ -241,9 +256,11 @@ def learn_supersegment_bin_edges(
 
             try:
                 if method == "optimization":
-                    edges = learn_optimization_bins(ss_booked, source_col=source_col, max_bins=max_bins)
-                else:
-                    edges = learn_quantile_bins(ss_booked, source_col=source_col, max_bins=max_bins)
+                    logger.warning(
+                        f"Bin method 'optimization' for '{var_name}' is deprecated (target leakage); "
+                        f"falling back to quantile splits."
+                    )
+                edges = learn_quantile_bins(ss_demand, source_col=source_col, max_bins=max_bins)
                 ss_edges[var_name] = edges
                 logger.info(f"Supersegment '{ss_name}' bin edges for '{var_name}': {edges}")
             except (ValueError, KeyError) as e:
