@@ -84,6 +84,9 @@ def _compute_calibration_error(
     The predicted (blended) risk after RI is:
         predicted_risk = multiplier * todu_30ever_h6 / todu_amt_pile_h6
 
+    The acceptance_rate is score-only (08-other rejections are excluded), so
+    the target population matches the blended (booked + score-rejected) basis.
+
     Returns the exposure-weighted mean of (relative_error ** 2).
     """
     rate_col = (
@@ -100,6 +103,9 @@ def _compute_calibration_error(
     df[rate_col] = df[rate_col].fillna(fallback_rate)
     acc = df[rate_col].clip(lower=0.05)
 
+    # Note: multiplier cancels in the relative error below; it is kept explicit
+    # so both quantities read as actual annualized risks and stay correct if the
+    # predicted/booked scaling factors ever diverge.
     denom_boo = df["todu_amt_pile_h6_boo"].replace(0, np.nan)
     booked_risk = multiplier * df["todu_30ever_h6_boo"] / denom_boo
     target_risk = booked_risk / (acc**calibration_gamma)

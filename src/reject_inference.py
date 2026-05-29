@@ -21,6 +21,21 @@ from loguru import logger
 
 from src.constants import RejectReason, StatusName
 
+_INCLUDE_ALL_REJECTIONS_DEPRECATION_WARNED = False
+
+
+def _warn_include_all_rejections_deprecated() -> None:
+    """Warn once that include_all_rejections is deprecated and ignored."""
+    global _INCLUDE_ALL_REJECTIONS_DEPRECATION_WARNED
+    if not _INCLUDE_ALL_REJECTIONS_DEPRECATION_WARNED:
+        logger.warning(
+            "reject_include_all_rejections / include_all_rejections is deprecated and ignored: "
+            "reject inference always uses score-only acceptance rates because the swap-in "
+            "(repesca) population consists solely of score-rejected accounts. Including "
+            "08-other rejections in the denominator biased inferred risk upward."
+        )
+        _INCLUDE_ALL_REJECTIONS_DEPRECATION_WARNED = True
+
 
 def compute_acceptance_rates(
     data_demand: pd.DataFrame,
@@ -40,11 +55,10 @@ def compute_acceptance_rates(
 
         acceptance_rate = n_booked / (n_booked + n_rejected)
 
-    By default, only ``09-score`` rejections are counted (``08-other`` are
-    excluded because they are not candidates for cutoff changes).  When
-    *include_all_rejections* is True, **all** rejections are included in the
-    denominator, producing lower (more conservative) acceptance rates and
-    higher reject-inference multipliers.
+    Only ``09-score`` rejections are counted.  ``08-other`` rejections are not
+    candidates for cutoff changes — the swap-in (repesca) population consists
+    solely of score-rejected accounts — so they must not enter the
+    acceptance-rate denominator (doing so biases the inferred risk upward).
 
     Parameters
     ----------
@@ -59,9 +73,10 @@ def compute_acceptance_rates(
     bayesian_prior_strength:
         Strength of the Beta prior (higher = more shrinkage toward global rate).
     include_all_rejections:
-        If True, include all rejections (not just score rejections) in the
-        denominator.  Use when non-score rejections are a material share of
-        demand (>5-10%).
+        Deprecated and ignored.  Reject inference always uses score-only
+        acceptance rates because the swap-in (repesca) population consists
+        solely of score-rejected accounts.  Passing ``True`` logs a one-time
+        deprecation warning and otherwise has no effect.
     recent_months:
         If set (and *decay_half_life_months* is None), restrict the demand
         population to the most recent N months before computing acceptance
@@ -77,8 +92,7 @@ def compute_acceptance_rates(
     Returns
     -------
     DataFrame with columns ``[*variables, "n_booked", "n_score_rejected", "acceptance_rate"]``.
-    When *include_all_rejections* is True, ``"n_score_rejected"`` contains the
-    count of **all** rejections.
+    ``"n_score_rejected"`` always counts ``09-score`` rejections only.
     When *bayesian_smoothing* is True, also includes ``"smoothed_acceptance_rate"``.
     """
     if "status_name" not in data_demand.columns:
@@ -121,16 +135,16 @@ def compute_acceptance_rates(
                     cutoff = max_date - pd.DateOffset(months=int(recent_months))
                     data_demand = data_demand.loc[data_demand[date_col] >= cutoff]
 
-    booked = data_demand[data_demand["status_name"] == StatusName.BOOKED.value]
-
     if include_all_rejections:
-        rejected = data_demand[data_demand["status_name"] == StatusName.REJECTED.value]
-        logger.debug("Acceptance rates use ALL rejections in denominator (include_all_rejections=True)")
-    else:
-        rejected = data_demand[
-            (data_demand["status_name"] == StatusName.REJECTED.value)
-            & (data_demand["reject_reason"] == RejectReason.SCORE.value)
-        ]
+        _warn_include_all_rejections_deprecated()
+
+    booked = data_demand[data_demand["status_name"] == StatusName.BOOKED.value]
+    # Score-only: 08-other rejections are not swap-in candidates and must not
+    # enter the acceptance-rate denominator (see include_all_rejections deprecation).
+    rejected = data_demand[
+        (data_demand["status_name"] == StatusName.REJECTED.value)
+        & (data_demand["reject_reason"] == RejectReason.SCORE.value)
+    ]
 
     if decay_half_life_months is not None:
         # Exponential decay weights anchored at the maximum date in the (possibly filtered) dataset.
@@ -155,21 +169,13 @@ def compute_acceptance_rates(
             n_booked = booked_w.groupby(variables)["__w"].sum().reset_index(name="n_booked")
             n_booked_raw = booked_w.groupby(variables).size().reset_index(name="n_booked_raw")
 
-            if include_all_rejections:
-                rejected_w = data_demand.loc[data_demand["status_name"] == StatusName.REJECTED.value, variables].copy()
-                rejected_w["__w"] = data_tmp.loc[
-                    data_demand["status_name"] == StatusName.REJECTED.value, "__w"
-                ].to_numpy()
-                n_rejected = rejected_w.groupby(variables)["__w"].sum().reset_index(name="n_score_rejected")
-                n_rejected_raw = rejected_w.groupby(variables).size().reset_index(name="n_score_rejected_raw")
-            else:
-                rej_mask = (data_demand["status_name"] == StatusName.REJECTED.value) & (
-                    data_demand["reject_reason"] == RejectReason.SCORE.value
-                )
-                rejected_w = data_demand.loc[rej_mask, variables].copy()
-                rejected_w["__w"] = data_tmp.loc[rej_mask, "__w"].to_numpy()
-                n_rejected = rejected_w.groupby(variables)["__w"].sum().reset_index(name="n_score_rejected")
-                n_rejected_raw = rejected_w.groupby(variables).size().reset_index(name="n_score_rejected_raw")
+            rej_mask = (data_demand["status_name"] == StatusName.REJECTED.value) & (
+                data_demand["reject_reason"] == RejectReason.SCORE.value
+            )
+            rejected_w = data_demand.loc[rej_mask, variables].copy()
+            rejected_w["__w"] = data_tmp.loc[rej_mask, "__w"].to_numpy()
+            n_rejected = rejected_w.groupby(variables)["__w"].sum().reset_index(name="n_score_rejected")
+            n_rejected_raw = rejected_w.groupby(variables).size().reset_index(name="n_score_rejected_raw")
     else:
         # Counts-based acceptance rates (original behavior)
         n_booked = booked.groupby(variables).size().reset_index(name="n_booked")
@@ -243,31 +249,33 @@ def compute_acceptance_rates(
             f"alpha={alpha:.2f}, beta={beta:.2f}"
         )
 
-    # Warn about non-score rejections only when they are excluded from the
-    # acceptance rate denominator (include_all_rejections=False).
-    if not include_all_rejections:
-        n_other_rejected = len(
-            data_demand[
-                (data_demand["status_name"] == StatusName.REJECTED.value)
-                & (data_demand["reject_reason"] != RejectReason.SCORE.value)
-            ]
+    # Non-score (08-other) rejections are excluded from the denominator by design
+    # (they are not swap-in candidates).  Surface their share so sparse or skewed
+    # bins can be assessed — but stabilize via Bayesian smoothing / min-obs, not by
+    # polluting the rate with rejections that can never be swapped in.
+    n_other_rejected = len(
+        data_demand[
+            (data_demand["status_name"] == StatusName.REJECTED.value)
+            & (data_demand["reject_reason"] != RejectReason.SCORE.value)
+        ]
+    )
+    n_total_rejected = len(data_demand[data_demand["status_name"] == StatusName.REJECTED.value])
+    n_total_demand = len(data_demand)
+    if n_other_rejected > 0:
+        other_pct = n_other_rejected / n_total_demand * 100
+        other_of_rejected_pct = n_other_rejected / max(n_total_rejected, 1) * 100
+        log_fn = logger.warning if other_pct > 5.0 else logger.info
+        log_fn(
+            f"Acceptance rates exclude {n_other_rejected:,} non-score rejections "
+            f"({other_pct:.1f}% of demand, {other_of_rejected_pct:.1f}% of all rejections) "
+            f"by design (not swap-in candidates)."
         )
-        n_total_rejected = len(data_demand[data_demand["status_name"] == StatusName.REJECTED.value])
-        n_total_demand = len(data_demand)
-        if n_other_rejected > 0:
-            other_pct = n_other_rejected / n_total_demand * 100
-            other_of_rejected_pct = n_other_rejected / max(n_total_rejected, 1) * 100
-            log_fn = logger.warning if other_pct > 5.0 else logger.info
-            log_fn(
-                f"Acceptance rates exclude {n_other_rejected:,} non-score rejections "
-                f"({other_pct:.1f}% of demand, {other_of_rejected_pct:.1f}% of all rejections). "
-                f"Bins with many non-score rejections may have overstated acceptance rates."
+        if other_pct > 10.0:
+            logger.warning(
+                "Non-score rejections exceed 10% of demand. If bin-level acceptance rates "
+                "look noisy, rely on Bayesian smoothing / min-obs rather than including "
+                "non-score rejections."
             )
-            if other_pct > 10.0:
-                logger.warning(
-                    "Non-score rejections exceed 10% of demand — acceptance rate bias may be material. "
-                    "Consider setting reject_include_all_rejections=true or adjusting reject_uplift_factor."
-                )
 
     logger.debug(
         f"Acceptance rates computed for {len(rates)} bins | "

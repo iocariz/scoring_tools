@@ -97,6 +97,31 @@ class TestComputeAcceptanceRates:
         assert rates.iloc[0]["acceptance_rate"] == pytest.approx(1.0)
         assert rates.iloc[0]["n_score_rejected"] == 0
 
+    def test_include_all_rejections_deprecated_and_ignored(self):
+        """include_all_rejections=True is deprecated: 08-other still excluded.
+
+        Regression for #3: the swap-in (repesca) population is solely
+        score-rejected, so non-score rejections must never enter the
+        acceptance-rate denominator regardless of the deprecated flag.
+        """
+        demand = _make_demand(
+            [
+                (1, 1, "booked", None),
+                (1, 1, "rejected", "09-score"),
+                (1, 1, "rejected", "08-other"),
+                (1, 1, "rejected", "08-other"),
+            ]
+        )
+        rates_default = compute_acceptance_rates(demand, VARIABLES)
+        rates_flag = compute_acceptance_rates(demand, VARIABLES, include_all_rejections=True)
+
+        # Score-only regardless of the flag: 1 booked + 1 score-rejected → 0.5,
+        # the two 08-other rejections excluded.
+        for rates in (rates_default, rates_flag):
+            assert rates.iloc[0]["n_score_rejected"] == 1
+            assert rates.iloc[0]["acceptance_rate"] == pytest.approx(0.5)
+        assert rates_flag.iloc[0]["acceptance_rate"] == pytest.approx(rates_default.iloc[0]["acceptance_rate"])
+
     def test_multiple_bins(self):
         """Rates computed independently per bin."""
         demand = _make_demand(

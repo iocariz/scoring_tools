@@ -12,12 +12,12 @@ items shift headline risk/production numbers.
 ## Done
 - [x] **#1 — Bin-edge target leakage + wrong population.** `learn_optimization_bins` deprecated (forced quantile); edges now learned on the date-filtered demand population in all 3 call sites (`preprocess_improved.py`, `run_batch.py`). Verified: income edge shifted −20.8% (booked→demand) on real data.
 - [x] **#2 — MR maturity anchored to `max(mis_date)`.** H3 path (`mr_pipeline.py:410`) and `_assign_tiered_risk` (`:939`) now use the observation-horizon anchor (`date_fin_book_obs_mr`), consistent with the H6 path. (H6 path was already correct given the end-of-month-next-month data convention.)
+- [x] **#3 — RI calibration / acceptance-rate population mismatch.** Root cause was `reject_include_all_rejections=true`: the all-rejects acceptance rate fed both the parceling uplift and the calibration target, but the blend is only score-rejected. Deprecated the flag and forced **score-only** acceptance rates everywhere (`reject_inference.py:compute_acceptance_rates`); fixed the misleading warning that recommended the flag. Original "wrong estimand" framing was overstated — downgraded from HIGH; the objective's intent (blend ≈ selection-model population risk) is sound.
 
 ---
 
 ## Tier 1 — Methodological flaws that bias results
 
-- [ ] **#3 — RI optimizer calibrates against the wrong estimand.** `reject_inference_optimizer.py:104-124`. Objective compares blended booked+repesca risk vs. `target_risk = booked_risk / a^gamma` (fully-rejected target) — different quantities, so minimizing the error doesn't recover the selection-bias correction. (`multiplier` also cancels in the ratio.) **HIGH.**
 - [ ] **#4 — Bayesian/empirical-Bayes smoothing mixes scales under time decay.** `reject_inference.py:202, 228-239`. Float effective counts mixed with count-scale Beta prior → over-shrinks to global rate; EB moment estimator (`between_var = sample_var - within_var_mean`) is unweighted and uses a global `p`, so the auto-tuned prior strength is unsound. **HIGH.**
 - [ ] **#5 — No-demand cells get the *smallest* RI uplift.** `reject_inference.py:553-555`. Bins absent from the acceptance-rate table (zero demand = highest selection bias) are filled with the *median* acceptance rate → near-1.0 multiplier. Anti-conservative; should use a low rate. **HIGH.**
 - [ ] **#6 — HurdleRegressor / zero-inflation rationale is inert.** `estimators.py:95`, `inference_optimized.py:295-300, 1269`. Two-part model is fit on the bin-aggregated continuous ratio `b2_ever_h6` (≈ never exactly zero), so `P(y>0)≈1` and the hurdle degenerates to plain Ridge/Lasso while still selected as a distinct model. The "zero proportion" diagnostic is also computed post-aggregation (misleading). **HIGH.**

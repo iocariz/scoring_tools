@@ -392,6 +392,9 @@ class PreprocessingSettings(BaseModel):
     reject_bayesian_smoothing: bool = False
     reject_bayesian_prior_strength: float = Field(default=10.0, gt=0, le=1000)
     reject_enforce_monotonicity: bool = False
+    # Deprecated and ignored: reject inference always uses score-only acceptance
+    # rates (the swap-in/repesca population is solely score-rejected). Setting
+    # True logs a one-time deprecation warning and has no effect.
     reject_include_all_rejections: bool = False
     # Time-awareness for reject inference acceptance rates (selection bias)
     # When enabled, acceptance rates are computed on a more recent demand
