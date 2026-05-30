@@ -69,9 +69,12 @@ uv run python main.py [OPTIONS]
 |:-----|:------|:------------|
 | `--config PATH` | `-c` | Configuration TOML file (default: `config.toml`) |
 | `--model-path DIR` | `-m` | Pre-trained model directory (skips training) |
-| `--training-only` | `-t` | Run only preprocessing and model training (skip optimization) |
-| `--baseline` | | Baseline mode: show current portfolio as-is (no optimization) |
+| `--training-only` | `-t` | Run only preprocessing and model training (skip optimization). Useful for supersegment model creation |
+| `--baseline` | | Baseline mode: show current portfolio as-is (no optimization). MR inference still runs; only the base scenario is generated (sensitivity and RI optimizer skipped) |
+| `--base-only` | | Run only the base scenario (skip pessimistic/optimistic); still runs optimization (unlike `--baseline`) |
 | `--skip-dq-checks` | | Skip data quality checks |
+| `--log-file PATH` | | Capture logs to a file (DEBUG level) in addition to the console |
+| `--resimulate R [R ...]` | | Resimulation mode: skip data loading/preprocessing/training/optimization, reload cached artifacts, and re-run scenario analysis at the given risk target(s) in % (e.g. `--resimulate 0.8 1.2 1.6`) |
 
 **Examples:**
 
@@ -116,9 +119,12 @@ uv run python run_batch.py [OPTIONS]
 | `--no-consolidation` | | Skip consolidated report generation |
 | `--consolidate-only` | | Only generate consolidated report (skip segments) |
 | `--training-only` | | Only run data quality + model training (skip optimization/reporting steps) |
-| `--baseline` | | Baseline mode: show current portfolio as-is (no optimization) |
-| `--cutoff-ordering-mode` | | Cutoff ordering direction: `bottom_up` (default) or `top_down` |
+| `--baseline` | | Baseline mode: show current portfolio as-is (no optimization), all segments |
+| `--base-only` | | Run only the base scenario for all segments (skip pessimistic/optimistic) |
+| `--cutoff-ordering-mode` | | Cutoff ordering direction: `bottom_up` (default) or `top_down`. Enforces nested acceptance across segments via each segment's `cutoff_floor_segment` |
 | `--no-report` | | Skip generating HTML reports |
+| `--log-file PATH` | | Capture all logs to a file (DEBUG level) |
+| `--resimulate R [R ...]` | | Resimulation across segments: risk target(s) in % applied to all segments, or a `scenarios.toml` path for per-segment targets |
 
 **Examples:**
 
@@ -221,8 +227,9 @@ uv run python dashboard.py [OPTIONS]
 |:-----|:------|:------------|
 | `--output DIR` | | Output location (auto-detects structure) |
 | `--segment NAME` | `-s` | Initial segment to display |
+| `--host HOST` | | Bind address (default: `127.0.0.1`, loopback only). Binding to a non-localhost address requires the `DASHBOARD_AUTH_USER` / `DASHBOARD_AUTH_PASS` env vars (HTTP Basic Auth, enforced by `src/web_auth.py`) |
 | `--port PORT` | `-p` | Port (default: `8050`) |
-| `--debug` | | Debug mode |
+| `--debug` | | Debug mode (refused on non-localhost binds unless `DASHBOARD_DEBUG_ALLOWED=1`) |
 
 ### 6. `interactive_allocator.py` -- Global Allocation Dashboard
 
@@ -234,8 +241,9 @@ uv run python interactive_allocator.py [OPTIONS]
 
 | Flag | Short | Description |
 |:-----|:------|:------------|
+| `--host HOST` | | Bind address (default: `127.0.0.1`). Non-localhost binds require `DASHBOARD_AUTH_USER` / `DASHBOARD_AUTH_PASS` (Basic Auth) |
 | `--port PORT` | `-p` | Port (default: `8051`) |
-| `--debug` | | Debug mode |
+| `--debug` | | Debug mode (refused on non-localhost binds unless `DASHBOARD_DEBUG_ALLOWED=1`) |
 
 ---
 
@@ -264,7 +272,7 @@ Loads SAS data (`.sas7bdat`), standardizes column names (lowercase, underscores)
 Trains a polynomial surface model on the score grid (uses the first 2 variables for 3D visualization, supports N variables for model training) to predict risk (`b2_ever_h6`).
 
 - **Feature sets tested**: simple (2 features), base (3: with interaction), polynomial (squared/cubic), full.
-- **Estimators evaluated**: `LinearRegression`, `Ridge`, `Lasso`, `ElasticNet`, `HurdleRegressor`, `TweedieGLM`, `XGBoost`, `LightGBM` (via Optuna hyperparameter tuning).
+- **Estimators evaluated**: `LinearRegression`, `Ridge`, `Lasso`, `ElasticNet`, `TweedieGLM`, `XGBoost`, `LightGBM` (via Optuna hyperparameter tuning). A two-part `HurdleRegressor` is available as an **opt-in** candidate (`model_hurdle_per_loan = true`, default off): it is trained on **per-loan** data — where the default indicator has real zero mass — with exposure-weighted severity, and scored on the same bin-level CV RMSE as the other models. On the bin-aggregated target it would degenerate to plain Ridge/Lasso, so it is not offered by default; it is also skipped automatically when the per-loan zero mass is degenerate (∉ [2%, 99.9%]).
 - **Cross-Validation Strategy**:
   - **Feature Selection & Tuning**: Uses 5-Fold Cross-Validation. *Crucially, validation folds are physically split on the raw unaggregated data first*. Aggregation and outlier filtering are then performed independently on the train and validation sets to prevent target leakage.
   - **Selection Metric**: Models and feature sets are ranked by weighted CV RMSE. The **one-standard-error rule** is applied relative to the lowest mean RMSE, selecting the simplest eligible candidate. CV R² is reported for diagnostics where available, but it is not the primary selector.
@@ -303,7 +311,7 @@ When `run_sensitivity = true` in configuration, runs after optimization:
 2. **Cell flip thresholds**: For each cell, finds the minimum perturbation that would flip its accept/reject status.
 3. **Marginal impact**: Analytically computes the production and risk change from flipping each individual cell.
 
-Outputs are saved to `sensitivity_analysis.csv`, `sensitivity_cell_detail.csv`, and `cell_marginal_impact.csv`.
+Outputs are saved to `sensitivity_analysis_base.csv`, `sensitivity_analysis_cell_detail.csv`, and `cell_marginal_impact_base.csv`.
 
 ### Phase 8: Trend Analysis
 
@@ -418,7 +426,7 @@ After stress adjustment, an optional reject inference correction further uplifts
 acceptance_rate = n_booked / (n_booked + n_score_rejected)
 ```
 
-Only score rejections (`09-score`) count in the denominator. Policy rejections (`08-other`) are excluded because their rejection is unrelated to the credit score cutoff. When `reject_include_all_rejections = true`, all rejections are included instead.
+Only score rejections (`09-score`) count in the denominator. Policy rejections (`08-other`) are excluded because their rejection is unrelated to the credit score cutoff. (`reject_include_all_rejections` is **deprecated and ignored** — the swap-in/repesca population is solely score-rejected, so including `08-other` biased inferred risk upward; rates are always score-only.)
 
 **Bayesian Smoothing** (optional, `reject_bayesian_smoothing = true`): Stabilizes noisy rates using a Beta-Binomial posterior:
 
@@ -429,7 +437,11 @@ beta  = prior_strength × (1 - global_rate)
 smoothed_rate = (n_booked + alpha) / (n_total + alpha + beta)
 ```
 
-The `reject_bayesian_prior_strength` parameter (default 10.0) controls shrinkage: low (1-5) gives minimal shrinkage, medium (10-50) stabilizes bins with < 50 observations, high (100+) pulls all bins strongly toward the global rate.
+The `reject_bayesian_prior_strength` parameter (default 10.0) controls shrinkage: low (1-5) gives minimal shrinkage, medium (10-50) stabilizes bins with < 50 observations, high (100+) pulls all bins strongly toward the global rate. On the integer-count path the prior strength is additionally auto-tuned via an empirical-Bayes random-effects estimate blended with the configured value.
+
+Under **time-decay** (`reject_acceptance_decay_half_life_months`) the per-bin counts become fractional "effective counts" `Σw`. The posterior is then computed on the **Kish effective sample size** `n_eff = (Σw)² / Σw²` (bounded by `Σw ≤ n_eff ≤ n_raw`) using the configured `reject_bayesian_prior_strength` directly — the empirical-Bayes auto-tuning is skipped, because the moment estimator is only valid on integer Binomial counts. Without this, the count-scale prior was added to the shrunk `Σw` evidence and systematically over-shrank decayed bins toward the global rate.
+
+**No / low-demand bins.** Repesca bins absent from the acceptance-rate table (zero demand = maximal selection-bias uncertainty), and sparse-but-nonzero bins generally, are not trusted at face value. Each bin's rate is shrunk toward a conservative *low* anchor (a low percentile of observed rates, `reject_no_demand_anchor_percentile`, default 10th pct, floored at 0.01) by a confidence weight `conf = 1 − exp(−n / reject_confidence_scale)`: no-demand bins (`conf = 0`) collapse fully to the anchor (→ high risk uplift, the conservative default), while well-observed bins (`conf ≈ 1`) are left essentially unchanged. This replaces the previous *median*-rate fill, which gave the most-uncertain bins a near-typical (anti-conservative) uplift. The same shrinkage drives the RI optimizer's calibration objective, so it scores candidates on the rate definition the runtime actually applies.
 
 **Parceling Methods.** A risk multiplier is applied to `todu_30ever_h6` only — production amounts (`oa_amt_h0`) are not adjusted since production is fully observable. Three functional forms are available:
 
@@ -627,16 +639,16 @@ When a separate validation period is configured, the system validates the select
 
 #### Risk Source Priority
 
-For each bin, the pipeline selects a risk estimate following a strict priority:
+For each bin, the pipeline selects a risk estimate by evaluating these conditions **in order — first match wins** (`np.select` over `[mature MR H6, extrapolable H3]`, with two fallbacks; `src/mr_pipeline.py`):
 
 | Priority | Source | Condition | Method |
 |:---------|:-------|:----------|:-------|
-| 1 | `h3_extrapolated` | H3 data exists, `n_obs_mr_h3 ≥ min_obs`, and `b2_main_h3` is non-zero | MR-observed H3 scaled by main-period H6/H3 ratio |
-| 2 | `mr_observed` | `n_obs_mr ≥ min_obs` and H3 extrapolation was not triggered | Direct MR-period `b2_ever_h6` |
-| 3 | `main_imputed` | Main-period bin exists but MR evidence is insufficient | Main-period `b2_ever_h6` |
-| 4 | `model_fallback` | Bin absent from main period and `n_obs_mr < min_obs` | Inferred via the trained risk model |
+| 1 | `mr_observed` | `n_obs_mr ≥ mr_min_obs_per_bin` (enough mature MR-period H6) | Direct MR-period `b2_ever_h6` |
+| 2 | `h3_extrapolated` | MR H6 insufficient, but mature MR H3 exists (`n_obs_mr_h3 ≥ min_obs`) and the main-period H6/H3 ratio is finite | MR-observed H3 scaled by the main-period H6/H3 ratio |
+| 3 | `main_imputed` | Main-period bin exists but MR evidence is insufficient (default) | Main-period `b2_ever_h6` |
+| 4 | `model_fallback` | Bin absent from the main period (`b2_main` is NaN) with no usable MR H6 or H3 | Inferred via the trained risk model |
 
-Each bin's selected source is logged in the `risk_source` column for auditability.
+Note that **observed mature MR H6 takes precedence over H3 extrapolation** — extrapolation only fills bins where direct H6 evidence is still too thin. Each bin's selected source is logged in the `risk_source` column for auditability.
 
 #### H3 → H6 Extrapolation
 
@@ -678,9 +690,11 @@ Consider bin (octroi=2, efx=5):
 - **H6/H3 ratio:** 70% / 20% = 3.5
 
 **MR period (H3 mature, H6 immature):**
-- `todu_30ever_h3` = 8, `todu_amt_pile_h3` = 160 → `b2_mr_h3` = 4 × 8/160 = 20%
-- **Extrapolated H6 risk (linear):** 20% × 3.5 = **70%**
-- **Extrapolated H6 risk (power, α=1.3):** 20% × 3.5^1.3 = **98.8%**
+- `todu_30ever_h3` = 10, `todu_amt_pile_h3` = 160 → `b2_mr_h3` = 4 × 10/160 = 25%
+- **Extrapolated H6 risk (linear):** 25% × 3.5 = **87.5%**
+- **Extrapolated H6 risk (power, α=1.3):** the power law is applied to the *deviation* of MR H3 from main-period H3, `b2_mr_h3 / b2_main_h3 = 25%/20% = 1.25`:
+  `25% × 3.5 × 1.25^(1.3−1) = 87.5% × 1.25^0.3 ≈ 87.5% × 1.069 ≈ **93.6%**`.
+  (When `b2_mr_h3 == b2_main_h3` the deviation is 1.0 and power collapses to linear. The simpler `b2_mr_h3 × ratio^α` form is only the legacy fallback used when per-bin `b2_main_h3` is unavailable.)
 
 With `mr_extrapolation_method = "auto"`, the curvature α is fitted from data — if the H6/H3 relationship is convex (α > 1), the estimate adjusts accordingly.
 
@@ -1059,7 +1073,8 @@ Monotonicity directions (under `[preprocessing.directions]`):
 | `multiplier` | float | `7.0` | > 0 | Risk formula multiplier for H6 metric |
 | `multiplier_h3` | float | `4.0` | > 0 | Risk formula multiplier for H3 metric |
 | `optimum_risk` | float | `1.1` | | Target risk appetite in %. Tune per segment according to business risk limits |
-| `risk_step` | float | `0.1` | | Scenario step: creates pessimistic (`optimum_risk - risk_step`) and optimistic (`optimum_risk + risk_step`). Use `0.05` for sharp frontiers, `0.2+` for starkly different strategies |
+| `risk_step` | float | `0.1` | > 0, ≤ 50 | Scenario step: creates pessimistic (`optimum_risk - risk_step`) and optimistic (`optimum_risk + risk_step`). Use `0.05` for sharp frontiers, `0.2+` for starkly different strategies |
+| `base_scenario_only` | bool | `false` | | Generate only the base scenario (skip pessimistic/optimistic). Config-only (no CLI equivalent); distinct from `baseline_mode` — still runs optimization, just at one risk target |
 | `n_months` | int | `12` | | Rolling window (months) for transformation rate computation |
 | `z_threshold` | float | `3.0` | > 0 | Outlier detection Z-score threshold |
 
@@ -1080,8 +1095,9 @@ Comfort zone yearly limits (under `[preprocessing.cz_config]`):
 | `date_fin_book_obs_mr` | str | `None` | | MR period end date |
 | `use_mr_outcomes` | bool | `false` | | Enable hybrid MR risk inference. Recommended `true` to use real H3 metrics instead of pure model imputation |
 | `mr_min_obs_per_bin` | int | `30` | >= 1 | Min observations for an MR bin to qualify. Push to `50` for high volume, drop to `10` for tiny segments |
+| `mr_maturity_months` | int | `6` | 0-24 | Min months since booking for an MR account to count as mature H6 (newer accounts are excluded from `b2_mr` to avoid diluting risk with immature zeros). `0` disables maturity filtering |
 | `mr_extrapolation_method` | str | `"linear"` | | H3→H6 extrapolation: `"linear"`, `"power"`, `"logistic"`, or `"auto"`. Recommended: `"auto"` (fits curvature from data) |
-| `mr_extrapolation_curvature` | float | `1.0` | 0-5 | Power exponent for `"power"` method. Ignored when `"auto"` |
+| `mr_extrapolation_curvature` | float | `1.0` | 0.3-5 | Power exponent for `"power"` method. Ignored when `"auto"` |
 | `mr_extrapolation_risk_multiplier` | float | `3.0` | > 0, ≤ 10 | Safety cap on extrapolated bin risk relative to main-period risk |
 | `mr_extrapolation_hard_cap` | float | `15.0` | > 0, ≤ 100 | Hard percentage cap on extrapolated risk |
 
@@ -1106,9 +1122,11 @@ Comfort zone yearly limits (under `[preprocessing.cz_config]`):
 | `reject_uplift_factor` | float | `1.5` | 0-10 | Scaling coefficient. `1.0–1.5` for data-rich segments, `2.0–4.0` for sparse segments on supersegments |
 | `reject_max_risk_multiplier` | float | `3.0` | 1-10 | Upper cap for per-bin risk multiplier. Standard range `3.0–5.0` |
 | `reject_bayesian_smoothing` | bool | `false` | | Beta-Binomial smoothing of acceptance rates. Enable for sparse segments with < 30 observations per bin |
-| `reject_bayesian_prior_strength` | float | `10.0` | 0-1000 | Bayesian prior strength (higher = more shrinkage toward global rate). Increase to `50+` for extremely noisy data |
+| `reject_bayesian_prior_strength` | float | `10.0` | 0-1000 | Bayesian prior strength (higher = more shrinkage toward global rate). Increase to `50+` for extremely noisy data. Under time-decay the posterior uses the Kish effective sample size and this value directly (no auto-tune) |
+| `reject_no_demand_anchor_percentile` | float | `0.10` | 0-0.5 | Conservative low-rate anchor (percentile of observed acceptance rates) that no/low-demand bins are shrunk toward. Lower = more conservative |
+| `reject_confidence_scale` | float | `10.0` | >0-1000 | Count scale in `conf = 1 - exp(-n/scale)` for the no/low-demand shrinkage; smaller ⇒ only genuinely sparse bins shrink |
 | `reject_enforce_monotonicity` | bool | `false` | | Isotonic regression on multipliers per variable axis. Enable for noisy segments with non-monotone raw rates |
-| `reject_include_all_rejections` | bool | `false` | | Include policy rejections (`08-other`) in acceptance rate denominator. Usually `false` — only penalize score-based rejections |
+| `reject_include_all_rejections` | bool | `false` | | **Deprecated and ignored** — acceptance rates are always score-only (the swap-in population is solely score-rejected); setting `true` logs a one-time warning and has no effect |
 | `reject_acceptance_recent_months` | int | `None` | >= 1 | If set, compute acceptance rates using only the most recent N months |
 | `reject_acceptance_decay_half_life_months` | float | `None` | > 0 | If set, apply exponential time-decay to acceptance-rate counts (takes precedence over recent window) |
 | `reject_acceptance_date_col` | str | `"mis_date"` | non-empty | Date column used for RI temporal windowing/decay weighting |
@@ -1128,7 +1146,8 @@ All multipliers are floored at 1.0 and capped at `reject_max_risk_multiplier`.
 |:----|:-----|:--------|:------|:------------|
 | `run_ri_optimizer` | bool | `false` | | Enable automated RI parameter search. Enable for mature segments with enough data |
 | `ri_optimizer_method` | str | `"grid"` | | `"grid"` (exhaustive, deterministic) or `"optuna"` (TPE, seed=42, more sample-efficient) |
-| `ri_calibration_gamma` | float | `1.0` | 0-1 | Selection-bias exponent. Target = `booked_risk / acceptance_rate^gamma`. Lower = less aggressive correction |
+| `ri_calibration_gamma` | float | `1.0` | (0, 1] | Selection-bias exponent. Target = `booked_risk / acceptance_rate^gamma`. Lower = less aggressive correction |
+| `ri_validation_split` | float | `0.7` | (0, 1] | Fraction of main-period months used for RI-optimizer training; the rest is held out for out-of-time validation (both splits fully mature). `1.0` disables the holdout |
 | `ri_uplift_range` | list[float] | `[0.0, 5.0]` | | Search range [min, max] for `reject_uplift_factor` |
 | `ri_max_mult_range` | list[float] | `[1.0, 5.0]` | | Search range [min, max] for `reject_max_risk_multiplier` |
 | `ri_uplift_steps` | int | `11` | | Grid divisions for uplift (grid method) |
@@ -1147,6 +1166,7 @@ Selection rule: minimum calibration error among feasible solutions, with ties wi
 | `pareto_n_points` | int | `50` | 5-500 | Number of risk targets in Pareto sweep |
 | `n_bootstraps` | int | `1000` | 100-50000 | Bootstrap replicates for confidence intervals |
 | `cv_folds` | int | `4` | 2-10 | Cross-validation folds for model training |
+| `model_hurdle_per_loan` | bool | `false` | | Offer a two-part `HurdleRegressor` candidate trained on per-loan data (real zero mass), exposure-weighted, scored on the same bin-level CV RMSE. Default off — on the aggregated target the hurdle degenerates to Ridge/Lasso. Auto-skipped if per-loan zero mass ∉ [2%, 99.9%]. Enabling can change the selected risk model and cutoffs |
 | `monotonicity_relaxation_enabled` | bool | `false` | | Enable uncertainty-aware relaxation of local monotonicity constraints in sparse/ambiguous cell adjacencies |
 | `monotonicity_uncertainty_min_exposure` | float | `0.0` | >= 0 | Minimum exposure threshold used by monotonicity relaxation gating |
 | `monotonicity_uncertainty_z_threshold` | float | `1.0` | >= 0 | Z-score ambiguity threshold used by monotonicity relaxation gating |
@@ -1407,6 +1427,11 @@ new_efx_clus = [5, 6, 8]
 | `constants.py` | Enums (`StatusName`, `RejectReason`, `Columns`), numeric defaults (`DEFAULT_N_BOOTSTRAPS`, `DEFAULT_SENSITIVITY_LEVELS`) |
 | `schema.py` | Pandera data schema validators |
 | `alerts.py` | Alert generation for drift anomalies |
+| `reporting.py` | Self-contained per-segment HTML report rendering (Jinja2 + embedded Plotly), with HTML-escaping of user-influenced values |
+| `selection_bias.py` | Selection-bias diagnostics (Thorndike correction, reject-inference Gini, score discriminance on the rejected population) |
+| `selection_bias_plots.py` | Plotting helpers for the selection-bias analysis |
+| `dashboard_data.py` | Shared data-loading / path-resolution helpers used by `dashboard.py` and `gradio_dashboard.py` (segment/scenario discovery, coefficient parsing) |
+| `web_auth.py` | HTTP Basic Auth + bind-policy enforcement for the web dashboards (`enforce_bind_auth_policy`) |
 
 ---
 
@@ -1420,12 +1445,12 @@ new_efx_clus = [5, 6, 8]
 |:-----|:------------|
 | `pareto_optimal_solutions.csv` | All Pareto-optimal solutions on the efficient frontier |
 | `optimal_solution_{scenario}.csv` | Selected cutoffs for the scenario |
-| `risk_production_summary_{scenario}.csv` | Actual vs Optimum risk and production metrics |
+| `risk_production_summary_table_{scenario}.csv` | Actual vs Optimum risk and production metrics |
 | `data_summary_desagregado_{scenario}.csv` | Bin-level disaggregated data |
 | `efficient_frontier_{scenario}.csv` | Frontier data for global allocation |
 | `cutoff_summary_by_segment.csv` | Cutoff summary (long format, all scenarios) |
 | `cutoff_summary_wide.csv` | Cutoff summary (wide format, all scenarios) |
-| `risk_production_summary_mr_{scenario}.csv` | MR period metrics |
+| `risk_production_summary_table_mr_{scenario}.csv` | MR period metrics |
 | `data_summary_desagregado_mr_{scenario}.csv` | MR period bin-level data |
 | `mr_risk_comparison_{scenario}.csv` | Per-bin MR risk comparison with drift metrics and risk source |
 | `stability_psi_{scenario}.csv` | Per-variable PSI values |
