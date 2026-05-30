@@ -348,8 +348,16 @@ def _decay_weight(date, max_date, half_life):
 
 class TestSmoothingWithDecay:
     def test_smoothing_with_decay_matches_count_path_at_unit_weights(self):
-        """With all records at the same date, weights ≈ 1 ⇒ n_eff = n_raw, so the
-        decay posterior reduces to the count-based posterior on raw counts."""
+        """With all records at the same date, weights = 1 ⇒ Σw = Σw² = n_raw ⇒ n_eff = n_raw,
+        so the decay posterior reduces to the count-*scale* posterior on raw counts.
+
+        Note: this checks the decay posterior against the *configured-strength* formula
+        ``(rate·n_raw + α)/(n_raw + α + β)`` — NOT against the no-decay code path's output.
+        At unit weights n_eff = n_raw, but decay-on and decay-off still diverge when there
+        are ≥2 bins, because the decay path uses the configured prior strength while the
+        no-decay path auto-tunes it (Option-2's deliberate asymmetry). So the comparison is
+        deliberately to the closed-form configured-strength posterior, not to a decay-off run.
+        """
         d = pd.Timestamp("2024-03-15")
         demand = _make_demand_with_dates(
             [
@@ -471,18 +479,37 @@ class TestSmoothingWithDecay:
             assert row["smoothed_acceptance_rate"] == pytest.approx(expected)
 
     def test_smoothing_no_decay_regression(self):
-        """Golden values for the untouched count-based smoothing path (single bin ⇒
-        auto-tune skipped ⇒ configured prior strength used)."""
+        """Golden values pinning the untouched count-based smoothing path, *including* the
+        empirical-Bayes auto-tune.
+
+        Uses two bins with rates either side of the global rate so the posterior is
+        sensitive to the prior strength and the denominator. A single-bin case is
+        degenerate — ``global_rate == bin_rate`` makes smoothing a no-op for any α/β/n, so
+        it cannot detect a wrong strength or denominator and gives false confidence.
+        """
         demand = _make_demand(
             [
                 *[(1, 1, "booked", None)] * 3,
-                *[(1, 1, "rejected", "09-score")] * 7,
+                *[(1, 1, "rejected", "09-score")] * 7,  # bin (1,1): rate 0.3, n=10
+                *[(2, 2, "booked", None)] * 70,
+                *[(2, 2, "rejected", "09-score")] * 30,  # bin (2,2): rate 0.7, n=100
             ]
         )
-        strength = 10.0
-        rates = compute_acceptance_rates(demand, VARIABLES, bayesian_smoothing=True, bayesian_prior_strength=strength)
-        # global_rate = 0.3, α = 3, β = 7 → (3 + 3)/(10 + 10) = 0.3
-        assert rates.iloc[0]["smoothed_acceptance_rate"] == pytest.approx(0.3)
+        rates = compute_acceptance_rates(demand, VARIABLES, bayesian_smoothing=True, bayesian_prior_strength=10.0)
+        bin_11 = rates[(rates["var0"] == 1) & (rates["var1"] == 1)].iloc[0]
+        bin_22 = rates[(rates["var0"] == 2) & (rates["var1"] == 2)].iloc[0]
+
+        # global_rate = 73/110 ≈ 0.6636. The EB auto-tune blends the configured strength
+        # (10) with the cross-bin moment estimate → effective strength ≈ 6.148
+        # (α ≈ 4.08, β ≈ 2.07). These golden values are captured from a verified run and
+        # drift if either the posterior formula or the EB blend changes.
+        global_rate = 0.6636363636363637
+        assert bin_11["smoothed_acceptance_rate"] == pytest.approx(0.4384475711581742)
+        assert bin_22["smoothed_acceptance_rate"] == pytest.approx(0.697893828233913)
+        # Sanity: each bin shrinks toward the global rate, and the smoothed value is
+        # genuinely moved off the raw rate by the auto-tuned strength (non-degenerate).
+        assert bin_11["acceptance_rate"] < bin_11["smoothed_acceptance_rate"] < global_rate
+        assert global_rate < bin_22["smoothed_acceptance_rate"] < bin_22["acceptance_rate"]
 
     def test_smoothing_decay_edges(self):
         """Single bin and rate ∈ {0, 1} under decay yield finite rates in [0, 1]."""

@@ -223,8 +223,11 @@ def compute_acceptance_rates(
     # smoothing below; kept as a local Series (the public schema is unchanged).
     if decay_half_life_months is not None:
         rates = rates.merge(sumw2_booked, on=variables, how="left").merge(sumw2_rej, on=variables, how="left").fillna(0)
+        # Derive Σw and Σw² from the merged frame so n_eff aligns with `rates` by
+        # construction — independent of merge row order (don't reuse the pre-merge `total`).
+        sumw = rates["n_booked"] + rates["n_score_rejected"]
         sumw2_total = rates["__sumw2_booked"] + rates["__sumw2_rej"]
-        n_eff = ((total**2) / sumw2_total).where(sumw2_total > 0, 0.0)
+        n_eff = ((sumw**2) / sumw2_total).where(sumw2_total > 0, 0.0)
         rates = rates.drop(columns=["__sumw2_booked", "__sumw2_rej"])
     else:
         n_eff = total
