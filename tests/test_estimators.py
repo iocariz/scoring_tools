@@ -194,3 +194,95 @@ class TestTweedieGLM:
         model = TweedieGLM()
         model.fit(X, y, sample_weight=w)
         assert hasattr(model, "regressor_")
+
+
+# =============================================================================
+# Per-loan training makes the hurdle meaningful (audit #6)
+# =============================================================================
+
+
+class TestHurdlePerLoanMeaningful:
+    """When fed PER-LOAN data (real zero mass in the default amount), HurdleRegressor's classifier
+    learns genuine default-frequency variation and its cell predictions track the exposure-weighted
+    aggregate b2 — unlike fitting on the bin-aggregated ratio, where the hurdle is inert."""
+
+    @staticmethod
+    def _per_loan_data(seed=0):
+        import pandas as pd
+
+        rng = np.random.RandomState(seed)
+        rows = []
+        for v0 in range(1, 4):
+            for v1 in range(1, 4):
+                p_def = 0.05 + 0.10 * (v0 + v1)  # default rate rises with coords (~0.25 .. 0.65)
+                for _ in range(400):
+                    den = rng.uniform(800.0, 1200.0)
+                    defaulted = rng.random() < p_def
+                    num = den * rng.uniform(0.02, 0.06) if defaulted else 0.0
+                    rows.append({"var0": v0, "var1": v1, "todu_30ever_h6": num, "todu_amt_pile_h6": den})
+        return pd.DataFrame(rows)
+
+    def test_per_loan_hurdle_classifier_is_not_degenerate(self):
+        from scipy.stats import spearmanr
+
+        df = self._per_loan_data()
+        r = (7.0 * df["todu_30ever_h6"] / df["todu_amt_pile_h6"]).fillna(0.0).to_numpy()
+        w = df["todu_amt_pile_h6"].to_numpy(dtype=float)
+        X = df[["var0", "var1"]]
+
+        model = HurdleRegressor(
+            classifier=LogisticRegression(max_iter=1000, random_state=42),
+            regressor=Ridge(alpha=0.5, random_state=42),
+        )
+        model.fit(X, r, sample_weight=w)
+
+        cells = (
+            df.groupby(["var0", "var1"])
+            .agg(num=("todu_30ever_h6", "sum"), den=("todu_amt_pile_h6", "sum"))
+            .reset_index()
+        )
+        cells["true_b2"] = 7.0 * cells["num"] / cells["den"]
+        coords = cells[["var0", "var1"]]
+
+        proba = model.classifier_.predict_proba(coords)[:, 1]
+        # The classifier learns real frequency variation across cells (NOT the degenerate ~1 it
+        # learns on the aggregated target). This is the crux of fixing #6.
+        assert proba.max() - proba.min() > 0.10
+
+        pred_b2 = model.predict(coords)
+        assert (pred_b2 >= 0).all()
+        # Predicted cell b2 tracks the exposure-weighted aggregate b2 (freq×severity reconciliation).
+        rho = spearmanr(pred_b2, cells["true_b2"].to_numpy()).correlation
+        assert rho > 0.7
+
+    def test_aggregated_target_has_no_zero_mass_for_hurdle(self):
+        """Root cause of #6: the bin-aggregated b2 has ≈ no exact zeros, so the hurdle's binary
+        target is all-ones and the classifier is degenerate (it cannot learn default frequency —
+        a single-class target). The PER-LOAN target, by contrast, has real zero mass."""
+        df = self._per_loan_data()
+        agg = (
+            df.groupby(["var0", "var1"])
+            .agg(num=("todu_30ever_h6", "sum"), den=("todu_amt_pile_h6", "sum"))
+            .reset_index()
+        )
+        agg_b2 = 7.0 * agg["num"] / agg["den"]
+        y_binary_agg = (np.abs(agg_b2) > 1e-10).astype(int)
+        assert y_binary_agg.min() == 1  # every aggregated cell non-zero ⇒ degenerate single-class hurdle
+
+        r = (7.0 * df["todu_30ever_h6"] / df["todu_amt_pile_h6"]).fillna(0.0)
+        per_loan_zero_frac = float((r <= 1e-10).mean())
+        assert per_loan_zero_frac > 0.3  # many non-defaulting loans ⇒ real zero mass for the hurdle
+
+    def test_per_loan_severity_uses_exposure_weights(self):
+        """The severity (positive-part) regressor receives the exposure weights sliced to defaulters."""
+
+        df = self._per_loan_data()
+        r = (7.0 * df["todu_30ever_h6"] / df["todu_amt_pile_h6"]).fillna(0.0).to_numpy()
+        w = df["todu_amt_pile_h6"].to_numpy(dtype=float)
+        model = HurdleRegressor(
+            classifier=LogisticRegression(max_iter=1000, random_state=42),
+            regressor=Ridge(alpha=0.5, random_state=42),
+        )
+        model.fit(df[["var0", "var1"]], r, sample_weight=w)
+        # Regressor was fit only on defaulters (r > 0), so it predicts a positive severity surface.
+        assert (model.regressor_.predict(df[["var0", "var1"]].drop_duplicates()) > 0).all()

@@ -274,7 +274,7 @@ def tune_linear_models(
     var_reg: list[str],
     cv_folds: int = 5,
     n_trials: int = 20,
-    include_hurdle: bool = True,
+    include_hurdle: bool = False,
     random_state: int = DEFAULT_RANDOM_STATE,
 ) -> tuple[pd.DataFrame, dict]:
     """
@@ -304,6 +304,18 @@ def tune_linear_models(
         logger.info(f"Nested evaluation: tuning={len(tuning_data):,}, holdout={len(holdout_data):,}")
 
     from src.inference_optimized import process_dataset
+    from src.models import transform_variables
+
+    def _fit_hurdle_per_loan(model_clone, raw_train):
+        """Fit a HurdleRegressor on PER-LOAN rows (audit #6): the per-loan ratio `_hurdle_r` has
+        real zero mass (non-defaulting loans → 0) so the classifier is meaningful, and `_hurdle_w`
+        (exposure) weights the severity stage so the cell prediction reconciles to the
+        exposure-weighted aggregate b2. Predictions are still made/scored on aggregated bins."""
+        raw_train_t = transform_variables(raw_train, variables)
+        x_pl = prepare_model_input(raw_train_t, var_reg, model_clone)
+        y_pl = raw_train["_hurdle_r"].to_numpy()
+        w_pl = np.asarray(raw_train["_hurdle_w"], dtype=float)
+        model_clone.fit(x_pl, y_pl, sample_weight=w_pl)
 
     def eval_model(model, raw_eval, cv_folds, random_state):
         splits = _stratified_cv_splitter(raw_eval, cv_folds, random_state, indicators)
@@ -333,7 +345,10 @@ def tune_linear_models(
 
             try:
                 model_clone = sklearn_clone(model)
-                model_clone.fit(X_train, y_train, sample_weight=w_train)
+                if isinstance(model, HurdleRegressor) and "_hurdle_r" in raw_train.columns:
+                    _fit_hurdle_per_loan(model_clone, raw_train)
+                else:
+                    model_clone.fit(X_train, y_train, sample_weight=w_train)
                 pred = model_clone.predict(X_val)
                 if len(y_val) >= 2:
                     scores.append(np.sqrt(mean_squared_error(y_val, pred, sample_weight=w_val)))
@@ -371,7 +386,10 @@ def tune_linear_models(
             y_train, y_test = train_agg[target_var], test_agg[target_var]
             w_train = _get_regression_weights(train_agg)
             w_test = _get_regression_weights(test_agg)
-            m.fit(X_train, y_train, sample_weight=w_train)
+            if isinstance(model, HurdleRegressor) and "_hurdle_r" in tuning_data.columns:
+                _fit_hurdle_per_loan(m, tuning_data)  # per-loan training (audit #6); score on holdout agg
+            else:
+                m.fit(X_train, y_train, sample_weight=w_train)
             pred = m.predict(X_test)
             if len(y_test) < 2:
                 return None

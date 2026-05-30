@@ -679,7 +679,16 @@ def _select_feature_set_cv(
             w_val = _get_regression_weights(val_agg)
 
             model_clone = clone(model_template)
-            model_clone.fit(X_train, y_train, sample_weight=w_train)
+            if isinstance(model_template, HurdleRegressor) and "_hurdle_r" in raw_train.columns:
+                # Per-loan training (audit #6); score on aggregated val like the other candidates.
+                raw_train_t = transform_variables(raw_train, variables)
+                model_clone.fit(
+                    prepare_model_input(raw_train_t, features, model_clone),
+                    raw_train["_hurdle_r"].to_numpy(),
+                    sample_weight=np.asarray(raw_train["_hurdle_w"], dtype=float),
+                )
+            else:
+                model_clone.fit(X_train, y_train, sample_weight=w_train)
             y_pred = model_clone.predict(X_val)
             if len(y_val) >= 2:
                 from sklearn.metrics import mean_squared_error, r2_score
@@ -877,6 +886,25 @@ def _prepare_pipeline_data(
     req_cols = variables + indicators
     booked_data = booked_data.dropna(subset=req_cols)
 
+    # Per-loan hurdle training targets (audit #6). `_hurdle_r` = per-loan b2 ratio (= 0 for
+    # non-defaulting loans → real zero mass the hurdle's classifier needs); `_hurdle_w` = exposure
+    # weight so the severity stage is exposure-weighted and the cell prediction reconciles to the
+    # exposure-weighted aggregate b2 = mult·Σnum/Σden. These extra columns are invisible to
+    # `process_dataset` (it only sums the named `indicators`), so the aggregated candidates are
+    # unaffected; they are consumed only when a HurdleRegressor is trained per-loan.
+    num_col, den_col = "todu_30ever_h6", "todu_amt_pile_h6"
+    if num_col in booked_data.columns and den_col in booked_data.columns:
+        booked_data["_hurdle_r"] = calculate_b2_ever_h6(
+            booked_data[num_col], booked_data[den_col], multiplier=multiplier
+        ).fillna(0.0)
+        if booked_data[den_col].abs().sum() > 0:
+            w = booked_data[den_col].astype(float)
+        elif "oa_amt_h0" in booked_data.columns:
+            w = booked_data["oa_amt_h0"].astype(float)
+        else:
+            w = pd.Series(1.0, index=booked_data.index)
+        booked_data["_hurdle_w"] = w.clip(lower=0.0).fillna(0.0)
+
     logger.info(f"Booked valid records: {len(booked_data):,} of {len(data):,} total")
     logger.info(f"Base features (var_reg): {var_reg}")
 
@@ -1014,18 +1042,38 @@ def _select_best_model_and_features(
 
 def _train_and_evaluate_final_model(
     best_model_template,
-    all_data: pd.DataFrame,
+    agg_data: pd.DataFrame,
     final_features: list[str],
     target_var: str,
     weights: pd.Series | None,
+    per_loan_data: pd.DataFrame | None = None,
+    variables: list[str] | None = None,
 ) -> tuple[Any, float]:
-    """Clone, fit, predict, compute R², return model + train_r2."""
+    """Clone, fit, predict, compute R², return model + train_r2.
+
+    For a HurdleRegressor with per-loan data available (audit #6), fit on PER-LOAN rows (real zero
+    mass); R² is still computed against the aggregated cells so it is comparable to other models.
+    """
     from sklearn.base import clone
 
     final_model = clone(best_model_template)
-    y_all = all_data[target_var]
-    X_all = prepare_model_input(all_data, final_features, final_model)
-    final_model.fit(X_all, y_all, sample_weight=weights)
+    y_all = agg_data[target_var]
+    X_all = prepare_model_input(agg_data, final_features, final_model)
+
+    if (
+        isinstance(final_model, HurdleRegressor)
+        and per_loan_data is not None
+        and variables is not None
+        and "_hurdle_r" in per_loan_data.columns
+    ):
+        pl_t = transform_variables(per_loan_data, variables)
+        final_model.fit(
+            prepare_model_input(pl_t, final_features, final_model),
+            per_loan_data["_hurdle_r"].to_numpy(),
+            sample_weight=np.asarray(per_loan_data["_hurdle_w"], dtype=float),
+        )
+    else:
+        final_model.fit(X_all, y_all, sample_weight=weights)
 
     y_all_pred = final_model.predict(X_all)
 
@@ -1197,7 +1245,7 @@ def inference_pipeline(
     target_var: str,
     multiplier: float,
     cv_folds: int = 4,
-    include_hurdle: bool = True,
+    include_hurdle: bool = False,
     save_model: bool = True,
     model_base_path: str = "models",
     create_visualizations: bool = True,
@@ -1229,7 +1277,7 @@ def inference_pipeline(
         target_var: Name of the target variable to predict.
         multiplier: Multiplier for target variable calculation.
         cv_folds: Number of cross-validation folds (default: 5).
-        include_hurdle: Whether to include Hurdle models (default: True).
+        include_hurdle: Whether to offer the (per-loan-trained) Hurdle candidate (default: False; audit #6).
         save_model: Whether to save the best model (default: True).
         model_base_path: Base path for saving models (default: 'models').
         create_visualizations: Whether to create 3D plots (default: True).
@@ -1266,12 +1314,29 @@ def inference_pipeline(
         all_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold=DEFAULT_Z_THRESHOLD
     )
     weights_all = _get_regression_weights(final_agg)
-    zero_prop = (np.abs(final_agg[target_var]) < 1e-10).mean()
+    # Zero mass for the hurdle (#6): measured PER-LOAN on the default-amount numerator, where real
+    # zeros exist (non-defaulting loans). The bin-aggregated target ratio is ~never exactly 0, so
+    # the old post-aggregation diagnostic was misleading. This per-loan value is what makes (or
+    # doesn't make) a two-part hurdle meaningful.
+    if "todu_30ever_h6" in all_data.columns and len(all_data):
+        zero_prop = float((all_data["todu_30ever_h6"] <= 0).mean())
+    else:
+        zero_prop = float((np.abs(final_agg[target_var]) < 1e-10).mean())
 
     logger.info(f"Processed full data scope: {final_agg.shape[0]} groups")
-    logger.info(f"Zero proportion: {zero_prop:.1%}")
+    logger.info(f"Per-loan zero proportion (no-default loans): {zero_prop:.1%}")
     if weights_all is not None:
         logger.info(f"Weight range: [{weights_all.min():.0f}, {weights_all.max():.0f}]")
+
+    # Degenerate-zero-mass gate (#6): a two-part hurdle is only meaningful when the per-loan default
+    # indicator has real two-class signal. If essentially all loans default (or none do), the
+    # classifier stage is degenerate — skip the hurdle candidate even if requested.
+    if include_hurdle and not (0.02 <= zero_prop <= 0.999):
+        logger.warning(
+            f"Hurdle requested but per-loan zero mass ({zero_prop:.1%}) is degenerate "
+            f"(outside [2%, 99.9%]); skipping the hurdle candidate."
+        )
+        include_hurdle = False
 
     # STEPS 2-3: MODEL TYPE + FEATURE SET SELECTION
     logger.info("-" * 40)
@@ -1302,7 +1367,13 @@ def inference_pipeline(
     logger.info("-" * 40)
 
     final_model, train_r2 = _train_and_evaluate_final_model(
-        best_model_type["model_template"], final_agg, final_features, target_var, weights_all
+        best_model_type["model_template"],
+        final_agg,
+        final_features,
+        target_var,
+        weights_all,
+        per_loan_data=all_data,
+        variables=variables,
     )
 
     logger.info(f"Final model: {best_model_name} + {best_feature_info['feature_set_name']}")

@@ -322,6 +322,13 @@ class PreprocessingSettings(BaseModel):
     multiplier_h3: float = Field(default=4.0, gt=0)
     z_threshold: float = Field(default=3.0, gt=0)
     cv_folds: int = Field(default=4, ge=2, le=10)
+    # Expert / default-off (audit #6). When True, a meaningful two-part HurdleRegressor is offered
+    # as a model candidate, trained on PER-LOAN data (real zero mass in the default indicator) and
+    # scored on the same bin-level CV RMSE as the other candidates. When False (default) the hurdle
+    # is not offered at all — on the bin-aggregated target it degenerates to plain Ridge/Lasso, so
+    # offering it added a misleading "distinct model" and two wasted Optuna tunings. Enabling this
+    # can change the selected risk model and therefore the cutoffs (M1 validation required).
+    model_hurdle_per_loan: bool = Field(default=False)
     optimum_risk: float = Field(default=1.1, gt=0, le=100)
     risk_step: float = Field(default=0.1, gt=0, le=50)
     cz_config: dict[int, Any] = Field(default_factory=dict)

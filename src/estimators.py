@@ -94,6 +94,11 @@ class HurdleRegressor(BaseEstimator, RegressorMixin):
         # Create binary target: 0 if zero, 1 if non-zero
         y_binary = (np.abs(y) > self.zero_threshold).astype(int)
 
+        # Coerce weights to ndarray so the boolean-mask slice below (Stage 2) is positional
+        # and robust to list/Series inputs (per-loan training passes exposure weights).
+        if sample_weight is not None:
+            sample_weight = np.asarray(sample_weight, dtype=float)
+
         # Stage 1: Fit classifier (zero vs non-zero)
         self.classifier_.fit(X, y_binary, sample_weight=sample_weight)
 

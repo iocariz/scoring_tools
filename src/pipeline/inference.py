@@ -111,7 +111,7 @@ def run_inference_phase(
             target_var="b2_ever_h6",
             multiplier=settings.multiplier,
             cv_folds=settings.cv_folds,
-            include_hurdle=True,
+            include_hurdle=settings.model_hurdle_per_loan,
             save_model=True,
             model_base_path=output.model_base_path,
             create_visualizations=True,
