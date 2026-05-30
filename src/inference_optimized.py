@@ -1861,6 +1861,8 @@ def run_optimization_pipeline(
     reject_acceptance_decay_half_life_months: float | None = None,
     reject_acceptance_date_col: str = "mis_date",
     reject_apply_h3_multiplier: bool = False,
+    reject_no_demand_anchor_percentile: float = 0.10,
+    reject_confidence_scale: float = 10.0,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
     inv_vars: list[str] | None = None,
     per_bin_stress: pd.DataFrame | None = None,
@@ -1964,6 +1966,8 @@ def run_optimization_pipeline(
             acceptance_decay_half_life_months=reject_acceptance_decay_half_life_months,
             acceptance_date_col=reject_acceptance_date_col,
             apply_h3_multiplier=reject_apply_h3_multiplier,
+            no_demand_anchor_percentile=reject_no_demand_anchor_percentile,
+            confidence_scale=reject_confidence_scale,
         )
         # Log RI multiplier stats at INFO level for visibility
         if "reject_risk_multiplier" in data_sumary_desagregado_repesca.columns:
@@ -1978,6 +1982,7 @@ def run_optimization_pipeline(
             columns=[
                 "acceptance_rate",
                 "smoothed_acceptance_rate",
+                "ri_effective_acceptance_rate",
                 "ri_confidence",
                 "ri_bin_count",
             ],

@@ -391,6 +391,78 @@ def compute_ri_confidence(
     )
 
 
+def _shrink_acceptance_rate(
+    target: pd.DataFrame,
+    acceptance_rates: pd.DataFrame,
+    variables: list[str],
+    rate_col: str,
+    *,
+    anchor_percentile: float = 0.10,
+    confidence_scale: float = 10.0,
+) -> tuple[pd.Series, float, int]:
+    """Confidence-weighted shrinkage of per-bin acceptance rates toward a conservative anchor.
+
+    Cells with little or no demand carry the highest selection-bias uncertainty, so their
+    acceptance rate is shrunk toward a conservative *low* anchor (low acceptance ⇒ high reject
+    multiplier) rather than trusted at face value or filled with the (anti-conservative) median::
+
+        rate_eff = conf · bin_rate + (1 − conf) · anchor
+        conf     = 1 − exp(−(n_booked + n_score_rejected) / confidence_scale)
+        anchor   = max(low-percentile of observed rates, 0.01)   # fixed 0.05 if none observed
+
+    No-demand cells (absent from *acceptance_rates*) get ``conf = 0`` ⇒ ``rate_eff = anchor``.
+    Well-observed cells get ``conf ≈ 1`` ⇒ ``rate_eff ≈ bin_rate`` (near-unchanged). This is a
+    deliberate risk-pessimism prior — the anchor is a *low* percentile, not the global mean.
+
+    Shared by :func:`apply_parceling_adjustment` (runtime) and the RI optimizer's calibration
+    objective so both score sparse cells on the same rate definition.
+
+    Parameters
+    ----------
+    target:
+        Frame whose rows (keyed by *variables*) need an effective acceptance rate.
+    acceptance_rates:
+        Output of :func:`compute_acceptance_rates`; supplies the observed ``rate_col`` and the
+        ``n_booked`` / ``n_score_rejected`` counts used for confidence and the anchor.
+    rate_col:
+        ``"smoothed_acceptance_rate"`` when Bayesian smoothing is on, else ``"acceptance_rate"``.
+    anchor_percentile:
+        Percentile of observed rates used as the conservative anchor (lower = more conservative).
+    confidence_scale:
+        Count scale in ``conf = 1 − exp(−n / scale)``; smaller = trust counts faster, so only
+        genuinely sparse cells shrink.
+
+    Returns
+    -------
+    ``(rate_eff, anchor, n_no_demand)`` — ``rate_eff`` is a Series aligned to *target*'s index,
+    ``anchor`` the conservative anchor used, ``n_no_demand`` the count of zero-demand target cells.
+    """
+    if len(acceptance_rates) and {"n_booked", "n_score_rejected"}.issubset(acceptance_rates.columns):
+        counts = (acceptance_rates["n_booked"] + acceptance_rates["n_score_rejected"]).to_numpy(dtype=float)
+    else:
+        # No counts available (e.g. hand-built rates): treat every observed bin as fully confident.
+        counts = np.full(len(acceptance_rates), np.inf)
+
+    # Conservative anchor: a low percentile of rates on cells with real demand. Robust to a single
+    # all-rejected bin (unlike min); adapts across segments (unlike a magic constant).
+    observed = acceptance_rates[rate_col].to_numpy(dtype=float)[counts > 0] if len(acceptance_rates) else np.array([])
+    observed = observed[np.isfinite(observed)]
+    anchor = max(float(np.quantile(observed, anchor_percentile)), 0.01) if observed.size else 0.05
+
+    conf_tbl = acceptance_rates[variables].copy()
+    conf_tbl["__n"] = counts
+    conf_tbl["__rate"] = acceptance_rates[rate_col].to_numpy(dtype=float)
+    merged = target[variables].merge(conf_tbl, on=variables, how="left")
+
+    n = merged["__n"].fillna(0.0).to_numpy(dtype=float)
+    bin_rate = merged["__rate"].fillna(anchor).to_numpy(dtype=float)
+    # conf = 1 - exp(-n/scale); n=inf (no counts) ⇒ conf=1 (use bin_rate); n=0 ⇒ conf=0 (use anchor).
+    conf = 1.0 - np.exp(-n / float(confidence_scale))
+    rate_eff = conf * bin_rate + (1.0 - conf) * anchor
+    n_no_demand = int((n <= 0).sum())
+    return pd.Series(rate_eff, index=target.index), anchor, n_no_demand
+
+
 def _enforce_multiplier_monotonicity(
     result: pd.DataFrame,
     variables: list[str],
@@ -551,6 +623,8 @@ def apply_parceling_adjustment(
     enforce_monotonicity: bool = False,
     inv_vars: list[str] | None = None,
     apply_h3_multiplier: bool = False,
+    no_demand_anchor_percentile: float = 0.10,
+    confidence_scale: float = 10.0,
     quiet: bool = False,
 ) -> pd.DataFrame:
     """Apply per-bin risk uplift to repesca summary based on acceptance rates.
@@ -589,12 +663,29 @@ def apply_parceling_adjustment(
     enforce_monotonicity:
         If True, apply isotonic regression to ensure multipliers are
         non-decreasing along each variable axis.
+    no_demand_anchor_percentile:
+        Percentile of observed acceptance rates used as the conservative anchor that
+        no/low-demand bins are shrunk toward (lower ⇒ more conservative). See
+        :func:`_shrink_acceptance_rate`.
+    confidence_scale:
+        Count scale in ``conf = 1 − exp(−n / scale)``; smaller ⇒ confidence saturates
+        faster, so only genuinely sparse bins shrink toward the anchor.
+
+    Notes
+    -----
+    Before applying the chosen method, each bin's acceptance rate is replaced by a
+    confidence-weighted blend toward a conservative low anchor (see
+    :func:`_shrink_acceptance_rate`): no-demand bins (the highest selection-bias
+    uncertainty) collapse to the anchor → high uplift, while well-observed bins are
+    left essentially unchanged. When Bayesian smoothing is on this composes with the
+    smoothed rate (smoothing pulls toward the global rate, this toward the low anchor).
 
     Returns
     -------
     Copy of *repesca_summary* with ``todu_30ever_h6`` adjusted in place.
-    Auxiliary columns ``acceptance_rate`` and ``reject_risk_multiplier`` are
-    included for diagnostics but should be dropped before downstream merges.
+    Auxiliary columns ``acceptance_rate``, ``ri_effective_acceptance_rate`` (the shrunk
+    rate actually used) and ``reject_risk_multiplier`` are included for diagnostics but
+    should be dropped before downstream merges.
     """
     # Use smoothed rates if available (from Bayesian smoothing)
     rate_col = (
@@ -610,21 +701,29 @@ def apply_parceling_adjustment(
         how="left",
     )
 
-    # Bins missing from acceptance_rates (no demand data): use median observed rate
-    # as a conservative default (1.0 would mean "all accepted" = no adjustment)
-    median_rate = acceptance_rates[rate_col].median()
-    fallback_rate = median_rate if pd.notna(median_rate) and median_rate > 0 else 0.5
-    n_missing = result[rate_col].isna().sum() if rate_col in result.columns else result["acceptance_rate"].isna().sum()
-    if n_missing > 0:
+    # No-demand / low-demand bins carry the highest selection-bias uncertainty. Instead of the
+    # (anti-conservative) median observed rate, shrink every bin's rate toward a conservative LOW
+    # anchor by confidence: no-demand → anchor (high uplift), well-observed → ~unchanged. This also
+    # de-trusts sparse-but-nonzero bins (audit #37/#81). See _shrink_acceptance_rate.
+    effective_rate, anchor, n_no_demand = _shrink_acceptance_rate(
+        result,
+        acceptance_rates,
+        variables,
+        rate_col,
+        anchor_percentile=no_demand_anchor_percentile,
+        confidence_scale=confidence_scale,
+    )
+    if n_no_demand > 0 and not quiet:
         logger.warning(
-            f"Parceling: {n_missing} repesca bin(s) have no demand data; "
-            f"filling acceptance_rate with median={fallback_rate:.3f}"
+            f"Parceling: {n_no_demand} repesca bin(s) have no demand data; "
+            f"shrinking toward conservative anchor={anchor:.3f} (confidence-weighted)."
         )
-    result["acceptance_rate"] = result["acceptance_rate"].fillna(fallback_rate)
-    if rate_col == "smoothed_acceptance_rate":
-        result["smoothed_acceptance_rate"] = result["smoothed_acceptance_rate"].fillna(fallback_rate)
-
-    effective_rate = result[rate_col] if rate_col in result.columns else result["acceptance_rate"]
+    # Persisted diagnostics: keep the observed acceptance_rate (anchor-filled so no NaN) for the
+    # extremes log below; expose the shrunk rate actually used as ri_effective_acceptance_rate.
+    result["acceptance_rate"] = result["acceptance_rate"].fillna(anchor)
+    if rate_col == "smoothed_acceptance_rate" and "smoothed_acceptance_rate" in result.columns:
+        result["smoothed_acceptance_rate"] = result["smoothed_acceptance_rate"].fillna(anchor)
+    result["ri_effective_acceptance_rate"] = effective_rate.to_numpy()
 
     if method == "power":
         # Power-law: multiplier = (1 / acceptance_rate) ^ factor
@@ -713,6 +812,8 @@ def apply_reject_inference(
     acceptance_recent_months: int | None = None,
     acceptance_decay_half_life_months: float | None = None,
     acceptance_date_col: str = "mis_date",
+    no_demand_anchor_percentile: float = 0.10,
+    confidence_scale: float = 10.0,
 ) -> pd.DataFrame:
     """Dispatcher: apply reject-inference adjustment to repesca risk predictions.
 
@@ -749,6 +850,12 @@ def apply_reject_inference(
         as H6, preserving the observed H6/H3 ratio when that is stable.  Default
         False: H3 numerator is left unchanged so H3→H6 extrapolation uses
         unscaled H3 (see ``reject_apply_h3_multiplier`` in config).
+    no_demand_anchor_percentile:
+        Percentile of observed acceptance rates used as the conservative anchor for
+        no/low-demand bins (lower = more conservative).  See :func:`_shrink_acceptance_rate`.
+    confidence_scale:
+        Count scale controlling how fast confidence saturates; smaller means only genuinely
+        sparse bins shrink toward the anchor.  Also used for the ``ri_confidence`` diagnostic.
 
     Returns
     -------
@@ -784,10 +891,12 @@ def apply_reject_inference(
             enforce_monotonicity=enforce_monotonicity,
             inv_vars=inv_vars,
             apply_h3_multiplier=apply_h3_multiplier,
+            no_demand_anchor_percentile=no_demand_anchor_percentile,
+            confidence_scale=confidence_scale,
         )
 
-        # Merge per-bin confidence scores
-        confidence = compute_ri_confidence(acceptance_rates, variables)
+        # Merge per-bin confidence scores (same scale as the shrinkage above, for consistency)
+        confidence = compute_ri_confidence(acceptance_rates, variables, scale=confidence_scale)
         result = result.merge(confidence, on=variables, how="left")
         result["ri_confidence"] = result["ri_confidence"].fillna(0.0)
         result["ri_bin_count"] = result["ri_bin_count"].fillna(0).astype(int)
