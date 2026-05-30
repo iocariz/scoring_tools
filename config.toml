@@ -26,8 +26,8 @@ score_measures = [
     "m_ct_direct_sc_precon25",
     "m_ct_direct_sc_fintonic25",
     "m_ct_direct_sc_direct25",
-    "m_ct_direct_sc_openb",
-    "m_ct_direct_sc_openb2"]
+    "m_ct_direct_sc_openb"
+    ]
 
 log_level = "INFO"
 data_path = "data/demanda_direct_out.sas7bdat"
