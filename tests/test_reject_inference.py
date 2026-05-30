@@ -555,7 +555,13 @@ class TestApplyParcelingAdjustment:
 
     def _make_rates(self, acceptance_rate=1.0):
         return pd.DataFrame(
-            {"var0": [1], "var1": [1], "n_booked": [10], "n_score_rejected": [0], "acceptance_rate": [acceptance_rate]}
+            {
+                "var0": [1],
+                "var1": [1],
+                "n_booked": [1000],
+                "n_score_rejected": [0],
+                "acceptance_rate": [acceptance_rate],
+            }
         )
 
     def test_no_adjustment_at_full_acceptance(self):
@@ -605,21 +611,44 @@ class TestApplyParcelingAdjustment:
 
         assert result["todu_amt_pile_h6"].iloc[0] == pytest.approx(500.0)
 
-    def test_missing_bins_get_median_adjustment(self):
-        """Bins not in acceptance_rates get median acceptance_rate as conservative fallback."""
+    def test_missing_bins_get_conservative_anchor(self):
+        """No-demand bins get a conservative LOW anchor (low percentile of observed rates),
+        NOT the anti-conservative median — so they receive a HIGHER reject uplift (#5).
+
+        Replaces the old test_missing_bins_get_median_adjustment, which pinned the bug
+        (missing bin filled with the median ⇒ near-typical, anti-conservative multiplier).
+        """
         repesca = pd.DataFrame(
-            {"var0": [1, 2], "var1": [1, 2], "todu_30ever_h6": [100.0, 200.0], "todu_amt_pile_h6": [500.0, 600.0]}
+            {
+                "var0": [1, 2, 3, 9],
+                "var1": [1, 2, 3, 9],
+                "todu_30ever_h6": [100.0, 100.0, 100.0, 100.0],
+                "todu_amt_pile_h6": [500.0, 500.0, 500.0, 500.0],
+            }
         )
-        # Only bin (1,1) has rates (median = 0.5)
-        rates = self._make_rates(acceptance_rate=0.5)
+        # Three well-observed, high-acceptance bins; bin (9,9) has NO demand (absent).
+        rates = pd.DataFrame(
+            {
+                "var0": [1, 2, 3],
+                "var1": [1, 2, 3],
+                "n_booked": [700, 800, 900],
+                "n_score_rejected": [300, 200, 100],
+                "acceptance_rate": [0.7, 0.8, 0.9],
+            }
+        )
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES, no_demand_anchor_percentile=0.10)
 
-        result = apply_parceling_adjustment(repesca, rates, VARIABLES)
+        observed = np.array([0.7, 0.8, 0.9])
+        anchor = max(float(np.quantile(observed, 0.10)), 0.01)  # ≈ 0.72
+        median = float(np.median(observed))  # 0.80
 
-        # Bin (1,1): adjusted with actual rate 0.5
-        assert result[result["var0"] == 1]["reject_risk_multiplier"].iloc[0] == pytest.approx(1.75)
-        # Bin (2,2): missing from rates → filled with median (0.5) → same multiplier
-        assert result[result["var0"] == 2]["reject_risk_multiplier"].iloc[0] == pytest.approx(1.75)
-        assert result[result["var0"] == 2]["todu_30ever_h6"].iloc[0] == pytest.approx(350.0)
+        missing = result[result["var0"] == 9].iloc[0]
+        # No-demand bin shrinks fully to the conservative anchor, not the median.
+        assert missing["ri_effective_acceptance_rate"] == pytest.approx(anchor)
+        assert missing["ri_effective_acceptance_rate"] < median
+        # → strictly higher reject multiplier than the buggy median fill would have produced.
+        assert missing["reject_risk_multiplier"] == pytest.approx(1.0 + 1.5 * (1.0 - anchor))
+        assert missing["reject_risk_multiplier"] > 1.0 + 1.5 * (1.0 - median)
 
     def test_multiple_bins(self):
         """Multiple bins with different acceptance rates."""
@@ -630,8 +659,10 @@ class TestApplyParcelingAdjustment:
             {
                 "var0": [1, 2],
                 "var1": [1, 2],
-                "n_booked": [10, 5],
-                "n_score_rejected": [0, 5],
+                # Well-observed bins (large n) so confidence≈1 and the conservative shrinkage is a
+                # no-op — this test isolates the per-method multiplier formula.
+                "n_booked": [1000, 500],
+                "n_score_rejected": [0, 500],
                 "acceptance_rate": [1.0, 0.5],
             }
         )
@@ -654,7 +685,13 @@ class TestSigmoidMethod:
 
     def _make_rates(self, acceptance_rate=1.0):
         return pd.DataFrame(
-            {"var0": [1], "var1": [1], "n_booked": [10], "n_score_rejected": [0], "acceptance_rate": [acceptance_rate]}
+            {
+                "var0": [1],
+                "var1": [1],
+                "n_booked": [1000],
+                "n_score_rejected": [0],
+                "acceptance_rate": [acceptance_rate],
+            }
         )
 
     def test_sigmoid_low_acceptance(self):
@@ -1242,3 +1279,122 @@ class TestApplyH3MultiplierFlag:
         # Should not raise for either flag value
         apply_parceling_adjustment(repesca, rates, VARIABLES, apply_h3_multiplier=True)
         apply_parceling_adjustment(repesca.copy(), rates, VARIABLES, apply_h3_multiplier=False)
+
+
+# =============================================================================
+# Confidence-weighted conservative shrinkage of no/low-demand bins (#5)
+# =============================================================================
+
+
+class TestConfidenceShrinkage:
+    """apply_parceling_adjustment shrinks no/low-demand acceptance rates toward a
+    conservative low anchor (audit #5), exposed via ri_effective_acceptance_rate."""
+
+    @staticmethod
+    def _repesca(bins):
+        return pd.DataFrame(
+            {
+                "var0": [b[0] for b in bins],
+                "var1": [b[1] for b in bins],
+                "todu_30ever_h6": [100.0] * len(bins),
+                "todu_amt_pile_h6": [500.0] * len(bins),
+            }
+        )
+
+    @staticmethod
+    def _rates(rows):
+        # rows: list of (var0, var1, rate, n_total) with n_score_rejected = n_total*(1-rate)
+        return pd.DataFrame(
+            {
+                "var0": [r[0] for r in rows],
+                "var1": [r[1] for r in rows],
+                "n_booked": [int(round(r[3] * r[2])) for r in rows],
+                "n_score_rejected": [int(round(r[3] * (1 - r[2]))) for r in rows],
+                "acceptance_rate": [r[2] for r in rows],
+            }
+        )
+
+    def test_no_demand_shrinks_fully_to_anchor(self):
+        """Absent bin → conf 0 → effective rate exactly the conservative anchor."""
+        repesca = self._repesca([(1, 1), (2, 2), (9, 9)])
+        rates = self._rates([(1, 1, 0.6, 2000), (2, 2, 0.9, 2000)])
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES, no_demand_anchor_percentile=0.10)
+        anchor = max(float(np.quantile([0.6, 0.9], 0.10)), 0.01)
+        missing = result[result["var0"] == 9].iloc[0]
+        assert missing["ri_effective_acceptance_rate"] == pytest.approx(anchor)
+
+    def test_low_demand_partial_shrink(self):
+        """A sparse high-rate bin is pulled partway toward the low anchor (anchor < eff < raw)."""
+        repesca = self._repesca([(1, 1), (2, 2), (3, 3)])
+        rates = self._rates([(1, 1, 0.2, 2000), (2, 2, 0.3, 2000), (3, 3, 0.9, 4)])
+        scale = 10.0
+        result = apply_parceling_adjustment(
+            repesca, rates, VARIABLES, no_demand_anchor_percentile=0.10, confidence_scale=scale
+        )
+        anchor = max(float(np.quantile([0.2, 0.3, 0.9], 0.10)), 0.01)
+        conf = 1.0 - np.exp(-4 / scale)
+        expected = conf * 0.9 + (1 - conf) * anchor
+        sparse = result[result["var0"] == 3].iloc[0]
+        assert 0.0 < conf < 1.0
+        assert anchor < sparse["ri_effective_acceptance_rate"] < 0.9
+        assert sparse["ri_effective_acceptance_rate"] == pytest.approx(expected)
+
+    def test_well_observed_unchanged(self):
+        """At scale=10, well-observed bins (large n ⇒ conf≈1) keep ~their raw rate."""
+        repesca = self._repesca([(1, 1), (2, 2), (3, 3)])
+        rates = self._rates([(1, 1, 0.2, 2000), (2, 2, 0.5, 2000), (3, 3, 0.9, 2000)])
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES, confidence_scale=10.0)
+        eff = result.set_index("var0")["ri_effective_acceptance_rate"]
+        assert eff[1] == pytest.approx(0.2, abs=1e-3)
+        assert eff[2] == pytest.approx(0.5, abs=1e-3)
+        assert eff[3] == pytest.approx(0.9, abs=1e-3)
+
+    def test_empty_rates_uses_fixed_fallback(self):
+        """No observed demand anywhere → fixed conservative fallback (0.05), no crash."""
+        repesca = self._repesca([(1, 1)])
+        rates = pd.DataFrame({"var0": [], "var1": [], "n_booked": [], "n_score_rejected": [], "acceptance_rate": []})
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES)
+        assert result["ri_effective_acceptance_rate"].iloc[0] == pytest.approx(0.05)
+
+    def test_single_observed_bin_degenerate_percentile(self):
+        """One observed bin → percentile is that bin's rate; absent bin gets it, no crash."""
+        repesca = self._repesca([(1, 1), (9, 9)])
+        rates = self._rates([(1, 1, 0.6, 2000)])
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES)
+        assert result[result["var0"] == 9].iloc[0]["ri_effective_acceptance_rate"] == pytest.approx(0.6)
+
+    def test_anchor_floored_and_multiplier_capped(self):
+        """All-low observed rates → anchor floored at 0.01; multiplier stays ≤ cap."""
+        repesca = self._repesca([(1, 1), (2, 2), (9, 9)])
+        rates = self._rates([(1, 1, 0.0, 2000), (2, 2, 0.005, 2000)])
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES, max_risk_multiplier=3.0)
+        missing = result[result["var0"] == 9].iloc[0]
+        assert missing["ri_effective_acceptance_rate"] == pytest.approx(0.01)
+        assert missing["reject_risk_multiplier"] <= 3.0 + 1e-9
+
+    def test_anchor_percentile_knob_direction(self):
+        """Higher anchor percentile ⇒ higher anchor ⇒ LOWER multiplier on a no-demand bin."""
+        repesca = self._repesca([(1, 1), (2, 2), (3, 3), (9, 9)])
+        rates = self._rates([(1, 1, 0.2, 2000), (2, 2, 0.5, 2000), (3, 3, 0.9, 2000)])
+        low = apply_parceling_adjustment(repesca, rates, VARIABLES, no_demand_anchor_percentile=0.10)
+        high = apply_parceling_adjustment(repesca, rates, VARIABLES, no_demand_anchor_percentile=0.50)
+        m_low = low[low["var0"] == 9].iloc[0]["reject_risk_multiplier"]
+        m_high = high[high["var0"] == 9].iloc[0]["reject_risk_multiplier"]
+        assert m_low > m_high
+
+    def test_smoothing_interaction_absent_bin(self):
+        """With smoothing on, rate_col is the smoothed rate; absent bins still → anchor."""
+        repesca = self._repesca([(1, 1), (2, 2), (9, 9)])
+        rates = pd.DataFrame(
+            {
+                "var0": [1, 2],
+                "var1": [1, 2],
+                "n_booked": [1400, 1800],
+                "n_score_rejected": [600, 200],
+                "acceptance_rate": [0.70, 0.90],
+                "smoothed_acceptance_rate": [0.72, 0.88],
+            }
+        )
+        result = apply_parceling_adjustment(repesca, rates, VARIABLES, no_demand_anchor_percentile=0.10)
+        anchor = max(float(np.quantile([0.72, 0.88], 0.10)), 0.01)  # percentile of SMOOTHED rates
+        assert result[result["var0"] == 9].iloc[0]["ri_effective_acceptance_rate"] == pytest.approx(anchor)

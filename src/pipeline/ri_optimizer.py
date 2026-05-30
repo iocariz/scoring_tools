@@ -146,6 +146,8 @@ def run_ri_optimizer_phase(
             per_bin_tasa_fin=per_bin_tasa_fin,
             enforce_monotonicity=settings.reject_enforce_monotonicity,
             apply_h3_multiplier=settings.reject_apply_h3_multiplier,
+            no_demand_anchor_percentile=settings.reject_no_demand_anchor_percentile,
+            confidence_scale=settings.reject_confidence_scale,
         )
 
         # Step 5: Run optimization (grid or Optuna)
@@ -206,6 +208,8 @@ def run_ri_optimizer_phase(
                     per_bin_tasa_fin=per_bin_tasa_fin,
                     enforce_monotonicity=settings.reject_enforce_monotonicity,
                     apply_h3_multiplier=settings.reject_apply_h3_multiplier,
+                    no_demand_anchor_percentile=settings.reject_no_demand_anchor_percentile,
+                    confidence_scale=settings.reject_confidence_scale,
                 )
 
                 validation = validate_ri_with_mr(

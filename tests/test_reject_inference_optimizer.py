@@ -344,6 +344,39 @@ class TestCalibrationRobustness:
         )
         assert np.isfinite(err)
 
+    def test_calibration_error_uses_conservative_anchor_for_missing(self):
+        """Absent bins enter calibration via the conservative anchor (shared helper, #5),
+        not the old median — so the anchor percentile measurably changes the error,
+        keeping the optimizer objective in lockstep with the runtime RI adjustment."""
+        merged = pd.DataFrame(
+            {
+                "var0": [1, 2, 9],
+                "var1": [1, 2, 9],
+                "todu_30ever_h6_boo": [1.0, 2.0, 1.5],
+                "todu_amt_pile_h6_boo": [100.0, 200.0, 150.0],
+                "todu_30ever_h6": [1.2, 2.2, 1.6],
+                "todu_amt_pile_h6": [110.0, 220.0, 160.0],
+            }
+        )
+        # Two well-observed bins; bin (9,9) is absent (no demand) → must use the anchor.
+        acceptance_rates = pd.DataFrame(
+            {
+                "var0": [1, 2],
+                "var1": [1, 2],
+                "n_booked": [1400, 1800],
+                "n_score_rejected": [600, 200],
+                "acceptance_rate": [0.7, 0.9],
+            }
+        )
+        err_low = _compute_calibration_error(
+            merged, acceptance_rates, ["var0", "var1"], multiplier=7.0, no_demand_anchor_percentile=0.10
+        )
+        err_high = _compute_calibration_error(
+            merged, acceptance_rates, ["var0", "var1"], multiplier=7.0, no_demand_anchor_percentile=0.50
+        )
+        assert np.isfinite(err_low) and np.isfinite(err_high)
+        assert err_low != pytest.approx(err_high)
+
     def test_select_best_ignores_non_finite_calibration_error(self):
         results_df = pd.DataFrame(
             {
