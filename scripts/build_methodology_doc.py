@@ -156,7 +156,10 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
     meta_table = doc.add_table(rows=6, cols=2)
     meta_table.style = "Light List Accent 1"
     meta_rows = [
-        ("Document scope", "End-to-end methodology for credit risk scoring, cutoff optimization, out-of-time validation, and portfolio allocation"),
+        (
+            "Document scope",
+            "End-to-end methodology for credit risk scoring, cutoff optimization, out-of-time validation, and portfolio allocation",
+        ),
         ("Owner", "Risk Analytics"),
         ("Status", "For management and internal review"),
         ("Review cadence", "On material methodology change; annual otherwise"),
@@ -274,11 +277,26 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         ["In scope", "Out of scope"],
         [
             ["Acceptance cutoffs on score-driven decisions", "Pricing decisions (rate / term / fees)"],
-            ["Risk inference for score-rejected (repesca) applications", "Underwriting policy rules unrelated to score (fraud, KYC, documentation)"],
-            ["Out-of-time validation on a recent monitoring (MR) period", "Through-the-cycle macroeconomic stress modelling"],
-            ["Multi-segment allocation against a global portfolio risk budget", "Collections strategy after origination"],
-            ["Bin-level monotonic acceptance grids", "Continuous score-cutoff curves (deliberately rejected — see Section 6)"],
-            ["Annualised risk metrics on b2_ever_h6 / b2_ever_h3", "Lifetime PD/LGD modelling for IFRS 9 / CECL provisioning"],
+            [
+                "Risk inference for score-rejected (repesca) applications",
+                "Underwriting policy rules unrelated to score (fraud, KYC, documentation)",
+            ],
+            [
+                "Out-of-time validation on a recent monitoring (MR) period",
+                "Through-the-cycle macroeconomic stress modelling",
+            ],
+            [
+                "Multi-segment allocation against a global portfolio risk budget",
+                "Collections strategy after origination",
+            ],
+            [
+                "Bin-level monotonic acceptance grids",
+                "Continuous score-cutoff curves (deliberately rejected — see Section 6)",
+            ],
+            [
+                "Annualised risk metrics on b2_ever_h6 / b2_ever_h3",
+                "Lifetime PD/LGD modelling for IFRS 9 / CECL provisioning",
+            ],
         ],
     )
 
@@ -296,14 +314,54 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["#", "Phase", "Purpose", "Why it matters"],
         [
-            ["1", "Configuration", "Load and validate parameters via Pydantic schema (PreprocessingSettings)", "Fail fast on bad inputs; every run is fully described by a TOML file. Schema validators check >= 2 variables, monotonic bin edges, parseable dates, paired MR period, range constraints."],
-            ["2", "Data loading", "Read SAS files (.sas7bdat), standardise columns to lowercase_underscore", "Single source of truth for downstream steps; deterministic naming. In batch mode data is loaded once and shared across segments."],
-            ["3", "Preprocessing", "DQ checks, segment/date filtering, binning, stress factor, transformation rate (tasa_fin)", "Quality gates before any modelling; explicit handling of selection bias via stress and tasa_fin."],
-            ["4", "Inference (modelling)", "Train risk model with 5-fold CV, 1-SE selection, monotonic constraints; SHAP and per-cell CIs as side outputs", "Disciplined model choice that resists overfitting and respects business priors."],
-            ["5", "Optimization", "MILP over monotonic cutoff combinations at ~50 risk targets; Pareto filter; optional GA fallback for N>2 if infeasible", "Globally optimal policies under explicit constraints — not greedy heuristics."],
-            ["6", "Scenario analysis", "Pessimistic / base / optimistic operating points with 1,000-replicate bootstrap CIs", "Decisions framed under uncertainty, not as point estimates."],
-            ["7", "Sensitivity & marginal impact", "Cell-level flip thresholds at +/- 5%, 10%, 20% perturbations; analytical O(N) marginal impact per cell", "Quantifies how robust the chosen policy is to small risk shocks."],
-            ["8", "MR validation, stability, trends", "Out-of-time validation, PSI/CSI vs main period, monthly SPC anomaly detection, audit table per record", "Detects drift before it becomes a problem in production; provides record-level audit trail."],
+            [
+                "1",
+                "Configuration",
+                "Load and validate parameters via Pydantic schema (PreprocessingSettings)",
+                "Fail fast on bad inputs; every run is fully described by a TOML file. Schema validators check >= 2 variables, monotonic bin edges, parseable dates, paired MR period, range constraints.",
+            ],
+            [
+                "2",
+                "Data loading",
+                "Read SAS files (.sas7bdat), standardise columns to lowercase_underscore",
+                "Single source of truth for downstream steps; deterministic naming. In batch mode data is loaded once and shared across segments.",
+            ],
+            [
+                "3",
+                "Preprocessing",
+                "DQ checks, segment/date filtering, binning, stress factor, transformation rate (tasa_fin)",
+                "Quality gates before any modelling; explicit handling of selection bias via stress and tasa_fin.",
+            ],
+            [
+                "4",
+                "Inference (modelling)",
+                "Train risk model with 5-fold CV, 1-SE selection, monotonic constraints; SHAP and per-cell CIs as side outputs",
+                "Disciplined model choice that resists overfitting and respects business priors.",
+            ],
+            [
+                "5",
+                "Optimization",
+                "MILP over monotonic cutoff combinations at ~50 risk targets; Pareto filter; optional GA fallback for N>2 if infeasible",
+                "Globally optimal policies under explicit constraints — not greedy heuristics.",
+            ],
+            [
+                "6",
+                "Scenario analysis",
+                "Pessimistic / base / optimistic operating points with 1,000-replicate bootstrap CIs",
+                "Decisions framed under uncertainty, not as point estimates.",
+            ],
+            [
+                "7",
+                "Sensitivity & marginal impact",
+                "Cell-level flip thresholds at +/- 5%, 10%, 20% perturbations; analytical O(N) marginal impact per cell",
+                "Quantifies how robust the chosen policy is to small risk shocks.",
+            ],
+            [
+                "8",
+                "MR validation, stability, trends",
+                "Out-of-time validation, PSI/CSI vs main period, monthly SPC anomaly detection, audit table per record",
+                "Detects drift before it becomes a problem in production; provides record-level audit trail.",
+            ],
         ],
     )
     _add_callout(
@@ -327,9 +385,24 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Population", "Definition (reject_reason)", "Sample size signal", "Treatment in the pipeline"],
         [
-            ["Booked", "Approved and disbursed (no rejection reason)", "Largest, fully observed", "Observed outcomes (todu_30ever_h6 and todu_amt_pile_h6) used directly; aggregated and annualised per cell."],
-            ["Score-rejected (repesca)", "'09-score' — rejected because the score fell below the cutoff", "Material; the population whose acceptance is being optimised", "Outcomes unobserved; estimated by trained model -> stress factor -> reject-inference parceling -> tasa_fin."],
-            ["Policy-rejected", "'08-other' — rejected for fraud, KYC, documentation, policy rules", "Variable", "Excluded from optimisation entirely. Their rejection has no causal link to the score cutoff and including them would attribute non-credit rejections to credit decisioning."],
+            [
+                "Booked",
+                "Approved and disbursed (no rejection reason)",
+                "Largest, fully observed",
+                "Observed outcomes (todu_30ever_h6 and todu_amt_pile_h6) used directly; aggregated and annualised per cell.",
+            ],
+            [
+                "Score-rejected (repesca)",
+                "'09-score' — rejected because the score fell below the cutoff",
+                "Material; the population whose acceptance is being optimised",
+                "Outcomes unobserved; estimated by trained model -> stress factor -> reject-inference parceling -> tasa_fin.",
+            ],
+            [
+                "Policy-rejected",
+                "'08-other' — rejected for fraud, KYC, documentation, policy rules",
+                "Variable",
+                "Excluded from optimisation entirely. Their rejection has no causal link to the score cutoff and including them would attribute non-credit rejections to credit decisioning.",
+            ],
         ],
     )
     _add_callout(
@@ -490,7 +563,11 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Direction value", "Interpretation", "Typical example"],
         [
-            ["-1 (inverted)", "Higher bin index = safer", "Internal score, bureau score — higher score is better creditworthiness"],
+            [
+                "-1 (inverted)",
+                "Higher bin index = safer",
+                "Internal score, bureau score — higher score is better creditworthiness",
+            ],
             ["+1 (default)", "Higher bin index = riskier", "Loan amount, term — larger / longer is generally riskier"],
         ],
     )
@@ -535,9 +612,21 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Family", "Models", "Why included"],
         [
-            ["Linear / regularised linear", "LinearRegression, Ridge, Lasso, ElasticNet", "Highly interpretable baselines; strong regularisation; robust to small samples; defensible when the risk surface is approximately additive."],
-            ["GLM / specialised", "TweedieGLM, HurdleRegressor", "Tailored to zero-inflated, exposure-weighted insurance / credit-style targets where many cells have zero observed default."],
-            ["Tree-based with monotonic constraints", "XGBoost, LightGBM (tuned via Optuna)", "Captures non-linear interactions while respecting business priors via per-feature monotonic constraints derived from the configured directions."],
+            [
+                "Linear / regularised linear",
+                "LinearRegression, Ridge, Lasso, ElasticNet",
+                "Highly interpretable baselines; strong regularisation; robust to small samples; defensible when the risk surface is approximately additive.",
+            ],
+            [
+                "GLM / specialised",
+                "TweedieGLM, HurdleRegressor",
+                "Tailored to zero-inflated, exposure-weighted insurance / credit-style targets where many cells have zero observed default.",
+            ],
+            [
+                "Tree-based with monotonic constraints",
+                "XGBoost, LightGBM (tuned via Optuna)",
+                "Captures non-linear interactions while respecting business priors via per-feature monotonic constraints derived from the configured directions.",
+            ],
         ],
     )
     _add_heading(doc, "7.2 Why monotonicity is enforced on tree models", 2)
@@ -626,9 +715,21 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Mode", "Behaviour", "When to use it"],
         [
-            ["global (default)", "Single scalar across the grid", "Conservative and easy to explain in committee; the safe default."],
-            ["per_bin", "Separate factor per cell; falls back to global if cell has fewer than 20 booked records", "Use when score variables span very different risk profiles, so tail-risk concentration is heterogeneous across the grid."],
-            ["disabled", "Stress factor = 1.0", "Use when reject-inference parceling is active (avoids double-counting selection bias) or when the model is trained on through-the-door data."],
+            [
+                "global (default)",
+                "Single scalar across the grid",
+                "Conservative and easy to explain in committee; the safe default.",
+            ],
+            [
+                "per_bin",
+                "Separate factor per cell; falls back to global if cell has fewer than 20 booked records",
+                "Use when score variables span very different risk profiles, so tail-risk concentration is heterogeneous across the grid.",
+            ],
+            [
+                "disabled",
+                "Stress factor = 1.0",
+                "Use when reject-inference parceling is active (avoids double-counting selection bias) or when the model is trained on through-the-door data.",
+            ],
         ],
     )
     _add_heading(doc, "8.2 Reject-inference parceling: three functional forms", 2)
@@ -648,9 +749,24 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Method", "Formula", "Risk shape", "When to choose it"],
         [
-            ["Linear (default)", "1 + uplift * (1 - rate)", "Steady, interpretable penalty: 1.0x at full acceptance, 1 + uplift at zero acceptance", "General-purpose default; easiest to defend in committee because the relationship is obviously linear."],
-            ["Power", "(1 / max(rate, 0.01)) ^ uplift", "Super-linear at low acceptance: rate=0.5 -> 2x at uplift=1; rate=0.1 -> 10x at uplift=1", "When risk is heavy-tailed and concentrates in highly-rejected bins. Power=1.0 reproduces the classic 1/a model."],
-            ["Sigmoid", "1 + uplift / (1 + exp(10 * (rate - 0.5)))", "Smooth S-curve with steep transition near 50% acceptance", "When the risk-selectivity relationship saturates — very selective bins are not infinitely riskier, and fully accepting bins still have some baseline uncertainty."],
+            [
+                "Linear (default)",
+                "1 + uplift * (1 - rate)",
+                "Steady, interpretable penalty: 1.0x at full acceptance, 1 + uplift at zero acceptance",
+                "General-purpose default; easiest to defend in committee because the relationship is obviously linear.",
+            ],
+            [
+                "Power",
+                "(1 / max(rate, 0.01)) ^ uplift",
+                "Super-linear at low acceptance: rate=0.5 -> 2x at uplift=1; rate=0.1 -> 10x at uplift=1",
+                "When risk is heavy-tailed and concentrates in highly-rejected bins. Power=1.0 reproduces the classic 1/a model.",
+            ],
+            [
+                "Sigmoid",
+                "1 + uplift / (1 + exp(10 * (rate - 0.5)))",
+                "Smooth S-curve with steep transition near 50% acceptance",
+                "When the risk-selectivity relationship saturates — very selective bins are not infinitely riskier, and fully accepting bins still have some baseline uncertainty.",
+            ],
         ],
     )
     _add_paragraph(doc, "Numerical examples at uplift_factor = 1.5:")
@@ -695,8 +811,16 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         ["Prior strength", "Effective behaviour", "When to use"],
         [
             ["1 - 5", "Minimal shrinkage; per-bin rates barely move", "Rich data, large per-bin counts (>= 100)"],
-            ["10 - 50 (default range)", "Stabilises bins with fewer than 50 observations toward the global rate", "Standard / default for most segments"],
-            ["100+", "Pulls all bins strongly toward the global rate", "Sparse segments where per-bin rates are not credible"],
+            [
+                "10 - 50 (default range)",
+                "Stabilises bins with fewer than 50 observations toward the global rate",
+                "Standard / default for most segments",
+            ],
+            [
+                "100+",
+                "Pulls all bins strongly toward the global rate",
+                "Sparse segments where per-bin rates are not credible",
+            ],
         ],
     )
     _add_paragraph(
@@ -722,10 +846,26 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Guardrail", "Behaviour", "Reason"],
         [
-            ["Floor", "Multiplier >= 1.0", "Risk is never adjusted downward by reject inference; the correction is one-sided by construction (the rejected population should not be safer than the booked one in the same bin)."],
-            ["Cap", "Multiplier <= reject_max_risk_multiplier (default 3.0; configurable up to 10.0)", "Prevents runaway uplift in extremely low-acceptance bins where the rate is unreliable. A cap of 3.0 means risk can at most triple — a strong but not absurd correction."],
-            ["Unseen bins", "Use median observed acceptance rate (or smoothed median when Bayesian smoothing active)", "Avoids NaN propagation; conservative because the median is dominated by booked-heavy bins."],
-            ["Confidence diagnostics", "Per-bin effective sample size (ri_bin_count_effective) and confidence score (1 - exp(-n/50))", "Surfaces low-confidence bins to reviewers without using them as MILP coefficients (separation of concerns)."],
+            [
+                "Floor",
+                "Multiplier >= 1.0",
+                "Risk is never adjusted downward by reject inference; the correction is one-sided by construction (the rejected population should not be safer than the booked one in the same bin).",
+            ],
+            [
+                "Cap",
+                "Multiplier <= reject_max_risk_multiplier (default 3.0; configurable up to 10.0)",
+                "Prevents runaway uplift in extremely low-acceptance bins where the rate is unreliable. A cap of 3.0 means risk can at most triple — a strong but not absurd correction.",
+            ],
+            [
+                "Unseen bins",
+                "Use median observed acceptance rate (or smoothed median when Bayesian smoothing active)",
+                "Avoids NaN propagation; conservative because the median is dominated by booked-heavy bins.",
+            ],
+            [
+                "Confidence diagnostics",
+                "Per-bin effective sample size (ri_bin_count_effective) and confidence score (1 - exp(-n/50))",
+                "Surfaces low-confidence bins to reviewers without using them as MILP coefficients (separation of concerns).",
+            ],
         ],
     )
     _add_paragraph(doc, "Confidence-score reference values:")
@@ -780,8 +920,16 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         ["gamma value", "Behaviour", "When to choose"],
         [
             ["1.0", "Standard 1/a model: full correction for selection bias", "Default; theoretically grounded"],
-            ["0.7", "Moderate correction, assumes partial sorting within bins", "When bins are wide and within-bin heterogeneity is substantial"],
-            ["0.5", "Conservative correction, appropriate when bins are coarse", "Few bins per dimension, or score model is known to be weak"],
+            [
+                "0.7",
+                "Moderate correction, assumes partial sorting within bins",
+                "When bins are wide and within-bin heterogeneity is substantial",
+            ],
+            [
+                "0.5",
+                "Conservative correction, appropriate when bins are coarse",
+                "Few bins per dimension, or score model is known to be weak",
+            ],
             ["-> 0", "Minimal correction, target approaches booked risk", "Diagnostic / sanity-check only"],
         ],
     )
@@ -811,7 +959,11 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         [
             ["~ 1.0", "Stable: RI correction generalises well", "Proceed with confidence"],
             ["1.0 - 2.0", "Moderate degradation: some temporal drift", "Investigate; consider lower gamma"],
-            ["> 2.0", "Significant: RI parameters may be overfit", "Lower gamma, coarsen bins, or revert to manual values"],
+            [
+                "> 2.0",
+                "Significant: RI parameters may be overfit",
+                "Lower gamma, coarsen bins, or revert to manual values",
+            ],
         ],
     )
 
@@ -948,8 +1100,16 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Case", "Fallback", "Why"],
         [
-            ["N > 2 dimensions, infeasible", "Genetic algorithm via pymoo (NSGA-II)", "Handles large combinatorial spaces; produces a near-optimal Pareto frontier rather than a single point."],
-            ["N = 2 dimensions, infeasible", "Legacy enumeration over all monotonic combinations", "The 2D space is small enough to brute-force; produces the exact frontier."],
+            [
+                "N > 2 dimensions, infeasible",
+                "Genetic algorithm via pymoo (NSGA-II)",
+                "Handles large combinatorial spaces; produces a near-optimal Pareto frontier rather than a single point.",
+            ],
+            [
+                "N = 2 dimensions, infeasible",
+                "Legacy enumeration over all monotonic combinations",
+                "The 2D space is small enough to brute-force; produces the exact frontier.",
+            ],
             ["MILP returns optimal", "Use directly", "Standard path"],
         ],
     )
@@ -1003,9 +1163,17 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Scenario", "Risk target", "Purpose"],
         [
-            ["Pessimistic", "optimum_risk - risk_step", "Acceptance policy under a tightened risk appetite — quantifies upside foregone if risk view worsens"],
+            [
+                "Pessimistic",
+                "optimum_risk - risk_step",
+                "Acceptance policy under a tightened risk appetite — quantifies upside foregone if risk view worsens",
+            ],
             ["Base", "optimum_risk", "Recommended operating point"],
-            ["Optimistic", "optimum_risk + risk_step", "Policy under a loosened appetite — quantifies upside available if risk view improves"],
+            [
+                "Optimistic",
+                "optimum_risk + risk_step",
+                "Policy under a loosened appetite — quantifies upside available if risk view improves",
+            ],
         ],
     )
     _add_paragraph(
@@ -1046,10 +1214,30 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Priority", "Source", "Condition", "Rationale"],
         [
-            ["1", "h3_extrapolated", "H3 data exists, n_obs_mr_h3 >= mr_min_obs_per_bin (default 30), and b2_main_h3 is non-zero", "Most up-to-date evidence: scales MR-observed H3 by main-period H6/H3 ratio"],
-            ["2", "mr_observed", "n_obs_mr >= mr_min_obs_per_bin and H3 extrapolation was not triggered", "Direct MR-period H6 — high quality but requires full maturity"],
-            ["3", "main_imputed", "Main-period bin exists but MR evidence is insufficient", "Preserves baseline knowledge; the model has been validated on this data"],
-            ["4", "model_fallback", "Bin absent from main period and n_obs_mr < min_obs", "Last resort: inferred via the trained risk model"],
+            [
+                "1",
+                "h3_extrapolated",
+                "H3 data exists, n_obs_mr_h3 >= mr_min_obs_per_bin (default 30), and b2_main_h3 is non-zero",
+                "Most up-to-date evidence: scales MR-observed H3 by main-period H6/H3 ratio",
+            ],
+            [
+                "2",
+                "mr_observed",
+                "n_obs_mr >= mr_min_obs_per_bin and H3 extrapolation was not triggered",
+                "Direct MR-period H6 — high quality but requires full maturity",
+            ],
+            [
+                "3",
+                "main_imputed",
+                "Main-period bin exists but MR evidence is insufficient",
+                "Preserves baseline knowledge; the model has been validated on this data",
+            ],
+            [
+                "4",
+                "model_fallback",
+                "Bin absent from main period and n_obs_mr < min_obs",
+                "Last resort: inferred via the trained risk model",
+            ],
         ],
     )
     _add_heading(doc, "11.2 H3 to H6 extrapolation", 2)
@@ -1064,10 +1252,26 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Method", "Formula", "When to use"],
         [
-            ["linear (default)", "b2_mr_h3 x (b2_main / b2_main_h3)", "Proportional H6/H3 relationship — the safest default"],
-            ["power", "b2_mr_h3 x ratio x (b2_mr_h3 / b2_main_h3)^(alpha-1)", "Convex (alpha > 1) or concave (alpha < 1) departures from linearity; falls back to linear per bin when b2_main_h3 is unavailable"],
-            ["logistic", "b2_mr_h3 x (1 + 2 x tanh(k x (ratio-1)/2) / k)", "Caps extreme ratios smoothly when the H6/H3 relationship saturates"],
-            ["auto (recommended)", "Fits curvature alpha from main-period data via weighted log-log regression", "Recommended — removes a manual tuning knob and replaces it with an evidence-based choice"],
+            [
+                "linear (default)",
+                "b2_mr_h3 x (b2_main / b2_main_h3)",
+                "Proportional H6/H3 relationship — the safest default",
+            ],
+            [
+                "power",
+                "b2_mr_h3 x ratio x (b2_mr_h3 / b2_main_h3)^(alpha-1)",
+                "Convex (alpha > 1) or concave (alpha < 1) departures from linearity; falls back to linear per bin when b2_main_h3 is unavailable",
+            ],
+            [
+                "logistic",
+                "b2_mr_h3 x (1 + 2 x tanh(k x (ratio-1)/2) / k)",
+                "Caps extreme ratios smoothly when the H6/H3 relationship saturates",
+            ],
+            [
+                "auto (recommended)",
+                "Fits curvature alpha from main-period data via weighted log-log regression",
+                "Recommended — removes a manual tuning knob and replaces it with an evidence-based choice",
+            ],
         ],
     )
     _add_paragraph(doc, "Auto-calibration procedure (method = 'auto'):")
@@ -1253,8 +1457,16 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Method", "How it works", "When to use"],
         [
-            ["exact (MILP)", "Global MILP via scipy.optimize.milp; selects one frontier point per segment subject to global risk and production constraints", "Default; produces the provably optimal allocation"],
-            ["greedy", "Hill-climbing heuristic; faster but may find local optima", "Diagnostic; or when the exact solver returns infeasible"],
+            [
+                "exact (MILP)",
+                "Global MILP via scipy.optimize.milp; selects one frontier point per segment subject to global risk and production constraints",
+                "Default; produces the provably optimal allocation",
+            ],
+            [
+                "greedy",
+                "Hill-climbing heuristic; faster but may find local optima",
+                "Diagnostic; or when the exact solver returns infeasible",
+            ],
         ],
     )
     _add_paragraph(
@@ -1274,13 +1486,41 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Control", "Mechanism", "Evidence"],
         [
-            ["Versioned configuration", "TOML files validated by Pydantic (PreprocessingSettings)", "config.toml + segments.toml committed alongside outputs"],
-            ["Idempotent runs", "Seeded randomness (numpy 42, Optuna 42); deterministic MILP; deterministic CV folds", "Re-running with the same TOML produces byte-identical outputs"],
-            ["Decision logging", "risk_source per MR bin; ri_optimizer_results.csv per RI run; fallback events logged at WARNING", "Every methodological decision is traceable to its inputs"],
-            ["Quality gates", "DQ checks (schema, missing values, outliers, date ranges, categorical consistency) before any modelling", "Failed checks block the run unless --skip-dq-checks is explicitly passed"],
-            ["Test coverage", "pytest with synthetic DataFrames; coverage target 80% on changed code", "CI gates lint -> test -> Docker build on push/PR"],
-            ["Immutable outputs", "Dated, structured output/{segment}/ folders; HTML report bundles all assets self-contained", "Outputs can be archived without losing context"],
-            ["Evidence pack ships with every recommendation", "MR validation, PSI/CSI, bootstrap CIs, sensitivity, marginal impact are first-class outputs (not optional)", "No recommendation can be made without its supporting evidence"],
+            [
+                "Versioned configuration",
+                "TOML files validated by Pydantic (PreprocessingSettings)",
+                "config.toml + segments.toml committed alongside outputs",
+            ],
+            [
+                "Idempotent runs",
+                "Seeded randomness (numpy 42, Optuna 42); deterministic MILP; deterministic CV folds",
+                "Re-running with the same TOML produces byte-identical outputs",
+            ],
+            [
+                "Decision logging",
+                "risk_source per MR bin; ri_optimizer_results.csv per RI run; fallback events logged at WARNING",
+                "Every methodological decision is traceable to its inputs",
+            ],
+            [
+                "Quality gates",
+                "DQ checks (schema, missing values, outliers, date ranges, categorical consistency) before any modelling",
+                "Failed checks block the run unless --skip-dq-checks is explicitly passed",
+            ],
+            [
+                "Test coverage",
+                "pytest with synthetic DataFrames; coverage target 80% on changed code",
+                "CI gates lint -> test -> Docker build on push/PR",
+            ],
+            [
+                "Immutable outputs",
+                "Dated, structured output/{segment}/ folders; HTML report bundles all assets self-contained",
+                "Outputs can be archived without losing context",
+            ],
+            [
+                "Evidence pack ships with every recommendation",
+                "MR validation, PSI/CSI, bootstrap CIs, sensitivity, marginal impact are first-class outputs (not optional)",
+                "No recommendation can be made without its supporting evidence",
+            ],
         ],
     )
     _add_callout(
@@ -1299,8 +1539,7 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
     _add_heading(doc, "17. Assumptions and Limitations", 1)
     _add_paragraph(
         doc,
-        "The platform is explicit about its assumptions so reviewers can check them. The most "
-        "material are:",
+        "The platform is explicit about its assumptions so reviewers can check them. The most material are:",
     )
     _add_table(
         doc,
@@ -1375,21 +1614,61 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Parameter", "Default", "Range", "Rationale for the default"],
         [
-            ["multiplier (H6)", "7.0", "> 0", "Annualisation constant — calibrated to convert 6-month observations to 12-month equivalents"],
+            [
+                "multiplier (H6)",
+                "7.0",
+                "> 0",
+                "Annualisation constant — calibrated to convert 6-month observations to 12-month equivalents",
+            ],
             ["multiplier (H3)", "4.0", "> 0", "H3 annualisation constant"],
-            ["optimum_risk", "1.1%", "Per-segment", "Default risk appetite; should be set per segment in segments.toml"],
+            [
+                "optimum_risk",
+                "1.1%",
+                "Per-segment",
+                "Default risk appetite; should be set per segment in segments.toml",
+            ],
             ["risk_step", "0.1", "—", "Pessimistic / optimistic offsets around optimum"],
-            ["pareto_n_points", "50", "5 - 500", "Dense enough for a smooth frontier; light enough to solve in seconds"],
+            [
+                "pareto_n_points",
+                "50",
+                "5 - 500",
+                "Dense enough for a smooth frontier; light enough to solve in seconds",
+            ],
             ["n_bootstraps", "1000", "100 - 50000", "Standard for stable 95% percentile CIs"],
-            ["cv_folds", "4-5", "2 - 10", "Standard for model selection; higher folds increase variance, lower folds increase bias"],
+            [
+                "cv_folds",
+                "4-5",
+                "2 - 10",
+                "Standard for model selection; higher folds increase variance, lower folds increase bias",
+            ],
             ["milp_time_limit", "30 s", "> 0", "Generous for 2D / 3D problems; falls back if exceeded"],
-            ["sensitivity_levels", "+/- 5, 10, 20%", "—", "Symmetric perturbation grid covering near-policy and tail scenarios"],
+            [
+                "sensitivity_levels",
+                "+/- 5, 10, 20%",
+                "—",
+                "Symmetric perturbation grid covering near-policy and tail scenarios",
+            ],
             ["mr_min_obs_per_bin", "30", ">= 1", "Statistical rule of thumb for stable per-bin estimates"],
-            ["stress_mode", "global", "global / per_bin / disabled", "Conservative default; switch to per_bin when score variables are heterogeneous"],
-            ["reject_uplift_factor", "1.5", "0 - 10", "Moderate default for parceling; tune per segment via RI optimizer"],
+            [
+                "stress_mode",
+                "global",
+                "global / per_bin / disabled",
+                "Conservative default; switch to per_bin when score variables are heterogeneous",
+            ],
+            [
+                "reject_uplift_factor",
+                "1.5",
+                "0 - 10",
+                "Moderate default for parceling; tune per segment via RI optimizer",
+            ],
             ["reject_max_risk_multiplier", "3.0", "1 - 10", "Risk can at most triple — strong but not absurd"],
             ["reject_bayesian_prior_strength", "10.0", "0 - 1000", "Stabilises bins with < 50 observations"],
-            ["mr_extrapolation_method", "linear (auto recommended)", "linear / power / logistic / auto", "Auto removes a manual tuning knob"],
+            [
+                "mr_extrapolation_method",
+                "linear (auto recommended)",
+                "linear / power / logistic / auto",
+                "Auto removes a manual tuning knob",
+            ],
             ["mr_extrapolation_risk_multiplier", "3.0", "(0, 10]", "Caps extrapolated risk relative to main-period"],
             ["mr_extrapolation_hard_cap", "15%", "(0, 100]", "Absolute cap on extrapolated risk"],
             ["PSI_EPSILON", "0.0001", "—", "Standard epsilon for log-term zero-bin handling"],
@@ -1404,27 +1683,69 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         ["Term", "Definition"],
         [
-            ["b2_ever_h6", "Annualised 6-month vintage rate of accounts ever 30+ days past due, weighted by exposure. Primary risk metric."],
-            ["b2_ever_h3", "3-month equivalent of b2_ever_h6, used for early warning and H3 -> H6 extrapolation when the MR window is not yet mature."],
+            [
+                "b2_ever_h6",
+                "Annualised 6-month vintage rate of accounts ever 30+ days past due, weighted by exposure. Primary risk metric.",
+            ],
+            [
+                "b2_ever_h3",
+                "3-month equivalent of b2_ever_h6, used for early warning and H3 -> H6 extrapolation when the MR window is not yet mature.",
+            ],
             ["Booked", "Application that was approved and disbursed; has observed outcomes."],
-            ["Repesca / score-rejected", "Application rejected by the credit-score cutoff (reject_reason = '09-score'); outcomes unobserved and inferred."],
-            ["Policy-rejected", "Application rejected for non-score reasons (fraud, KYC, documentation; reject_reason = '08-other'); excluded from optimisation."],
+            [
+                "Repesca / score-rejected",
+                "Application rejected by the credit-score cutoff (reject_reason = '09-score'); outcomes unobserved and inferred.",
+            ],
+            [
+                "Policy-rejected",
+                "Application rejected for non-score reasons (fraud, KYC, documentation; reject_reason = '08-other'); excluded from optimisation.",
+            ],
             ["Cell", "One unique combination of bin coordinates in the N-dimensional score grid."],
             ["Mask", "Binary vector indicating which cells are accepted under a candidate policy."],
-            ["MILP", "Mixed-Integer Linear Program; the solver framework used to choose cutoffs (scipy.optimize.milp / HiGHS)."],
+            [
+                "MILP",
+                "Mixed-Integer Linear Program; the solver framework used to choose cutoffs (scipy.optimize.milp / HiGHS).",
+            ],
             ["Pareto frontier", "Set of policies for which no other policy is both lower-risk and higher-production."],
             ["MR period", "Recent Monitoring period — out-of-time holdout used for validation, not for optimisation."],
             ["PSI / CSI", "Population / Characteristic Stability Index; measure distribution drift between periods."],
-            ["Stress factor", "Scalar (or per-bin map) that uplifts repesca risk predictions to reflect tail-risk concentration in the booked population."],
+            [
+                "Stress factor",
+                "Scalar (or per-bin map) that uplifts repesca risk predictions to reflect tail-risk concentration in the booked population.",
+            ],
             ["tasa_fin", "Transformation rate; the fraction of eligible applications that are ultimately disbursed."],
-            ["Swap-in / swap-out", "Repesca accepted under a new policy / booked rejected under a new policy — the two delta populations vs. the current cutoff."],
-            ["1-SE rule", "Selection rule that picks the simplest model within one standard error of the lowest mean CV error — favours stability over chasing minimum mean."],
-            ["Annual coefficient", "12 / n_months_in_observation_period — normalises flow indicators to a 12-month equivalent."],
-            ["Cutoff floor segment", "A segment whose accepted cells must be a subset of this segment's accepted cells, enforcing nested cutoffs across segments."],
-            ["Supersegment", "Group of segments that share a trained model (modelling supersegment) and/or are reported together (reporting supersegment)."],
-            ["Degradation ratio", "MR-period calibration error divided by main-period calibration error; > 2 indicates likely overfit."],
-            ["Marginal monotonicity", "Monotonicity enforced per dimension independently, not jointly across dimensions."],
-            ["Audit table", "Record-level classification (keep / swap_in / swap_out / rejected / rejected_other) under a proposed cutoff."],
+            [
+                "Swap-in / swap-out",
+                "Repesca accepted under a new policy / booked rejected under a new policy — the two delta populations vs. the current cutoff.",
+            ],
+            [
+                "1-SE rule",
+                "Selection rule that picks the simplest model within one standard error of the lowest mean CV error — favours stability over chasing minimum mean.",
+            ],
+            [
+                "Annual coefficient",
+                "12 / n_months_in_observation_period — normalises flow indicators to a 12-month equivalent.",
+            ],
+            [
+                "Cutoff floor segment",
+                "A segment whose accepted cells must be a subset of this segment's accepted cells, enforcing nested cutoffs across segments.",
+            ],
+            [
+                "Supersegment",
+                "Group of segments that share a trained model (modelling supersegment) and/or are reported together (reporting supersegment).",
+            ],
+            [
+                "Degradation ratio",
+                "MR-period calibration error divided by main-period calibration error; > 2 indicates likely overfit.",
+            ],
+            [
+                "Marginal monotonicity",
+                "Monotonicity enforced per dimension independently, not jointly across dimensions.",
+            ],
+            [
+                "Audit table",
+                "Record-level classification (keep / swap_in / swap_out / rejected / rejected_other) under a proposed cutoff.",
+            ],
         ],
     )
 

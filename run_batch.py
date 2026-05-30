@@ -129,11 +129,7 @@ def learn_global_bin_edges(data: pd.DataFrame, base_config: dict[str, Any]) -> d
     # (all statuses) the bins are applied to — not booked-only, which is a
     # selected, risk-truncated subset.  Date-filter to the observation window to
     # avoid look-ahead bias.
-    mask = (
-        (data["fuera_norma"] == "n")
-        & (data["fraud_flag"] == "n")
-        & (data["nature_holder"] != "legal")
-    )
+    mask = (data["fuera_norma"] == "n") & (data["fraud_flag"] == "n") & (data["nature_holder"] != "legal")
     data_demand = data[mask]
     date_ini = base_config.get("date_ini_book_obs")
     date_fin = base_config.get("date_fin_book_obs")
@@ -208,11 +204,7 @@ def learn_supersegment_bin_edges(
 
     # Basic quality filters (no segment filter yet).  Learn on the DEMAND
     # population (all statuses) the bins are applied to — not booked-only.
-    quality_mask = (
-        (data["fuera_norma"] == "n")
-        & (data["fraud_flag"] == "n")
-        & (data["nature_holder"] != "legal")
-    )
+    quality_mask = (data["fuera_norma"] == "n") & (data["fraud_flag"] == "n") & (data["nature_holder"] != "legal")
     date_ini = base_config.get("date_ini_book_obs")
     date_fin = base_config.get("date_fin_book_obs")
 

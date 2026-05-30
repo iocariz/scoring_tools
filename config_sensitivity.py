@@ -142,9 +142,7 @@ def extract_metrics(out: OutputPaths) -> tuple[float, float, frozenset]:
     return production, risk, fingerprint
 
 
-def run_pipeline(
-    cfg: dict, run_dir: Path, model_path: str | None, preloaded=None
-) -> tuple[float, float, frozenset]:
+def run_pipeline(cfg: dict, run_dir: Path, model_path: str | None, preloaded=None) -> tuple[float, float, frozenset]:
     """Write the config, run the pipeline into run_dir, and extract headline metrics."""
     from main import main as run_main
 
