@@ -429,6 +429,12 @@ class PreprocessingSettings(BaseModel):
     # Default to False to avoid imposing the (often unstable) booked H6/H3 ratio
     # assumption onto the rejected/re-predicted H3 numerator.
     reject_apply_h3_multiplier: bool = False
+    # No/low-demand repesca bins (highest selection-bias uncertainty) have their acceptance
+    # rate shrunk toward a conservative LOW anchor by confidence, instead of the old
+    # anti-conservative median fallback (audit #5). Anchor = this percentile of observed
+    # rates; confidence = 1 - exp(-n / scale) (smaller scale ⇒ only sparse bins shrink).
+    reject_no_demand_anchor_percentile: float = Field(default=0.10, ge=0.0, le=0.5)
+    reject_confidence_scale: float = Field(default=10.0, gt=0.0, le=1000.0)
     ri_calibration_gamma: float = Field(default=1.0, gt=0, le=1)
     ri_optimizer_method: Literal["grid", "optuna"] = "grid"
     ri_optuna_n_trials: int = Field(default=100, ge=10, le=10000)

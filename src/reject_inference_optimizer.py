@@ -32,7 +32,7 @@ from loguru import logger
 
 from src.constants import DEFAULT_RANDOM_STATE, Suffixes
 from src.optimization_utils import CellGrid, evaluate_solution, milp_solve_cutoffs
-from src.reject_inference import apply_parceling_adjustment
+from src.reject_inference import _shrink_acceptance_rate, apply_parceling_adjustment
 from src.utils import calculate_b2_ever_h6
 
 ParcelingMethod = Literal["linear", "power", "sigmoid"]
@@ -55,6 +55,8 @@ class OptimizerInputs:
     per_bin_tasa_fin: pd.DataFrame | None = None
     enforce_monotonicity: bool = False
     apply_h3_multiplier: bool = False
+    no_demand_anchor_percentile: float = 0.10
+    confidence_scale: float = 10.0
 
     def __post_init__(self) -> None:
         """Runtime validation of Literal-typed fields (todo #52).
@@ -75,6 +77,9 @@ def _compute_calibration_error(
     variables: list[str],
     multiplier: float,
     calibration_gamma: float = 1.0,
+    *,
+    no_demand_anchor_percentile: float = 0.10,
+    confidence_scale: float = 10.0,
 ) -> float:
     """Compute exposure-weighted mean squared relative calibration error.
 
@@ -92,16 +97,20 @@ def _compute_calibration_error(
     rate_col = (
         "smoothed_acceptance_rate" if "smoothed_acceptance_rate" in acceptance_rates.columns else "acceptance_rate"
     )
-    merge_cols = variables + [rate_col] if rate_col != "acceptance_rate" else variables + ["acceptance_rate"]
-    df = merged.merge(acceptance_rates[merge_cols], on=variables, how="left")
-    # Keep calibration objective aligned with runtime RI adjustment behavior:
-    # bins missing in acceptance_rates should receive median fallback instead of
-    # being silently excluded from calibration.
-    fallback_rate = acceptance_rates[rate_col].median() if rate_col in acceptance_rates.columns else np.nan
-    if not np.isfinite(fallback_rate):
-        fallback_rate = 0.5
-    df[rate_col] = df[rate_col].fillna(fallback_rate)
-    acc = df[rate_col].clip(lower=0.05)
+    df = merged
+    # Keep the calibration objective aligned with runtime RI adjustment (apply_parceling_adjustment):
+    # no/low-demand bins are shrunk toward the conservative anchor via the SAME shared helper, so the
+    # optimizer scores candidates against the same rate definition the runtime applies (not the old,
+    # anti-conservative median fallback).
+    rate_eff, _anchor, _n_no_demand = _shrink_acceptance_rate(
+        df,
+        acceptance_rates,
+        variables,
+        rate_col,
+        anchor_percentile=no_demand_anchor_percentile,
+        confidence_scale=confidence_scale,
+    )
+    acc = rate_eff.clip(lower=0.05)
 
     # Note: multiplier cancels in the relative error below; it is kept explicit
     # so both quantities read as actual annualized risks and stay correct if the
@@ -157,6 +166,8 @@ def evaluate_ri_params(
         enforce_monotonicity=inputs.enforce_monotonicity,
         inv_vars=inputs.inv_vars,
         apply_h3_multiplier=inputs.apply_h3_multiplier,
+        no_demand_anchor_percentile=inputs.no_demand_anchor_percentile,
+        confidence_scale=inputs.confidence_scale,
         quiet=True,
     )
 
@@ -166,6 +177,7 @@ def evaluate_ri_params(
             "acceptance_rate",
             "smoothed_acceptance_rate",
             "reject_risk_multiplier",
+            "ri_effective_acceptance_rate",
             "ri_confidence",
             "ri_bin_count",
         ],
@@ -200,7 +212,13 @@ def evaluate_ri_params(
     # Calibration error (parameter-intrinsic, computed before MILP)
     calibration_gamma = inputs.calibration_gamma if hasattr(inputs, "calibration_gamma") else 1.0
     calibration_error = _compute_calibration_error(
-        merged, inputs.acceptance_rates, inputs.variables, inputs.multiplier, calibration_gamma
+        merged,
+        inputs.acceptance_rates,
+        inputs.variables,
+        inputs.multiplier,
+        calibration_gamma,
+        no_demand_anchor_percentile=inputs.no_demand_anchor_percentile,
+        confidence_scale=inputs.confidence_scale,
     )
 
     # Build grid and solve MILP

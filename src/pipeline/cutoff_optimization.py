@@ -130,6 +130,8 @@ def run_optimization_phase(
         reject_acceptance_decay_half_life_months=settings.reject_acceptance_decay_half_life_months,
         reject_acceptance_date_col=settings.reject_acceptance_date_col,
         reject_apply_h3_multiplier=settings.reject_apply_h3_multiplier,
+        reject_no_demand_anchor_percentile=settings.reject_no_demand_anchor_percentile,
+        reject_confidence_scale=settings.reject_confidence_scale,
         multiplier=settings.multiplier,
         inv_vars=settings.inv_vars,
         per_bin_stress=per_bin_stress,
