@@ -70,8 +70,16 @@ def compute_acceptance_rates(
         The two binning variable names (e.g. ``["sc_octroi_new_clus", "new_efx_clus"]``).
     bayesian_smoothing:
         If True, apply Beta-Binomial posterior smoothing to acceptance rates.
+        Without time-decay the prior strength is auto-tuned via an empirical-Bayes
+        random-effects estimator over the integer bin counts. Under time-decay
+        (*decay_half_life_months* set) the posterior is computed on the Kish effective
+        sample size ``n_eff = (Σw)² / Σw²`` using the configured *bayesian_prior_strength*
+        directly — the empirical-Bayes auto-tuning is skipped, because the moment
+        estimator is only valid on integer Binomial counts, not on float effective counts.
     bayesian_prior_strength:
-        Strength of the Beta prior (higher = more shrinkage toward global rate).
+        Strength of the Beta prior (higher = more shrinkage toward global rate). Used as a
+        baseline blended with the empirical estimate on the count path, and used directly
+        (no blend) on the decay path.
     include_all_rejections:
         Deprecated and ignored.  Reject inference always uses score-only
         acceptance rates because the swap-in (repesca) population consists
@@ -166,16 +174,21 @@ def compute_acceptance_rates(
 
             booked_w = data_demand.loc[data_demand["status_name"] == StatusName.BOOKED.value, variables].copy()
             booked_w["__w"] = data_tmp.loc[data_demand["status_name"] == StatusName.BOOKED.value, "__w"].to_numpy()
+            booked_w["__w2"] = booked_w["__w"] ** 2
             n_booked = booked_w.groupby(variables)["__w"].sum().reset_index(name="n_booked")
             n_booked_raw = booked_w.groupby(variables).size().reset_index(name="n_booked_raw")
+            # Σw² per bin → needed for the Kish effective sample size used by Bayesian smoothing.
+            sumw2_booked = booked_w.groupby(variables)["__w2"].sum().reset_index(name="__sumw2_booked")
 
             rej_mask = (data_demand["status_name"] == StatusName.REJECTED.value) & (
                 data_demand["reject_reason"] == RejectReason.SCORE.value
             )
             rejected_w = data_demand.loc[rej_mask, variables].copy()
             rejected_w["__w"] = data_tmp.loc[rej_mask, "__w"].to_numpy()
+            rejected_w["__w2"] = rejected_w["__w"] ** 2
             n_rejected = rejected_w.groupby(variables)["__w"].sum().reset_index(name="n_score_rejected")
             n_rejected_raw = rejected_w.groupby(variables).size().reset_index(name="n_score_rejected_raw")
+            sumw2_rej = rejected_w.groupby(variables)["__w2"].sum().reset_index(name="__sumw2_rej")
     else:
         # Counts-based acceptance rates (original behavior)
         n_booked = booked.groupby(variables).size().reset_index(name="n_booked")
@@ -203,48 +216,88 @@ def compute_acceptance_rates(
     total = rates["n_booked"] + rates["n_score_rejected"]
     rates["acceptance_rate"] = (rates["n_booked"] / total).where(total > 0, 0.0)
 
-    # Bayesian smoothing: Beta-Binomial posterior
+    # Effective sample size for the per-bin acceptance proportion. Under time-decay the
+    # per-bin "total" is Σw (float effective counts), which understates the information
+    # content of a weighted proportion. The correct value is the Kish effective sample
+    # size n_eff = (Σw)² / Σw², bounded by Σw ≤ n_eff ≤ n_raw. Used only by Bayesian
+    # smoothing below; kept as a local Series (the public schema is unchanged).
+    if decay_half_life_months is not None:
+        rates = rates.merge(sumw2_booked, on=variables, how="left").merge(sumw2_rej, on=variables, how="left").fillna(0)
+        # Derive Σw and Σw² from the merged frame so n_eff aligns with `rates` by
+        # construction — independent of merge row order (don't reuse the pre-merge `total`).
+        sumw = rates["n_booked"] + rates["n_score_rejected"]
+        sumw2_total = rates["__sumw2_booked"] + rates["__sumw2_rej"]
+        n_eff = ((sumw**2) / sumw2_total).where(sumw2_total > 0, 0.0)
+        rates = rates.drop(columns=["__sumw2_booked", "__sumw2_rej"])
+    else:
+        n_eff = total
+
+    # Bayesian smoothing: Beta-Binomial posterior.
+    #
+    # The empirical-Bayes prior auto-tuning below estimates the shrinkage strength
+    # from cross-bin variability using a method-of-moments random-effects model. That
+    # estimator assumes integer Binomial counts: it is only statistically valid on the
+    # unweighted count path. Under time-decay the per-bin evidence is Σw (float
+    # effective counts), so:
+    #   - we compute the posterior on the Kish effective sample size n_eff (above),
+    #     not on Σw, to avoid systematically over-shrinking toward the global rate; and
+    #   - we use the analyst-configured `bayesian_prior_strength` directly rather than
+    #     auto-tuning a prior from a handful of weighted bins (where the moment
+    #     estimator is unsound).
+    # This deliberate asymmetry keeps the count path bit-identical while making the
+    # decay path defensible under independent model validation.
     if bayesian_smoothing:
         global_rate = rates["n_booked"].sum() / max(total.sum(), 1)
-        # Empirical-Bayes adjustment:
-        # The configured `bayesian_prior_strength` is treated as a baseline
-        # shrinkage (equivalent sample size). We estimate an additional
-        # empirical shrinkage level from cross-bin variability, and blend the
-        # two to reduce staleness across time/segments.
-        #
-        # This is intentionally conservative and bounded to keep downstream
-        # behavior stable.
-        effective_prior_strength = float(bayesian_prior_strength)
-        p = float(global_rate)
-        if 0.0 < p < 1.0:
-            bins_for_emp = rates.loc[total > 0, "acceptance_rate"]
-            n_i = total.loc[total > 0].astype(float).to_numpy()
-            if len(bins_for_emp) >= 2 and np.all(n_i > 0):
-                sample_var = float(bins_for_emp.var(ddof=1))
-                # Average within-bin (binomial) variance of the acceptance-rate estimator
-                # Var(p_hat_i | p) ~ p(1-p)/n_i.
-                within_var_mean = float((p * (1 - p) / n_i).mean())
-                between_var = sample_var - within_var_mean
-                if np.isfinite(between_var) and between_var <= 0:
-                    logger.warning(
-                        f"Bayesian smoothing: between-bin variance is non-positive "
-                        f"({between_var:.6f}), data may not support random-effects model. "
-                        f"Using configured prior_strength={bayesian_prior_strength:.1f}."
-                    )
-                if np.isfinite(between_var) and between_var > 0:
-                    empirical_strength = (p * (1 - p) / between_var) - 1.0
-                    if np.isfinite(empirical_strength) and empirical_strength > 0:
-                        # Conservative blend keeps configured strength relevant while adapting.
-                        effective_prior_strength = 0.5 * float(bayesian_prior_strength) + 0.5 * float(
-                            empirical_strength
+        if decay_half_life_months is None:
+            # Empirical-Bayes adjustment (integer-count path only):
+            # The configured `bayesian_prior_strength` is treated as a baseline
+            # shrinkage (equivalent sample size). We estimate an additional
+            # empirical shrinkage level from cross-bin variability, and blend the
+            # two to reduce staleness across time/segments.
+            #
+            # This is intentionally conservative and bounded to keep downstream
+            # behavior stable.
+            effective_prior_strength = float(bayesian_prior_strength)
+            p = float(global_rate)
+            if 0.0 < p < 1.0:
+                bins_for_emp = rates.loc[total > 0, "acceptance_rate"]
+                n_i = total.loc[total > 0].astype(float).to_numpy()
+                if len(bins_for_emp) >= 2 and np.all(n_i > 0):
+                    sample_var = float(bins_for_emp.var(ddof=1))
+                    # Average within-bin (binomial) variance of the acceptance-rate estimator
+                    # Var(p_hat_i | p) ~ p(1-p)/n_i.
+                    within_var_mean = float((p * (1 - p) / n_i).mean())
+                    between_var = sample_var - within_var_mean
+                    if np.isfinite(between_var) and between_var <= 0:
+                        logger.warning(
+                            f"Bayesian smoothing: between-bin variance is non-positive "
+                            f"({between_var:.6f}), data may not support random-effects model. "
+                            f"Using configured prior_strength={bayesian_prior_strength:.1f}."
                         )
+                    if np.isfinite(between_var) and between_var > 0:
+                        empirical_strength = (p * (1 - p) / between_var) - 1.0
+                        if np.isfinite(empirical_strength) and empirical_strength > 0:
+                            # Conservative blend keeps configured strength relevant while adapting.
+                            effective_prior_strength = 0.5 * float(bayesian_prior_strength) + 0.5 * float(
+                                empirical_strength
+                            )
+        else:
+            # Decay path: no auto-tune — use the configured prior strength directly.
+            effective_prior_strength = float(bayesian_prior_strength)
 
         effective_prior_strength = float(np.clip(effective_prior_strength, 0.5, 1000.0))
         alpha = max(effective_prior_strength * global_rate, 0.5)
         beta = max(effective_prior_strength * (1 - global_rate), 0.5)
-        rates["smoothed_acceptance_rate"] = (rates["n_booked"] + alpha) / (total + alpha + beta)
+        if decay_half_life_months is None:
+            # Literal count-based posterior (kept bit-identical for regression tests).
+            rates["smoothed_acceptance_rate"] = (rates["n_booked"] + alpha) / (total + alpha + beta)
+        else:
+            # Weighted posterior on the Kish effective sample size.
+            rates["smoothed_acceptance_rate"] = (rates["acceptance_rate"] * n_eff + alpha) / (n_eff + alpha + beta)
         logger.debug(
-            f"Bayesian smoothing applied | prior_strength(cfg)={bayesian_prior_strength:.3f} | "
+            f"Bayesian smoothing applied | decay={'on' if decay_half_life_months is not None else 'off'} | "
+            f"auto_tune={'off' if decay_half_life_months is not None else 'on'} | "
+            f"prior_strength(cfg)={bayesian_prior_strength:.3f} | "
             f"prior_strength(eff)={effective_prior_strength:.3f} | global_rate={global_rate:.3f} | "
             f"alpha={alpha:.2f}, beta={beta:.2f}"
         )

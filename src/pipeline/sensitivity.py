@@ -3,7 +3,6 @@
 Extracted from ``src/pipeline/optimization.py`` in R2b-iv (todo #63). Exposes :func:`run_sensitivity_phase`.
 """
 
-
 import pandas as pd
 from loguru import logger
 

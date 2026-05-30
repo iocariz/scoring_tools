@@ -335,6 +335,216 @@ class TestTimeAwareAcceptanceRates:
 
 
 # =============================================================================
+# Bayesian smoothing under time-decay (Kish effective sample size)
+# =============================================================================
+
+
+def _decay_weight(date, max_date, half_life):
+    """Replicate the decay weight used in compute_acceptance_rates."""
+    age_days = (max_date - date).total_seconds() / (3600 * 24)
+    age_months = age_days / 30.437
+    return 2.0 ** (-age_months / half_life)
+
+
+class TestSmoothingWithDecay:
+    def test_smoothing_with_decay_matches_count_path_at_unit_weights(self):
+        """With all records at the same date, weights = 1 ⇒ Σw = Σw² = n_raw ⇒ n_eff = n_raw,
+        so the decay posterior reduces to the count-*scale* posterior on raw counts.
+
+        Note: this checks the decay posterior against the *configured-strength* formula
+        ``(rate·n_raw + α)/(n_raw + α + β)`` — NOT against the no-decay code path's output.
+        At unit weights n_eff = n_raw, but decay-on and decay-off still diverge when there
+        are ≥2 bins, because the decay path uses the configured prior strength while the
+        no-decay path auto-tunes it (Option-2's deliberate asymmetry). So the comparison is
+        deliberately to the closed-form configured-strength posterior, not to a decay-off run.
+        """
+        d = pd.Timestamp("2024-03-15")
+        demand = _make_demand_with_dates(
+            [
+                *[(1, 1, d, "booked", None)] * 2,
+                *[(1, 1, d, "rejected", "09-score")] * 8,
+                *[(2, 2, d, "booked", None)] * 80,
+                *[(2, 2, d, "rejected", "09-score")] * 20,
+            ]
+        )
+        strength = 10.0
+        rates = compute_acceptance_rates(
+            demand, VARIABLES, bayesian_smoothing=True, bayesian_prior_strength=strength, decay_half_life_months=240.0
+        )
+
+        # All weights are exactly 1 (age 0) ⇒ Σw = Σw² = n_raw ⇒ n_eff = n_raw.
+        global_rate = rates["n_booked"].sum() / (rates["n_booked"] + rates["n_score_rejected"]).sum()
+        alpha = max(strength * global_rate, 0.5)
+        beta = max(strength * (1 - global_rate), 0.5)
+        for _, row in rates.iterrows():
+            n_raw = row["n_booked_raw"] + row["n_score_rejected_raw"]
+            expected = (row["acceptance_rate"] * n_raw + alpha) / (n_raw + alpha + beta)
+            assert row["smoothed_acceptance_rate"] == pytest.approx(expected)
+
+    def test_smoothing_with_decay_less_shrinkage_than_sumw_scale(self):
+        """The Kish n_eff posterior shrinks less toward the global rate than the old
+        Σw-scale posterior, because Σw ≤ n_eff."""
+        recent = pd.Timestamp("2024-03-15")  # max-date anchor, weight ≈ 1
+        old = pd.Timestamp("2022-03-15")  # ~24 months back, small weight
+        half_life = 6.0
+        demand = _make_demand_with_dates(
+            [
+                # Bin (1,1): recent booked dominate the weighted rate; some old rejects.
+                *[(1, 1, recent, "booked", None)] * 8,
+                *[(1, 1, old, "rejected", "09-score")] * 8,
+                # Bin (2,2): anchors the global rate away from bin (1,1)'s rate.
+                *[(2, 2, recent, "booked", None)] * 10,
+                *[(2, 2, recent, "rejected", "09-score")] * 90,
+            ]
+        )
+        strength = 10.0
+        rates = compute_acceptance_rates(
+            demand,
+            VARIABLES,
+            bayesian_smoothing=True,
+            bayesian_prior_strength=strength,
+            decay_half_life_months=half_life,
+        )
+
+        # Recompute Σw, Σw², n_eff for bin (1,1) from first principles.
+        w_recent = _decay_weight(recent, recent, half_life)  # = 1.0
+        w_old = _decay_weight(old, recent, half_life)
+        sumw = 8 * w_recent + 8 * w_old
+        sumw2 = 8 * w_recent**2 + 8 * w_old**2
+        n_eff = sumw**2 / sumw2
+        assert sumw < n_eff < 16  # Σw ≤ n_eff ≤ n_raw, strict here (mixed weights)
+
+        bin_11 = rates[(rates["var0"] == 1) & (rates["var1"] == 1)].iloc[0]
+        rate = bin_11["acceptance_rate"]
+
+        global_rate = rates["n_booked"].sum() / (rates["n_booked"] + rates["n_score_rejected"]).sum()
+        alpha = max(strength * global_rate, 0.5)
+        beta = max(strength * (1 - global_rate), 0.5)
+
+        new_smoothed = (rate * n_eff + alpha) / (n_eff + alpha + beta)
+        old_smoothed = (rate * sumw + alpha) / (sumw + alpha + beta)  # buggy Σw-scale posterior
+
+        assert bin_11["smoothed_acceptance_rate"] == pytest.approx(new_smoothed)
+        # Core fix: the n_eff posterior stays closer to the observed rate (less shrinkage).
+        assert abs(new_smoothed - rate) < abs(old_smoothed - rate)
+
+    def test_smoothing_with_decay_uses_configured_prior_strength(self):
+        """Under decay the posterior uses the configured prior strength directly
+        (no empirical-Bayes auto-tuning)."""
+        recent = pd.Timestamp("2024-03-15")
+        old = pd.Timestamp("2023-09-15")
+        half_life = 9.0
+        demand = _make_demand_with_dates(
+            [
+                *[(1, 1, recent, "booked", None)] * 4,
+                *[(1, 1, old, "rejected", "09-score")] * 6,
+                *[(2, 2, recent, "booked", None)] * 60,
+                *[(2, 2, old, "rejected", "09-score")] * 40,
+            ]
+        )
+        strength = 10.0
+        rates = compute_acceptance_rates(
+            demand,
+            VARIABLES,
+            bayesian_smoothing=True,
+            bayesian_prior_strength=strength,
+            decay_half_life_months=half_life,
+        )
+
+        global_rate = rates["n_booked"].sum() / (rates["n_booked"] + rates["n_score_rejected"]).sum()
+        alpha = max(strength * global_rate, 0.5)
+        beta = max(strength * (1 - global_rate), 0.5)
+        for _, row in rates.iterrows():
+            total = row["n_booked"] + row["n_score_rejected"]
+            # n_eff is not returned; reconstruct it from Σw and Σw² for this bin's rows.
+            if row["var0"] == 1:
+                w_b, w_r, nb, nr = (
+                    _decay_weight(recent, recent, half_life),
+                    _decay_weight(old, recent, half_life),
+                    4,
+                    6,
+                )
+            else:
+                w_b, w_r, nb, nr = (
+                    _decay_weight(recent, recent, half_life),
+                    _decay_weight(old, recent, half_life),
+                    60,
+                    40,
+                )
+            sumw = nb * w_b + nr * w_r
+            sumw2 = nb * w_b**2 + nr * w_r**2
+            n_eff = sumw**2 / sumw2
+            assert total == pytest.approx(sumw)
+            expected = (row["acceptance_rate"] * n_eff + alpha) / (n_eff + alpha + beta)
+            assert row["smoothed_acceptance_rate"] == pytest.approx(expected)
+
+    def test_smoothing_no_decay_regression(self):
+        """Golden values pinning the untouched count-based smoothing path, *including* the
+        empirical-Bayes auto-tune.
+
+        Uses two bins with rates either side of the global rate so the posterior is
+        sensitive to the prior strength and the denominator. A single-bin case is
+        degenerate — ``global_rate == bin_rate`` makes smoothing a no-op for any α/β/n, so
+        it cannot detect a wrong strength or denominator and gives false confidence.
+        """
+        demand = _make_demand(
+            [
+                *[(1, 1, "booked", None)] * 3,
+                *[(1, 1, "rejected", "09-score")] * 7,  # bin (1,1): rate 0.3, n=10
+                *[(2, 2, "booked", None)] * 70,
+                *[(2, 2, "rejected", "09-score")] * 30,  # bin (2,2): rate 0.7, n=100
+            ]
+        )
+        rates = compute_acceptance_rates(demand, VARIABLES, bayesian_smoothing=True, bayesian_prior_strength=10.0)
+        bin_11 = rates[(rates["var0"] == 1) & (rates["var1"] == 1)].iloc[0]
+        bin_22 = rates[(rates["var0"] == 2) & (rates["var1"] == 2)].iloc[0]
+
+        # global_rate = 73/110 ≈ 0.6636. The EB auto-tune blends the configured strength
+        # (10) with the cross-bin moment estimate → effective strength ≈ 6.148
+        # (α ≈ 4.08, β ≈ 2.07). These golden values are captured from a verified run and
+        # drift if either the posterior formula or the EB blend changes.
+        global_rate = 0.6636363636363637
+        assert bin_11["smoothed_acceptance_rate"] == pytest.approx(0.4384475711581742)
+        assert bin_22["smoothed_acceptance_rate"] == pytest.approx(0.697893828233913)
+        # Sanity: each bin shrinks toward the global rate, and the smoothed value is
+        # genuinely moved off the raw rate by the auto-tuned strength (non-degenerate).
+        assert bin_11["acceptance_rate"] < bin_11["smoothed_acceptance_rate"] < global_rate
+        assert global_rate < bin_22["smoothed_acceptance_rate"] < bin_22["acceptance_rate"]
+
+    def test_smoothing_decay_edges(self):
+        """Single bin and rate ∈ {0, 1} under decay yield finite rates in [0, 1]."""
+        d = pd.Timestamp("2024-03-15")
+        # Single bin, all booked → rate 1.0
+        demand_all = _make_demand_with_dates([*[(1, 1, d, "booked", None)] * 5])
+        rates_all = compute_acceptance_rates(
+            demand_all, VARIABLES, bayesian_smoothing=True, decay_half_life_months=12.0
+        )
+        s_all = rates_all.iloc[0]["smoothed_acceptance_rate"]
+        assert np.isfinite(s_all) and 0.0 <= s_all <= 1.0
+
+        # Single bin, all rejected → rate 0.0
+        demand_none = _make_demand_with_dates([*[(1, 1, d, "rejected", "09-score")] * 5])
+        rates_none = compute_acceptance_rates(
+            demand_none, VARIABLES, bayesian_smoothing=True, decay_half_life_months=12.0
+        )
+        s_none = rates_none.iloc[0]["smoothed_acceptance_rate"]
+        assert np.isfinite(s_none) and 0.0 <= s_none <= 1.0
+
+    def test_smoothing_decay_does_not_leak_internal_columns(self):
+        """The Σw² temp columns must not appear in the returned schema."""
+        d = pd.Timestamp("2024-03-15")
+        demand = _make_demand_with_dates(
+            [
+                (1, 1, d, "booked", None),
+                (1, 1, d, "rejected", "09-score"),
+            ]
+        )
+        rates = compute_acceptance_rates(demand, VARIABLES, bayesian_smoothing=True, decay_half_life_months=12.0)
+        assert "__sumw2_booked" not in rates.columns
+        assert "__sumw2_rej" not in rates.columns
+
+
+# =============================================================================
 # apply_parceling_adjustment Tests
 # =============================================================================
 
