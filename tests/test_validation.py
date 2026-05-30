@@ -82,6 +82,12 @@ class TestPreprocessorSettings:
         settings = PreprocessingSettings(**valid_config_dict)
         assert settings.use_mr_outcomes is False
 
+    def test_model_hurdle_per_loan_default_off(self, valid_config_dict):
+        # Audit #6: the per-loan hurdle candidate is opt-in (default off) — standard runs offer no
+        # hurdle, so it can't be selected and the cutoff surface is unchanged until enabled + validated.
+        settings = PreprocessingSettings(**valid_config_dict)
+        assert settings.model_hurdle_per_loan is False
+
     def test_mr_min_obs_per_bin_default(self, valid_config_dict):
         settings = PreprocessingSettings(**valid_config_dict)
         assert settings.mr_min_obs_per_bin == 30
