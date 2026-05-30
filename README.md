@@ -271,7 +271,7 @@ Loads SAS data (`.sas7bdat`), standardizes column names (lowercase, underscores)
 
 Trains a polynomial surface model on the score grid (uses the first 2 variables for 3D visualization, supports N variables for model training) to predict risk (`b2_ever_h6`).
 
-- **Feature sets tested**: simple (2 features), base (3: with interaction), polynomial (squared/cubic), full.
+- **Feature sets tested**: for the 2-variable grid — `simple` (2 features), `base` (3: + interaction), `polynomial` (+ squared/cubic terms), `full`. For N > 2 variables, `PolynomialFeatures`-derived sets at `degree_1` / `degree_2` / `degree_3`. The simplest set within one SE of the best CV RMSE is chosen.
 - **Estimators evaluated**: `LinearRegression`, `Ridge`, `Lasso`, `ElasticNet`, `TweedieGLM`, `XGBoost`, `LightGBM` (via Optuna hyperparameter tuning). A two-part `HurdleRegressor` is available as an **opt-in** candidate (`model_hurdle_per_loan = true`, default off): it is trained on **per-loan** data — where the default indicator has real zero mass — with exposure-weighted severity, and scored on the same bin-level CV RMSE as the other models. On the bin-aggregated target it would degenerate to plain Ridge/Lasso, so it is not offered by default; it is also skipped automatically when the per-loan zero mass is degenerate (∉ [2%, 99.9%]).
 - **Cross-Validation Strategy**:
   - **Feature Selection & Tuning**: Uses 5-Fold Cross-Validation. *Crucially, validation folds are physically split on the raw unaggregated data first*. Aggregation and outlier filtering are then performed independently on the train and validation sets to prevent target leakage.
@@ -437,13 +437,13 @@ beta  = prior_strength × (1 - global_rate)
 smoothed_rate = (n_booked + alpha) / (n_total + alpha + beta)
 ```
 
-The `reject_bayesian_prior_strength` parameter (default 10.0) controls shrinkage: low (1-5) gives minimal shrinkage, medium (10-50) stabilizes bins with < 50 observations, high (100+) pulls all bins strongly toward the global rate. On the integer-count path the prior strength is additionally auto-tuned via an empirical-Bayes random-effects estimate blended with the configured value.
+The `reject_bayesian_prior_strength` parameter (default 10.0) controls shrinkage: low (1-5) gives minimal shrinkage, medium (10-50) stabilizes bins with < 50 observations, high (100+) pulls all bins strongly toward the global rate. On the integer-count path the prior strength is additionally auto-tuned via an empirical-Bayes random-effects estimate (method-of-moments on cross-bin variance), blended **50/50** with the configured value and clipped to `[0.5, 1000]`.
 
 Under **time-decay** (`reject_acceptance_decay_half_life_months`) the per-bin counts become fractional "effective counts" `Σw`. The posterior is then computed on the **Kish effective sample size** `n_eff = (Σw)² / Σw²` (bounded by `Σw ≤ n_eff ≤ n_raw`) using the configured `reject_bayesian_prior_strength` directly — the empirical-Bayes auto-tuning is skipped, because the moment estimator is only valid on integer Binomial counts. Without this, the count-scale prior was added to the shrunk `Σw` evidence and systematically over-shrank decayed bins toward the global rate.
 
 **No / low-demand bins.** Repesca bins absent from the acceptance-rate table (zero demand = maximal selection-bias uncertainty), and sparse-but-nonzero bins generally, are not trusted at face value. Each bin's rate is shrunk toward a conservative *low* anchor (a low percentile of observed rates, `reject_no_demand_anchor_percentile`, default 10th pct, floored at 0.01) by a confidence weight `conf = 1 − exp(−n / reject_confidence_scale)`: no-demand bins (`conf = 0`) collapse fully to the anchor (→ high risk uplift, the conservative default), while well-observed bins (`conf ≈ 1`) are left essentially unchanged. This replaces the previous *median*-rate fill, which gave the most-uncertain bins a near-typical (anti-conservative) uplift. The same shrinkage drives the RI optimizer's calibration objective, so it scores candidates on the rate definition the runtime actually applies.
 
-**Parceling Methods.** A risk multiplier is applied to `todu_30ever_h6` only — production amounts (`oa_amt_h0`) are not adjusted since production is fully observable. Three functional forms are available:
+**Parceling Methods.** A risk multiplier is applied to `todu_30ever_h6` only — production amounts (`oa_amt_h0`) are not adjusted since production is fully observable. By default the H3 numerator (`todu_30ever_h3`) is left **unscaled** so H3→H6 extrapolation uses unbiased H3; set `reject_apply_h3_multiplier = true` to apply the same multiplier to H3 (preserving the observed H6/H3 ratio when it is stable). Three functional forms are available:
 
 **Linear** (default): `multiplier = 1 + uplift_factor × (1 - acceptance_rate)`
 
@@ -578,6 +578,8 @@ x[riskier_cell] - x[safer_cell] ≤ 0
 ```
 
 This ensures: if a safer cell is rejected, all riskier cells along that dimension must also be rejected. The result is a "staircase" acceptance pattern. Monotonicity is enforced **marginally** (per dimension independently), not jointly.
+
+**Uncertainty-aware relaxation** (optional, `monotonicity_relaxation_enabled = true`): in sparse or statistically ambiguous cell adjacencies — where the empirical risk ordering is within noise — the local monotonicity constraint can be relaxed rather than imposed. Gating is controlled by `monotonicity_uncertainty_min_exposure` (skip relaxation below this exposure) and `monotonicity_uncertainty_z_threshold` (how ambiguous the adjacency must be). Default off: the strict staircase is enforced everywhere.
 
 #### Swap-In Constraints
 
@@ -1025,7 +1027,7 @@ Global pipeline parameters. Per-segment overrides go in `segments.toml`. All set
 |:----|:-----|:--------|:------------|
 | `keep_vars` | list[str] | *(required)* | Columns to retain from source data |
 | `indicators` | list[str] | *(required)* | Target and amount indicator columns |
-| `variables` | list[str] | *(required, >= 2, unique)* | Grid variables for optimization. Start with 2 core scores; if adding a 3rd (e.g., income), use `"optimization"` binning |
+| `variables` | list[str] | *(required, >= 2, unique)* | Grid variables for optimization. Start with 2 core scores; a 3rd (e.g., income) is binned via quantiles or explicit `bin_edges` (the legacy `"optimization"` method is deprecated). The validator technically accepts 1, but the MILP grid is designed for >= 2 |
 | `date_ini_book_obs` | str | *(required)* | Main observation period start date (YYYY-MM-DD) |
 | `date_fin_book_obs` | str | *(required)* | Main observation period end date (YYYY-MM-DD) |
 
@@ -1035,7 +1037,7 @@ Global pipeline parameters. Per-segment overrides go in `segments.toml`. All set
 |:----|:-----|:--------|:------------|
 | `data_path` | str | `"data/demanda_direct_out.sas7bdat"` | Path to SAS source data file |
 | `segment_filter` | str | `"unknown"` | Segment regex filter (usually overridden per-segment) |
-| `inference_variables` | list[str] | `= variables` | Subset of `variables` used for model training (>= 2, must be subset of `variables`) |
+| `inference_variables` | list[str] | `None` → `variables` | Subset of `variables` used for model training. If unset (`None` in TOML), auto-populated to `variables` by the config validator; override to train on fewer variables than the optimization grid |
 | `score_measures` | list[str] | `None` | Score columns for discriminance analysis (`run_score_metrics.py`) |
 | `log_level` | str | `"INFO"` | Logging level |
 
@@ -1054,9 +1056,9 @@ N-variable binning (under `[preprocessing.bins.VAR_NAME]`):
 |:----|:-----|:--------|:------------|
 | `source_col` | str | *(required)* | Raw column name in the data |
 | `output_col` | str | *(required)* | Name of the binned column to create |
-| `bin_edges` | list[float] | `[]` | Fixed bin edges (>= 2 values). When empty, edges are learned via `max_bins` |
-| `max_bins` | int | `None` | Max bins for supervised edge learning. Required if `bin_edges` is empty |
-| `method` | str | `"quantile"` | `"quantile"` (unsupervised equal-count, learned on the demand population). `"optimization"` is deprecated (target leakage) and falls back to quantile |
+| `bin_edges` | list[float] | `[]` | Fixed bin edges (>= 2 values if provided). Either `bin_edges` **or** `max_bins` must be set (both empty is a validation error) |
+| `max_bins` | int | `None` | Max bins for **unsupervised quantile** edge learning (equal-count splits on the demand population). Required when `bin_edges` is empty |
+| `method` | str | `"quantile"` | `"quantile"` (unsupervised equal-count, learned on the demand population). `"optimization"` is deprecated (target leakage) and is silently converted to quantile at runtime (logs a warning) — no error |
 
 Monotonicity directions (under `[preprocessing.directions]`):
 
@@ -1190,8 +1192,8 @@ Selection rule: minimum calibration error among feasible solutions, with ties wi
 | Key | Type | Default | Description |
 |:----|:-----|:--------|:------------|
 | `baseline_mode` | bool | `false` | Show current portfolio as-is (no optimization, Optimum = Actual) |
-| `cutoff_floor_segment` | str | `null` | Segment whose accepted cells constrain this segment (sequential ordering) |
-| `cutoff_ordering_mode` | str | `"bottom_up"` | `"bottom_up"` (floor constraints) or `"top_down"` (ceiling constraints) |
+| `cutoff_floor_segment` | str | `null` | Segment whose accepted cells constrain this segment (sequential ordering). Set **per segment** in `segments.toml` |
+| `cutoff_ordering_mode` | str | `"bottom_up"` | `"bottom_up"` (floor constraints) or `"top_down"` (ceiling constraints). **Batch-level** orchestration setting — read from the raw TOML / `--cutoff-ordering-mode` CLI flag by `run_batch.py`, not a per-segment `PreprocessingSettings` field |
 
 ##### Fixed Cutoffs
 
@@ -1676,6 +1678,25 @@ uv run pytest tests/test_utils.py tests/test_mr_pipeline.py -q
 | `test_optuna_tuning.py` | Optuna hyperparameter tuning |
 | `test_sensitivity.py` | Sensitivity analysis, marginal impact, fixed-cell constraints |
 | `test_shap.py` | SHAP analysis |
+| `test_inference_optimized.py` | Inference pipeline: training, CV, model/feature selection |
+| `test_inference_helpers.py` | Inference helper functions (per-loan hurdle, final training, diagnostics) |
+| `test_pipeline_phases.py` | Individual pipeline-phase wrappers (`src/pipeline/`) |
+| `test_pipeline_orchestration.py` | Cross-segment / supersegment orchestration in `run_batch.py` |
+| `test_data_manager.py` | SAS loading and column standardization |
+| `test_schema.py` | Pandera data-schema validators |
+| `test_cutoff_spec.py` | `CutoffSpec` value type (2-var cut_map / N-var mask dispatch) |
+| `test_audit_helpers.py` | Audit-table helper functions |
+| `test_alerts.py` | Drift-alert generation |
+| `test_reporting.py` | HTML report rendering and value escaping |
+| `test_selection_bias.py` | Selection-bias diagnostics (Thorndike, RI Gini) |
+| `test_selection_bias_plots.py` | Selection-bias plotting |
+| `test_portfolio_owner_extra.py` | Extended portfolio-owner / allocation-narrative cases |
+| `test_config_legacy_deprecation.py` | Legacy config field deprecation (`octroi_bins`/`efx_bins`, `method="optimization"`) |
+| `test_dashboard_data.py` | Shared dashboard data/path helpers |
+| `test_dashboard_security.py` | Dashboard static-route / path-traversal security |
+| `test_web_auth.py` | Dashboard HTTP Basic Auth + bind-policy enforcement |
+
+(The suite has ~41 `test_*.py` files; `tests/verify_plots.py` is a manual plot-inspection utility, not a pytest module.)
 
 ### Adding a New Segment
 
