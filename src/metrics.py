@@ -161,6 +161,10 @@ def calculate_psi_by_period(
     - 0.1 <= PSI < 0.25: Moderate change, investigate
     - PSI >= 0.25: Significant change, action required
 
+    Zero handling (audit #11): epsilon protects only the log term; the difference term keeps the true
+    proportions. This variant is symmetric in appearing/disappearing bins and equals the textbook
+    epsilon-in-both-terms PSI to O(epsilon), so the thresholds above remain valid.
+
     Args:
         data: DataFrame containing scores and dates.
         date_column: Name of the date column.
