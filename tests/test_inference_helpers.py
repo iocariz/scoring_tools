@@ -208,3 +208,54 @@ class TestProcessDataset:
         assert "target" in out.columns
         assert "n_observations" in out.columns
         assert len(out) == 4  # 4 unique bin combinations
+
+
+class TestEvaluateHoldoutRmse:
+    """Winner-only held-out RMSE report (audit #7)."""
+
+    @staticmethod
+    def _data(n=400, seed=0):
+        rng = np.random.RandomState(seed)
+        rows = []
+        for _ in range(n):
+            v0, v1 = int(rng.randint(1, 5)), int(rng.randint(1, 5))
+            den = rng.uniform(800.0, 1200.0)
+            num = den * (0.01 + 0.01 * (v0 + v1)) * rng.uniform(0.5, 1.5)
+            rows.append(
+                {"var0": v0, "var1": v1, "todu_30ever_h6": num, "todu_amt_pile_h6": den, "oa_amt_h0": den * 0.9}
+            )
+        return pd.DataFrame(rows)
+
+    def test_returns_finite_rmse_on_adequate_data(self):
+        from sklearn.linear_model import LinearRegression
+
+        rmse = io.evaluate_holdout_rmse(
+            LinearRegression(),
+            self._data(),
+            None,
+            ["var0", "var1"],
+            ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"],
+            "b2_ever_h6",
+            7.0,
+            ["var0", "var1"],
+            3.0,
+            42,
+        )
+        assert rmse is not None and np.isfinite(rmse) and rmse >= 0
+
+    def test_returns_none_on_tiny_data(self):
+        from sklearn.linear_model import LinearRegression
+
+        rmse = io.evaluate_holdout_rmse(
+            LinearRegression(),
+            self._data(n=50),
+            None,
+            ["var0", "var1"],
+            ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"],
+            "b2_ever_h6",
+            7.0,
+            ["var0", "var1"],
+            3.0,
+            42,
+        )
+        assert rmse is None  # < 200 rows ⇒ no held-out report

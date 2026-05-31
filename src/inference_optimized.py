@@ -1040,6 +1040,84 @@ def _select_best_model_and_features(
     )
 
 
+def evaluate_holdout_rmse(
+    model_template,
+    raw_data: pd.DataFrame,
+    bins: tuple,
+    variables: list[str],
+    indicators: list[str],
+    target_var: str,
+    multiplier: float,
+    features: list[str],
+    z_threshold: float,
+    random_state: int,
+    test_size: float = 0.2,
+) -> float | None:
+    """Unbiased held-out RMSE for the SELECTED model only (audit #7).
+
+    A single stratified train/test split is carved here — AFTER model selection — so the held-out
+    fraction was never used to choose the model (no winner's-curse bias). The model is refit on the
+    train portion and scored (exposure-weighted RMSE) on the independently-aggregated test portion
+    (train-derived outlier stats applied to test → no leakage). Returns ``None`` when the data is too
+    small. This split is independent of, and never reused by, the k-fold selection metric.
+    """
+    from sklearn.base import clone
+    from sklearn.metrics import mean_squared_error
+    from sklearn.model_selection import train_test_split
+
+    if len(raw_data) < 200:
+        return None
+    stratify = None
+    strat_col = indicators[0] if indicators else None
+    if strat_col and strat_col in raw_data.columns:
+        y_strat = (raw_data[strat_col] > 0).astype(int)
+        if y_strat.nunique() >= 2 and y_strat.sum() >= 5 and (len(y_strat) - y_strat.sum()) >= 5:
+            stratify = y_strat
+    try:
+        train_raw, test_raw = train_test_split(
+            raw_data, test_size=test_size, random_state=random_state, stratify=stratify
+        )
+        train_agg = process_dataset(
+            train_raw, bins, variables, indicators, target_var, multiplier, features, z_threshold
+        )
+        outlier_stats = compute_outlier_stats(train_agg, target_var) if len(train_agg) > 2 else None
+        test_agg = process_dataset(
+            test_raw,
+            bins,
+            variables,
+            indicators,
+            target_var,
+            multiplier,
+            features,
+            z_threshold,
+            outlier_stats=outlier_stats,
+        )
+        if len(train_agg) < 3 or len(test_agg) < 3:
+            return None
+        m = clone(model_template)
+        if isinstance(m, HurdleRegressor) and "_hurdle_r" in train_raw.columns:
+            # Mirror the per-loan hurdle fit (audit #6) so the report reflects the real model.
+            train_t = transform_variables(train_raw, variables)
+            m.fit(
+                prepare_model_input(train_t, features, m),
+                train_raw["_hurdle_r"].to_numpy(),
+                sample_weight=np.asarray(train_raw["_hurdle_w"], dtype=float),
+            )
+        else:
+            m.fit(
+                prepare_model_input(train_agg, features, m),
+                train_agg[target_var],
+                sample_weight=_get_regression_weights(train_agg),
+            )
+        pred = m.predict(prepare_model_input(test_agg, features, m))
+        return float(
+            np.sqrt(mean_squared_error(test_agg[target_var], pred, sample_weight=_get_regression_weights(test_agg)))
+        )
+    except Exception:
+        logger.debug("Winner held-out RMSE evaluation failed", exc_info=True)
+        return None
+
+
 def _train_and_evaluate_final_model(
     best_model_template,
     agg_data: pd.DataFrame,
@@ -1174,6 +1252,7 @@ def _save_model_to_disk(
         "cv_std_r2": best_model_info.get("cv_std_r2", 0.0),
         "train_r2": best_model_info["train_r2"],
         "full_r2": best_model_info["train_r2"],  # Full and train R2 are identical because final model uses all data
+        "holdout_rmse": best_model_info.get("holdout_rmse"),  # unbiased winner-only 20% report (audit #7)
         "cv_folds": cv_folds,
         "total_samples": len(all_data),
         "target_variable": target_var,
@@ -1389,6 +1468,23 @@ def inference_pipeline(
         for feature, coef in zip(final_features, final_model.regressor_.coef_):
             logger.debug(f"  {feature}: {coef:.6f}")
 
+    # Winner-only held-out report (audit #7): a fresh 20% split scored on the SELECTED model only,
+    # never used for selection — an unbiased generalization estimate for the model-risk record.
+    holdout_rmse = evaluate_holdout_rmse(
+        best_model_type["model_template"],
+        all_data,
+        bins,
+        variables,
+        indicators,
+        target_var,
+        multiplier,
+        final_features,
+        DEFAULT_Z_THRESHOLD,
+        DEFAULT_RANDOM_STATE,
+    )
+    if holdout_rmse is not None:
+        logger.info(f"  Winner held-out RMSE (20%, not used for selection): {holdout_rmse:.4f}")
+
     best_model_info = {
         "model": final_model,
         "name": f"{best_model_name} + {best_feature_info['feature_set_name']}",
@@ -1397,6 +1493,7 @@ def inference_pipeline(
         "cv_mean_r2": best_feature_info.get("cv_mean_r2", 0.0),
         "cv_std_r2": best_feature_info.get("cv_std_r2", 0.0),
         "train_r2": train_r2,
+        "holdout_rmse": holdout_rmse,
         "model_type": best_model_name,
         "feature_set": best_feature_info["feature_set_name"],
         "weighted": weights_all is not None,
