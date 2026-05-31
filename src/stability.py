@@ -151,6 +151,11 @@ def calculate_psi(
 
     Formula:
         PSI = Σ (Actual% - Expected%) × ln(Actual% / Expected%)
+
+    Zero handling (audit #11): epsilon protects only the log term; the difference term keeps the
+    true proportions (no re-normalization). This variant is symmetric — PSI(a, e) = PSI(e, a), so
+    appearing and disappearing bins are weighted identically — and equals the textbook
+    epsilon-in-both-terms PSI to O(epsilon), so the 0.1 / 0.25 interpretation thresholds remain valid.
     """
     # Handle missing values
     baseline_clean = baseline.dropna()
@@ -501,6 +506,9 @@ def calculate_csi_for_categorical(
 
     Returns:
         Tuple of (CSI value, DataFrame with category-level breakdown)
+
+    Uses the same epsilon-only-in-log formula as ``calculate_psi`` (audit #11): symmetric in
+    appearing/disappearing categories and equal to the textbook epsilon-in-both-terms form to O(epsilon).
     """
     # Get value counts as percentages
     baseline_pct = baseline.value_counts(normalize=True)

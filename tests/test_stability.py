@@ -207,6 +207,42 @@ class TestCalculatePsi:
         # epsilon only protects the log term: (0-1)*log(0.2/1) + (1-0)*log(1/0.2) = 2*log(5)
         assert psi == pytest.approx(2.0 * np.log(5.0))
 
+    def test_psi_symmetric_under_population_swap(self):
+        """Audit #11: the eps-only-in-log variant treats appearing and disappearing
+        bins identically. PSI is invariant under swapping the two populations
+        (PSI(a,e) = sum((a-e)*log(a/e)) = PSI(e,a)), and swapping turns every
+        appearing bin into a disappearing one — so swap-invariance IS the proof that
+        there is no asymmetric weighting of appearing vs disappearing bins."""
+        bins = [-np.inf, 0.5, 1.5, np.inf]
+        # baseline lives in bins {0,1}, comparison in {1,2}: bin 2 appears, bin 0 disappears.
+        a = pd.Series([0] * 60 + [1] * 40)
+        b = pd.Series([1] * 40 + [2] * 60)
+
+        psi_ab, _ = calculate_psi(a, b, bins=bins)
+        psi_ba, _ = calculate_psi(b, a, bins=bins)
+
+        assert psi_ab == pytest.approx(psi_ba)
+        assert psi_ab > 0  # a genuine shift, not a degenerate zero
+
+    def test_psi_matches_textbook_within_epsilon(self):
+        """Audit #11: the eps-only-in-log variant equals the textbook eps-in-BOTH-terms
+        PSI to O(eps) even with empty bins, so the 0.1/0.25 thresholds stay valid."""
+        bins = [-np.inf, 0.5, 1.5, 2.5, np.inf]
+        a = pd.Series([0] * 50 + [1] * 50)  # nothing in bins 2,3 -> empty bins
+        b = pd.Series([1] * 50 + [3] * 50)
+
+        psi_variant, breakdown = calculate_psi(a, b, bins=bins)
+
+        # Textbook PSI: floor BOTH terms with the same epsilon, then compare.
+        eps = 0.0001
+        exp = breakdown["baseline_pct"].to_numpy()
+        act = breakdown["comparison_pct"].to_numpy()
+        exp_s = np.where(exp > 0, exp, eps)
+        act_s = np.where(act > 0, act, eps)
+        psi_textbook = float(((act_s - exp_s) * np.log(act_s / exp_s)).sum())
+
+        assert psi_variant == pytest.approx(psi_textbook, abs=1e-2)
+
     def test_breakdown_columns(self):
         np.random.seed(42)
         baseline = pd.Series(np.random.normal(0, 1, 100))
@@ -324,6 +360,19 @@ class TestCalculateCsiForCategorical:
         # Standard CSI: difference uses original proportions,
         # epsilon only protects the log term
         assert csi == pytest.approx(2.0 * np.log(5.0))
+
+    def test_csi_symmetric_under_population_swap(self):
+        """Audit #11: CSI shares the PSI formula, so it is likewise swap-invariant —
+        appearing and disappearing categories are weighted identically."""
+        # category A disappears, C appears between the two populations.
+        a = pd.Series(["A"] * 60 + ["B"] * 40)
+        b = pd.Series(["B"] * 40 + ["C"] * 60)
+
+        csi_ab, _ = calculate_csi_for_categorical(a, b)
+        csi_ba, _ = calculate_csi_for_categorical(b, a)
+
+        assert csi_ab == pytest.approx(csi_ba)
+        assert csi_ab > 0
 
     def test_breakdown_columns(self):
         baseline = pd.Series(["A", "B", "C"])
