@@ -286,3 +286,56 @@ class TestHurdlePerLoanMeaningful:
         model.fit(df[["var0", "var1"]], r, sample_weight=w)
         # Regressor was fit only on defaulters (r > 0), so it predicts a positive severity surface.
         assert (model.regressor_.predict(df[["var0", "var1"]].drop_duplicates()) > 0).all()
+
+
+class TestTweedieGLMExposureWeighting:
+    """Audit #8: TweedieGLM models the rate directly and takes exposure via sample_weight —
+    no penalized log-exposure feature, no exposure column needed at predict time."""
+
+    @staticmethod
+    def _data(seed=0, n=200):
+        import pandas as pd
+
+        rng = np.random.RandomState(seed)
+        X = pd.DataFrame({"var0": rng.randint(1, 6, n).astype(float), "var1": rng.randint(1, 6, n).astype(float)})
+        y = np.abs(rng.randn(n)) * 0.05  # non-negative rate
+        exposure = rng.uniform(500.0, 1500.0, n)
+        return X, y, exposure
+
+    def test_predicts_rate_without_exposure_column(self):
+        from src.estimators import TweedieGLM
+
+        X, y, exposure = self._data()
+        model = TweedieGLM(power=1.5, alpha=0.5)
+        model.fit(X, y, sample_weight=exposure)
+        # Predict on the bare feature frame (no exposure column) — the mesh/grid path.
+        preds = model.predict(X)
+        assert len(preds) == len(X)
+        assert (preds >= 0).all()  # log link ⇒ non-negative rate
+
+    def test_no_log_exposure_feature_added(self):
+        from src.estimators import TweedieGLM
+
+        X, y, exposure = self._data()
+        model = TweedieGLM(power=1.5, alpha=0.5).fit(X, y, sample_weight=exposure)
+        # The underlying regressor sees exactly the supplied features — no "_log_exposure" column.
+        assert model.regressor_.n_features_in_ == X.shape[1]
+        assert not hasattr(model, "exposure_col")
+
+    def test_sample_weight_changes_fit(self):
+        from src.estimators import TweedieGLM
+
+        X, y, exposure = self._data()
+        unw = TweedieGLM(power=1.5, alpha=0.1).fit(X, y).predict(X)
+        wtd = TweedieGLM(power=1.5, alpha=0.1).fit(X, y, sample_weight=exposure).predict(X)
+        # Exposure weighting is live: weighted vs unweighted fits differ.
+        assert not np.allclose(unw, wtd)
+
+    def test_prepare_model_input_appends_no_exposure(self):
+        import pandas as pd
+
+        from src.estimators import TweedieGLM, prepare_model_input
+
+        data = pd.DataFrame({"var0": [1.0, 2.0], "var1": [3.0, 4.0], "todu_amt_pile_h6": [900.0, 1100.0]})
+        out = prepare_model_input(data, ["var0", "var1"], TweedieGLM())
+        assert list(out.columns) == ["var0", "var1"]  # exposure column NOT appended

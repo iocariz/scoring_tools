@@ -196,159 +196,63 @@ class TweedieGLM(BaseEstimator, RegressorMixin):
     """
     Tweedie Generalized Linear Model (GLM) for zero-inflated data.
 
-    This model uses the Tweedie distribution with a log-link function, which is
-    particularly effective for modeling semi-continuous data with a mass at zero
-    (e.g., insurance claims, credit risk exposure).
+    This model uses the Tweedie distribution with a log-link function, effective for
+    non-negative, zero-inflated rate targets (e.g. the bin-aggregated risk rate ``b2_ever_h6``).
 
-    When ``exposure_col`` is set, the model internally converts a ratio target
-    (``multiplier * numerator / exposure``) back to the numerator, fits the
-    Tweedie on the numerator (the natural scale for Compound Poisson-Gamma),
-    and converts predictions back to the ratio scale.  This is the standard
-    actuarial approach for rate models and properly handles zero-inflation.
+    Exposure is handled the canonical sklearn way — by passing the exposure column as
+    ``sample_weight`` (so high-exposure bins dominate the fit), which is mathematically
+    equivalent to a ``log(exposure)`` GLM offset for the mean (audit #8). Exposure is therefore
+    used exactly once, as the weight; it is NOT appended as a (penalized) feature, and predictions
+    are on the rate scale with no exposure column needed at predict time (so mesh/grid prediction
+    is consistent with training).
 
     Parameters:
     -----------
     power : float, default=1.5
         Power parameter for the Tweedie distribution.
         - 1 < power < 2: Compound Poisson-Gamma (zero-inflated continuous).
-        - power = 0: Normal distribution.
-        - power = 1: Poisson distribution.
-        - power = 2: Gamma distribution.
-        - power = 3: Inverse Gaussian distribution.
+        - power = 0: Normal; 1: Poisson; 2: Gamma; 3: Inverse Gaussian.
     alpha : float, default=0.5
-        Constant that multiplies the penalty terms (regularization).
+        Constant that multiplies the penalty term (L2 regularization).
     link : str, default='log'
-        Link function to use. 'log' ensures non-negative predictions.
+        Link function. 'log' ensures non-negative predictions.
     max_iter : int, default=100
-        Maximum number of iterations.
-    exposure_col : str or None, default=None
-        Name of the exposure column in X.  When set, X must be a DataFrame
-        containing this column.  The column is extracted as exposure, removed
-        from the features, and used to convert between ratio and numerator
-        targets internally.
-    multiplier : float, default=7.0
-        Risk multiplier used in the ratio target formula
-        (``target = multiplier * numerator / exposure``).
+        Maximum number of solver iterations.
 
     Attributes:
     -----------
     regressor_ : fitted TweedieRegressor from sklearn
     """
 
-    def __init__(self, power=1.5, alpha=0.5, link="log", max_iter=100, exposure_col=None, multiplier=7.0):
+    def __init__(self, power=1.5, alpha=0.5, link="log", max_iter=100):
         self.power = power
         self.alpha = alpha
         self.link = link
         self.max_iter = max_iter
-        self.exposure_col = exposure_col
-        self.multiplier = multiplier
-
-    def _split_exposure(self, X):
-        """Extract exposure column from X if available.
-
-        Returns (X_features, exposure) where exposure is None when not applicable.
-        """
-        if self.exposure_col and hasattr(X, "columns") and self.exposure_col in X.columns:
-            exposure = X[self.exposure_col].values.astype(float)
-            X_features = X.drop(columns=[self.exposure_col])
-            return X_features, exposure
-        return X, None
-
-    def _add_log_exposure(self, X_features, exposure):
-        """Add log(exposure) as a feature to approximate the GLM offset term."""
-        import pandas as pd
-
-        if isinstance(X_features, pd.DataFrame):
-            X_aug = X_features.copy()
-            X_aug["_log_exposure"] = np.log(np.maximum(exposure, 1e-10))
-        else:
-            log_exp = np.log(np.maximum(exposure, 1e-10)).reshape(-1, 1)
-            X_aug = np.hstack([X_features, log_exp])
-        return X_aug
 
     def fit(self, X, y, sample_weight=None):
-        """
-        Fit the Tweedie GLM model.
+        """Fit an exposure-weighted Tweedie regression on the rate target.
 
-        When ``exposure_col`` is set, the model converts the ratio target to
-        the numerator (the natural scale for Tweedie compound Poisson-Gamma)
-        and adds ``log(exposure)`` as a feature to approximate the GLM offset
-        term.  This lets sklearn's TweedieRegressor learn the exposure
-        relationship (coefficient should converge to ~1).
-
-        Args:
-            X: Features (DataFrame; may include exposure column)
-            y: Target variable (ratio scale when using exposure offset)
-            sample_weight: Optional sample weights
-
-        Returns:
-            self
+        Pass the exposure column as ``sample_weight`` (the canonical sklearn exposure pattern,
+        equivalent to a ``log(exposure)`` offset for the mean — audit #8). ``X`` is the
+        bin-coordinate feature matrix and ``y`` the rate target.
         """
         from sklearn.linear_model import TweedieRegressor
 
         self.regressor_ = TweedieRegressor(power=self.power, alpha=self.alpha, link=self.link, max_iter=self.max_iter)
-
-        X_features, exposure = self._split_exposure(X)
-
-        if exposure is not None:
-            # Convert ratio target back to numerator:
-            #   y_ratio = multiplier * numerator / exposure
-            #   => numerator = y_ratio * exposure / multiplier
-            y_numerator = np.asarray(y, dtype=float) * exposure / self.multiplier
-            # Add log(exposure) as feature to approximate the offset term
-            X_aug = self._add_log_exposure(X_features, exposure)
-            # Fit on numerator; don't pass sample_weight (exposure is in the offset)
-            self.regressor_.fit(X_aug, y_numerator, sample_weight=sample_weight)
-            self._fitted_with_exposure = True
-            self._median_exposure = float(np.median(exposure))
-        else:
-            self.regressor_.fit(X, y, sample_weight=sample_weight)
-            self._fitted_with_exposure = False
-            self._median_exposure = 1.0
-
+        self.regressor_.fit(X, y, sample_weight=sample_weight)
         return self
 
     def predict(self, X):
-        """
-        Predict using the Tweedie GLM model.
-
-        When fitted with exposure offset, predictions are converted back to the
-        ratio scale.  If the exposure column is not present at predict time
-        (e.g. for mesh-grid visualization), a median exposure from training is
-        used as a fallback.
-
-        Args:
-            X: Features (DataFrame; may include exposure column)
-
-        Returns:
-            predictions: Array of predictions on the ratio (b2_ever_h6) scale
-        """
-        X_features, exposure = self._split_exposure(X)
-
-        if self._fitted_with_exposure:
-            if exposure is not None:
-                safe_exposure = np.maximum(exposure, 1e-10)
-                X_aug = self._add_log_exposure(X_features, exposure)
-                raw_pred = self.regressor_.predict(X_aug)
-                return self.multiplier * raw_pred / safe_exposure
-            # Fallback: use median exposure from training for approximate rate
-            X_aug = self._add_log_exposure(X_features, np.full(len(X_features), self._median_exposure))
-            raw_pred = self.regressor_.predict(X_aug)
-            return self.multiplier * raw_pred / self._median_exposure
-
-        return self.regressor_.predict(X_features)
+        """Predict the rate target (log-link Tweedie); non-negative by construction."""
+        return self.regressor_.predict(X)
 
 
-def prepare_model_input(data, features, model):
-    """Prepare feature DataFrame, appending exposure column for TweedieGLM.
+def prepare_model_input(data, features, model=None):
+    """Select the model's feature columns (``data[features]``).
 
-    For non-Tweedie models (or TweedieGLM without exposure_col), this simply
-    returns ``data[features]``.  For exposure-aware TweedieGLM, the exposure
-    column is appended so that :meth:`TweedieGLM.fit` / :meth:`TweedieGLM.predict`
-    can extract it internally.
+    All candidates — including TweedieGLM, which now takes exposure via ``sample_weight`` rather
+    than as an appended feature (audit #8) — use exactly the listed features. The ``model`` argument
+    is retained for call-site compatibility but no longer alters the column set.
     """
-    cols = list(features)
-    if isinstance(model, TweedieGLM) and model.exposure_col:
-        if model.exposure_col not in cols and hasattr(data, "columns") and model.exposure_col in data.columns:
-            cols = cols + [model.exposure_col]
-    return data[cols]
+    return data[list(features)]

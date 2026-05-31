@@ -392,19 +392,19 @@ def tune_linear_models(
         name_func=lambda p: f"ElasticNet (Optuna Tuned α={p['alpha']:.3f}, l1={p['l1_ratio']:.2f})",
     )
 
-    # 5. TweedieGLM (with exposure offset for proper rate modeling)
+    # 5. TweedieGLM — exposure-weighted rate model (exposure enters as sample_weight, not a
+    #    penalized log-exposure feature; audit #8). The weight is supplied by eval_model via
+    #    _get_regression_weights (todu_amt_pile_h6).
     def objective_tweedie(trial):
         power = trial.suggest_float("power", 1.01, 1.99)
         alpha = trial.suggest_float("alpha", 0.01, 10.0, log=True)
-        model = TweedieGLM(power=power, alpha=alpha, link="log", exposure_col="todu_amt_pile_h6", multiplier=multiplier)
+        model = TweedieGLM(power=power, alpha=alpha, link="log")
         mean_score, _ = safe_eval(model)
         return mean_score
 
     optimize_and_evaluate(
         objective_func=objective_tweedie,
-        create_model_func=lambda p: TweedieGLM(
-            power=p["power"], alpha=p["alpha"], link="log", exposure_col="todu_amt_pile_h6", multiplier=multiplier
-        ),
+        create_model_func=lambda p: TweedieGLM(power=p["power"], alpha=p["alpha"], link="log"),
         name_func=lambda p: f"Tweedie (Optuna Tuned p={p['power']:.2f}, α={p['alpha']:.2f})",
     )
 
