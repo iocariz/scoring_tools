@@ -1432,8 +1432,8 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         [
             "A one-period-lagged rolling median as the centre line — lagging prevents the current observation from biasing the band that is supposed to detect it.",
-            "MAD (median absolute deviation) for scale — robust to the outliers SPC is designed to surface, unlike the standard deviation which is itself moved by outliers.",
-            "A Student-t critical value adjustment for small windows — keeps the false-positive rate honest when the rolling window contains few months.",
+            "A robust moving-range (I-MR) scale — sigma is estimated from the median of the absolute month-to-month differences (median(MR) / 0.9539), i.e. from within-subgroup short-term variation rather than the dispersion of the levels. This keeps the band tight under a slow drift, so a point that jumps off the trend is still flagged instead of being masked by an inflated spread.",
+            "A plain Shewhart n-sigma multiplier (3-sigma by default) — stable at any window size, with no small-sample critical-value inflation that would over-widen the band.",
         ],
     )
     _add_paragraph(

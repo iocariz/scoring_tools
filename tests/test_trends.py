@@ -177,3 +177,80 @@ class TestDetectTrendChanges:
 
         assert not result.empty
         assert result["is_anomaly"].sum() == 0  # Can't flag with insufficient data
+
+    def test_drift_masking_regression(self):
+        """A point that jumps off a drift is flagged by the moving-range chart but
+        MASKED by the old MAD-of-levels chart, whose spread inflates during the drift.
+
+        This is the regression that motivates audit #10: same data, same n_sigma — only
+        the scale estimator differs. The moving range (within-subgroup variation) stays
+        tight under drift, so the jump is caught; the MAD of the levels spans the drift,
+        widening the band until the jump fits inside it.
+        """
+        n = 14
+        window, n_sigma = 6, 3.0
+        values = np.array([0.50 + 0.02 * i for i in range(n)])  # steady upward drift
+        jump_idx = n - 1
+        values[jump_idx] = 0.79  # off-trend jump (trend would be ~0.76)
+        monthly = pd.DataFrame(
+            {
+                "year_month": pd.period_range("2023-01", periods=n, freq="M"),
+                "approval_rate": values,
+            }
+        )
+
+        result = detect_trend_changes(monthly, "approval_rate", window=window, n_sigma=n_sigma)
+
+        # New (moving-range) chart flags the jump.
+        assert bool(result.loc[jump_idx, "is_anomaly"]) is True
+        assert result.loc[jump_idx, "direction"] == "above"
+
+        # Old (MAD-of-levels) band at the same index, same multiplier, would NOT flag it:
+        # the drift inflated its spread.
+        s = monthly["approval_rate"]
+        center = s.rolling(window, min_periods=window).median().shift(1)
+        mad = (
+            s.rolling(window, min_periods=window)
+            .apply(lambda x: np.median(np.abs(x - np.median(x))), raw=True)
+            .shift(1)
+        )
+        old_upper = center + n_sigma * (mad / 0.6745)
+        assert values[jump_idx] <= old_upper.iloc[jump_idx]  # old chart masks the jump
+
+    def test_constant_series_no_false_positive(self):
+        """Constant series ⇒ all moving ranges 0 ⇒ sigma_hat 0 ⇒ band collapses to the
+        centre line ⇒ nothing flagged (no global-std fallback re-inflating the band)."""
+        n = 8
+        monthly = pd.DataFrame(
+            {
+                "year_month": pd.period_range("2023-01", periods=n, freq="M"),
+                "approval_rate": np.full(n, 0.5),
+            }
+        )
+        result = detect_trend_changes(monthly, "approval_rate", window=6, n_sigma=3.0)
+
+        assert result["is_anomaly"].sum() == 0
+        defined = result["upper_bound"].notna()
+        assert defined.any()
+        assert np.allclose(result.loc[defined, "upper_bound"], result.loc[defined, "rolling_mean"])
+        assert np.allclose(result.loc[defined, "lower_bound"], result.loc[defined, "rolling_mean"])
+
+    def test_moving_range_sigma_unit(self):
+        """Pin the moving-range scale: half-width == n_sigma * median(MR_window) / 0.9539,
+        with the .shift(1) look-back (current point excluded from its own band)."""
+        window, n_sigma = 4, 3.0
+        # diffs: [-, .02, .02, .10, .02, .02, .02]; at idx 5 the lagged MR window is
+        # MR[1..4] = [.02, .02, .10, .02] -> median .02.
+        values = [0.50, 0.52, 0.54, 0.64, 0.66, 0.68, 0.70]
+        monthly = pd.DataFrame(
+            {
+                "year_month": pd.period_range("2023-01", periods=len(values), freq="M"),
+                "approval_rate": values,
+            }
+        )
+        result = detect_trend_changes(monthly, "approval_rate", window=window, n_sigma=n_sigma)
+
+        half_width = result.loc[5, "upper_bound"] - result.loc[5, "rolling_mean"]
+        assert half_width == pytest.approx(n_sigma * 0.02 / 0.9539)
+        # centre is the lagged rolling median of s[1..4] = median([.52,.54,.64,.66]) = .59
+        assert result.loc[5, "rolling_mean"] == pytest.approx(0.59)

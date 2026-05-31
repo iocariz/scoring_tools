@@ -597,8 +597,9 @@ def main(
                     output_path=output.metric_trends_html(segment),
                 )
 
-                # Detect anomalies in approval rate
-                anomalies = detect_trend_changes(monthly, "approval_rate", window=3)
+                # Detect anomalies in approval rate (window=6: the SPC default; >=5 moving ranges
+                # per estimate — window=3 gave only 2, an unstable scale; audit #10)
+                anomalies = detect_trend_changes(monthly, "approval_rate", window=6)
                 anomaly_months = anomalies[anomalies["is_anomaly"]]
                 if not anomaly_months.empty:
                     anomalies.to_csv(output.trend_anomalies_csv(segment))
