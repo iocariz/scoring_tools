@@ -243,6 +243,44 @@ class TestCalculatePsi:
 
         assert psi_variant == pytest.approx(psi_textbook, abs=1e-2)
 
+    def test_low_cardinality_detects_shift(self):
+        """Audit #12: a discrete score with a real shift must NOT report PSI~0 'stable'.
+        With bins=10 quantile binning would drop duplicate edges and collapse; per-value
+        binning measures the genuine shift across the discrete levels."""
+        # baseline mostly in {0}, comparison mostly in {2}: a large, obvious shift.
+        baseline = pd.Series([0] * 70 + [1] * 20 + [2] * 10)
+        comparison = pd.Series([0] * 10 + [1] * 20 + [2] * 70)
+
+        psi, breakdown = calculate_psi(baseline, comparison, bins=10)
+
+        assert np.isfinite(psi)
+        assert psi > 0.25  # well above the UNSTABLE threshold; the old single-bin collapse returned ~0
+        assert len(breakdown) == 3  # one bin per distinct value
+
+    def test_dominant_value_collapse_falls_back(self):
+        """Audit #12: a dominant value (qcut silently collapses to <2 bins) falls back to
+        equal-width binning rather than silently returning PSI=0."""
+        rng = np.random.RandomState(0)
+        # 95% mass at 0, a thin continuous tail -> q=10 quantiles all land on 0 and collapse.
+        baseline = pd.Series(np.concatenate([np.zeros(950), rng.uniform(1, 10, 50)]))
+        comparison = pd.Series(np.concatenate([np.zeros(600), rng.uniform(1, 10, 400)]))
+
+        psi, _ = calculate_psi(baseline, comparison, bins=10)
+
+        assert np.isfinite(psi)
+        assert psi > 0  # a real shift is detected, not masked as 0
+
+    def test_constant_baseline_returns_nan(self):
+        """Audit #12: a constant reference makes PSI undefined -> NaN (never silent 0/'stable')."""
+        baseline = pd.Series([5.0] * 100)
+        comparison = pd.Series([5.0] * 50 + [9.0] * 50)
+
+        psi, breakdown = calculate_psi(baseline, comparison, bins=10)
+
+        assert np.isnan(psi)
+        assert breakdown.empty
+        assert get_psi_status(psi) != StabilityStatus.STABLE  # not falsely reassuring
+
     def test_breakdown_columns(self):
         np.random.seed(42)
         baseline = pd.Series(np.random.normal(0, 1, 100))

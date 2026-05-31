@@ -27,6 +27,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from loguru import logger
 from scipy import stats
 from scipy.stats import rankdata
 from sklearn.linear_model import LogisticRegression
@@ -196,6 +197,24 @@ def calculate_psi_by_period(
     # Create buckets
     if breakpoints is None:
         breakpoints = np.percentile(expected[score_column], np.linspace(0, 100, buckets + 1))
+    # Drop duplicate edges (audit #12): on a low-cardinality score np.percentile yields repeated
+    # breakpoints, which would make np.histogram raise "bins must increase monotonically".
+    breakpoints = np.unique(breakpoints)
+    if len(breakpoints) < 2:
+        # Near-constant reference: PSI undefined. Return a NaN result (not a crash, not a 0 that
+        # would read as "stable").
+        logger.warning(f"PSI by period: fewer than 2 distinct score breakpoints for '{score_column}'. Returning NaN.")
+        return pd.DataFrame(
+            {
+                "Bucket": [1],
+                "Breakpoint Value": [np.inf],
+                "Expected Count": [0],
+                "Actual Count": [0],
+                "Expected Percent": [0.0],
+                "Actual Percent": [0.0],
+                "PSI": [float("nan")],
+            }
+        )
     # Extend edges to (-inf, +inf) so out-of-range actual values are captured
     # (mirrors stability.calculate_psi behaviour).
     breakpoints = list(breakpoints)

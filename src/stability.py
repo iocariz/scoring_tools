@@ -126,6 +126,10 @@ class StabilityReport:
 
 def get_psi_status(psi_value: float) -> StabilityStatus:
     """Determine stability status from PSI value."""
+    # An undefined PSI (NaN — e.g. a constant reference or a binning that could not form
+    # >=2 bins; audit #12) is surfaced for investigation, never reported as silently STABLE.
+    if psi_value is None or np.isnan(psi_value):
+        return StabilityStatus.UNSTABLE
     if psi_value < PSI_STABLE_THRESHOLD:
         return StabilityStatus.STABLE
     elif psi_value < PSI_UNSTABLE_THRESHOLD:
@@ -165,15 +169,46 @@ def calculate_psi(
         logger.warning("Empty series provided for PSI calculation")
         return 0.0, pd.DataFrame()
 
-    # Create bins from baseline distribution
+    # Create bins from baseline distribution (audit #12: never let quantile binning silently
+    # collapse to a single bin — that returns PSI=0 = false "stable" regardless of any real shift).
     if isinstance(bins, int):
-        # Use quantiles from baseline to create bins
-        try:
-            _, bin_edges = pd.qcut(baseline_clean, q=bins, retbins=True, duplicates="drop")
-        except ValueError:
-            # Fallback to equal-width bins if quantiles fail
-            logger.warning("Quantile binning failed (low cardinality data), falling back to equal-width bins.")
-            _, bin_edges = pd.cut(baseline_clean, bins=bins, retbins=True)
+        uniques = np.sort(baseline_clean.unique())
+        if len(uniques) < 2:
+            # Constant reference: a reference-based stability index is undefined. Return NaN
+            # (not 0) so it is never reported as "stable".
+            logger.warning(
+                "PSI undefined: baseline has fewer than 2 distinct values (constant reference). Returning NaN."
+            )
+            return float("nan"), pd.DataFrame()
+        elif len(uniques) <= bins:
+            # Low-cardinality / discrete score: quantile bins would drop duplicate edges and
+            # collapse on the ties. Put one bin per distinct value (midpoint edges) so the shift
+            # across the discrete support is actually measured.
+            logger.info(
+                f"PSI: low-cardinality score ({len(uniques)} distinct values <= {bins} bins); "
+                "using one bin per distinct value."
+            )
+            midpoints = (uniques[:-1] + uniques[1:]) / 2.0
+            bin_edges = [-np.inf, *midpoints, np.inf]
+        else:
+            # Enough unique values for quantiles.
+            try:
+                _, bin_edges = pd.qcut(baseline_clean, q=bins, retbins=True, duplicates="drop")
+            except ValueError:
+                logger.warning("Quantile binning failed (low cardinality data), falling back to equal-width bins.")
+                _, bin_edges = pd.cut(baseline_clean, bins=bins, retbins=True)
+            bin_edges = list(bin_edges)
+            if len(bin_edges) - 1 < 2:
+                # qcut silently collapsed (e.g. a dominant value soaking up most of the mass).
+                # Retry with equal-width bins, which separate the spread; NaN if even that fails.
+                logger.warning(
+                    "PSI quantile bins collapsed to <2 bins (dominant value); falling back to equal-width bins."
+                )
+                _, bin_edges = pd.cut(baseline_clean, bins=bins, retbins=True)
+                bin_edges = list(bin_edges)
+                if len(bin_edges) - 1 < 2:
+                    logger.warning("PSI could not form >=2 bins for this score. Returning NaN.")
+                    return float("nan"), pd.DataFrame()
     else:
         bin_edges = bins
 

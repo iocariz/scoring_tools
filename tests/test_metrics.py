@@ -238,6 +238,28 @@ class TestCalculatePsiMetrics:
         assert isinstance(result, pd.DataFrame)
         assert "PSI" in result.columns
 
+    def test_low_cardinality_no_crash(self):
+        """Audit #12: a low-cardinality score makes np.percentile emit duplicate breakpoints,
+        which used to crash np.histogram. De-dup + guard now returns a frame instead of raising."""
+        ref_scores = [0, 0, 0, 0, 1] * 20  # two distinct values, heavy ties
+        act_scores = [0, 1, 1, 1, 1] * 20
+        data = self._make_data(
+            ref_scores, act_scores, [pd.Timestamp("2023-01-15")] * 100, [pd.Timestamp("2023-06-15")] * 100
+        )
+        result = calculate_psi_by_period(
+            data,
+            date_column="date",
+            score_column="score",
+            start_date_ref=pd.Timestamp("2023-01-01"),
+            end_date_ref=pd.Timestamp("2023-02-01"),
+            start_date_act=pd.Timestamp("2023-06-01"),
+            end_date_act=pd.Timestamp("2023-07-01"),
+            buckets=10,
+            show_plots=False,
+        )
+        assert isinstance(result, pd.DataFrame)
+        assert "PSI" in result.columns  # no exception raised
+
 
 # =============================================================================
 # calc_iv Tests
