@@ -751,6 +751,20 @@ def _select_feature_set_cv(
     return results_df, best_feature_info
 
 
+def _nadeau_bengio_cv_se(std: float, n_folds: int) -> float:
+    """Nadeau–Bengio corrected standard error of a k-fold CV mean (audit #9).
+
+    Cross-fold predictions are positively correlated (the folds share training data), so the naive
+    ``std / sqrt(k)`` treats them as independent and underestimates the SE (typically by ~2x). The
+    corrected resampled variance multiplies the per-fold sample variance by ``(1/k + n_test/n_train)``;
+    for standard k-fold ``n_test/n_train = 1/(k-1)``, giving ``SE = std * sqrt(1/k + 1/(k-1))``. Falls
+    back to the naive ``std / sqrt(k)`` when ``n_folds < 2`` (no correction term defined).
+    """
+    if n_folds < 2:
+        return std / np.sqrt(max(n_folds, 1))
+    return std * np.sqrt(1.0 / n_folds + 1.0 / (n_folds - 1))
+
+
 def compute_cell_level_ci(
     raw_data: pd.DataFrame,
     bins: tuple,
@@ -764,11 +778,14 @@ def compute_cell_level_ci(
     cv_folds: int = 5,
     confidence_level: float = 0.95,
 ) -> pd.DataFrame:
-    """K-fold CV per-cell prediction intervals.
+    """K-fold CV per-cell prediction intervals (report-only).
 
     For each fold: train on train split, aggregate val split by bins,
     predict target_var per cell, record predictions.
-    Then per cell: compute mean, std, CI from cross-fold predictions.
+    Then per cell: compute mean, std, and a CI from cross-fold predictions using the
+    **Nadeau–Bengio corrected** SE (``std * sqrt(1/k + 1/(k-1))``, not the naive ``std/sqrt(k)``)
+    to account for the positive correlation between folds (audit #9). These intervals are for
+    human-facing reporting (dashboard / CSV); no cutoff or optimization logic consumes them.
 
     Args:
         raw_data: Raw (un-aggregated) booked data.
@@ -850,7 +867,7 @@ def compute_cell_level_ci(
 
         if n_folds >= 2:
             std = np.std(preds_list, ddof=1)
-            se = std / np.sqrt(n_folds)
+            se = _nadeau_bengio_cv_se(std, n_folds)  # corrected for inter-fold correlation (audit #9)
             crit_val = stats.t.ppf(1 - alpha / 2, df=n_folds - 1) if n_folds < 30 else z_val
             row["pred_std"] = std
             row["ci_lower"] = row["pred_mean"] - crit_val * se

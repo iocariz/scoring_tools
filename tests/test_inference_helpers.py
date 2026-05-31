@@ -259,3 +259,25 @@ class TestEvaluateHoldoutRmse:
             42,
         )
         assert rmse is None  # < 200 rows ⇒ no held-out report
+
+
+class TestNadeauBengioCvSe:
+    """Audit #9: corrected SE of a k-fold CV mean (std·√(1/k + 1/(k-1))), wider than std/√k."""
+
+    def test_k4_matches_formula(self):
+        std = 0.02
+        assert io._nadeau_bengio_cv_se(std, 4) == pytest.approx(std * np.sqrt(1 / 4 + 1 / 3))
+
+    def test_k2_matches_formula(self):
+        std = 0.02
+        assert io._nadeau_bengio_cv_se(std, 2) == pytest.approx(std * np.sqrt(1.5))
+
+    def test_wider_than_naive_for_all_k(self):
+        std = 0.05
+        for k in (2, 3, 4, 5, 10):
+            assert io._nadeau_bengio_cv_se(std, k) > std / np.sqrt(k)
+
+    def test_fallback_below_two_folds(self):
+        # No correction term defined for k<2; falls back to the naive std/√n.
+        assert io._nadeau_bengio_cv_se(0.02, 1) == pytest.approx(0.02)
+        assert io._nadeau_bengio_cv_se(0.0, 4) == pytest.approx(0.0)
