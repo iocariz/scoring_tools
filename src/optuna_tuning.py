@@ -10,7 +10,7 @@ from loguru import logger
 from sklearn.base import clone as sklearn_clone
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, LogisticRegression, Ridge
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
+from sklearn.model_selection import KFold, StratifiedKFold
 from xgboost import XGBRegressor
 
 from src.constants import DEFAULT_RANDOM_STATE
@@ -80,21 +80,11 @@ def tune_tree_models(
         xgb_monotone = tuple([-1] * n_features)
         lgb_monotone = list([-1] * n_features)
 
-    # Nested evaluation: holdout split for unbiased performance estimate
-    holdout_data = None
+    # Hyperparameters are tuned by k-fold CV on the full data (tuning seed); the chosen params are
+    # then scored on a FRESH-seed k-fold pass below (a different fold partition) — a selection metric
+    # with a real standard error and no single reused holdout (audit #7). A genuinely held-out 20%
+    # report is computed once on the *winning* model in inference_optimized, never used for selection.
     tuning_data = raw_data
-    if len(raw_data) >= 200:
-        stratify = None
-        strat_col = indicators[0] if indicators else None
-        if strat_col and strat_col in raw_data.columns:
-            y_strat = (raw_data[strat_col] > 0).astype(int)
-            if y_strat.nunique() >= 2 and y_strat.sum() >= 5 and (len(y_strat) - y_strat.sum()) >= 5:
-                stratify = y_strat
-        tuning_data, holdout_data = train_test_split(
-            raw_data, test_size=0.2, random_state=random_state, stratify=stratify
-        )
-        logger.info(f"Nested evaluation: tuning={len(tuning_data):,}, holdout={len(holdout_data):,}")
-
     fresh_seed = random_state + 1000
 
     from src.inference_optimized import process_dataset
@@ -134,27 +124,6 @@ def tune_tree_models(
             return np.inf, 0.0
         return np.mean(scores), np.std(scores, ddof=1) / np.sqrt(len(scores))
 
-    def eval_holdout_tree(model):
-        """Train on tuning aggregate, evaluate on holdout aggregate for unbiased RMSE."""
-        train_agg = process_dataset(
-            tuning_data, bins, variables, indicators, target_var, multiplier, variables, z_threshold
-        )
-        test_agg = process_dataset(
-            holdout_data, bins, variables, indicators, target_var, multiplier, variables, z_threshold
-        )
-        if len(test_agg) < 3 or len(train_agg) < 3:
-            return None
-        X_train, y_train = train_agg[variables], train_agg[target_var]
-        X_test, y_test = test_agg[variables], test_agg[target_var]
-        w_train = _get_regression_weights(train_agg)
-        w_test = _get_regression_weights(test_agg)
-        m = sklearn_clone(model)
-        m.fit(X_train, y_train, sample_weight=w_train)
-        pred = m.predict(X_test)
-        if len(y_test) < 2:
-            return None
-        return np.sqrt(mean_squared_error(y_test, pred, sample_weight=w_test))
-
     # --- XGBoost Study ---
     def objective_xgb(trial):
         params = {
@@ -181,21 +150,11 @@ def tune_tree_models(
     best_xgb_params["n_jobs"] = -1
 
     xgb_model = XGBRegressor(**best_xgb_params)
-    if holdout_data is not None:
-        holdout_rmse = eval_holdout_tree(xgb_model)
-        if holdout_rmse is not None:
-            xgb_mean, xgb_std = holdout_rmse, 0.0
-            logger.info(
-                f"Best XGBoost: inner CV RMSE={study_xgb.best_value:.4f}, holdout RMSE={holdout_rmse:.4f} (unbiased)"
-            )
-        else:
-            xgb_mean, xgb_std = eval_model(xgb_model, raw_data, cv_folds, fresh_seed)
-            logger.info(
-                f"Best XGBoost CV RMSE: {xgb_mean:.4f} ± {xgb_std:.4f} (holdout too small, fresh-seed fallback)"
-            )
-    else:
-        xgb_mean, xgb_std = eval_model(xgb_model, raw_data, cv_folds, fresh_seed)
-        logger.info(f"Best XGBoost CV RMSE: {xgb_mean:.4f} ± {xgb_std:.4f} (fresh-seed, dataset < 200 rows)")
+    # Fresh-seed k-fold CV for the selection metric (real mean + SE; different folds than tuning).
+    xgb_mean, xgb_std = eval_model(xgb_model, raw_data, cv_folds, fresh_seed)
+    logger.info(
+        f"Best XGBoost: inner CV RMSE={study_xgb.best_value:.4f}, fresh-seed CV RMSE={xgb_mean:.4f} ± {xgb_std:.4f}"
+    )
 
     # --- LightGBM Study ---
     def objective_lgb(trial):
@@ -226,21 +185,10 @@ def tune_tree_models(
     best_lgb_params["n_jobs"] = -1
 
     lgb_model = LGBMRegressor(**best_lgb_params)
-    if holdout_data is not None:
-        holdout_rmse = eval_holdout_tree(lgb_model)
-        if holdout_rmse is not None:
-            lgb_mean, lgb_std = holdout_rmse, 0.0
-            logger.info(
-                f"Best LightGBM: inner CV RMSE={study_lgb.best_value:.4f}, holdout RMSE={holdout_rmse:.4f} (unbiased)"
-            )
-        else:
-            lgb_mean, lgb_std = eval_model(lgb_model, raw_data, cv_folds, fresh_seed)
-            logger.info(
-                f"Best LightGBM CV RMSE: {lgb_mean:.4f} ± {lgb_std:.4f} (holdout too small, fresh-seed fallback)"
-            )
-    else:
-        lgb_mean, lgb_std = eval_model(lgb_model, raw_data, cv_folds, fresh_seed)
-        logger.info(f"Best LightGBM CV RMSE: {lgb_mean:.4f} ± {lgb_std:.4f} (fresh-seed, dataset < 200 rows)")
+    lgb_mean, lgb_std = eval_model(lgb_model, raw_data, cv_folds, fresh_seed)
+    logger.info(
+        f"Best LightGBM: inner CV RMSE={study_lgb.best_value:.4f}, fresh-seed CV RMSE={lgb_mean:.4f} ± {lgb_std:.4f}"
+    )
 
     models = {"XGBoost (Optuna Tuned)": xgb_model, "LightGBM (Optuna Tuned)": lgb_model}
 
@@ -288,20 +236,11 @@ def tune_linear_models(
 
     fresh_seed = random_state + 1000
 
-    # Nested evaluation: holdout split for unbiased performance estimate
-    holdout_data = None
+    # Tuning runs k-fold CV on the full data (tuning seed); the chosen params are scored on a
+    # FRESH-seed k-fold pass (different fold partition) for the selection metric — real SE, no single
+    # reused holdout (audit #7). The winning model's genuinely held-out 20% report is computed once in
+    # inference_optimized and is never used for selection.
     tuning_data = raw_data
-    if len(raw_data) >= 200:
-        stratify = None
-        strat_col = indicators[0] if indicators else None
-        if strat_col and strat_col in raw_data.columns:
-            y_strat = (raw_data[strat_col] > 0).astype(int)
-            if y_strat.nunique() >= 2 and y_strat.sum() >= 5 and (len(y_strat) - y_strat.sum()) >= 5:
-                stratify = y_strat
-        tuning_data, holdout_data = train_test_split(
-            raw_data, test_size=0.2, random_state=random_state, stratify=stratify
-        )
-        logger.info(f"Nested evaluation: tuning={len(tuning_data):,}, holdout={len(holdout_data):,}")
 
     from src.inference_optimized import process_dataset
     from src.models import transform_variables
@@ -367,40 +306,9 @@ def tune_linear_models(
             logger.debug(f"Model evaluation failed for {type(model).__name__}: {model}", exc_info=True)
             return np.inf, 0.0
 
-    def _eval_holdout_linear(model):
-        """Train on tuning aggregate, evaluate on holdout aggregate for unbiased RMSE."""
-        if holdout_data is None:
-            return None
-        try:
-            train_agg = process_dataset(
-                tuning_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold
-            )
-            test_agg = process_dataset(
-                holdout_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold
-            )
-            if len(test_agg) < 3 or len(train_agg) < 3:
-                return None
-            m = sklearn_clone(model)
-            X_train = prepare_model_input(train_agg, var_reg, m)
-            X_test = prepare_model_input(test_agg, var_reg, m)
-            y_train, y_test = train_agg[target_var], test_agg[target_var]
-            w_train = _get_regression_weights(train_agg)
-            w_test = _get_regression_weights(test_agg)
-            if isinstance(model, HurdleRegressor) and "_hurdle_r" in tuning_data.columns:
-                _fit_hurdle_per_loan(m, tuning_data)  # per-loan training (audit #6); score on holdout agg
-            else:
-                m.fit(X_train, y_train, sample_weight=w_train)
-            pred = m.predict(X_test)
-            if len(y_test) < 2:
-                return None
-            return np.sqrt(mean_squared_error(y_test, pred, sample_weight=w_test))
-        except Exception:
-            return None
-
     def safe_eval_fresh(model):
-        holdout_rmse = _eval_holdout_linear(model)
-        if holdout_rmse is not None:
-            return holdout_rmse, 0.0
+        # Selection metric: fresh-seed k-fold CV (mean + real SE), a different fold partition than the
+        # tuning objective so it isn't scored on the exact folds it was tuned on (audit #7).
         try:
             return eval_model(model, raw_data, cv_folds, fresh_seed)
         except Exception:

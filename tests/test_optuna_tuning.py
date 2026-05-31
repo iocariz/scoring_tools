@@ -109,3 +109,33 @@ def test_tune_linear_models_hurdle_per_loan_flag():
         random_state=42,
     )
     assert not any("Hurdle" in m for m in res_off["Model"])
+
+
+def test_selection_metric_reports_real_cv_se():
+    """Audit #7: candidate rows are scored by fresh-seed k-fold CV, so CV Std RMSE is a real
+    standard error (> 0), not the degenerate 0.0 of the old single shared holdout — this is what
+    lets the downstream 1-SE rule form a proper band instead of collapsing to argmin."""
+    from src.inference_optimized import _generate_regression_variables
+    from src.optuna_tuning import tune_linear_models
+
+    df = _per_loan_linear_data()
+    variables = ["var0", "var1"]
+    indicators = ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"]
+    var_reg, _ = _generate_regression_variables(variables)
+
+    results_df, _ = tune_linear_models(
+        df,
+        None,
+        variables,
+        indicators,
+        "b2_ever_h6",
+        7.0,
+        3.0,
+        var_reg,
+        cv_folds=3,
+        n_trials=2,
+        include_hurdle=False,
+        random_state=42,
+    )
+    assert (results_df["CV Std RMSE"] >= 0).all()
+    assert (results_df["CV Std RMSE"] > 0).any()  # real k-fold SE, not the all-zero holdout placeholder
