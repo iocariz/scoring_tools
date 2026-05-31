@@ -294,6 +294,25 @@ class TestDominatedPruning:
         )
         assert len(alloc.frontiers["seg"]) == 3
 
+    def test_sub_epsilon_gain_kept(self):
+        """Audit #13: pruning now uses the canonical strict `prod > prev_max` sweep (shared with
+        trace_pareto_frontier) instead of the old hard-coded 1e-4 epsilon. A point that improves
+        production by a sub-1e-4 amount at higher risk is therefore KEPT (it was dropped before).
+        This can only matter for synthetic sub-cent gaps; real euro-scale frontiers are unaffected."""
+        alloc = GlobalAllocator()
+        alloc.load_frontier(
+            "seg",
+            _make_frontier(
+                [
+                    (0, 0.5, 100.0),
+                    (1, 1.0, 100.00005),  # +0.00005 production: < old 1e-4 epsilon, but strictly greater
+                    (2, 1.5, 200.0),
+                ]
+            ),
+        )
+        assert len(alloc.frontiers["seg"]) == 3
+        assert list(alloc.frontiers["seg"]["sol_fac"]) == [0, 1, 2]
+
 
 class TestUnknownConstraintWarning:
     def test_warns_on_unknown_segment(self, two_segment_allocator):

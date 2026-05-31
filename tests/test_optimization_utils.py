@@ -22,6 +22,7 @@ from src.optimization_utils import (
     get_fact_sol,
     mask_to_cutoffs,
     milp_solve_cutoffs,
+    pareto_keep_indices,
     trace_pareto_frontier,
 )
 
@@ -2103,3 +2104,38 @@ class TestLegacyEnumerationLimit:
         values_var1 = list(range(1, 31))
         with pytest.raises(RuntimeError, match="Legacy enumeration"):
             get_fact_sol(values_var0, values_var1)
+
+
+# =============================================================================
+# pareto_keep_indices Tests (audit #13 — shared canonical sweep)
+# =============================================================================
+
+
+class TestParetoKeepIndices:
+    def test_strictly_increasing_keeps_all(self):
+        assert pareto_keep_indices([10.0, 20.0, 30.0]) == [0, 1, 2]
+
+    def test_non_increasing_dropped(self):
+        # production sorted by ascending risk; flat/decreasing tail is dominated
+        assert pareto_keep_indices([100.0, 90.0, 200.0, 200.0, 150.0]) == [0, 2]
+
+    def test_equal_values_keep_first_only(self):
+        assert pareto_keep_indices([50.0, 50.0, 50.0]) == [0]
+
+    def test_strict_no_epsilon(self):
+        # a sub-1e-4 gain is strictly greater -> kept (canonical sweep has no epsilon)
+        assert pareto_keep_indices([100.0, 100.00005, 100.0001]) == [0, 1, 2]
+
+    def test_empty(self):
+        assert pareto_keep_indices([]) == []
+
+    def test_matches_manual_sweep(self):
+        rng = np.random.RandomState(0)
+        prod = rng.uniform(0, 1000, 200).tolist()
+        prev = float("-inf")
+        expected = []
+        for i, p in enumerate(prod):
+            if p > prev:
+                expected.append(i)
+                prev = p
+        assert pareto_keep_indices(prod) == expected

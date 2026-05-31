@@ -678,6 +678,29 @@ def evaluate_solution(
 # =============================================================================
 
 
+def pareto_keep_indices(production) -> list[int]:
+    """Canonical risk-vs-production Pareto sweep (audit #13: single source of truth).
+
+    Given a production sequence **already ordered by ascending risk**, return the indices to
+    keep: a point survives iff its production is strictly greater than every production seen so
+    far (`prod > prev_max`). This is exactly the set of risk/production-efficient points — at a
+    given (or higher) risk you would never pick a solution that produces no more than one already
+    available at lower risk. Exact ties and dominated points are dropped (the first occurrence of a
+    production level wins); there is no epsilon tolerance, so the rule is scale-free.
+
+    Used by both `trace_pareto_frontier` (per-segment frontier sweep) and
+    `global_optimizer.GlobalAllocator.load_frontier` (allocation-MILP candidate set) so the two
+    paths prune identically.
+    """
+    prev_max = float("-inf")
+    keep: list[int] = []
+    for i, prod in enumerate(production):
+        if prod > prev_max:
+            keep.append(i)
+            prev_max = prod
+    return keep
+
+
 def trace_pareto_frontier(
     data_summary_desagregado: pd.DataFrame,
     variables: list[str],
@@ -866,14 +889,9 @@ def trace_pareto_frontier(
     df = df.iloc[sort_idx].reset_index(drop=True)
     all_masks = [all_masks[i] for i in sort_idx]
 
-    # Post-hoc Pareto dominance filter:
-    # Sorted by ascending risk, keep solutions whose production is strictly > any previously seen.
-    prev_max = float("-inf")
-    pareto_keep = []
-    for i, prod in enumerate(df["oa_amt_h0"].values):
-        if prod > prev_max:
-            pareto_keep.append(i)
-            prev_max = prod
+    # Post-hoc Pareto dominance filter (canonical sweep — shared with global_optimizer, audit #13):
+    # sorted by ascending risk, keep solutions whose production is strictly > any previously seen.
+    pareto_keep = pareto_keep_indices(df["oa_amt_h0"].values)
 
     if len(pareto_keep) < len(df):
         n_removed = len(df) - len(pareto_keep)
