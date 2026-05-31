@@ -185,19 +185,34 @@ def detect_trend_changes(
     n_sigma: float = 3.0,
 ) -> pd.DataFrame:
     """
-    Detect trend changes using statistical process control (SPC).
+    Detect trend changes using a robust Individuals (I-MR) statistical-process-control chart.
 
-    Flags months where the metric exceeds rolling mean +/- n_sigma * rolling_std.
+    The control band is centred on a one-period-lagged rolling median, and its half-width is
+    ``n_sigma * sigma_hat`` where the scale is estimated from the **moving range** (the absolute
+    month-to-month differences) — the canonical within-subgroup / short-term variation estimator
+    for individuals data::
+
+        MR_i      = |value_i - value_{i-1}|
+        sigma_hat = median(MR over the window) / 0.9539     # robust median-MR (d4 constant)
+
+    Estimating the scale from the moving range (rather than from the dispersion of the *levels*)
+    is what keeps the band honest under a slow drift: a trend produces small successive
+    differences, so the band stays tight and a point that jumps off the trend is still flagged —
+    whereas a MAD/std of the levels inflates during drift and masks the anomaly. The lagged
+    median centre and the ``.shift(1)`` on the scale ensure the current observation never enters
+    the band that judges it (no leakage). The classic mean-based variant ``mean(MR) / 1.128`` is
+    the textbook alternative; the robust median form is used here to stay resilient to a single
+    outlier month on short (≈ annual) series.
 
     Args:
         monthly_df: DataFrame from compute_monthly_metrics.
         metric: Column name to analyze.
         window: Rolling window size (in months).
-        n_sigma: Number of standard deviations for bounds.
+        n_sigma: Shewhart multiplier (number of sigmas) for the control band.
 
     Returns:
         DataFrame with columns: year_month, value, rolling_mean, upper_bound,
-        lower_bound, is_anomaly, direction.
+        lower_bound, is_anomaly, direction. (``rolling_mean`` holds the robust median centre line.)
     """
     if metric not in monthly_df.columns:
         raise ValueError(f"Metric '{metric}' not found in data. Available: {list(monthly_df.columns)}")
@@ -218,46 +233,22 @@ def detect_trend_changes(
         df["direction"] = None
         return df
 
-    # Compute robust rolling stats: rolling median and rolling MAD
+    # Centre line: one-period-lagged rolling median (robust, drift-resistant).
     rolling_median = df["value"].rolling(window=window, min_periods=window).median().shift(1)
 
-    # We need a custom rolling MAD function
-    def mad(x):
-        median = np.median(x)
-        return np.median(np.abs(x - median))
-
-    rolling_mad = df["value"].rolling(window=window, min_periods=window).apply(mad, raw=True).shift(1)
-
-    # For small windows, use t-distribution critical value instead of normal z
-    # to maintain the intended false-positive rate (n_sigma maps to tail probability)
-    if window < 20:
-        from scipy.stats import norm
-        from scipy.stats import t as t_dist
-
-        target_alpha = 2 * (1 - norm.cdf(n_sigma))  # two-tailed alpha implied by n_sigma
-        effective_sigma = t_dist.ppf(1 - target_alpha / 2, df=window - 1)
-        logger.debug(
-            f"SPC: small window ({window}), adjusting sigma from {n_sigma:.2f} to {effective_sigma:.2f} "
-            f"(t-distribution, df={window - 1})"
-        )
-    else:
-        effective_sigma = n_sigma
-
-    # Convert MAD to standard deviation equivalent: std = MAD / 0.6745
-    rolling_std_est = rolling_mad / 0.6745
-
-    # Handle cases where MAD is 0 (e.g. constant values in window)
-    # Fallback to traditional rolling std; if that is also 0/NaN, use global std as last resort
-    rolling_std_traditional = df["value"].rolling(window=window, min_periods=max(2, window)).std().shift(1)
-    rolling_std_est = rolling_std_est.fillna(rolling_std_traditional)
-    rolling_std_est = np.where(rolling_std_est == 0, rolling_std_traditional, rolling_std_est)
-    global_std = df["value"].std()
-    if global_std > 0:
-        rolling_std_est = np.where(np.isnan(rolling_std_est) | (rolling_std_est == 0), global_std, rolling_std_est)
+    # Scale: robust moving-range (I-MR) estimator — median of the absolute month-to-month
+    # differences within the window, divided by the d4 unbiasing constant (E[median(MR)] =
+    # 0.9539 * sigma for normal data). The moving range captures *within-subgroup* (short-term)
+    # variation, so the band does not inflate during a slow drift the way a MAD/std of the levels
+    # does — that inflation was the bug this estimator fixes (audit #10). The .shift(1) mirrors the
+    # centre line so the current observation never enters the band that judges it (no leakage).
+    # Classic mean variant (textbook Shewhart): mean(MR) / 1.128 — kept as the documented alternative.
+    moving_range = df["value"].diff().abs()
+    rolling_sigma = moving_range.rolling(window=window, min_periods=max(1, window - 1)).median().shift(1) / 0.9539
 
     df["rolling_mean"] = rolling_median  # using median as the center line for robust SPC
-    df["upper_bound"] = rolling_median + effective_sigma * rolling_std_est
-    df["lower_bound"] = rolling_median - effective_sigma * rolling_std_est
+    df["upper_bound"] = rolling_median + n_sigma * rolling_sigma
+    df["lower_bound"] = rolling_median - n_sigma * rolling_sigma
 
     # Flag anomalies
     df["is_anomaly"] = (df["value"] > df["upper_bound"]) | (df["value"] < df["lower_bound"])
