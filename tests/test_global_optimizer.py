@@ -760,3 +760,45 @@ class TestGreedyFeasibilityFlag:
         result = two_segment_allocator.optimize_greedy(global_risk_target=1.5)
         assert result.feasible is True
         assert result.global_risk <= 1.5 + 1e-9
+
+
+def _frontier_with_exposure(points):
+    """(sol_fac, risk, production, exposure=todu_amt_pile_h6) frontier."""
+    return pd.DataFrame(points, columns=["sol_fac", "b2_ever_h6", "oa_amt_h0", "todu_amt_pile_h6"])
+
+
+class TestPortfolioBadRate:
+    """Audit #14: report the exposure-weighted portfolio bad-rate alongside the production-weighted
+    risk that the MILP optimizes; the optimization constraint is unchanged."""
+
+    def test_exposure_weighted_reported_and_differs_from_production_weighted(self):
+        alloc = GlobalAllocator()
+        # A: risk 1.0, production 1000, exposure 4000 ; B: risk 3.0, production 3000, exposure 1000
+        alloc.load_frontier("A", _frontier_with_exposure([(0, 1.0, 1000, 4000)]))
+        alloc.load_frontier("B", _frontier_with_exposure([(0, 3.0, 3000, 1000)]))
+        result = alloc.optimize_exact(global_risk_target=5.0)  # loose: both single points chosen
+        # production-weighted = (1*1000 + 3*3000)/(1000+3000) = 2.5  (the optimized ceiling)
+        assert result.global_risk == pytest.approx(2.5)
+        # exposure-weighted = (1*4000 + 3*1000)/(4000+1000) = 1.4  (portfolio bad-rate)
+        assert result.portfolio_bad_rate == pytest.approx(1.4)
+        assert result.portfolio_bad_rate != pytest.approx(result.global_risk)  # genuinely different basis
+
+    def test_allocations_unchanged_with_vs_without_exposure(self):
+        pts = [(0, 1.0, 1000), (1, 2.0, 2000)]
+        pts_ex = [(0, 1.0, 1000, 500), (1, 2.0, 2000, 1500)]
+        a1 = GlobalAllocator()
+        a1.load_frontier("A", _make_frontier(pts))
+        a2 = GlobalAllocator()
+        a2.load_frontier("A", _frontier_with_exposure(pts_ex))
+        r1 = a1.optimize_exact(global_risk_target=2.0)
+        r2 = a2.optimize_exact(global_risk_target=2.0)
+        assert r1.allocations == r2.allocations  # constraint unchanged -> same choice
+        assert r1.global_risk == pytest.approx(r2.global_risk)
+        assert r1.portfolio_bad_rate is None  # no exposure column -> graceful None
+        assert r2.portfolio_bad_rate is not None  # exposure present -> computed
+
+    def test_greedy_also_reports_portfolio_bad_rate(self):
+        alloc = GlobalAllocator()
+        alloc.load_frontier("A", _frontier_with_exposure([(0, 1.0, 1000, 4000), (1, 2.0, 2000, 3000)]))
+        result = alloc.optimize_greedy(global_risk_target=5.0)
+        assert result.portfolio_bad_rate is not None

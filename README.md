@@ -149,6 +149,8 @@ uv run python run_batch.py --list
 
 After batch processing, allocates a global risk target across segments by selecting one point from each segment's efficient frontier to maximize total production.
 
+**Global risk convention:** the target is a **production-weighted** average of each segment's `b2_ever_h6` bad-rate — `Σ prod·risk / Σ prod` (risk per euro of new production) — and this is the figure the MILP/greedy solver constrains. The **exposure-weighted portfolio bad-rate** (`Σbad/Σexposure`, the portfolio-consistent rate) is computed and reported alongside it for reference only; the two differ unless production is proportional to exposure across segments.
+
 You must pass **at least one** risk target via `--target` and/or `--what-if` (see below).
 
 ```bash

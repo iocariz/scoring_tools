@@ -5,6 +5,10 @@ This script runs the global portfolio optimization process.
 It loads efficient frontiers from 'data/efficient_frontier_*.csv' (or specified paths),
 and allocates risk targets to maximize global production.
 
+The global risk target is PRODUCTION-weighted (Sum prod*risk / Sum prod) -- the figure the solver
+constrains. The exposure-weighted portfolio bad-rate (Sum bad / Sum exposure) is reported alongside
+it for reference only (audit #14).
+
 Per-segment constraints are loaded from segments.toml (min_risk, max_risk, min_production).
 Segments can be locked to a specific sol_fac via --lock.
 
@@ -224,6 +228,12 @@ def main():
             logger.warning(
                 f"INFEASIBLE allocation at target {t}%: {result.message or 'constraints not satisfied'}. "
                 "Reported figures are the closest feasible-effort result, not an optimum."
+            )
+        pbr = getattr(result, "portfolio_bad_rate", None)
+        if pbr is not None:
+            logger.info(
+                f"Target {t}%: production-weighted risk {result.global_risk:.4f}% (the optimized ceiling) | "
+                f"exposure-weighted portfolio bad-rate {pbr:.4f}% (reference)."
             )
         results.append((t, result))
 
