@@ -220,6 +220,11 @@ def main():
             global_production_floor=args.production_floor,
             method=args.method,
         )
+        if not getattr(result, "feasible", True):
+            logger.warning(
+                f"INFEASIBLE allocation at target {t}%: {result.message or 'constraints not satisfied'}. "
+                "Reported figures are the closest feasible-effort result, not an optimum."
+            )
         results.append((t, result))
 
     # Primary CSV = first target (same as first requested)
