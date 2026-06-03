@@ -565,51 +565,73 @@ def _fix_partial_order_violations(
     result: pd.DataFrame,
     variables: list[str],
     inv_set: set[str],
+    *,
+    tol: float = 1e-9,
 ) -> int:
-    """Check and fix partial-order violations by averaging violating pairs.
+    """Project the multiplier surface onto monotonicity over the cell poset (audit #17).
 
-    Returns the number of violations fixed.
+    A generalized PAVA: whenever a dominating pair violates the order (cell ``i`` is riskier than
+    ``j`` in every dimension but ``mult[i] < mult[j]``), the two cells' **blocks** are pooled to the
+    unweighted mean of their members via union-find, and the scan repeats until no violation remains.
+    Pooling whole blocks (level sets) rather than averaging isolated pairs is what makes this a valid
+    isotonic projection — and because blocks only ever merge (≤ n−1 merges) it is guaranteed to
+    terminate with **zero** residual partial-order violations (the old pairwise-average + ``range(5)``
+    loop could re-break pairs and exit non-converged).
+
+    Returns the number of block merges performed.
     """
-    vals = result["reject_risk_multiplier"].values.copy()
-    coords = result[variables].values  # (n_cells, n_vars)
     n = len(result)
+    if n < 2:
+        return 0
 
-    # Build direction signs: +1 if higher bin = riskier, -1 if inverted
+    vals = result["reject_risk_multiplier"].to_numpy(dtype=float)
+    # Orient coordinates so that higher = riskier in all dimensions.
     signs = np.array([(-1 if v in inv_set else 1) for v in variables])
+    oriented = result[variables].to_numpy() * signs
 
-    # Orient coordinates so that higher = riskier in all dimensions
-    oriented = coords * signs
+    # Strictly-dominating ordered pairs: i dominates j ⇒ constraint mult[i] >= mult[j].
+    dom_pairs = []
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            diff = oriented[i] - oriented[j]
+            if np.all(diff >= 0) and np.any(diff > 0):
+                dom_pairs.append((i, j))
+    if not dom_pairs:
+        return 0
 
-    violations_fixed = 0
-    # Iterate until no violations remain (typically 1-2 passes)
-    for _ in range(5):
+    # Union-find over cells; a block's value is the unweighted mean of its members' multipliers.
+    parent = list(range(n))
+    block_sum = vals.copy()
+    block_size = np.ones(n)
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    merges = 0
+    while True:
         changed = False
-        for i in range(n):
-            for j in range(i + 1, n):
-                # Check if i dominates j (i is riskier or equal in all dims)
-                diff = oriented[i] - oriented[j]
-                if np.all(diff >= 0) and np.any(diff > 0):
-                    # i is strictly riskier → multiplier[i] should >= multiplier[j]
-                    if vals[i] < vals[j]:
-                        avg = (vals[i] + vals[j]) / 2
-                        vals[i] = avg
-                        vals[j] = avg
-                        violations_fixed += 1
-                        changed = True
-                elif np.all(diff <= 0) and np.any(diff < 0):
-                    # j is strictly riskier → multiplier[j] should >= multiplier[i]
-                    if vals[j] < vals[i]:
-                        avg = (vals[i] + vals[j]) / 2
-                        vals[j] = avg
-                        vals[i] = avg
-                        violations_fixed += 1
-                        changed = True
+        for i, j in dom_pairs:
+            ri, rj = find(i), find(j)
+            if ri == rj:
+                continue
+            if block_sum[ri] / block_size[ri] < block_sum[rj] / block_size[rj] - tol:
+                # i dominates j but block(i) is less risky than block(j): pool the two blocks.
+                parent[rj] = ri
+                block_sum[ri] += block_sum[rj]
+                block_size[ri] += block_size[rj]
+                merges += 1
+                changed = True
         if not changed:
             break
 
-    if violations_fixed > 0:
-        result["reject_risk_multiplier"] = vals
-    return violations_fixed
+    if merges:
+        result["reject_risk_multiplier"] = np.array([block_sum[find(k)] / block_size[find(k)] for k in range(n)])
+    return merges
 
 
 def apply_parceling_adjustment(
@@ -752,11 +774,12 @@ def apply_parceling_adjustment(
                 f"{n_full} bin(s) at ≥99% (all accepted)"
             )
 
-    # Enforce monotonicity if requested
+    # Enforce monotonicity if requested. Clip FIRST, then enforce (audit #17): a uniform clip is
+    # order-preserving, and pooled means of in-range values stay in range, so the monotone projection
+    # is the final word and the output is provably both monotone and within [1, max_risk_multiplier].
     if enforce_monotonicity:
-        result = _enforce_multiplier_monotonicity(result, variables, inv_vars=inv_vars, quiet=quiet)
-        # Re-clip after isotonic adjustment
         result["reject_risk_multiplier"] = result["reject_risk_multiplier"].clip(lower=1.0, upper=max_risk_multiplier)
+        result = _enforce_multiplier_monotonicity(result, variables, inv_vars=inv_vars, quiet=quiet)
 
     # Warn about bins with extreme adjustments or very few observations
     extreme_bins = (result["reject_risk_multiplier"] >= max_risk_multiplier * 0.9).sum()

@@ -9,11 +9,31 @@ import pytest
 
 from src.reject_inference import (
     _enforce_multiplier_monotonicity,
+    _fix_partial_order_violations,
     apply_parceling_adjustment,
     apply_reject_inference,
     compute_acceptance_rates,
     compute_ri_confidence,
 )
+
+
+def _count_partial_order_violations(df, variables, inv_set=None):
+    """Count strictly-dominating pairs (a riskier than b in all dims) with mult[a] < mult[b]."""
+    inv_set = inv_set or set()
+    signs = np.array([(-1 if v in inv_set else 1) for v in variables])
+    oriented = df[variables].to_numpy() * signs
+    vals = df["reject_risk_multiplier"].to_numpy()
+    n = len(df)
+    c = 0
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            d = oriented[i] - oriented[j]
+            if np.all(d >= 0) and np.any(d > 0) and vals[i] < vals[j] - 1e-9:
+                c += 1
+    return c
+
 
 # =============================================================================
 # Helper to build demand DataFrames
@@ -1197,6 +1217,75 @@ class TestPartialOrderVerification:
                         f"Partial-order violation: {idx_a} dominates {idx_b} "
                         f"but mult {mults[idx_a]:.4f} < {mults[idx_b]:.4f}"
                     )
+
+
+class TestPosetIsotonicProjection:
+    """Audit #17: block-pooling generalized PAVA — a valid, terminating poset isotonic projection."""
+
+    def test_zero_residual_violations_on_tangled_grid(self):
+        """The core guarantee: after enforcement, ZERO partial-order violations remain."""
+        rng = np.random.RandomState(7)
+        rows = []
+        for v0 in range(4):
+            for v1 in range(4):
+                # tangled (anti-monotone-ish + noise) multiplier surface
+                rows.append({"var0": v0, "var1": v1, "reject_risk_multiplier": float(6 - v0 - v1) + rng.uniform(-1, 1)})
+        result = pd.DataFrame(rows)
+        enforced = _enforce_multiplier_monotonicity(result.copy(), ["var0", "var1"])
+        assert _count_partial_order_violations(enforced, ["var0", "var1"]) == 0
+
+    def test_pools_decreasing_chain_to_isotonic_mean(self):
+        """A totally-ordered decreasing chain projects to its mean (the true isotonic solution),
+        not the arbitrary monotone staircase the old pairwise-averaging produced."""
+        chain = pd.DataFrame(
+            {"var0": list(range(10)), "var1": list(range(10)), "reject_risk_multiplier": np.arange(10, 0, -1.0)}
+        )
+        out = chain.copy()
+        _fix_partial_order_violations(out, ["var0", "var1"], set())
+        vals = out["reject_risk_multiplier"].to_numpy()
+        # block pooling collapses the whole violating chain to its mean (= 5.5)
+        np.testing.assert_allclose(vals, 5.5)
+
+    def test_idempotent_and_already_monotone_unchanged(self):
+        monotone = pd.DataFrame(
+            {"var0": [1, 1, 2, 2], "var1": [1, 2, 1, 2], "reject_risk_multiplier": [1.0, 1.5, 1.5, 2.0]}
+        )
+        out = monotone.copy()
+        merges = _fix_partial_order_violations(out, ["var0", "var1"], set())
+        assert merges == 0
+        np.testing.assert_array_almost_equal(out["reject_risk_multiplier"].to_numpy(), [1.0, 1.5, 1.5, 2.0])
+        # idempotent: a second pass changes nothing
+        _fix_partial_order_violations(out, ["var0", "var1"], set())
+        np.testing.assert_array_almost_equal(out["reject_risk_multiplier"].to_numpy(), [1.0, 1.5, 1.5, 2.0])
+
+    def test_inverted_axis_direction(self):
+        """For an inv_var (higher bin = safer), domination is oriented the other way."""
+        # var0 inverted: higher var0 = safer, so LOWER var0 should carry the higher multiplier.
+        df = pd.DataFrame({"var0": [1, 2, 3], "var1": [1, 1, 1], "reject_risk_multiplier": [1.0, 2.0, 3.0]})
+        _fix_partial_order_violations(df, ["var0", "var1"], {"var0"})
+        # with var0 inverted this [1,2,3] is a violation (riskier low bin has lower mult) -> pooled
+        assert _count_partial_order_violations(df, ["var0", "var1"], {"var0"}) == 0
+
+    def test_clip_then_enforce_bounded_and_monotone(self):
+        """apply_parceling_adjustment: output is within [1, max_mult] AND monotone (clip-then-enforce)."""
+        repesca = pd.DataFrame(
+            {"var0": [1, 2, 3], "var1": [1, 1, 1], "todu_30ever_h6": [100.0] * 3, "todu_amt_pile_h6": [500.0] * 3}
+        )
+        rates = pd.DataFrame(
+            {
+                "var0": [1, 2, 3],
+                "var1": [1, 1, 1],
+                "n_booked": [1, 8, 5],
+                "n_score_rejected": [9, 2, 5],
+                "acceptance_rate": [0.05, 0.9, 0.4],
+            }
+        )
+        result = apply_parceling_adjustment(
+            repesca, rates, VARIABLES, enforce_monotonicity=True, max_risk_multiplier=2.5
+        )
+        mults = result.sort_values("var0")["reject_risk_multiplier"].to_numpy()
+        assert (mults >= 1.0 - 1e-9).all() and (mults <= 2.5 + 1e-9).all()  # bounded
+        assert all(mults[i] <= mults[i + 1] + 1e-9 for i in range(len(mults) - 1))  # monotone
 
 
 # =============================================================================
