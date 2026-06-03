@@ -333,6 +333,10 @@ class PreprocessingSettings(BaseModel):
     risk_step: float = Field(default=0.1, gt=0, le=50)
     cz_config: dict[int, Any] = Field(default_factory=dict)
     log_level: str = "INFO"
+    # Data-quality strictness (audit #18). When True (default), DQ warnings (e.g. coverage gaps,
+    # outliers) are logged but do not halt the pipeline; genuine corruption (negative counts/amounts,
+    # unparseable dates) always FAILs regardless. Set False for strict mode: warnings halt too.
+    dq_allow_warnings: bool = True
     fixed_cutoffs: dict[str, Any] | None = None
     baseline_mode: bool = False
     base_scenario_only: bool = False

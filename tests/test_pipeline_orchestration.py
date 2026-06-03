@@ -65,6 +65,31 @@ class TestRunPreprocessingPhase:
 
         assert result is None
 
+    def test_strict_mode_halts_on_warnings(self, monkeypatch, tmp_path):
+        """audit #18: with dq_allow_warnings=False, a warnings-only report halts the pipeline."""
+        settings = make_settings(dq_allow_warnings=False)
+        output = OutputPaths(base_dir=tmp_path)
+
+        monkeypatch.setattr(
+            preprocessing_module,
+            "run_data_quality_checks",
+            lambda data, settings, verbose=True: SimpleNamespace(is_valid=True, warnings=["coverage gap"]),
+        )
+
+        def fail_complete(*args, **kwargs):
+            raise AssertionError("complete_preprocessing_pipeline must not run in strict mode with warnings")
+
+        monkeypatch.setattr(preprocessing_module, "complete_preprocessing_pipeline", fail_complete)
+
+        result = preprocessing_module.run_preprocessing_phase(
+            pd.DataFrame({"raw": [1]}),
+            settings,
+            skip_dq_checks=False,
+            output=output,
+        )
+
+        assert result is None
+
     def test_skips_dq_and_normalizes_non_positive_tasa_fin(self, monkeypatch, tmp_path):
         settings = make_settings()
         output = OutputPaths(base_dir=tmp_path)

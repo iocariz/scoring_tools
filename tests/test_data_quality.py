@@ -268,6 +268,12 @@ class TestCheckDateRange:
         assert result.status == CheckStatus.WARNING
         assert "ends" in result.message
 
+    def test_unparseable_dates_fail(self):
+        # audit #18: dates that cannot be parsed break downstream filtering -> FAILED (fail closed)
+        df = pd.DataFrame({"date": ["not-a-date", "still-not-a-date", "nope"]})
+        result = check_date_range(df, "date", "2023-01-01", "2023-12-01")
+        assert result.status == CheckStatus.FAILED
+
     def test_missing_column(self):
         df = pd.DataFrame({"other": [1]})
         result = check_date_range(df, "date", "2023-01-01", "2023-12-01")
@@ -320,10 +326,11 @@ class TestCheckIndicatorValues:
         result = check_indicator_values(df, ["ind1", "ind2"])
         assert result.status == CheckStatus.PASSED
 
-    def test_negative_values_warn(self):
+    def test_negative_values_fail(self):
+        # audit #18: negative counts/amounts are genuine corruption -> FAILED (fail closed), not WARNING
         df = pd.DataFrame({"ind1": [1, -2, 3]})
         result = check_indicator_values(df, ["ind1"])
-        assert result.status == CheckStatus.WARNING
+        assert result.status == CheckStatus.FAILED
 
     def test_no_indicators(self):
         df = pd.DataFrame({"a": [1]})
@@ -356,6 +363,42 @@ class TestCheckBookedRatio:
         df = pd.DataFrame({"other": [1]})
         result = check_booked_ratio(df)
         assert result.status == CheckStatus.SKIPPED
+
+    def test_segment_filter_denominator(self):
+        """audit #18: the ratio is computed on the segment's demand population, not the full frame.
+        Target segment 'cd' has a healthy 30% booked ratio; the global ratio is ~1.5% (FAILED)."""
+        # cd: 30 booked / 100 ; other segment: 0 booked / 5000
+        cd = pd.DataFrame({"status_name": ["booked"] * 30 + ["rejected"] * 70, "segment_cut_off": "cd"})
+        other = pd.DataFrame({"status_name": ["rejected"] * 5000, "segment_cut_off": "other"})
+        df = pd.concat([cd, other], ignore_index=True)
+        # Without segment scoping: 30/5100 ≈ 0.59% < 1% -> FAILED (the old global-denominator bug)
+        assert check_booked_ratio(df).status == CheckStatus.FAILED
+        # With segment scoping: 30/100 = 30% -> PASSED
+        assert check_booked_ratio(df, segment_filter="cd").status == CheckStatus.PASSED
+
+    def test_segment_filter_applies_demand_exclusions(self):
+        """Fraud/legal/out-of-norm rows are excluded from the denominator (demand population)."""
+        df = pd.DataFrame(
+            {
+                "status_name": ["booked"] * 30 + ["rejected"] * 70 + ["rejected"] * 500,
+                "segment_cut_off": "cd",
+                "fuera_norma": ["n"] * 100 + ["s"] * 500,  # 500 out-of-norm rows excluded
+                "fraud_flag": "n",
+                "nature_holder": "individual",
+            }
+        )
+        # only the 100 in-norm rows count -> 30/100 = 30% PASSED (vs 30/600 = 5% borderline otherwise)
+        assert check_booked_ratio(df, segment_filter="cd").status == CheckStatus.PASSED
+
+    def test_regex_supersegment_filter(self):
+        df = pd.DataFrame(
+            {
+                "status_name": ["booked"] * 30 + ["rejected"] * 70,
+                "segment_cut_off": ["cd"] * 50 + ["ef"] * 50,
+            }
+        )
+        result = check_booked_ratio(df, segment_filter="(cd)|(ef)")
+        assert result.status == CheckStatus.PASSED  # regex matches both -> 30/100 = 30%
 
 
 # =============================================================================
