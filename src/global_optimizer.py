@@ -49,6 +49,10 @@ class AllocationResult:
     binding_constraints: list[str] = field(default_factory=list)
     feasible: bool = True  # whether the returned allocation satisfies target + constraints (audit #15)
     message: str = ""  # human-readable note (e.g. why the allocation is infeasible)
+    # Exposure-weighted portfolio bad-rate (Σ b2·exposure / Σ exposure) — the portfolio-consistent
+    # bad-rate, reported alongside the production-weighted `global_risk` that the MILP optimizes
+    # (audit #14). None when exposure (todu_amt_pile_h6) is absent from the loaded frontier.
+    portfolio_bad_rate: float | None = None
 
     def to_dataframe(self) -> pd.DataFrame:
         """Return a DataFrame with allocation summary and swap details per segment."""
@@ -97,7 +101,9 @@ class AllocationResult:
         lines.append("=" * 90)
         lines.append("GLOBAL ALLOCATION RESULTS")
         lines.append("=" * 90)
-        lines.append(f"Global Risk:       {self.global_risk:.4f}%")
+        lines.append(f"Global Risk:       {self.global_risk:.4f}% (production-weighted — the optimized ceiling)")
+        if self.portfolio_bad_rate is not None:
+            lines.append(f"Portfolio bad-rate:{self.portfolio_bad_rate:.4f}% (exposure-weighted — reference only)")
         lines.append(f"Global Production: {self.global_production:,.0f}")
         if self.target is not None:
             lines.append(f"Risk Target:       {self.target:.4f}%")
@@ -168,6 +174,25 @@ def _check_allocation_feasible(
     if production_floor is not None and total_prod < production_floor - tol:
         reasons.append(f"total production {total_prod:,.0f} below global floor {production_floor:,.0f}")
     return reasons
+
+
+def _exposure_weighted_bad_rate(segment_details: dict[str, dict]) -> float | None:
+    """Exposure-weighted portfolio bad-rate of a decoded allocation (audit #14).
+
+    Returns ``Σ b2·exposure / Σ exposure`` over the chosen frontier rows (exposure =
+    ``todu_amt_pile_h6``) — the portfolio-consistent bad-rate ``Σbad/Σexposure``, reported alongside
+    the production-weighted ``global_risk`` that the MILP optimizes. Returns ``None`` if any chosen
+    row lacks the exposure column or total exposure is non-positive (e.g. an older frontier CSV).
+    """
+    num = 0.0
+    exp = 0.0
+    for d in segment_details.values():
+        if "todu_amt_pile_h6" not in d or "b2_ever_h6" not in d:
+            return None
+        e = float(d["todu_amt_pile_h6"])
+        num += float(d["b2_ever_h6"]) * e
+        exp += e
+    return num / exp if exp > 0 else None
 
 
 class GlobalAllocator:
@@ -531,6 +556,7 @@ class GlobalAllocator:
             target=global_risk_target,
             segment_details=segment_details,
             binding_constraints=binding,
+            portfolio_bad_rate=_exposure_weighted_bad_rate(segment_details),
         )
 
     # ------------------------------------------------------------------
@@ -811,4 +837,5 @@ class GlobalAllocator:
             binding_constraints=binding_heuristic,
             feasible=not greedy_violations,
             message="; ".join(greedy_violations),
+            portfolio_bad_rate=_exposure_weighted_bad_rate(segment_details),
         )

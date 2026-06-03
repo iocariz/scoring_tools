@@ -214,9 +214,15 @@ def allocation_constraint_narrative(
             f"- **Risk target (input):** {tgt:.4f}% (production-weighted portfolio b2 ceiling used by the MILP/greedy solver)."
         )
     lines.append(
-        f"- **Achieved global risk:** {result.global_risk:.4f}% | **Global production:** €{result.global_production:,.0f} "
-        f"| **Method:** {result.method or 'unknown'}."
+        f"- **Achieved global risk (production-weighted — the optimized ceiling):** {result.global_risk:.4f}% "
+        f"| **Global production:** €{result.global_production:,.0f} | **Method:** {result.method or 'unknown'}."
     )
+    pbr = getattr(result, "portfolio_bad_rate", None)
+    if pbr is not None:
+        lines.append(
+            f"- **Portfolio bad-rate (exposure-weighted — reference only):** {pbr:.4f}% "
+            "(Σbad/Σexposure across segments; the optimizer constrains the production-weighted figure above)."
+        )
     if global_production_floor is not None:
         met = result.global_production + 1e-6 >= global_production_floor
         floor_note = "met" if met else "below configured floor — infeasible or check solver"
