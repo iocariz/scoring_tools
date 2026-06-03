@@ -282,7 +282,8 @@ def check_date_range(df: pd.DataFrame, date_column: str, expected_start: str, ex
                 name="Date Range", status=CheckStatus.PASSED, message="Data covers expected date range", details=details
             )
     except (ValueError, TypeError) as e:
-        return CheckResult(name="Date Range", status=CheckStatus.WARNING, message=f"Could not parse dates: {e}")
+        # Unparseable dates break date filtering downstream — fail closed rather than warn (audit #18).
+        return CheckResult(name="Date Range", status=CheckStatus.FAILED, message=f"Could not parse dates: {e}")
 
 
 def check_numeric_outliers(
@@ -354,10 +355,12 @@ def check_indicator_values(df: pd.DataFrame, indicators: list[str]) -> CheckResu
             issues[col] = f"{neg_count:,} negative values"
 
     if issues:
+        # Counts/amounts cannot be negative — this is genuine data corruption, not a soft warning
+        # (audit #18: fail closed rather than passing invalid data through).
         return CheckResult(
             name="Indicator Values",
-            status=CheckStatus.WARNING,
-            message=f"Negative values in {len(issues)} indicator columns",
+            status=CheckStatus.FAILED,
+            message=f"Negative values (invalid for counts/amounts) in {len(issues)} indicator columns",
             details=issues,
         )
     else:
@@ -374,16 +377,36 @@ def check_booked_ratio(
     booked_value: str = "booked",
     min_ratio_warn: float = 0.05,
     min_ratio_fail: float = 0.01,
+    segment_filter: str | None = None,
 ) -> CheckResult:
-    """Check that there's a reasonable ratio of booked vs total applications."""
+    """Check that there's a reasonable ratio of booked vs total applications.
+
+    Computes the ratio on the segment's **demand population** when ``segment_filter`` is given
+    (DQ runs before the pipeline applies the segment filter, so the raw frame spans all segments
+    plus fraud/legal rows). Using the full unfiltered frame as the denominator understated the
+    per-segment ratio (audit #18); restrict to the segment + demand exclusions instead.
+    """
     if status_column not in df.columns:
         return CheckResult(
             name="Booked Ratio", status=CheckStatus.SKIPPED, message=f"Column '{status_column}' not found"
         )
 
-    status_lower = df[status_column].astype(str).str.lower()
+    # Restrict to the segment's demand population so the ratio reflects the segment, not the
+    # whole file (audit #18). Mirrors check_segment_exists / preprocess_data filtering.
+    scoped = df
+    if segment_filter and "segment_cut_off" in scoped.columns:
+        seg_col = scoped["segment_cut_off"].astype(str)
+        seg_mask = seg_col.str.match(segment_filter, na=False) if "|" in segment_filter else (seg_col == segment_filter)
+        scoped = scoped[seg_mask]
+    for excl_col, keep_val in (("fuera_norma", "n"), ("fraud_flag", "n")):
+        if excl_col in scoped.columns:
+            scoped = scoped[scoped[excl_col].astype(str).str.lower() == keep_val]
+    if "nature_holder" in scoped.columns:
+        scoped = scoped[scoped["nature_holder"].astype(str).str.lower() != "legal"]
+
+    status_lower = scoped[status_column].astype(str).str.lower()
     booked_count = (status_lower == booked_value.lower()).sum()
-    total_count = len(df)
+    total_count = len(scoped)
     ratio = booked_count / total_count if total_count > 0 else 0
 
     details = {"booked_count": f"{booked_count:,}", "total_count": f"{total_count:,}", "ratio": f"{ratio:.1%}"}
@@ -477,7 +500,7 @@ def run_data_quality_checks(
     report.add(check_date_range(df, "mis_date", date_ini, date_fin))
     report.add(check_numeric_outliers(df, indicators))
     report.add(check_indicator_values(df, indicators))
-    report.add(check_booked_ratio(df))
+    report.add(check_booked_ratio(df, segment_filter=segment_filter))
     report.add(check_duplicate_rows(df))
 
     if verbose:
