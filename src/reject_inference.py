@@ -546,16 +546,16 @@ def _enforce_multiplier_monotonicity(
             f"Isotonic monotonicity did not converge after {max_iterations} iterations (max_change={max_change:.2e})"
         )
 
-    # Post-hoc: verify and fix partial-order violations across all dimensions.
-    # A cell a dominates b if a[v] >= b[v] for all v (respecting direction).
-    # For dominated pairs: multiplier[riskier] >= multiplier[safer].
+    # Post-hoc: project onto monotonicity over the full cell poset (block-pooling PAVA, audit #17).
+    # A cell a dominates b if a[v] >= b[v] for all v (respecting direction) ⇒ multiplier[a] >= multiplier[b].
+    # Guarantees zero residual violations after the alternating axis-wise warm-start.
     if len(variables) >= 2 and len(result) > 1:
-        n_violations = _fix_partial_order_violations(result, variables, inv_set)
-        if n_violations > 0:
+        n_merges = _fix_partial_order_violations(result, variables, inv_set)
+        if n_merges > 0:
             log_fn = logger.debug if quiet else logger.warning
             log_fn(
-                f"Isotonic post-hoc: fixed {n_violations} partial-order violation(s) "
-                f"remaining after alternating projections."
+                f"Isotonic post-hoc: pooled {n_merges} block(s) to clear partial-order violations "
+                f"remaining after the axis-wise warm-start."
             )
 
     return result
