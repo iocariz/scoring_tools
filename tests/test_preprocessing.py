@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from src.config import BinConfig, PreprocessingSettings
 from src.constants import RejectReason, StatusName
 from src.preprocess_improved import (
+    _infer_direction_from_bins,
     _run_data_transformations,
     apply_binning_transformations,
     complete_preprocessing_pipeline,
@@ -714,3 +715,66 @@ def test_learn_optimization_bins_missing_column():
 
     with pytest.raises(ValueError, match="Missing required columns"):
         learn_optimization_bins(df, source_col="income_t1_m")
+
+
+class TestInferDirectionFromBins:
+    """Audit #16: direction = sign of the production-weighted rank correlation, always."""
+
+    def test_clear_descending(self):
+        # higher bin index = safer (risk falls) -> descending -> -1
+        bins = [1, 2, 3, 4, 5, 6]
+        risk = [5.0, 4.0, 3.0, 2.0, 1.5, 1.0]
+        w = [1000, 2000, 3000, 2500, 1500, 800]
+        direction, rho_w, p = _infer_direction_from_bins(bins, risk, w)
+        assert direction == -1
+        assert rho_w < 0
+        assert p < 0.05  # strong monotone signal
+
+    def test_clear_ascending(self):
+        bins = [1, 2, 3, 4, 5, 6]
+        risk = [1.0, 1.5, 2.0, 3.0, 4.0, 5.0]
+        w = [1000, 2000, 3000, 2500, 1500, 800]
+        direction, rho_w, p = _infer_direction_from_bins(bins, risk, w)
+        assert direction == 1
+        assert rho_w > 0
+        assert p < 0.05
+
+    def test_noisy_descending_regression(self):
+        """The headline fix: a descending-on-average but noisy profile that the OLD
+        significance-gated rule would have forced to ascending (+1) is now correctly
+        inferred descending (-1), because direction follows the empirical sign."""
+        bins = [1, 2, 3, 4, 5]
+        risk = [3.0, 3.2, 2.5, 2.8, 2.0]  # overall down, with inversions
+        w = [500, 3000, 400, 3000, 600]
+
+        direction, rho_w, p = _infer_direction_from_bins(bins, risk, w)
+        assert direction == -1  # empirical sign (was forced +1 by the old default)
+        assert rho_w < 0
+        assert p > 0.10  # the (calibrated) permutation deems it weak — but that no longer flips the sign
+
+    def test_flat_risk_defaults_ascending(self):
+        bins = [1, 2, 3, 4, 5]
+        risk = [2.0, 2.0, 2.0, 2.0, 2.0]
+        w = [1000, 1000, 1000, 1000, 1000]
+        direction, rho_w, p = _infer_direction_from_bins(bins, risk, w)
+        assert direction == 1  # documented default — no monotone signal
+        assert np.isnan(rho_w)
+        assert p == 1.0
+
+    def test_permutation_calibration_sanity(self):
+        bins = [1, 2, 3, 4, 5, 6]
+        w = [1000, 1500, 1200, 1300, 1100, 900]
+        # strong monotone -> small p
+        _, _, p_strong = _infer_direction_from_bins(bins, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], w)
+        # near-random (no clear trend) -> larger p
+        _, _, p_weak = _infer_direction_from_bins(bins, [3.0, 1.0, 4.0, 2.0, 5.0, 3.5], w)
+        assert p_strong < 0.05
+        assert p_weak > p_strong
+
+    def test_deterministic(self):
+        bins = [1, 2, 3, 4, 5]
+        risk = [3.0, 3.2, 2.5, 2.8, 2.0]
+        w = [500, 3000, 400, 3000, 600]
+        a = _infer_direction_from_bins(bins, risk, w)
+        b = _infer_direction_from_bins(bins, risk, w)
+        assert a == b

@@ -1034,6 +1034,72 @@ def _filter_demand_for_period(
     return data_demand
 
 
+def _infer_direction_from_bins(
+    bin_vals,
+    risk_vals,
+    weights,
+    *,
+    n_permutations: int = 1000,
+    seed: int = DEFAULT_RANDOM_STATE,
+) -> tuple[int, float, float]:
+    """Infer the monotonicity direction of risk vs bin index (audit #16).
+
+    Returns ``(direction, rho_w, p_value)`` where ``direction`` is +1 (ascending risk: higher bin
+    = riskier) or -1 (descending: higher bin = safer).
+
+    The direction is **always** the sign of the production-weighted rank correlation ``rho_w``
+    between bin index and per-bin risk — it is never overridden by significance, so a genuinely
+    descending-but-noisy score is inferred descending instead of being forced to ascending. The
+    permutation ``p_value`` is reported for **confidence only** (a caller may warn when it is large);
+    it is calibrated by permuting the ``(risk_rank, weight)`` pairs **jointly** so the weight travels
+    with its risk (an exchangeable null). When there is no monotone signal (``rho_w`` NaN/≈0 — a flat
+    risk profile), ``direction`` falls back to the documented default ``+1`` with ``p_value = 1.0``.
+    """
+    from scipy.stats import rankdata
+
+    rank_x = rankdata(bin_vals)
+    rank_y = rankdata(risk_vals)
+    weights = np.asarray(weights, dtype=float)
+
+    mean_x = np.average(rank_x, weights=weights)
+    mean_y = np.average(rank_y, weights=weights)
+    dx = rank_x - mean_x
+    dy = rank_y - mean_y
+    cov_xy = np.average(dx * dy, weights=weights)
+    var_x = np.average(dx * dx, weights=weights)
+    var_y = np.average(dy * dy, weights=weights)
+
+    # Coherent production-weighted rank correlation (weighted Pearson-on-ranks ⇒ weighted Spearman).
+    if var_x <= 0 or var_y <= 0:
+        rho_w = float("nan")
+    else:
+        rho_w = float(cov_xy / np.sqrt(var_x * var_y))
+
+    # No monotone signal: flat/degenerate risk profile → documented default, no confidence.
+    if np.isnan(rho_w) or np.isclose(rho_w, 0.0):
+        return 1, rho_w, 1.0
+
+    direction = 1 if rho_w > 0 else -1
+
+    # Calibrated permutation null (confidence only — does NOT change `direction`): permute the
+    # (risk_rank, weight) pairs jointly so each risk keeps its own production weight.
+    rng = np.random.RandomState(seed)
+    abs_cov_obs = abs(cov_xy)
+    n = len(rank_x)
+    exceed = 0
+    for _ in range(n_permutations):
+        perm = rng.permutation(n)
+        perm_y = rank_y[perm]
+        perm_w = weights[perm]
+        pmx = np.average(rank_x, weights=perm_w)
+        pmy = np.average(perm_y, weights=perm_w)
+        perm_cov = np.average((rank_x - pmx) * (perm_y - pmy), weights=perm_w)
+        if abs(perm_cov) >= abs_cov_obs:
+            exceed += 1
+    p_value = (exceed + 1) / (n_permutations + 1)
+    return direction, rho_w, p_value
+
+
 def _infer_monotonicity(data: pd.DataFrame, settings: "PreprocessingSettings") -> None:
     """
     Infer the monotonicity of binned variables with respect to the risk target.
@@ -1047,7 +1113,6 @@ def _infer_monotonicity(data: pd.DataFrame, settings: "PreprocessingSettings") -
     logger.info("=" * 80)
 
     import numpy as np
-    from scipy.stats import rankdata
 
     from src.utils import calculate_b2_ever_h6
 
@@ -1072,47 +1137,22 @@ def _infer_monotonicity(data: pd.DataFrame, settings: "PreprocessingSettings") -
                 risk_vals = b2_risks[valid_idx].values
                 weights = aggs["oa_amt"][valid_idx].values
 
-                # Calculate weighted Spearman correlation using ranked variables
-                rank_x = rankdata(bin_vals)
-                rank_y = rankdata(risk_vals)
+                # Direction = sign of the production-weighted rank correlation, ALWAYS (audit #16);
+                # the permutation p-value is confidence-only and never overrides the empirical sign.
+                direction, rho_w, p_value = _infer_direction_from_bins(bin_vals, risk_vals, weights)
 
-                # Calculate weighted covariance of ranks to prevent tiny edge bins dictating constraints
-                mean_x = np.average(rank_x, weights=weights)
-                mean_y = np.average(rank_y, weights=weights)
-
-                cov_xy = np.average((rank_x - mean_x) * (rank_y - mean_y), weights=weights)
-
-                # Permutation test: assess significance of weighted covariance
-                n_permutations = 1000
-                rng = np.random.RandomState(DEFAULT_RANDOM_STATE)
-                abs_cov_obs = abs(cov_xy) if not np.isnan(cov_xy) else 0.0
-                exceed_count = 0
-                for _ in range(n_permutations):
-                    perm_y = rng.permutation(rank_y)
-                    perm_mean_y = np.average(perm_y, weights=weights)
-                    perm_cov = np.average((rank_x - mean_x) * (perm_y - perm_mean_y), weights=weights)
-                    if abs(perm_cov) >= abs_cov_obs:
-                        exceed_count += 1
-                p_value = (exceed_count + 1) / (n_permutations + 1)
-
-                # Direction is driven by the sign of the covariance + significance check
-                if np.isnan(cov_xy) or np.isclose(cov_xy, 0):
-                    direction = 1
+                if np.isnan(rho_w) or np.isclose(rho_w, 0.0):
                     logger.warning(
-                        f"[{var}] Weighted Spearman covariance returned NaN or 0. Defaulting to ascending (1)."
+                        f"[{var}] No production-weighted monotone signal (flat risk profile). "
+                        f"Defaulting to ascending (1) — set the direction explicitly in config."
                     )
                 elif p_value > 0.10:
-                    direction = 1
                     logger.warning(
-                        f"[{var}] Weighted Spearman covariance not significant "
-                        f"(cov={cov_xy:g}, p={p_value:.3f} > 0.10). "
-                        f"Defaulting to ascending (1). Consider setting direction explicitly in config."
+                        f"[{var}] Weak monotone signal (rho_w: {rho_w:.3f}, perm_p: {p_value:.3f}); "
+                        f"using the empirical sign direction: {direction}. Consider setting it explicitly in config."
                     )
                 else:
-                    direction = 1 if cov_xy > 0 else -1
-                    logger.info(
-                        f"[{var}] Inferred direction: {direction} (Weighted Spearman Cov: {cov_xy:g}, p={p_value:.3f})"
-                    )
+                    logger.info(f"[{var}] Inferred direction: {direction} (rho_w: {rho_w:.3f}, perm_p: {p_value:.3f}).")
 
             settings.directions[var] = direction
 
