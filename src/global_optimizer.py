@@ -47,6 +47,8 @@ class AllocationResult:
     target: float | None = None
     segment_details: dict[str, dict] = field(default_factory=dict)  # full frontier row per segment
     binding_constraints: list[str] = field(default_factory=list)
+    feasible: bool = True  # whether the returned allocation satisfies target + constraints (audit #15)
+    message: str = ""  # human-readable note (e.g. why the allocation is infeasible)
 
     def to_dataframe(self) -> pd.DataFrame:
         """Return a DataFrame with allocation summary and swap details per segment."""
@@ -101,6 +103,9 @@ class AllocationResult:
             lines.append(f"Risk Target:       {self.target:.4f}%")
         if self.method:
             lines.append(f"Method:            {self.method}")
+        if not self.feasible:
+            note = self.message or "constraints not satisfied"
+            lines.append(f"⚠ INFEASIBLE:      {note}")
         lines.append("-" * 90)
         lines.append(f"{'Segment':<25} {'Risk':>10} {'Production':>15} {'Sol ID':>8}")
         lines.append("-" * 90)
@@ -125,6 +130,44 @@ class AllocationResult:
 
         lines.append("=" * 90)
         return "\n".join(lines)
+
+
+def _check_allocation_feasible(
+    segment_metrics: dict[str, dict[str, float]],
+    total_prod: float,
+    global_risk: float,
+    target: float,
+    constraints: "dict[str, SegmentConstraints] | None" = None,
+    production_floor: float | None = None,
+    tol: float = 1e-6,
+) -> list[str]:
+    """Recompute constraint violations of a *decoded* integer allocation (audit #15).
+
+    The MILP solve can, on a degenerate/fractional result, be argmax-decoded into a per-segment
+    choice that no longer satisfies the constraints it was given. This re-checks the decoded
+    choices against the same constraints — global production-weighted risk <= target (exactly the
+    MILP's ``Σ p(r−T)x ≤ 0``), each segment's min/max risk and min production, and the global
+    production floor — and returns a list of human-readable reasons (empty list ⇒ feasible).
+    """
+    reasons: list[str] = []
+    if global_risk > target + tol:
+        reasons.append(f"global risk {global_risk:.4f}% exceeds target {target:.4f}%")
+    if constraints:
+        for seg, sc in constraints.items():
+            m = segment_metrics.get(seg)
+            if m is None:
+                continue
+            risk = m["risk"]
+            prod = m["production"]
+            if sc.min_risk is not None and risk < sc.min_risk - tol:
+                reasons.append(f"{seg} risk {risk:.4f}% below min_risk {sc.min_risk:.4f}%")
+            if sc.max_risk is not None and risk > sc.max_risk + tol:
+                reasons.append(f"{seg} risk {risk:.4f}% above max_risk {sc.max_risk:.4f}%")
+            if sc.min_production is not None and prod < sc.min_production - tol:
+                reasons.append(f"{seg} production {prod:,.0f} below min_production {sc.min_production:,.0f}")
+    if production_floor is not None and total_prod < production_floor - tol:
+        reasons.append(f"total production {total_prod:,.0f} below global floor {production_floor:,.0f}")
+    return reasons
 
 
 class GlobalAllocator:
@@ -429,6 +472,7 @@ class GlobalAllocator:
         total_prod = 0.0
         total_risk_num = 0.0
 
+        x_decoded = np.zeros_like(x)  # one-hot of the actual decoded choices (audit #15)
         for seg in segments:
             df = self.frontiers[seg]
             off = var_offset[seg]
@@ -441,6 +485,7 @@ class GlobalAllocator:
                     f"(expected 1). Using argmax as fallback."
                 )
             chosen = int(np.argmax(seg_x))
+            x_decoded[off + chosen] = 1.0
             row = df.iloc[chosen]
 
             allocations[seg] = int(row["sol_fac"])
@@ -453,11 +498,22 @@ class GlobalAllocator:
 
         global_risk = total_risk_num / total_prod if total_prod > 0 else 0.0
 
-        # Detect binding constraints (slack < 1e-6)
+        # Re-validate the *decoded* integer allocation against the constraints the MILP was given.
+        # The argmax decode of a degenerate/fractional solver result can violate the global risk
+        # target or per-segment bounds; never report such an allocation as optimal (audit #15).
+        # Raising routes through optimize()'s existing greedy fallback.
+        violations = _check_allocation_feasible(
+            segment_metrics, total_prod, global_risk, global_risk_target, constraints, global_production_floor
+        )
+        if violations:
+            raise RuntimeError("MILP decode infeasible: " + "; ".join(violations))
+
+        # Detect binding constraints (slack < 1e-6) from the DECODED allocation, not the
+        # (possibly fractional) raw solver vector, so diagnostics match what is returned.
         binding = []
         if n_ub > 0:
             # Keep diagnostics sparse-safe to avoid dense matrix blow-ups on large frontiers.
-            ub_values = np.asarray(A_ub @ x, dtype=float).ravel()
+            ub_values = np.asarray(A_ub @ x_decoded, dtype=float).ravel()
             for i, label in enumerate(ub_labels):
                 slack = b_ub[i] - ub_values[i]
                 if abs(slack) < 1e-6:
@@ -730,6 +786,20 @@ class GlobalAllocator:
                 f"(achieved {final_total_prod:,.0f}) under target {global_risk_target:.4f}%"
             )
 
+        # Greedy is best-effort (hill-climbing): it may stop with risk above target or a bound
+        # unmet. Don't raise — but label the result honestly so callers never present it as
+        # optimal (audit #15).
+        greedy_violations = _check_allocation_feasible(
+            segment_metrics,
+            final_total_prod,
+            final_global_risk,
+            global_risk_target,
+            constraints,
+            global_production_floor,
+        )
+        if greedy_violations:
+            logger.warning("Greedy allocation does not meet all constraints: " + "; ".join(greedy_violations))
+
         return AllocationResult(
             global_risk=final_global_risk,
             global_production=final_total_prod,
@@ -739,4 +809,6 @@ class GlobalAllocator:
             target=global_risk_target,
             segment_details=segment_details,
             binding_constraints=binding_heuristic,
+            feasible=not greedy_violations,
+            message="; ".join(greedy_violations),
         )

@@ -9,7 +9,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.global_optimizer import AllocationResult, GlobalAllocator, SegmentConstraints
+from src.global_optimizer import (
+    AllocationResult,
+    GlobalAllocator,
+    SegmentConstraints,
+    _check_allocation_feasible,
+)
 
 
 def _make_frontier(points: list[tuple[int, float, float]]) -> pd.DataFrame:
@@ -84,6 +89,7 @@ class TestExactSolver:
         assert result.allocations["B"] == 1
         assert result.global_production == pytest.approx(5500)
         assert result.global_risk <= 1.5 + 1e-9
+        assert result.feasible is True  # audit #15: a satisfied target is labeled feasible
 
     def test_respects_global_risk_target(self, two_segment_allocator):
         """Result weighted risk must not exceed the target."""
@@ -162,6 +168,9 @@ class TestExactSolver:
         assert result.allocations["A"] == 0
         # Fell back to greedy, so method reflects that
         assert result.method == "greedy"
+        # audit #15: greedy could not reach the target, so the result is honestly flagged infeasible
+        assert result.feasible is False
+        assert result.global_risk > 0.01
 
     def test_exact_beats_greedy_local_optimum(self):
         """Greedy gets trapped by a near-dominated intermediate point.
@@ -688,3 +697,66 @@ class TestBackwardCompatibility:
             constraints={"A": SegmentConstraints(min_risk=0.9, max_risk=1.1)},  # Forces A to sol_fac=1
         )
         assert result.segment_metrics["A"]["risk"] == pytest.approx(1.0)
+
+
+class TestCheckAllocationFeasible:
+    """Audit #15: the decode feasibility guard, unit-tested directly (forcing scipy to emit a
+    fractional x is impractical, so the validation logic is exercised in isolation)."""
+
+    def _metrics(self):
+        return {"A": {"risk": 1.0, "production": 2000.0}, "B": {"risk": 1.2, "production": 3000.0}}
+
+    def test_feasible_returns_no_reasons(self):
+        m = self._metrics()
+        total = sum(v["production"] for v in m.values())
+        gr = sum(v["risk"] * v["production"] for v in m.values()) / total  # ≈ 1.127%
+        assert _check_allocation_feasible(m, total, gr, target=1.5) == []
+
+    def test_global_risk_over_target_flagged(self):
+        m = self._metrics()
+        total = sum(v["production"] for v in m.values())
+        gr = sum(v["risk"] * v["production"] for v in m.values()) / total
+        reasons = _check_allocation_feasible(m, total, gr, target=1.0)
+        assert reasons and any("global risk" in r for r in reasons)
+
+    def test_segment_max_risk_violation_flagged(self):
+        m = self._metrics()
+        total = sum(v["production"] for v in m.values())
+        gr = sum(v["risk"] * v["production"] for v in m.values()) / total
+        reasons = _check_allocation_feasible(
+            m, total, gr, target=2.0, constraints={"B": SegmentConstraints(max_risk=1.0)}
+        )
+        assert any("B" in r and "max_risk" in r for r in reasons)
+
+    def test_segment_min_production_violation_flagged(self):
+        m = self._metrics()
+        total = sum(v["production"] for v in m.values())
+        gr = sum(v["risk"] * v["production"] for v in m.values()) / total
+        reasons = _check_allocation_feasible(
+            m, total, gr, target=2.0, constraints={"A": SegmentConstraints(min_production=5000.0)}
+        )
+        assert any("A" in r and "min_production" in r for r in reasons)
+
+    def test_global_production_floor_violation_flagged(self):
+        m = self._metrics()
+        total = sum(v["production"] for v in m.values())
+        gr = sum(v["risk"] * v["production"] for v in m.values()) / total
+        reasons = _check_allocation_feasible(m, total, gr, target=2.0, production_floor=10000.0)
+        assert any("global floor" in r for r in reasons)
+
+
+class TestGreedyFeasibilityFlag:
+    def test_greedy_unreachable_target_flagged_infeasible(self):
+        """Audit #15: greedy is best-effort — when it cannot reach the target it returns the
+        closest result honestly flagged feasible=False (it does not raise)."""
+        alloc = GlobalAllocator()
+        alloc.load_frontier("A", _make_frontier([(0, 2.0, 100), (1, 3.0, 200)]))
+        result = alloc.optimize_greedy(global_risk_target=0.5)
+        assert result.feasible is False
+        assert result.global_risk > 0.5
+        assert result.message  # carries a reason
+
+    def test_greedy_feasible_target_flagged_feasible(self, two_segment_allocator):
+        result = two_segment_allocator.optimize_greedy(global_risk_target=1.5)
+        assert result.feasible is True
+        assert result.global_risk <= 1.5 + 1e-9

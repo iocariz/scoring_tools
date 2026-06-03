@@ -201,6 +201,13 @@ def allocation_constraint_narrative(
     lines: list[str] = []
     lines.append("## Allocation constraint narrative")
     lines.append("")
+    if not getattr(result, "feasible", True):
+        note = result.message or "constraints not satisfied"
+        lines.append(
+            f"- ⚠ **INFEASIBLE:** {note}. No allocation meets the target under the current frontiers/constraints; "
+            "the figures below are the closest feasible-effort result, **not** an optimum."
+        )
+        lines.append("")
     tgt = result.target
     if tgt is not None:
         lines.append(
