@@ -18,6 +18,8 @@ from loguru import logger
 from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import csc_array
 
+from src.optimization_utils import pareto_keep_indices
+
 
 @dataclass
 class SegmentConstraints:
@@ -159,13 +161,12 @@ class GlobalAllocator:
         # Sort by risk ascending
         sorted_df = frontier_df.sort_values("b2_ever_h6").reset_index(drop=True)
 
-        # Prune dominated points: keep only strictly increasing production
-        prod = sorted_df["oa_amt_h0"]
-        cummax = prod.cummax()
-        pareto_mask = (cummax - cummax.shift(1).fillna(-np.inf)).abs() > 1e-4
-        pareto_mask.iloc[0] = True
+        # Prune dominated points: keep only strictly increasing production. Uses the canonical
+        # Pareto sweep shared with optimization_utils.trace_pareto_frontier (audit #13) so the
+        # per-segment frontier and the allocation candidate set prune by the same rule.
         n_before = len(sorted_df)
-        sorted_df = sorted_df.loc[pareto_mask].reset_index(drop=True)
+        keep = pareto_keep_indices(sorted_df["oa_amt_h0"].values)
+        sorted_df = sorted_df.iloc[keep].reset_index(drop=True)
         n_pruned = n_before - len(sorted_df)
 
         self.frontiers[segment_name] = sorted_df
