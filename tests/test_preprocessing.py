@@ -416,6 +416,44 @@ def test_binning_with_nan_values_raises_when_above_threshold():
         apply_binning_transformations(data, octroi_bins, efx_bins)
 
 
+# audit #21: out-of-range handling with FINITE edges (unreachable on the standard ±inf config).
+_FINITE_OCTROI = [0.0, 50.0, 100.0]  # 2 bins, no ±inf
+_FINITE_EFX = [0.0, 25.0, 50.0]  # risk kept in-range
+
+
+def _binning_frame(score_vals):
+    n = len(score_vals)
+    return pd.DataFrame({"score_rf": score_vals, "risk_score_rf": [10.0] * n})
+
+
+def test_out_of_range_below_snapped_to_first_bin():
+    # 199 in-range + 1 below-range (0.5% < 1%): the below row snaps to the first bin (1-indexed = 1), kept.
+    result = apply_binning_transformations(_binning_frame([60.0] * 199 + [-10.0]), _FINITE_OCTROI, _FINITE_EFX)
+    assert len(result) == 200  # snapped, not dropped
+    assert not result["sc_octroi_new_clus"].isna().any()
+    assert result["sc_octroi_new_clus"].iloc[-1] == 1  # below-range -> first bin
+
+
+def test_out_of_range_above_snapped_to_last_bin():
+    # 199 in-range + 1 above-range: snaps to the last bin (2 bins -> 1-indexed 2), kept.
+    result = apply_binning_transformations(_binning_frame([60.0] * 199 + [200.0]), _FINITE_OCTROI, _FINITE_EFX)
+    assert len(result) == 200
+    assert result["sc_octroi_new_clus"].iloc[-1] == 2  # above-range -> last bin
+
+
+def test_nan_source_dropped_separately_from_oob():
+    # 199 in-range + 1 NaN-source: the NaN row is dropped (not snapped); OOD rows would be kept.
+    result = apply_binning_transformations(_binning_frame([60.0] * 199 + [np.nan]), _FINITE_OCTROI, _FINITE_EFX)
+    assert len(result) == 199  # NaN-source dropped
+    assert not result["sc_octroi_new_clus"].isna().any()
+
+
+def test_out_of_range_over_threshold_still_raises():
+    # >1% out of range with finite edges -> hard fail (behavior preserved).
+    with pytest.raises(ValueError, match="exceeds 1% threshold"):
+        apply_binning_transformations(_binning_frame([60.0] * 90 + [-10.0] * 10), _FINITE_OCTROI, _FINITE_EFX)
+
+
 def test_filter_by_date_with_nat():
     """Test date filtering with NaT values."""
     data = pd.DataFrame(
