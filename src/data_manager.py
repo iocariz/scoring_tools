@@ -47,6 +47,20 @@ def standardize_columns_and_values(data: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
+def find_missing_columns(df: pd.DataFrame, required_columns: list[str]) -> list[str]:
+    """Return the required columns absent from ``df`` (case-SENSITIVE, audit #20).
+
+    The single source of truth for "are the required columns present", shared by
+    ``validate_data_columns`` (the hard gate) and ``data_quality.check_required_columns`` so the two
+    can never diverge. The match is case-sensitive because column names are standardized to lowercase
+    by ``standardize_columns_and_values`` and pandas ``df[col]`` access is itself case-sensitive — so
+    this exactly reflects what the pipeline requires (no false "all present" on mixed-case names).
+    Required names are returned verbatim.
+    """
+    data_columns = set(df.columns)
+    return [col for col in required_columns if col not in data_columns]
+
+
 def validate_data_columns(data: pd.DataFrame, required_columns: list[str], context: str = "data") -> list[str]:
     """
     Validate that required columns exist in the DataFrame.
@@ -62,10 +76,9 @@ def validate_data_columns(data: pd.DataFrame, required_columns: list[str], conte
     Raises:
         DataValidationError: If any required columns are missing
     """
-    # Case-sensitive comparison — columns should already be standardized to
+    # Case-sensitive comparison (via the shared helper) — columns should already be standardized to
     # lowercase by load_and_prepare_data before this is called.
-    data_columns = set(data.columns)
-    missing = [col for col in required_columns if col not in data_columns]
+    missing = find_missing_columns(data, required_columns)
 
     if missing:
         raise DataValidationError(f"Missing required columns in {context}: {missing}")

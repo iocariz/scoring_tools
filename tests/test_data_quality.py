@@ -153,10 +153,14 @@ class TestCheckRequiredColumns:
         assert result.status == CheckStatus.FAILED
         assert "c" in result.details["missing_columns"]
 
-    def test_case_insensitive(self):
-        df = pd.DataFrame({"Status_Name": [1]})
-        result = check_required_columns(df, ["status_name"])
-        assert result.status == CheckStatus.PASSED
+    def test_case_sensitive_exact_match(self):
+        # audit #20: now case-SENSITIVE (matches validate_data_columns + pandas access). A mixed-case
+        # column does NOT satisfy a lowercase requirement -> FAILED (was falsely PASSED before).
+        mixed = pd.DataFrame({"Status_Name": [1]})
+        assert check_required_columns(mixed, ["status_name"]).status == CheckStatus.FAILED
+        # exact (post-standardization) lowercase match -> PASSED
+        lower = pd.DataFrame({"status_name": [1]})
+        assert check_required_columns(lower, ["status_name"]).status == CheckStatus.PASSED
 
 
 # =============================================================================
