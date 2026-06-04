@@ -37,6 +37,7 @@ from tqdm import tqdm
 
 from src.config import OutputPaths
 from src.consolidation import generate_consolidation_report
+from src.data_manager import standardize_columns_and_values
 from src.utils import resolve_modelling_supersegment, resolve_reporting_supersegment
 
 
@@ -57,7 +58,7 @@ def _safe_remove_sink(sink_id: int) -> None:
         pass
 
 
-def load_and_standardize_data(data_path: str) -> pd.DataFrame | None:
+def load_and_standardize_data(data_path: str, encoding: str = "latin-1") -> pd.DataFrame | None:
     """
     Load data from SAS file and standardize column names and categorical values.
 
@@ -73,17 +74,14 @@ def load_and_standardize_data(data_path: str) -> pd.DataFrame | None:
     """
     try:
         logger.info(f"Attempting to preload data from {data_path}...")
-        data = pd.read_sas(data_path, format="sas7bdat", encoding="utf-8")
+        # Encoding configurable + unified with data_manager.load_data (audit #19): both read sites
+        # use the same encoding (default latin-1) instead of the old latin-1/utf-8 split.
+        data = pd.read_sas(data_path, format="sas7bdat", encoding=encoding)
         logger.info(f"Data loaded: {data.shape[0]:,} rows × {data.shape[1]} columns")
 
-        # Standardize column names
-        logger.info("Standardizing column names...")
-        data.columns = data.columns.str.lower().str.replace(" ", "_")
-
-        # Standardize categorical values
-        logger.info("Standardizing categorical values...")
-        for col in data.select_dtypes(include=["object", "category", "string"]).columns:
-            data[col] = data[col].astype("string").str.lower().str.replace(" ", "_").astype("category")
+        # Standardize column names + categorical values via the shared helper (protects dates/IDs).
+        logger.info("Standardizing column names and categorical values...")
+        data = standardize_columns_and_values(data)
 
         logger.info("Data standardization complete.")
         return data
@@ -1508,7 +1506,7 @@ def main():
     print("Attempting to preload data (optimization)")
     print(f"{'=' * 60}")
     data_path = base_config.get("data_path", "data/demanda_direct_out.sas7bdat")
-    preloaded_data = load_and_standardize_data(data_path)
+    preloaded_data = load_and_standardize_data(data_path, encoding=base_config.get("sas_encoding", "latin-1"))
 
     if preloaded_data is not None:
         print(f"Data preloaded: {preloaded_data.shape[0]:,} rows × {preloaded_data.shape[1]} columns")

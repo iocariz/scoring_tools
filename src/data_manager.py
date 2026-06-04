@@ -13,10 +13,38 @@ class DataValidationError(Exception):
     pass
 
 
-def load_data(df_path: str) -> pd.DataFrame:
-    """Load data from SAS file."""
-    df = pd.read_sas(df_path, format="sas7bdat", encoding="latin-1")
+# Columns that must NOT be value-coerced by standardize_columns_and_values (audit #19):
+# date columns and opaque identifier keys. Lowercasing/underscoring/categorizing these would
+# mangle string dates (e.g. "2024-01-01 00:00:00" -> "2024-01-01_00:00:00") and case-sensitive
+# IDs. On the current data these load as datetime64/numeric (not object), so excluding them is a
+# no-op; the protection guards against future files delivering them as strings.
+# NOTE: `se_decision_id` is intentionally NOT protected — it is a categorical filter ("ok"/"rv"/
+# "ko") whose downstream comparisons require the lowercased form.
+PROTECTED_FROM_COERCION = frozenset({"mis_date", "authorization_id"})
+
+
+def load_data(df_path: str, encoding: str = "latin-1") -> pd.DataFrame:
+    """Load data from SAS file (encoding configurable via settings.sas_encoding)."""
+    df = pd.read_sas(df_path, format="sas7bdat", encoding=encoding)
     return df
+
+
+def standardize_columns_and_values(data: pd.DataFrame) -> pd.DataFrame:
+    """Lowercase/underscore column names and normalize categorical *values* in place.
+
+    Column names are always normalized (lowercase + spaces→underscores). Object/string/category
+    *values* are lowercased + underscored + cast to ``category`` — except for protected date and
+    identifier columns (``PROTECTED_FROM_COERCION`` or any ``*_date`` name), which are left verbatim
+    so dates and case-sensitive keys are never mangled (audit #19). Shared by both load paths
+    (``load_and_prepare_data`` and ``run_batch.load_and_standardize_data``) so they normalize
+    identically.
+    """
+    data.columns = data.columns.str.lower().str.replace(" ", "_")
+    for col in data.select_dtypes(include=["object", "category", "string"]).columns:
+        if col in PROTECTED_FROM_COERCION or col.endswith("_date"):
+            continue
+        data[col] = data[col].astype("string").str.lower().str.replace(" ", "_").astype("category")
+    return data
 
 
 def validate_data_columns(data: pd.DataFrame, required_columns: list[str], context: str = "data") -> list[str]:
@@ -84,13 +112,12 @@ def load_and_prepare_data(
         logger.debug(f"Using pre-loaded data: {data.shape[0]:,} rows x {data.shape[1]} columns")
     else:
         data_path = settings.data_path
-        data = load_data(data_path)
+        data = load_data(data_path, encoding=getattr(settings, "sas_encoding", "latin-1"))
         validate_data_not_empty(data, "Input data")
 
-        # Standardize column names and categorical values (only when loading fresh data)
-        data.columns = data.columns.str.lower().str.replace(" ", "_")
-        for col in data.select_dtypes(include=["object", "category", "string"]).columns:
-            data[col] = data[col].astype("string").str.lower().str.replace(" ", "_").astype("category")
+        # Standardize column names and categorical values (only when loading fresh data).
+        # Dates/IDs are protected from value coercion (audit #19).
+        data = standardize_columns_and_values(data)
         logger.debug("Column names and categorical values standardized")
 
     # Validate required columns exist after standardization.

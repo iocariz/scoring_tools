@@ -106,11 +106,64 @@ class TestLoadAndPrepareData:
         # Inject a column with mixed-case and a space → should be standardized
         raw["MisCased_col"] = ["A B", "C D"]
 
-        monkeypatch.setattr(dm, "load_data", lambda _: raw)
+        captured = {}
+
+        def _fake_load_data(path, encoding="latin-1"):
+            captured["encoding"] = encoding
+            return raw
+
+        monkeypatch.setattr(dm, "load_data", _fake_load_data)
         monkeypatch.setattr("src.schema.validate_raw_data", lambda d, raise_on_error=True: None)
 
         data, _ = dm.load_and_prepare_data(settings, preloaded_data=None)
         # Columns lowercased + spaces replaced
         assert "miscased_col" in data.columns
-        # Categorical values lowercased + spaces replaced
+        # Categorical values lowercased + spaces replaced (non-protected column)
         assert data["miscased_col"].iloc[0] == "a_b"
+        # Encoding is plumbed from settings (audit #19)
+        assert captured["encoding"] == settings.sas_encoding
+
+
+class TestStandardizeColumnsAndValues:
+    """Audit #19: normalize categorical filter values but protect dates / identifier keys."""
+
+    def test_filter_columns_normalized(self):
+        df = pd.DataFrame(
+            {
+                "Status_Name": ["Booked", "Rejected"],
+                "se_decision_id": ["OK", "RV"],  # _id but a categorical filter -> normalized
+                "reject_reason": ["09-SCORE", "08-OTHER"],
+            }
+        )
+        out = dm.standardize_columns_and_values(df)
+        assert list(out["status_name"]) == ["booked", "rejected"]
+        assert list(out["se_decision_id"]) == ["ok", "rv"]
+        assert list(out["reject_reason"]) == ["09-score", "08-other"]
+        # normalized columns are categorical
+        assert isinstance(out["status_name"].dtype, pd.CategoricalDtype)
+
+    def test_protected_date_and_id_left_verbatim(self):
+        df = pd.DataFrame(
+            {
+                "mis_date": ["2024-01-01 00:00:00", "2024-02-01 00:00:00"],  # string date w/ space
+                "authorization_id": ["AB12cd", "XY99ZZ"],  # case-sensitive opaque key
+                "settlement_date": ["2024-03-01 12:00:00", "2024-04-01 09:00:00"],  # *_date suffix
+                "status_name": ["Booked", "Rejected"],  # control: still normalized
+            }
+        )
+        out = dm.standardize_columns_and_values(df)
+        # protected: verbatim (no lowercase, no space->underscore, not categorical)
+        assert list(out["mis_date"]) == ["2024-01-01 00:00:00", "2024-02-01 00:00:00"]
+        assert list(out["authorization_id"]) == ["AB12cd", "XY99ZZ"]
+        assert list(out["settlement_date"]) == ["2024-03-01 12:00:00", "2024-04-01 09:00:00"]
+        assert not isinstance(out["mis_date"].dtype, pd.CategoricalDtype)
+        # control still normalized
+        assert list(out["status_name"]) == ["booked", "rejected"]
+
+    def test_column_names_lowercased(self):
+        df = pd.DataFrame({"Mixed Case Col": [1, 2]})
+        out = dm.standardize_columns_and_values(df)
+        assert "mixed_case_col" in out.columns
+
+    def test_config_default_encoding(self):
+        assert make_settings().sas_encoding == "latin-1"
