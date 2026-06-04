@@ -333,6 +333,10 @@ class PreprocessingSettings(BaseModel):
     risk_step: float = Field(default=0.1, gt=0, le=50)
     cz_config: dict[int, Any] = Field(default_factory=dict)
     log_level: str = "INFO"
+    # SAS file encoding for pd.read_sas (audit #19). Default "latin-1" (the verified main-path
+    # value); used by both data_manager.load_data and run_batch's preloader so the two read sites
+    # never diverge.
+    sas_encoding: str = "latin-1"
     # Data-quality strictness (audit #18). When True (default), DQ warnings (e.g. coverage gaps,
     # outliers) are logged but do not halt the pipeline; genuine corruption (negative counts/amounts,
     # unparseable dates) always FAILs regardless. Set False for strict mode: warnings halt too.
