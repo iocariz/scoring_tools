@@ -106,6 +106,16 @@ class TestThorndike:
         result = thorndike_case2_correction(observed_gini=0.4, u_ratio=0.0)
         assert result["corrected_gini"] == pytest.approx(0.4, abs=0.001)
 
+    def test_corrected_never_below_observed_and_attenuation_nonnegative(self):
+        """A Case-2 correction (u<1) only raises the estimate, so corrected_gini >= observed_gini
+        and attenuation_pct >= 0 must hold everywhere — including extreme/near-saturation inputs
+        (the clamp guards against the 0.999 r-clip ever inverting it)."""
+        for og in [0.05, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.98, 0.998]:
+            for u in [0.1, 0.2, 0.3, 0.5, 0.7, 0.9]:
+                r = thorndike_case2_correction(observed_gini=og, u_ratio=u)
+                assert r["corrected_gini"] >= og - 1e-9, (og, u, r["corrected_gini"])
+                assert r["attenuation_pct"] >= 0.0, (og, u, r["attenuation_pct"])
+
 
 # ---------------------------------------------------------------------------
 # Simulated range restriction

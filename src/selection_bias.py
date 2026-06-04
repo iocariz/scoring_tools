@@ -164,6 +164,11 @@ def thorndike_case2_correction(
     corrected_auc = _r_to_auc(r_corr)
     corrected_gini = 2 * corrected_auc - 1
 
+    # A Case-2 range-restriction correction (u<1) can only raise the estimate; the 0.999 r-clip
+    # above can otherwise invert that and yield corrected < observed -> a nonsensical negative
+    # attenuation. Clamp so corrected is never below observed (attenuation_pct is then >= 0).
+    corrected_gini = max(corrected_gini, observed_gini)
+
     attenuation = (1 - observed_gini / corrected_gini) * 100 if corrected_gini > 0 else 0.0
 
     return {
