@@ -620,8 +620,11 @@ def compute_ri_gini(
     and Gini is computed on the combined (booked-observed + rejected-imputed)
     population.  Repeated 50 times to produce a mean and CI.
 
-    This is inherently circular (the score informs both selection and imputation)
-    but provides an upper-bound estimate of unrestricted Gini.
+    This metric is **mechanically inflated** and must NOT be read as an unbiased discrimination
+    estimate: the imputed bad rate is a monotone function of the same score the Gini then ranks by,
+    so the score trivially "predicts" the imputed-rejected portion by construction. It is an upper
+    bound *under that assumption* only (the returned dict carries a ``note`` saying so). For a
+    principled unrestricted estimate use the Thorndike-corrected Gini instead.
     """
     rng = np.random.RandomState(42)
 
@@ -677,6 +680,11 @@ def compute_ri_gini(
         "n_booked": len(df_booked),
         "n_rejected": len(df_rejected),
         "uplift_factor": uplift_factor,
+        "note": (
+            "circular: rejected bad outcomes are imputed as a monotone function of the same score "
+            "the Gini ranks by — an upper bound under that assumption, NOT an unbiased discrimination "
+            "estimate"
+        ),
     }
 
 

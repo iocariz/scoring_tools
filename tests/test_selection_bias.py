@@ -282,6 +282,13 @@ class TestRiGini:
         # This is a soft test — RI Gini should be reasonable
         assert result["ri_gini_mean"] > 0.05
 
+    def test_ri_gini_carries_circularity_note(self):
+        """The result must flag that the RI Gini is a circular upper bound (diagnostic honesty)."""
+        df = _make_demand_df(n=3000, acceptance_rate=0.6)
+        result = compute_ri_gini(df, "score_rf", "early_bad", score_negate=True)
+        assert "note" in result and result["note"]
+        assert "circular" in result["note"].lower()
+
 
 # ---------------------------------------------------------------------------
 # Monthly PSI
