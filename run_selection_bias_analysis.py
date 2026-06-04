@@ -525,7 +525,11 @@ def main():
         print(outputs["score_correlations"].to_string(index=False))
 
     if "ri_gini" in outputs:
-        print("\n--- Reject Inference Gini (imputed) ---")
+        print("\n--- Reject Inference Gini (imputed — circular upper bound) ---")
+        print(
+            "  CAUTION: mechanically inflated — rejected outcomes are imputed from the same score the Gini "
+            "ranks by. Not an unbiased discrimination estimate; use the Thorndike-corrected Gini instead."
+        )
         print(
             outputs["ri_gini"][["segment", "score", "ri_gini_mean", "ri_gini_ci_lo", "ri_gini_ci_hi"]].to_string(
                 index=False

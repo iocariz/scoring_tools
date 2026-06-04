@@ -613,7 +613,7 @@ def plot_ri_gini(
     fig, ax = plt.subplots(figsize=(max(8, 3 * len(labels)), 6))
     ax.bar(x - width, df["observed_gini"], width, label="Observed", color=COLOR_SECONDARY)
     ax.bar(x, df["corrected_gini"], width, label="Thorndike corrected", color=COLOR_ACCENT)
-    ax.bar(x + width, df["ri_gini_mean"], width, label="RI-imputed", color=COLOR_PRODUCTION)
+    ax.bar(x + width, df["ri_gini_mean"], width, label="RI-imputed (circular upper bound)", color=COLOR_PRODUCTION)
 
     # Error bars for RI
     ri_err_lo = df["ri_gini_mean"] - df["ri_gini_ci_lo"]
@@ -644,6 +644,18 @@ def plot_ri_gini(
     ax.set_title("Observed vs Corrected vs RI-Imputed Gini", fontsize=15, fontweight="bold")
     ax.legend(fontsize=10)
     ax.axhline(0, color="black", lw=0.5)
+    # The RI-imputed bar is mechanically inflated — make that explicit for the reader (audit sub-finding).
+    fig.text(
+        0.5,
+        -0.02,
+        "RI-imputed Gini is a circular upper bound: rejected outcomes are imputed from the same score the "
+        "Gini ranks by — not an unbiased estimate.",
+        ha="center",
+        va="top",
+        fontsize=8,
+        style="italic",
+        color="gray",
+    )
 
     fig.tight_layout()
     fig_path = output_dir / "ri_gini_comparison.png"
