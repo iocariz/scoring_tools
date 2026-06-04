@@ -348,6 +348,21 @@ def _compute_hybrid_mr_risk(
                 f"Consider lowering mr_maturity_months or extending the MR window."
             )
             mr_h6_valid = mr_h6_valid.iloc[:0]  # empty DataFrame, forces fallback
+    elif mr_maturity_months > 0:
+        # mis_date is absent -> the requested maturity filter cannot run. Don't fail open silently:
+        # immature H6 zeros (todu_30ever_h6==0 only because the loan hasn't seasoned) then pass the
+        # .notna() gate and dilute b2_mr, which feeds the MR optimization mask (audit #2b).
+        logger.error(
+            f"H6 maturity filter requested (mr_maturity_months={mr_maturity_months}) but 'mis_date' is "
+            f"unavailable — immature H6 zeros are NOT excluded and may understate the MR-period risk (b2_mr) "
+            f"that drives the optimization mask. Ensure 'mis_date' is present."
+        )
+    else:
+        # mr_maturity_months == 0: maturity filtering explicitly disabled (audit #2b).
+        logger.info(
+            "H6 maturity filter disabled (mr_maturity_months=0): immature H6 zeros are NOT excluded from "
+            "b2_mr. Only use 0 when the MR booking window is fully mature."
+        )
 
     mr_agg = mr_h6_valid.groupby(merge_keys)[["todu_30ever_h6", "todu_amt_pile_h6"]].sum().reset_index()
     mr_agg["b2_mr"] = calculate_b2_ever_h6(
