@@ -618,34 +618,40 @@ def _apply_binning_from_config(
             nan_count = transformed_data[bc.output_col].isna().sum()
             if nan_count > 0:
                 nan_pct = nan_count / len(transformed_data)
-                src_min = transformed_data[bc.source_col].min()
-                src_max = transformed_data[bc.source_col].max()
+                src = transformed_data[bc.source_col]
+                src_min, src_max = src.min(), src.max()
+                lo, hi = min(bc.bin_edges), max(bc.bin_edges)
+                # Distinguish out-of-range (snapped into a boundary bin, KEPT — these contaminate the
+                # boundary cell that feeds the MILP grid) from true-NaN-source (dropped). NaN source
+                # values match neither mask. Flag each explicitly (audit #21).
+                nan_mask = transformed_data[bc.output_col].isna()
+                below_mask = nan_mask & (src < lo)
+                above_mask = nan_mask & (src >= hi)
+                n_below = int(below_mask.sum())
+                n_above = int(above_mask.sum())
+                n_nan_src = int(nan_count - n_below - n_above)
                 logger.warning(
-                    f"{nan_count:,} records ({nan_pct:.1%}) have NaN after {bc.output_col} binning. "
-                    f"{bc.source_col} range: [{src_min}, {src_max}], "
-                    f"bin_edges: [{min(bc.bin_edges)}, {max(bc.bin_edges)}]"
+                    f"{bc.output_col}: {nan_count:,} records ({nan_pct:.1%}) unbinned — "
+                    f"{n_below:,} below-range + {n_above:,} above-range snapped to boundary bins, "
+                    f"{n_nan_src:,} NaN-source dropped. "
+                    f"{bc.source_col} range: [{src_min}, {src_max}], bin_edges: [{lo}, {hi}]"
                 )
                 if nan_pct > 0.01:
                     raise ValueError(
                         f"{nan_pct:.1%} of records fall outside {bc.output_col} bin range — exceeds 1% threshold. "
                         f"Check bin_edges configuration or data quality."
                     )
-                # Assign out-of-range records to the nearest boundary bin instead of dropping
+                # Assign out-of-range records to the nearest boundary bin instead of dropping.
                 n_bins = len(bc.bin_edges) - 1
-                nan_mask = transformed_data[bc.output_col].isna()
-                below_mask = nan_mask & (transformed_data[bc.source_col] < min(bc.bin_edges))
-                above_mask = nan_mask & (transformed_data[bc.source_col] >= max(bc.bin_edges))
                 transformed_data.loc[below_mask, bc.output_col] = 0  # first bin (0-indexed)
                 transformed_data.loc[above_mask, bc.output_col] = n_bins - 1  # last bin (0-indexed)
-                # Any remaining NaNs (e.g., NaN source values) are dropped
-                remaining_nan = transformed_data[bc.output_col].isna().sum()
-                if remaining_nan > 0:
+                # Any remaining NaNs (NaN source values) are dropped.
+                if n_nan_src > 0:
                     logger.info(
-                        f"Dropping {remaining_nan:,} records with NaN source values in '{bc.output_col}' "
-                        f"({remaining_nan / len(transformed_data):.1%} of data)"
+                        f"Dropping {n_nan_src:,} records with NaN source values in '{bc.output_col}' "
+                        f"({n_nan_src / len(transformed_data):.1%} of data)"
                     )
                     transformed_data = transformed_data.dropna(subset=[bc.output_col])
-                logger.info(f"Assigned {nan_count - remaining_nan:,} out-of-range records to boundary bins")
 
             # 1-indexed bins
             transformed_data[bc.output_col] = transformed_data[bc.output_col] + 1
