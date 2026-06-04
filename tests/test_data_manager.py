@@ -38,6 +38,23 @@ class TestValidateDataColumns:
             dm.validate_data_columns(df, ["a", "z"])
 
 
+class TestFindMissingColumns:
+    """Audit #20: shared case-sensitive helper backing both validate_data_columns and DQ."""
+
+    def test_all_present(self):
+        df = pd.DataFrame({"a": [1], "b": [2]})
+        assert dm.find_missing_columns(df, ["a", "b"]) == []
+
+    def test_missing_reported_verbatim(self):
+        df = pd.DataFrame({"a": [1], "b": [2]})
+        assert dm.find_missing_columns(df, ["a", "c", "d"]) == ["c", "d"]
+
+    def test_case_sensitive(self):
+        # "A" required but only "a" present -> reported missing (matches pandas df[col] access)
+        df = pd.DataFrame({"a": [1]})
+        assert dm.find_missing_columns(df, ["A"]) == ["A"]
+
+
 class TestValidateDataNotEmpty:
     def test_non_empty_passes(self):
         dm.validate_data_not_empty(pd.DataFrame({"a": [1]}))

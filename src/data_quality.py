@@ -112,11 +112,15 @@ class DataQualityReport:
 
 
 def check_required_columns(df: pd.DataFrame, required_columns: list[str], context: str = "data") -> CheckResult:
-    """Check that required columns exist in the DataFrame."""
-    df_columns = set(df.columns.str.lower())
-    required_lower = {col.lower(): col for col in required_columns}
+    """Check that required columns exist in the DataFrame.
 
-    missing = [orig for lower, orig in required_lower.items() if lower not in df_columns]
+    Uses the shared, case-sensitive ``find_missing_columns`` so this DQ check agrees exactly with
+    ``validate_data_columns`` and the pipeline's real requirement (audit #20) — no false "all
+    present" on mixed-case names.
+    """
+    from src.data_manager import find_missing_columns
+
+    missing = find_missing_columns(df, required_columns)
 
     if not missing:
         return CheckResult(
