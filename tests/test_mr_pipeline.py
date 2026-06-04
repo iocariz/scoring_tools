@@ -872,6 +872,83 @@ class TestComputeHybridMRRisk:
         )
         assert comp_ref.iloc[0]["n_obs_mr_h3"] == 3
 
+    def test_immature_h6_zeros_excluded_when_filter_active(self, merge_keys):
+        """audit #2b: immature accounts with H6=0.0 (not NaN — zero only because unseasoned) pass the
+        .notna() gate but must be excluded by the maturity filter so they don't dilute b2_mr."""
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1],
+                "bin_b": [1],
+                "todu_30ever_h6": [5.0],
+                "todu_amt_pile_h6": [100.0],
+                "status_name": ["booked"],
+            }
+        )
+        n_mature, n_immature = 40, 60
+        data_demand_mr = pd.DataFrame(
+            {
+                "bin_a": [1] * (n_mature + n_immature),
+                "bin_b": [1] * (n_mature + n_immature),
+                "mis_date": pd.to_datetime(["2025-06-15"] * n_mature + ["2026-01-15"] * n_immature),
+                # mature: real bad; immature: H6=0.0 (would dilute b2_mr toward 0 if included)
+                "todu_30ever_h6": [8.0] * n_mature + [0.0] * n_immature,
+                "todu_amt_pile_h6": [100.0] * (n_mature + n_immature),
+                "oa_amt_h0": [1000.0] * (n_mature + n_immature),
+                "status_name": ["booked"] * (n_mature + n_immature),
+            }
+        )
+        _, comp = _compute_hybrid_mr_risk(
+            data_booked,
+            data_demand_mr,
+            merge_keys,
+            min_obs=10,
+            mr_maturity_months=6,
+            maturity_reference_date=pd.Timestamp("2026-02-01"),
+        )
+        row = comp.iloc[0]
+        # only the 40 mature accounts counted; the 60 immature H6=0 rows excluded
+        assert row["n_obs_mr"] == n_mature
+        # b2_mr (stored as a fraction) is the undiluted mature risk, NOT diluted toward 0 by the
+        # immature zeros (diluted would be mult*320/10000 vs undiluted mult*320/4000).
+        expected = calculate_b2_ever_h6(8.0 * n_mature, 100.0 * n_mature)
+        assert row["b2_mr"] == pytest.approx(expected, rel=1e-6)
+
+    def test_missing_mis_date_with_maturity_requested_warns(self, merge_keys):
+        """audit #2b: if the maturity filter is requested but mis_date is absent, the immature rows
+        are NOT excluded (filter can't run) — but the silent skip is now flagged with a loud log."""
+        from loguru import logger as loguru_logger
+
+        data_booked = pd.DataFrame(
+            {
+                "bin_a": [1],
+                "bin_b": [1],
+                "todu_30ever_h6": [5.0],
+                "todu_amt_pile_h6": [100.0],
+                "status_name": ["booked"],
+            }
+        )
+        n = 50
+        data_demand_mr = pd.DataFrame(  # NO mis_date column
+            {
+                "bin_a": [1] * n,
+                "bin_b": [1] * n,
+                "todu_30ever_h6": [8.0] * 20 + [0.0] * 30,
+                "todu_amt_pile_h6": [100.0] * n,
+                "oa_amt_h0": [1000.0] * n,
+                "status_name": ["booked"] * n,
+            }
+        )
+        captured: list[str] = []
+        sink_id = loguru_logger.add(lambda m: captured.append(m.record["message"]), level="ERROR")
+        try:
+            _, comp = _compute_hybrid_mr_risk(data_booked, data_demand_mr, merge_keys, min_obs=10, mr_maturity_months=6)
+        finally:
+            loguru_logger.remove(sink_id)
+        # filter could not run -> all rows counted (immature not excluded)
+        assert comp.iloc[0]["n_obs_mr"] == n
+        # ...but the silent skip is now flagged
+        assert any("mis_date" in msg and "maturity" in msg.lower() for msg in captured)
+
     def test_h6_h3_ratio_in_comparison_df(self, merge_keys):
         """When H3 is available, h6_h3_ratio column appears in comparison_df with correct values."""
         rng_main = np.random.RandomState(99)
