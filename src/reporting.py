@@ -9,6 +9,7 @@ Reports read saved artifacts from disk, decoupling report generation from pipeli
 execution and enabling regeneration without re-running the pipeline.
 """
 
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -48,6 +49,7 @@ class ReportContext:
     generation_date: str
     date_range: str
     sections: list[ReportSection] = field(default_factory=list)
+    lineage: dict | None = None  # per-run data lineage / provenance (M2)
 
 
 # ---------------------------------------------------------------------------
@@ -977,12 +979,22 @@ def build_segment_report(
     if cutoff_section.tables:
         sections.append(cutoff_section)
 
+    # Data lineage / provenance (M2): surface the per-run artifact if present.
+    lineage = None
+    lineage_path = Path(output_paths.run_lineage_json)
+    if lineage_path.exists():
+        try:
+            lineage = json.loads(lineage_path.read_text())
+        except Exception:
+            logger.warning(f"[{segment}] Could not read run lineage for report")
+
     return ReportContext(
         title=f"Segment Report — {segment}",
         segment_name=segment,
         generation_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         date_range=date_range,
         sections=sections,
+        lineage=lineage,
     )
 
 
@@ -1092,6 +1104,7 @@ def render_report(
         generation_date=context.generation_date,
         date_range=context.date_range,
         sections=context.sections,
+        lineage=context.lineage,
     )
 
     output_path = Path(output_path)

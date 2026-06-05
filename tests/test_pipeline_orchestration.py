@@ -90,6 +90,82 @@ class TestRunPreprocessingPhase:
 
         assert result is None
 
+    def test_default_is_fail_closed_on_warnings(self, monkeypatch, tmp_path):
+        """M2: DQ is fail-closed by *default* — a warnings-only report halts even with no override."""
+        settings = make_settings()  # no dq_allow_warnings override
+        assert settings.dq_allow_warnings is False  # the M2 default flip
+        output = OutputPaths(base_dir=tmp_path)
+
+        monkeypatch.setattr(
+            preprocessing_module,
+            "run_data_quality_checks",
+            lambda data, settings, verbose=True: SimpleNamespace(is_valid=True, warnings=["coverage gap"]),
+        )
+
+        def fail_complete(*args, **kwargs):
+            raise AssertionError("preprocessing must not run when warnings halt under the fail-closed default")
+
+        monkeypatch.setattr(preprocessing_module, "complete_preprocessing_pipeline", fail_complete)
+
+        result = preprocessing_module.run_preprocessing_phase(
+            pd.DataFrame({"raw": [1]}),
+            settings,
+            skip_dq_checks=False,
+            output=output,
+        )
+
+        assert result is None
+
+    def test_allow_dq_warnings_proceeds_past_warnings(self, monkeypatch, tmp_path):
+        """M2: the --allow-dq-warnings escape hatch (dq_allow_warnings=True) proceeds past warnings."""
+        settings = make_settings(dq_allow_warnings=True)
+        output = OutputPaths(base_dir=tmp_path)
+        risk_fig = DummyFigure()
+        rate_fig = DummyFigure()
+
+        data_clean = pd.DataFrame(
+            {
+                "mis_date": pd.to_datetime(["2024-01-01"]),
+                "oa_amt": [1000.0],
+                "sc_octroi_new_clus": [1],
+                "new_efx_clus": [1],
+            }
+        )
+
+        # DQ runs and reports warnings, but the escape hatch lets preprocessing continue.
+        monkeypatch.setattr(
+            preprocessing_module,
+            "run_data_quality_checks",
+            lambda data, settings, verbose=True: SimpleNamespace(is_valid=True, warnings=["coverage gap"]),
+        )
+        monkeypatch.setattr(
+            preprocessing_module,
+            "complete_preprocessing_pipeline",
+            lambda data, settings: (data_clean, pd.DataFrame({"booked": [1]}), pd.DataFrame({"demand": [1]})),
+        )
+        monkeypatch.setattr(preprocessing_module, "plot_risk_vs_production", lambda *args, **kwargs: risk_fig)
+        monkeypatch.setattr(
+            preprocessing_module,
+            "plot_bin_threshold_diagnostic",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(preprocessing_module, "calculate_stress_factor", lambda data: 1.0)
+        monkeypatch.setattr(
+            preprocessing_module,
+            "calculate_and_plot_transformation_rate",
+            lambda *args, **kwargs: {"figure": rate_fig, "overall_rate": 0.0},
+        )
+
+        result = preprocessing_module.run_preprocessing_phase(
+            pd.DataFrame({"raw": [1]}),
+            settings,
+            skip_dq_checks=False,
+            output=output,
+        )
+
+        assert result is not None
+        assert result.data_clean is data_clean
+
     def test_skips_dq_and_normalizes_non_positive_tasa_fin(self, monkeypatch, tmp_path):
         settings = make_settings()
         output = OutputPaths(base_dir=tmp_path)
