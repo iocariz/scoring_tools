@@ -2,6 +2,7 @@
 
 import os
 import sys
+from pathlib import Path
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -235,6 +236,32 @@ class TestBuildSegmentReport:
         assert isinstance(context, ReportContext)
         # Executive summary always has config notes
         assert any(s.id == "executive-summary" for s in context.sections)
+        # No lineage artifact present -> lineage is None (M2)
+        assert context.lineage is None
+
+    def test_picks_up_run_lineage(self, tmp_path, minimal_settings):
+        """M2: build_segment_report surfaces run_lineage.json when present."""
+        import json
+
+        base = tmp_path / "lineage_seg"
+        (base / "data").mkdir(parents=True)
+        (base / "images").mkdir(parents=True)
+        (base / "models").mkdir(parents=True)
+
+        output = OutputPaths(base_dir=base)
+        Path(output.run_lineage_json).write_text(json.dumps({"run_id": "RID42", "data": {"rows_loaded": 7}}))
+
+        context = build_segment_report(output, minimal_settings, scenarios=["base"])
+        assert context.lineage is not None
+        assert context.lineage["run_id"] == "RID42"
+
+        # render_report must forward lineage to the template (regression guard:
+        # render_report maps fields explicitly, so a new context field is easy to drop).
+        out_html = base / "report.html"
+        render_report(context, out_html)
+        html = out_html.read_text()
+        assert "Data Lineage / Provenance" in html
+        assert "RID42" in html
 
     def test_multiple_scenarios(self, segment_output_dir, minimal_settings):
         # Add a pessimistic scenario CSV

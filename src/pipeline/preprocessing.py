@@ -68,10 +68,11 @@ def run_preprocessing_phase(
 
         if dq_report.warnings:
             if not settings.dq_allow_warnings:
-                # Strict mode (audit #18): warnings halt too.
+                # Fail-closed by default (audit #18, M2): warnings halt too.
                 logger.error(
-                    f"[{segment}] {len(dq_report.warnings)} data quality warnings and dq_allow_warnings=false. "
-                    "Set dq_allow_warnings=true (or --skip-dq-checks) to bypass."
+                    f"[{segment}] {len(dq_report.warnings)} data quality warning(s) and DQ is fail-closed "
+                    "(dq_allow_warnings=false). Pass --allow-dq-warnings (or set dq_allow_warnings=true) to "
+                    "proceed past soft warnings, or --skip-dq-checks to skip DQ entirely."
                 )
                 return None
             logger.warning(f"[{segment}] {len(dq_report.warnings)} data quality warnings. Proceeding with caution.")

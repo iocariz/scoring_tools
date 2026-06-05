@@ -454,6 +454,41 @@
     </div>
     {% endfor %}
 
+    {% if lineage %}
+    <div class="section" id="data-lineage">
+        <h2>Data Lineage / Provenance</h2>
+        <ul class="notes">
+            <li><strong>Run ID:</strong> {{ lineage.run_id }} ({{ lineage.run_timestamp }})</li>
+            {% if lineage.data %}
+            <li><strong>Data file:</strong> {{ lineage.data.path }}</li>
+            {% if lineage.data.exists %}
+            <li><strong>SHA-256:</strong> {{ lineage.data.sha256[:16] }}&hellip;
+                | <strong>Size:</strong> {{ lineage.data.size_bytes }} bytes
+                | <strong>Modified (snapshot):</strong> {{ lineage.data.mtime }}</li>
+            {% else %}
+            <li><em>Data file not on disk at capture time (e.g. preloaded/remote) &mdash; hash unavailable.</em></li>
+            {% endif %}
+            <li><strong>Rows loaded:</strong> {{ lineage.data.rows_loaded }}</li>
+            {% endif %}
+            {% if lineage.git %}
+            <li><strong>Code revision:</strong>
+                {{ lineage.git.short or "n/a" }}{% if lineage.git.dirty %} (uncommitted changes){% endif %}</li>
+            {% endif %}
+            {% if lineage.config %}
+            <li><strong>Config:</strong> {{ lineage.config.path }} (hash {{ lineage.config.hash }})</li>
+            {% endif %}
+            {% if lineage.assumptions %}
+            <li><strong>Key assumptions:</strong>
+                multiplier={{ lineage.assumptions.multiplier }},
+                stress_mode={{ lineage.assumptions.stress_mode }},
+                optimum_risk={{ lineage.assumptions.optimum_risk }},
+                use_mr_outcomes={{ lineage.assumptions.use_mr_outcomes }},
+                reject={{ lineage.assumptions.reject_inference_method }}</li>
+            {% endif %}
+        </ul>
+    </div>
+    {% endif %}
+
     <footer>
         Scoring Tools &mdash; HTML Report &mdash; {{ generation_date }}
         <a href="#top">Back to top</a>

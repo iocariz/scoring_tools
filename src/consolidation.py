@@ -10,6 +10,7 @@ Aggregates risk_production_summary_table data across:
 Produces portfolio-level views for executive reporting.
 """
 
+import json
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -3733,6 +3734,36 @@ def _write_sheet_cutoff_comparison(writer, cutoff_data: dict) -> None:
         _apply_page_setup(writer.sheets["Cutoff Comparison"])
 
 
+def _batch_provenance_suffix(output_base: str | Path, segments: dict[str, dict[str, Any]]) -> str:
+    """Compact provenance line from a representative segment's run_lineage.json (M2).
+
+    All segments in a batch share one data source + run-id, so the first readable
+    lineage is representative. Returns "" on any failure (best-effort footer).
+    """
+    base = Path(output_base)
+    for seg_name in segments:
+        path = base / seg_name / "data" / "run_lineage.json"
+        if not path.exists():
+            continue
+        try:
+            lin = json.loads(path.read_text())
+        except Exception:
+            continue
+        parts = []
+        if lin.get("run_id"):
+            parts.append(f"run {lin['run_id']}")
+        git = lin.get("git") or {}
+        if git.get("short"):
+            parts.append(f"git {git['short']}{' (dirty)' if git.get('dirty') else ''}")
+        data = lin.get("data") or {}
+        if data.get("sha256"):
+            parts.append(f"data sha {data['sha256'][:12]}")
+        if parts:
+            return "  |  " + "  |  ".join(parts)
+        return ""
+    return ""
+
+
 def export_consolidated_excel(
     consolidated_df: pd.DataFrame,
     output_base: str | Path,
@@ -3821,7 +3852,7 @@ def export_consolidated_excel(
         ws_exec.merge_cells("A2:J2")
         ws_exec["A2"].value = (
             f"  Generated {date.today().strftime('%d %b %Y')}  |  {len(segments)} segment(s)  |  "
-            "Consolidated portfolio view"
+            "Consolidated portfolio view" + _batch_provenance_suffix(output_base, segments)
         )
         ws_exec["A2"].font = Font(bold=False, color=_CLR_ACCENT_LIGHT, size=11, name=_FN)
         ws_exec["A2"].fill = title_fill

@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from src.config import OutputPaths
 from src.data_manager import DataValidationError, load_and_prepare_data
+from src.lineage import build_lineage, log_run_banner, write_lineage
 from src.pipeline.config_loader import load_and_validate_config
 from src.pipeline.inference import run_inference_phase
 from src.pipeline.optimization import (
@@ -255,11 +256,14 @@ def main(
     baseline_mode: bool = False,
     base_scenario_only: bool = False,
     skip_dq_checks: bool = False,
+    allow_dq_warnings: bool = False,
     preloaded_data: pd.DataFrame | None = None,
     output: OutputPaths | None = None,
     floor_cells_path: str | None = None,
     floor_cells_mode: str = "floor",
     resimulate_risk: list[float] | None = None,
+    run_id: str | None = None,
+    run_ts_iso: str | None = None,
 ):
     """
     Run the full single-segment scoring pipeline end-to-end.
@@ -286,6 +290,12 @@ def main(
             True`` — generate only the base scenario, skip pessimistic /
             optimistic scenarios. Config-only flag; no CLI equivalent.
         skip_dq_checks: If True, skip data quality checks.
+        allow_dq_warnings: If True, force ``settings.dq_allow_warnings = True`` —
+            proceed past soft DQ warnings (coverage gaps, outliers, small
+            segments) instead of halting. DQ is fail-closed by default (M2);
+            this is the analyst escape hatch. Equivalent to the
+            ``--allow-dq-warnings`` CLI flag. The flag can only *relax* DQ; when
+            absent the resolved ``dq_allow_warnings`` config value is used.
         preloaded_data: Optional pre-loaded and standardized DataFrame. When
             provided, bypasses the SAS read in the data-loading phase.
             ``run_batch.py`` uses this to share a loaded DataFrame across
@@ -335,6 +345,9 @@ def main(
             settings.baseline_mode = True
         if base_scenario_only:
             settings.base_scenario_only = True
+        if allow_dq_warnings:
+            # Analyst escape hatch (M2): relax the fail-closed DQ gate for this run.
+            settings.dq_allow_warnings = True
 
         # Resimulation mode: skip phases 2-5, load artifacts, run scenarios only
         if resimulate_risk:
@@ -353,6 +366,21 @@ def main(
             raise DataLoadError(f"[{segment}] Data error") from e
         except Exception as e:
             raise DataLoadError(f"[{segment}] Unexpected data loading error") from e
+
+        # Capture per-run data lineage / provenance (M2). Best-effort: a lineage
+        # failure must never abort the pipeline (it is a diagnostic, not decisioning).
+        try:
+            lineage = build_lineage(
+                settings,
+                config_path=config_path,
+                n_rows=len(data),
+                run_id=run_id,
+                run_ts_iso=run_ts_iso,
+            )
+            log_run_banner(lineage)
+            write_lineage(output, lineage)
+        except Exception:
+            logger.warning(f"[{segment}] Could not capture run lineage", exc_info=True)
 
         # Step 3: Preprocessing (DQ checks, binning, stress factor, transformation rate)
         prep = run_preprocessing_phase(data, settings, skip_dq_checks, output=output)
@@ -704,6 +732,16 @@ Output files:
     )
 
     parser.add_argument(
+        "--allow-dq-warnings",
+        action="store_true",
+        help=(
+            "Analyst escape hatch: proceed past non-critical DQ warnings (coverage gaps, outliers, "
+            "small segments) instead of halting. DQ is fail-closed by default; FAILED-severity checks "
+            "(negative counts/amounts, unparseable dates) still halt — use --skip-dq-checks to skip DQ entirely."
+        ),
+    )
+
+    parser.add_argument(
         "--log-file",
         type=str,
         default=None,
@@ -743,6 +781,7 @@ if __name__ == "__main__":
             baseline_mode=args.baseline,
             base_scenario_only=args.base_only,
             skip_dq_checks=args.skip_dq_checks,
+            allow_dq_warnings=args.allow_dq_warnings,
             resimulate_risk=args.resimulate,
         )
     finally:

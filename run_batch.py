@@ -27,7 +27,7 @@ import shutil
 import sys
 import tomllib
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,7 @@ from tqdm import tqdm
 from src.config import OutputPaths
 from src.consolidation import generate_consolidation_report
 from src.data_manager import standardize_columns_and_values
+from src.lineage import git_provenance
 from src.utils import resolve_modelling_supersegment, resolve_reporting_supersegment
 
 
@@ -343,6 +344,7 @@ def run_segment_pipeline(
     output_base: str = "output",
     model_path: str | None = None,
     skip_dq_checks: bool = False,
+    allow_dq_warnings: bool = False,
     preloaded_data: pd.DataFrame = None,
     training_only: bool = False,
     baseline_mode: bool = False,
@@ -351,6 +353,8 @@ def run_segment_pipeline(
     supersegment_bin_edges: dict[str, dict[str, list[float]]] | None = None,
     floor_cells_path: str | None = None,
     floor_cells_mode: str = "floor",
+    run_id: str | None = None,
+    run_ts_iso: str | None = None,
 ) -> bool:
     """
     Run the pipeline for a single segment.
@@ -438,6 +442,7 @@ def run_segment_pipeline(
             config_path=str(temp_config),
             model_path=resolved_model_path,
             skip_dq_checks=skip_dq_checks,
+            allow_dq_warnings=allow_dq_warnings,
             preloaded_data=preloaded_data,
             training_only=training_only,
             baseline_mode=baseline_mode,
@@ -445,6 +450,8 @@ def run_segment_pipeline(
             floor_cells_path=floor_cells_path,
             floor_cells_mode=floor_cells_mode,
             output=segment_output,
+            run_id=run_id,
+            run_ts_iso=run_ts_iso,
         )
 
         if result is None:
@@ -471,8 +478,11 @@ def run_supersegment_training(
     base_config: dict[str, Any],
     output_base: str = "output",
     skip_dq_checks: bool = False,
+    allow_dq_warnings: bool = False,
     preloaded_data: pd.DataFrame = None,
     global_bin_edges: dict[str, list[float]] | None = None,
+    run_id: str | None = None,
+    run_ts_iso: str | None = None,
 ) -> str | None:
     """
     Train a model on combined supersegment data (multiple segment_filters).
@@ -545,8 +555,11 @@ def run_supersegment_training(
             config_path=str(temp_config),
             training_only=True,
             skip_dq_checks=skip_dq_checks,
+            allow_dq_warnings=allow_dq_warnings,
             preloaded_data=preloaded_data,
             output=supersegment_output,
+            run_id=run_id,
+            run_ts_iso=run_ts_iso,
         )
 
         if result is None:
@@ -658,6 +671,7 @@ def run_segments_sequential(
     supersegments: dict[str, dict[str, Any]] = None,
     reuse_models: bool = False,
     skip_dq_checks: bool = False,
+    allow_dq_warnings: bool = False,
     preloaded_data: pd.DataFrame = None,
     training_only: bool = False,
     baseline_mode: bool = False,
@@ -665,6 +679,8 @@ def run_segments_sequential(
     global_bin_edges: dict[str, list[float]] | None = None,
     supersegment_bin_edges: dict[str, dict[str, list[float]]] | None = None,
     cutoff_ordering_mode: str = "bottom_up",
+    run_id: str | None = None,
+    run_ts_iso: str | None = None,
 ) -> dict[str, bool]:
     """
     Run all segments sequentially, with supersegment support.
@@ -732,8 +748,11 @@ def run_segments_sequential(
                     base_config=base_config,
                     output_base=output_base,
                     skip_dq_checks=skip_dq_checks,
+                    allow_dq_warnings=allow_dq_warnings,
                     preloaded_data=preloaded_data,
                     global_bin_edges=global_bin_edges,
+                    run_id=run_id,
+                    run_ts_iso=run_ts_iso,
                 )
 
                 if model_path:
@@ -843,6 +862,7 @@ def run_segments_sequential(
                 output_base,
                 model_path=model_path,
                 skip_dq_checks=skip_dq_checks,
+                allow_dq_warnings=allow_dq_warnings,
                 preloaded_data=preloaded_data,
                 training_only=training_only,
                 baseline_mode=baseline_mode,
@@ -851,6 +871,8 @@ def run_segments_sequential(
                 supersegment_bin_edges=supersegment_bin_edges,
                 floor_cells_path=floor_cells_path,
                 floor_cells_mode=floor_cells_mode,
+                run_id=run_id,
+                run_ts_iso=run_ts_iso,
             )
             results[segment_name] = success
 
@@ -871,6 +893,7 @@ def run_segments_parallel(
     supersegments: dict[str, dict[str, Any]] = None,
     reuse_models: bool = False,
     skip_dq_checks: bool = False,
+    allow_dq_warnings: bool = False,
     preloaded_data: pd.DataFrame = None,
     training_only: bool = False,
     baseline_mode: bool = False,
@@ -878,6 +901,8 @@ def run_segments_parallel(
     global_bin_edges: dict[str, list[float]] | None = None,
     supersegment_bin_edges: dict[str, dict[str, list[float]]] | None = None,
     cutoff_ordering_mode: str = "bottom_up",
+    run_id: str | None = None,
+    run_ts_iso: str | None = None,
 ) -> dict[str, bool]:
     """
     Run all segments in parallel, with supersegment support.
@@ -947,8 +972,11 @@ def run_segments_parallel(
                     base_config=base_config,
                     output_base=output_base,
                     skip_dq_checks=skip_dq_checks,
+                    allow_dq_warnings=allow_dq_warnings,
                     preloaded_data=preloaded_data,
                     global_bin_edges=global_bin_edges,
+                    run_id=run_id,
+                    run_ts_iso=run_ts_iso,
                 )
                 if model_path:
                     supersegment_models[ss_name] = model_path
@@ -988,21 +1016,29 @@ def run_segments_parallel(
                 modelling_ss = resolve_modelling_supersegment(segment_config)
                 model_path = supersegment_models.get(modelling_ss) if modelling_ss else None
 
+                # Keyword args: robust to signature changes. (Previously positional,
+                # which silently mis-mapped base_scenario_only/global_bin_edges/
+                # floor_cells_* after base_scenario_only was inserted into the
+                # signature — fixed here.)
                 future = executor.submit(
                     run_segment_pipeline,
                     segment_name,
                     segment_config,
                     base_config,
                     output_base,
-                    model_path,
-                    skip_dq_checks,
-                    preloaded_data,
-                    training_only,
-                    baseline_mode,
-                    global_bin_edges,
-                    supersegment_bin_edges,
-                    None,  # floor_cells_path (unconstrained)
-                    "floor",  # floor_cells_mode
+                    model_path=model_path,
+                    skip_dq_checks=skip_dq_checks,
+                    allow_dq_warnings=allow_dq_warnings,
+                    preloaded_data=preloaded_data,
+                    training_only=training_only,
+                    baseline_mode=baseline_mode,
+                    base_scenario_only=base_scenario_only,
+                    global_bin_edges=global_bin_edges,
+                    supersegment_bin_edges=supersegment_bin_edges,
+                    floor_cells_path=None,  # unconstrained
+                    floor_cells_mode="floor",
+                    run_id=run_id,
+                    run_ts_iso=run_ts_iso,
                 )
                 futures[future] = segment_name
 
@@ -1088,6 +1124,7 @@ def run_segments_parallel(
                 output_base,
                 model_path=model_path,
                 skip_dq_checks=skip_dq_checks,
+                allow_dq_warnings=allow_dq_warnings,
                 preloaded_data=preloaded_data,
                 training_only=training_only,
                 baseline_mode=baseline_mode,
@@ -1096,6 +1133,8 @@ def run_segments_parallel(
                 supersegment_bin_edges=supersegment_bin_edges,
                 floor_cells_path=floor_cells_path,
                 floor_cells_mode=floor_cells_mode,
+                run_id=run_id,
+                run_ts_iso=run_ts_iso,
             )
             results[segment_name] = success
 
@@ -1245,6 +1284,14 @@ def main():
     parser.add_argument("--clean-only", action="store_true", help="Only clean output directories (don't run pipeline)")
     parser.add_argument(
         "--skip-dq-checks", action="store_true", help="Skip data quality checks (not recommended for production)"
+    )
+    parser.add_argument(
+        "--allow-dq-warnings",
+        action="store_true",
+        help=(
+            "Analyst escape hatch: proceed past non-critical DQ warnings instead of halting. DQ is "
+            "fail-closed by default; FAILED-severity checks still halt (use --skip-dq-checks to skip DQ entirely)."
+        ),
     )
     parser.add_argument(
         "--no-consolidation", action="store_true", help="Skip generating consolidated report at the end"
@@ -1533,6 +1580,18 @@ def main():
     # Resolve cutoff ordering mode: CLI flag overrides config.toml
     cutoff_ordering_mode = args.cutoff_ordering_mode or base_config.get("cutoff_ordering_mode", "bottom_up")
 
+    # One canonical run-id for the whole batch (M2 lineage); every segment's
+    # run_lineage.json shares it so a batch is traceable end-to-end.
+    run_ts = datetime.now(UTC)
+    run_ts_iso = run_ts.isoformat()
+    git = git_provenance()
+    run_id = f"{run_ts.strftime('%Y%m%dT%H%M%SZ')}_{git.get('short') or 'nogit'}"
+    dirty = " (dirty)" if git.get("dirty") else ""
+    logger.info(
+        f"==== BATCH RUN {run_id} | {len(segments)} segment(s) | config={args.config} | "
+        f"git={git.get('short') or 'n/a'}{dirty} ===="
+    )
+
     # Run segments
     if args.parallel:
         results = run_segments_parallel(
@@ -1543,6 +1602,7 @@ def main():
             supersegments=all_supersegments,
             reuse_models=args.reuse_models,
             skip_dq_checks=args.skip_dq_checks,
+            allow_dq_warnings=args.allow_dq_warnings,
             preloaded_data=preloaded_data,
             training_only=args.training_only,
             baseline_mode=args.baseline,
@@ -1550,6 +1610,8 @@ def main():
             global_bin_edges=global_bin_edges,
             supersegment_bin_edges=supersegment_bin_edges,
             cutoff_ordering_mode=cutoff_ordering_mode,
+            run_id=run_id,
+            run_ts_iso=run_ts_iso,
         )
     else:
         results = run_segments_sequential(
@@ -1559,6 +1621,7 @@ def main():
             supersegments=all_supersegments,
             reuse_models=args.reuse_models,
             skip_dq_checks=args.skip_dq_checks,
+            allow_dq_warnings=args.allow_dq_warnings,
             preloaded_data=preloaded_data,
             training_only=args.training_only,
             baseline_mode=args.baseline,
@@ -1566,6 +1629,8 @@ def main():
             global_bin_edges=global_bin_edges,
             supersegment_bin_edges=supersegment_bin_edges,
             cutoff_ordering_mode=cutoff_ordering_mode,
+            run_id=run_id,
+            run_ts_iso=run_ts_iso,
         )
 
     # Print summary

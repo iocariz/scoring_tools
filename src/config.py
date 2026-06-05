@@ -171,6 +171,11 @@ class OutputPaths:
         return str(self.data_dir / "resimulation_meta.json")
 
     @property
+    def run_lineage_json(self) -> str:
+        """Per-run data lineage / provenance artifact (M2)."""
+        return str(self.data_dir / "run_lineage.json")
+
+    @property
     def per_bin_stress_csv(self) -> str:
         return str(self.data_dir / "per_bin_stress.csv")
 
@@ -337,10 +342,12 @@ class PreprocessingSettings(BaseModel):
     # value); used by both data_manager.load_data and run_batch's preloader so the two read sites
     # never diverge.
     sas_encoding: str = "latin-1"
-    # Data-quality strictness (audit #18). When True (default), DQ warnings (e.g. coverage gaps,
-    # outliers) are logged but do not halt the pipeline; genuine corruption (negative counts/amounts,
-    # unparseable dates) always FAILs regardless. Set False for strict mode: warnings halt too.
-    dq_allow_warnings: bool = True
+    # Data-quality strictness (audit #18, M2). Fail-closed by default: when False (default), any DQ
+    # warning (e.g. coverage gaps, outliers, small segments, booked-ratio 0.01-0.05) HALTS the run, on
+    # top of the FAILED-severity checks (negative counts/amounts, unparseable dates, booked-ratio <0.01)
+    # that always halt. Relax with the `--allow-dq-warnings` CLI flag or `dq_allow_warnings=true` in
+    # config (proceed past soft warnings); use `--skip-dq-checks` to skip DQ entirely.
+    dq_allow_warnings: bool = False
     fixed_cutoffs: dict[str, Any] | None = None
     baseline_mode: bool = False
     base_scenario_only: bool = False

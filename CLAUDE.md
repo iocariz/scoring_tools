@@ -17,7 +17,8 @@ uv run python main.py
 uv run python main.py --config path/to/config.toml
 uv run python main.py --training-only          # preprocessing + model training only
 uv run python main.py --model-path models/dir  # use pre-trained model
-uv run python main.py --skip-dq-checks         # skip data quality checks
+uv run python main.py --skip-dq-checks         # skip data quality checks entirely
+uv run python main.py --allow-dq-warnings      # proceed past non-critical DQ warnings (DQ is fail-closed by default)
 uv run python main.py --baseline               # baseline: show current portfolio, no optimization
 uv run python main.py --log-file run.log       # capture logs to file
 
@@ -30,6 +31,7 @@ uv run python run_batch.py --consolidate-only    # only generate consolidated re
 uv run python run_batch.py --clean               # clean output dirs before running
 uv run python run_batch.py --no-report           # skip HTML reports
 uv run python run_batch.py --training-only       # only run DQ + training
+uv run python run_batch.py --allow-dq-warnings   # proceed past non-critical DQ warnings (fail-closed by default)
 uv run python run_batch.py --log-file batch.log  # capture all logs to file
 uv run python run_batch.py --baseline           # baseline mode for all segments
 uv run python run_batch.py --cutoff-ordering-mode bottom_up  # sequential cutoff ordering
@@ -124,6 +126,10 @@ Two-tier config: `config.toml` (global defaults) overridden per-segment by `segm
 **Core fields:** `variables` (≥ 2 score names), `inference_variables` (subset for model training), date ranges, `optimum_risk`, `risk_step`, `multiplier`, `directions` (monotonicity hints per variable).
 
 **Model training:** `cv_folds`. `model_hurdle_per_loan` (bool, default `false`, Expert/default-off, audit #6) — when `true`, a two-part `HurdleRegressor` is offered as a model candidate, trained on **per-loan** data (real zero mass in the default indicator) with exposure-weighted severity, and scored on the same bin-level CV RMSE as the other candidates; it is skipped automatically when the per-loan zero mass is degenerate (∉ [2%, 99.9%]). When `false` the hurdle is not offered at all — on the bin-aggregated target it degenerates to plain Ridge/Lasso. Enabling it can change the selected risk model and therefore the cutoffs (validate on real data first).
+
+**Data quality (M2, fail-closed):** `dq_allow_warnings` (bool, default `false`). DQ is a hard gate by default — both FAILED-severity checks (negative counts/amounts, unparseable dates, booked-ratio < 0.01) **and** WARNING-severity checks (date-coverage gaps, numeric outliers, small segments, booked-ratio 0.01–0.05) halt the run. The `--allow-dq-warnings` CLI flag (or `dq_allow_warnings=true` in config) is the analyst escape hatch: it relaxes only the WARNING tier (FAILED still halts). `--skip-dq-checks` skips DQ entirely. The flag can only *relax* DQ; absent, the resolved config value applies.
+
+**Data lineage (M2):** every run writes `output/<segment>/data/run_lineage.json` (`src/lineage.py`) capturing the source data file (path, size, mtime as the snapshot/extraction proxy, SHA-256), loaded row count, run timestamp + run-id, git commit (+dirty), config path/hash, and headline assumptions (multiplier, stress_mode, optimum_risk, MR/RI toggles). A run banner is logged at entry; batch mode generates one canonical run-id shared by all segments. The segment HTML report shows a "Data Lineage / Provenance" section; the consolidated Excel exec summary carries a provenance line. Capture is best-effort — a lineage failure never aborts the pipeline; git/file stats degrade gracefully (Docker/non-repo/missing file).
 
 **Binning:** `octroi_bins`/`efx_bins` (legacy) or `[preprocessing.bins.*]` (N-variable `BinConfig` with `source_col`, `output_col`, `bin_edges`/`max_bins`, `method`). Batch mode supports global bin learning across all segments.
 
