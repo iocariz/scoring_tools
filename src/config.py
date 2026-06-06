@@ -323,6 +323,13 @@ class PreprocessingSettings(BaseModel):
     score_measures: list[str] | None = None
     data_path: str = "data/demanda_direct_out.sas7bdat"
     n_months: int = 12
+    # FIXED accounting constants, not tuning knobs. `todu_amt_pile_hN` is the SUM of
+    # outstanding over months H0..HN, so dividing by the month count gives the average
+    # monthly outstanding: b2_ever_h6 = 7·Σ(todu_30ever_h6)/Σ(todu_amt_pile_h6).
+    # multiplier = 7 because H0..H6 inclusive = 7 months; multiplier_h3 = 4 (H0..H3).
+    # These must match how the pile columns are summed — do NOT vary them to "tune"
+    # risk (a config-sensitivity sweep will show huge impact precisely because changing
+    # them mis-scales the denominator; that's a guardrail signal, not a degree of freedom).
     multiplier: float = Field(default=7.0, gt=0)
     multiplier_h3: float = Field(default=4.0, gt=0)
     z_threshold: float = Field(default=3.0, gt=0)
