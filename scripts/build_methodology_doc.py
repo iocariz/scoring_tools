@@ -215,7 +215,7 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         doc,
         [
             "A self-contained HTML report per segment with the proposed cutoff grid, risk and production for actual / swap-in / swap-out / optimum, MR validation, PSI/CSI, and sensitivity panels.",
-            "An Excel workbook (consolidated_risk_production.xlsx) with executive summary, portfolio summary, per-segment detail, and acceptance grids — designed to be circulated in committee.",
+            "An Excel workbook (consolidated_risk_production.xlsx) whose first three sheets form a trust layer — an executive summary (KPI cards with bootstrap CIs and a plain-language recommendation), a Validation & Governance sheet (data-snapshot provenance, assumption tiers, per-segment reproducibility and stability), and an Out-of-time Validation sheet — followed by per-segment risk-production sheets; designed to be circulated in committee.",
             "A reproducible TOML configuration that fully describes the run; reruns with the same TOML and the same data produce byte-identical outputs.",
             "An efficient frontier per segment (efficient_frontier_{scenario}.csv) and an optional global allocation (allocation_results.csv plus a Markdown narrative) that distributes a portfolio-wide risk budget across segments.",
         ],
@@ -412,7 +412,9 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         "rate denominator used by reject inference, (ii) inflate the apparent rejection rate of "
         "low-score bins, and (iii) make the policy uninterpretable because two distinct decisions "
         "(score cutoff vs. policy rule) would be conflated. The reject_include_all_rejections flag "
-        "exists to override this default for diagnostic purposes only and defaults to false.",
+        "is deprecated and ignored — acceptance rates are always computed score-only because the "
+        "swap-in population is solely score-rejected, so setting it has no effect (it logs a "
+        "one-time warning).",
     )
     _add_heading(doc, "4.1 The audit table", 2)
     _add_paragraph(
@@ -501,8 +503,9 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
     _add_paragraph(
         doc,
         "All flow indicators (todu_30ever_h6, todu_amt_pile_h6, oa_amt_h0) are scaled by annual_coef "
-        "before aggregation, so risk and production are comparable across runs of different lengths "
-        "and across segments observed over different windows.",
+        "as part of grid aggregation — the per-bin sums are multiplied by annual_coef (identical to "
+        "scaling each row first) — so risk and production are comparable across runs of different "
+        "lengths and across segments observed over different windows.",
     )
 
     # ====================================================================
@@ -534,24 +537,25 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         [
             [
                 "Quantile (default)",
-                "Equal-count bins from the empirical distribution of the source column. Bin edges are quantile cut points so each bin has approximately the same number of observations.",
-                "2D models where statistical stability in every cell matters more than maximum risk separation. Cannot be accused of overfitting because the bin boundaries ignore the target.",
+                "Equal-count bins learned on the demand population from the empirical distribution of the source column. Bin edges are quantile cut points so each bin holds approximately the same number of observations.",
+                "All models — the only supported learned-edge method. Leakage-free (the boundaries ignore the target) and statistically stable in every cell.",
             ],
             [
-                "Optimization",
-                "Fits a sklearn DecisionTreeRegressor weighted by production (oa_amt_h0) on the risk target, with max_leaf_nodes = max_bins. Bin edges are the tree's split points, sorted ascending.",
-                "Critical for N>2 (e.g. when income is added). Quantile binning wastes degrees of freedom on flat regions of the risk surface; optimisation puts cut points where risk actually changes per unit of production.",
+                "Optimization (deprecated)",
+                "Formerly fit a sklearn DecisionTreeRegressor weighted by production on the risk target and used its split points. Now deprecated and silently converted to quantile at runtime (logs a warning).",
+                "Do not use. It learned bin boundaries from the same risk target the optimizer later maximises (target leakage). For established legacy tiers, set explicit bin_edges instead.",
             ],
         ],
     )
     _add_callout(
         doc,
-        "Why two methods rather than one",
-        "Quantile bins are the safe default — they cannot be accused of overfitting because they "
-        "ignore the target. The optimisation method is reserved for cases where the additional "
-        "dimension (income, or any third variable) only adds value if the bin boundaries follow the "
-        "actual risk gradient. Both methods are deterministic, reproducible, and saved with the run "
-        "configuration so any reviewer can replay the decision.",
+        "Why quantile is the only learned-edge method",
+        "Quantile bins are leakage-free by construction — they ignore the target, so they cannot "
+        "overfit it. The earlier 'optimization' method learned bin edges from the very risk target "
+        "the optimizer then maximises, leaking it into the grid; it is deprecated and now falls back "
+        "to quantile with a warning. For established legacy tiers, set explicit bin_edges. If "
+        "quantile bins make an extra dimension (e.g. income) look flat, that dimension genuinely "
+        "lacks discriminating power rather than something to engineer around with supervised splits.",
     )
     _add_heading(doc, "6.3 Bin direction and risk ordering", 2)
     _add_paragraph(
@@ -769,17 +773,17 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
             ],
         ],
     )
-    _add_paragraph(doc, "Numerical examples at uplift_factor = 1.5:")
+    _add_paragraph(doc, "Numerical examples at uplift_factor = 1.5 (raw multipliers, before the floor of 1.0 and the default cap of 3.0):")
     _add_table(
         doc,
         ["Acceptance rate", "Linear multiplier", "Power multiplier", "Sigmoid multiplier"],
         [
             ["1.00", "1.00x", "1.00x", "approx 1.00x"],
-            ["0.70", "1.45x", "approx 1.24x", "approx 1.04x"],
+            ["0.70", "1.45x", "approx 1.71x", "approx 1.18x"],
             ["0.50", "1.75x", "approx 2.83x", "1.75x"],
-            ["0.30", "2.05x", "approx 5.29x", "approx 2.46x"],
-            ["0.10", "2.35x", "31.6x (capped)", "approx 2.50x"],
-            ["0.00", "2.50x", "(undefined - clipped at 0.01)", "approx 2.50x"],
+            ["0.30", "2.05x", "approx 6.09x", "approx 2.32x"],
+            ["0.10", "2.35x", "31.6x raw (capped to 3.0)", "approx 2.47x"],
+            ["0.00", "2.50x", "(undefined - clipped at 0.01)", "approx 2.49x"],
         ],
     )
     _add_callout(
@@ -857,27 +861,27 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
                 "Prevents runaway uplift in extremely low-acceptance bins where the rate is unreliable. A cap of 3.0 means risk can at most triple — a strong but not absurd correction.",
             ],
             [
-                "Unseen bins",
-                "Use median observed acceptance rate (or smoothed median when Bayesian smoothing active)",
-                "Avoids NaN propagation; conservative because the median is dominated by booked-heavy bins.",
+                "No / low-demand bins",
+                "Shrink toward a conservative low anchor — the reject_no_demand_anchor_percentile (default 10th) percentile of observed rates, floored at 0.01 (0.05 if none observable) — by the confidence weight 1 - exp(-n / reject_confidence_scale)",
+                "Avoids NaN propagation and stays conservative: no-demand bins collapse to the low anchor (high uplift), well-observed bins are ~unchanged. Replaces the old anti-conservative median fill.",
             ],
             [
                 "Confidence diagnostics",
-                "Per-bin effective sample size (ri_bin_count_effective) and confidence score (1 - exp(-n/50))",
+                "Per-bin effective sample size (ri_bin_count_effective) and confidence score (1 - exp(-n / reject_confidence_scale), default scale 10)",
                 "Surfaces low-confidence bins to reviewers without using them as MILP coefficients (separation of concerns).",
             ],
         ],
     )
-    _add_paragraph(doc, "Confidence-score reference values:")
+    _add_paragraph(doc, "Confidence-score reference values (at the default reject_confidence_scale = 10):")
     _add_table(
         doc,
-        ["Total observations", "Confidence score"],
+        ["Effective observations", "Confidence score"],
         [
-            ["10", "0.18"],
-            ["25", "0.39"],
-            ["50", "0.63"],
-            ["100", "0.86"],
-            ["200", "0.98"],
+            ["5", "0.39"],
+            ["10", "0.63"],
+            ["20", "0.86"],
+            ["30", "0.95"],
+            ["50", "0.99"],
         ],
     )
     _add_heading(doc, "8.6 Optional temporal weighting", 2)
@@ -1134,14 +1138,16 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
     _add_numbered(
         doc,
         [
-            "Monotone production filter: keep solution i only if its production exceeds all solutions with lower risk.",
-            "Full dominance filter: remove any solution dominated by another (lower or equal risk AND higher or equal production, with at least one strict inequality).",
+            "Monotone production filter: keep solution i only if its production strictly exceeds every solution with lower risk.",
         ],
     )
     _add_paragraph(
         doc,
-        "The resulting frontier has strictly increasing production as risk increases — a clean, "
-        "monotone trade-off curve.",
+        "For the standard two-objective case (risk vs production) this single sort-and-sweep is "
+        "already exact, so the separate full-dominance pass — removing any solution with "
+        "lower-or-equal risk and higher-or-equal production (with at least one strict inequality) — "
+        "is intentionally skipped; it would not change the frontier. The resulting frontier has "
+        "strictly increasing production as risk increases — a clean, monotone trade-off curve.",
     )
     _add_heading(doc, "10.1 Why a frontier rather than a point", 2)
     _add_bullets(
@@ -1216,15 +1222,15 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         [
             [
                 "1",
-                "h3_extrapolated",
-                "H3 data exists, n_obs_mr_h3 >= mr_min_obs_per_bin (default 30), and b2_main_h3 is non-zero",
-                "Most up-to-date evidence: scales MR-observed H3 by main-period H6/H3 ratio",
+                "mr_observed",
+                "n_obs_mr >= mr_min_obs_per_bin (default 30) mature MR-period H6",
+                "Direct MR-period H6 — the highest-quality evidence; observed mature H6 takes precedence over H3 extrapolation",
             ],
             [
                 "2",
-                "mr_observed",
-                "n_obs_mr >= mr_min_obs_per_bin and H3 extrapolation was not triggered",
-                "Direct MR-period H6 — high quality but requires full maturity",
+                "h3_extrapolated",
+                "MR H6 insufficient, but mature MR H3 exists (n_obs_mr_h3 >= max(mr_min_obs_per_bin // 2, 10), the relaxed H3 gate) and the main-period H6/H3 ratio is finite",
+                "Scales MR-observed H3 by the main-period H6/H3 ratio; fills bins where direct H6 is still too thin",
             ],
             [
                 "3",
@@ -1235,7 +1241,7 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
             [
                 "4",
                 "model_fallback",
-                "Bin absent from main period and n_obs_mr < min_obs",
+                "Bin absent from the main period (b2_main is NaN) with no usable MR H6 or H3",
                 "Last resort: inferred via the trained risk model",
             ],
         ],
@@ -1292,9 +1298,9 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
             ["Main (mature)", "todu_30ever_h6=100, todu_amt_pile_h6=1000, mult=7", "b2_main = 7 x 100/1000 = 70%"],
             ["Main (mature)", "todu_30ever_h3=45, todu_amt_pile_h3=900, mult_h3=4", "b2_main_h3 = 4 x 45/900 = 20%"],
             ["Main", "Ratio", "70 / 20 = 3.5"],
-            ["MR (H3 mature, H6 not)", "todu_30ever_h3=8, todu_amt_pile_h3=160", "b2_mr_h3 = 4 x 8/160 = 20%"],
-            ["MR linear extrapolation", "20% x 3.5", "70%"],
-            ["MR power, alpha=1.3", "20% x 3.5^1.3", "approx 98.8%"],
+            ["MR (H3 mature, H6 not)", "todu_30ever_h3=10, todu_amt_pile_h3=160", "b2_mr_h3 = 4 x 10/160 = 25%"],
+            ["MR linear extrapolation", "25% x 3.5", "87.5%"],
+            ["MR power, alpha=1.3", "25% x 3.5 x (25/20)^0.3", "approx 93.6%"],
         ],
     )
     _add_paragraph(
