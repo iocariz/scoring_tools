@@ -1,0 +1,5 @@
+knob,production_spread_pct,risk_spread_pp,risk_spread_pct,max_cutoff_cells_changed,n_values_tested,n_failed,impact_score
+reject_uplift_factor,0.0,0.0,0.0,0,4,0,0.0
+reject_max_risk_multiplier,0.0,0.0,0.0,0,4,0,0.0
+reject_parceling_method,0.0,0.0,0.0,0,3,0,0.0
+ri_calibration_gamma,0.0,0.0,0.0,0,3,1,0.0

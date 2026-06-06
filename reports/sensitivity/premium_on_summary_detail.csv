@@ -1,0 +1,17 @@
+label,knob,value,ok,production,risk,n_accepted,cutoff_diff_vs_base,error
+baseline,(baseline),,True,26960060.709999997,1.086863,87,0,
+reject_uplift_factor=1.0,reject_uplift_factor,1.0,True,26960060.709999997,1.086863,87,0,
+reject_uplift_factor=2.0,reject_uplift_factor,2.0,True,26960060.709999997,1.086863,87,0,
+reject_uplift_factor=2.5,reject_uplift_factor,2.5,True,26960060.709999997,1.086863,87,0,
+reject_uplift_factor=3.0,reject_uplift_factor,3.0,True,26960060.709999997,1.086863,87,0,
+reject_max_risk_multiplier=2.0,reject_max_risk_multiplier,2.0,True,26960060.709999997,1.086863,87,0,
+reject_max_risk_multiplier=4.0,reject_max_risk_multiplier,4.0,True,26960060.709999997,1.086863,87,0,
+reject_max_risk_multiplier=5.0,reject_max_risk_multiplier,5.0,True,26960060.709999997,1.086863,87,0,
+reject_max_risk_multiplier=7.0,reject_max_risk_multiplier,7.0,True,26960060.709999997,1.086863,87,0,
+reject_parceling_method=linear,reject_parceling_method,linear,True,26960060.709999997,1.086863,87,0,
+reject_parceling_method=power,reject_parceling_method,power,True,26960060.709999997,1.086863,87,0,
+reject_parceling_method=sigmoid,reject_parceling_method,sigmoid,True,26960060.709999997,1.086863,87,0,
+ri_calibration_gamma=0.4,ri_calibration_gamma,0.4,True,26960060.709999997,1.086863,87,0,
+ri_calibration_gamma=0.6,ri_calibration_gamma,0.6,True,26960060.709999997,1.086863,87,0,
+ri_calibration_gamma=1.0,ri_calibration_gamma,1.0,True,26960060.709999997,1.086863,87,0,
+ri_calibration_gamma=1.4,ri_calibration_gamma,1.4,False,,,-1,-1,missing /tmp/_sens_premium_on/ri_calibration_gamma=1.4/data/optimal_solution_base.csv (run did not reach scenario analysis)

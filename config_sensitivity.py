@@ -63,15 +63,25 @@ class Knob:
 
 
 # Starting registry: the most plausible drivers. Extend/trim after the first run.
+#
+# Tier-1 knobs (the material drivers found on no_premium_cd) carry WIDENED grids
+# (~4 points each, +baseline ≈ 5) so the impact estimate reflects the response
+# curve rather than two endpoints (M3 generality check). Tier-2/Tier-3 knobs stay
+# at 2 points — they're minor/inert, so finer grids only burn runtime.
 KNOBS: list[Knob] = [
     # --- risk scaling ---
-    Knob("multiplier", "multiplier", [6, 8], note="H6 annualization factor"),
+    Knob("multiplier", "multiplier", [5, 6, 8, 9], note="H6 annualization factor (Tier-1, widened)"),
     Knob("multiplier_h3", "multiplier_h3", [3, 5], note="H3 annualization factor"),
     # --- reject inference ---
-    Knob("reject_uplift_factor", "reject_uplift_factor", [1.0, 2.5]),
-    Knob("reject_max_risk_multiplier", "reject_max_risk_multiplier", [2.0, 5.0]),
-    Knob("reject_parceling_method", "reject_parceling_method", ["power", "sigmoid"]),
-    Knob("ri_calibration_gamma", "ri_calibration_gamma", [0.5, 1.0]),
+    Knob("reject_uplift_factor", "reject_uplift_factor", [1.0, 2.0, 2.5, 3.0], note="Tier-1, widened"),
+    Knob("reject_max_risk_multiplier", "reject_max_risk_multiplier", [2.0, 4.0, 5.0, 7.0], note="widened"),
+    Knob(
+        "reject_parceling_method",
+        "reject_parceling_method",
+        ["linear", "power", "sigmoid"],
+        note="Tier-1, all enum values",
+    ),
+    Knob("ri_calibration_gamma", "ri_calibration_gamma", [0.4, 0.6, 1.0, 1.4], note="Tier-1 (optimizer-on), widened"),
     Knob("reject_bayesian_prior_strength", "reject_bayesian_prior_strength", [5.0, 50.0]),
     Knob("reject_decay_half_life", "reject_acceptance_decay_half_life_months", [3.0, 12.0]),
     Knob("run_ri_optimizer", "run_ri_optimizer", [False], note="toggle the RI optimizer off"),
@@ -83,7 +93,7 @@ KNOBS: list[Knob] = [
     Knob("mr_extrapolation_hard_cap", "mr_extrapolation_hard_cap", [10.0, 20.0]),
     Knob("use_mr_outcomes", "use_mr_outcomes", [False], note="toggle MR outcomes off"),
     # --- stress / transformation ---
-    Knob("stress_mode", "stress_mode", ["global", "per_bin"]),
+    Knob("stress_mode", "stress_mode", ["global", "per_bin", "disabled"], note="Tier-1, all enum values"),
     Knob("per_bin_tasa_fin", "per_bin_tasa_fin", [False]),
     # --- monotonicity / optimization ---
     Knob("monotonicity_relaxation", "monotonicity_relaxation_enabled", [False]),
