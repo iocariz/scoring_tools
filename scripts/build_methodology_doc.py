@@ -773,7 +773,10 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
             ],
         ],
     )
-    _add_paragraph(doc, "Numerical examples at uplift_factor = 1.5 (raw multipliers, before the floor of 1.0 and the default cap of 3.0):")
+    _add_paragraph(
+        doc,
+        "Numerical examples at uplift_factor = 1.5 (raw multipliers, before the floor of 1.0 and the default cap of 3.0):",
+    )
     _add_table(
         doc,
         ["Acceptance rate", "Linear multiplier", "Power multiplier", "Sigmoid multiplier"],
