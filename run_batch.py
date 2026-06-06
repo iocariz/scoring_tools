@@ -1320,6 +1320,11 @@ def main():
     )
     parser.add_argument("--no-report", action="store_true", help="Skip generating HTML reports")
     parser.add_argument(
+        "--no-backtest",
+        action="store_true",
+        help="Skip the out-of-time backtest step (M4) that runs after segments and feeds the consolidated report.",
+    )
+    parser.add_argument(
         "--log-file", type=str, default=None, help="Path to write all log output to a file (in addition to console)"
     )
     parser.add_argument(
@@ -1635,6 +1640,27 @@ def main():
 
     # Print summary
     print_summary(results)
+
+    # Out-of-time backtest (M4) — runs before consolidation so the report's OOT sheet is populated.
+    # Reuses the already-loaded SAS data; skipped under --training-only / --no-backtest / no data.
+    if not args.no_backtest and not args.training_only and preloaded_data is not None:
+        successful_segments = [name for name, ok in results.items() if ok]
+        if successful_segments:
+            print(f"\n{'=' * 60}")
+            print("Out-of-time backtest (frozen cutoffs vs held-out cohort)")
+            print(f"{'=' * 60}")
+            try:
+                from run_backtest import backtest_all
+
+                backtest_all(
+                    preloaded_data,
+                    data_dir=args.output,
+                    out_dir=str(Path(args.output) / "backtest"),
+                    scenario="base",
+                    segments=successful_segments,
+                )
+            except Exception:
+                logger.exception("Out-of-time backtest step failed (non-fatal; consolidated report continues)")
 
     # Generate consolidated report
     if not args.no_consolidation and not args.training_only:
