@@ -45,9 +45,13 @@ whether the tier classification generalizes.
 
 ## Findings
 
-1. **`multiplier` is the only universally-dominant lever** — material on both segments (52% / 56%). The widened grid
-   reveals a clean monotone response (premium: €32.7M → €29.2M → €23.7M → €17.7M for multiplier 5 → 6 → 8 → 9), so the
-   original ±22% on `no_premium_cd` was a grid-resolution underestimate, not a different effect.
+1. **`multiplier` dominates on both segments (52% / 56%) — but it is a FIXED accounting constant, not a tuning lever.**
+   `todu_amt_pile_hN` is the *sum* of outstanding over months H0..HN, so `b2_ever_h6 = 7·Σ(todu_30ever_h6)/Σ(todu_amt_pile_h6)`
+   uses `multiplier = 7` (H0..H6 inclusive = 7 months) to turn that sum into the average monthly outstanding;
+   `multiplier_h3 = 4` (H0..H3). The widened grid's clean monotone response (premium €32.7M → €29.2M → €23.7M →
+   €17.7M for 5 → 6 → 8 → 9) is therefore a **guardrail** result, not a degree of freedom: changing the constant
+   mis-scales the risk denominator. Its large measured impact says **lock and validate it**, not "tune it". The real
+   tunable space is everything below.
 
 2. **The rest of the `no_premium_cd` Tier-1 set does NOT generalize.** `stress_mode`, `reject_uplift_factor`, and
    `reject_parceling_method` are Tier-1 on `no_premium_cd` but **byte-identical inert on premium**. The
@@ -80,7 +84,8 @@ whether the tier classification generalizes.
   governed for the **no_premium / known-PL** family (where rejections are score-driven), but are effectively moot for
   **premium** (rejections are overwhelmingly non-score). The right control is *per-segment*, keyed on the
   score-rejection share — not one global tier list. This refines (does not contradict) the original classification.
-- `multiplier` remains the single knob to govern everywhere.
+- `multiplier`/`multiplier_h3` are **fixed metric-definition constants** (7 = H0..H6 months, 4 = H0..H3) — *lock and
+  validate*, never tune. Their dominance in the sweep is a guardrail signal, not a governance lever.
 
 This is a diagnostic/validation result — it changes no production defaults or pipeline behaviour and has no cutoff
 impact.

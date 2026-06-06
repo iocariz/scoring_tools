@@ -70,8 +70,12 @@ class Knob:
 # at 2 points — they're minor/inert, so finer grids only burn runtime.
 KNOBS: list[Knob] = [
     # --- risk scaling ---
-    Knob("multiplier", "multiplier", [5, 6, 8, 9], note="H6 annualization factor (Tier-1, widened)"),
-    Knob("multiplier_h3", "multiplier_h3", [3, 5], note="H3 annualization factor"),
+    # NB: multiplier / multiplier_h3 are FIXED accounting constants (months in the
+    # H0..HN window: 7 and 4), not tuning knobs. They are swept here only as a GUARDRAIL
+    # probe — large impact confirms they must stay locked, since changing them mis-scales
+    # the average-outstanding denominator. Do not treat their high sensitivity as a lever.
+    Knob("multiplier", "multiplier", [5, 6, 8, 9], note="FIXED constant (=7, H0..H6 months); guardrail probe"),
+    Knob("multiplier_h3", "multiplier_h3", [3, 5], note="FIXED constant (=4, H0..H3 months); guardrail probe"),
     # --- reject inference ---
     Knob("reject_uplift_factor", "reject_uplift_factor", [1.0, 2.0, 2.5, 3.0], note="Tier-1, widened"),
     Knob("reject_max_risk_multiplier", "reject_max_risk_multiplier", [2.0, 4.0, 5.0, 7.0], note="widened"),
