@@ -60,6 +60,13 @@ uv run python run_allocation.py --target 2.5 --lock segment1:3
 uv run python run_selection_bias_analysis.py
 uv run python run_selection_bias_analysis.py --config config.toml --segments-config segments.toml
 
+# Run out-of-time backtest of frozen cutoffs (M4)
+uv run python run_backtest.py                                       # all frozen segments under output/
+uv run python run_backtest.py -s no_premium_cd premium              # specific segments
+uv run python run_backtest.py --data-dir output --output output/backtest --scenario base
+uv run python run_backtest.py -s no_premium_cd --holdout-start 2025-06-01 --holdout-end 2025-08-01  # override auto-window
+# Writes under `--output`: `backtest_<segment><suffix>.csv` (+ `_calibration.csv`), `backtest_consolidated<suffix>.csv`, `backtest_summary<suffix>.md`
+
 # Generate presentation (.pptx / .pdf)
 uv run python generate_presentation.py
 uv run python generate_presentation.py --pdf     # also convert to PDF (requires LibreOffice)
@@ -107,7 +114,7 @@ Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `mak
   - Reject inference: `reject_inference.py`, `reject_inference_optimizer.py`
   - Analysis: `mr_pipeline.py`, `stability.py`, `sensitivity.py`, `trends.py`, `alerts.py`, `audit.py`, `selection_bias.py`, `selection_bias_plots.py`
   - Output: `consolidation.py`, `reporting.py`, `plots.py`, `styles.py`, `metrics.py`, `utils.py`, `portfolio_owner.py`
-- Entry points: `main.py` (single segment), `run_batch.py` (multi-segment with global bin learning + supersegment model sharing), `run_allocation.py` (MILP allocation with segment constraints/locking), `generate_presentation.py` (PowerPoint/PDF output), `run_score_metrics.py` (score discriminance), `run_selection_bias_analysis.py` (selection bias diagnostics), `dashboard.py` / `interactive_allocator.py` (Dash web UIs), `gradio_dashboard.py` (Gradio web UI)
+- Entry points: `main.py` (single segment), `run_batch.py` (multi-segment with global bin learning + supersegment model sharing), `run_allocation.py` (MILP allocation with segment constraints/locking), `run_backtest.py` (out-of-time backtest of frozen cutoffs, M4), `generate_presentation.py` (PowerPoint/PDF output), `run_score_metrics.py` (score discriminance), `run_selection_bias_analysis.py` (selection bias diagnostics), `dashboard.py` / `interactive_allocator.py` (Dash web UIs), `gradio_dashboard.py` (Gradio web UI)
 
 ### Key Design Patterns
 
@@ -136,6 +143,8 @@ Two-tier config: `config.toml` (global defaults) overridden per-segment by `segm
 **Reject inference:** `reject_inference_method` ("none"/"parceling"), `reject_parceling_method` ("linear"/"power"/"sigmoid"), `reject_uplift_factor`, `reject_max_risk_multiplier`, `reject_bayesian_smoothing`, `reject_bayesian_prior_strength`, `reject_enforce_monotonicity`, `reject_include_all_rejections`. **No/low-demand handling:** `reject_no_demand_anchor_percentile` (default 0.10) and `reject_confidence_scale` (default 10.0) — repesca bins with little/no demand have their acceptance rate shrunk toward a conservative *low* anchor (the given percentile of observed rates) by confidence `1 − exp(−n/scale)`, instead of the old anti-conservative median fallback; no-demand bins (conf 0) get the anchor, well-observed bins (conf ≈ 1) are ~unchanged. Smaller `scale` shrinks only genuinely sparse bins. RI optimizer: `run_ri_optimizer`, `ri_validation_split`, `ri_optimizer_methods` ("grid"/"optuna"), `ri_optuna_n_trials`, `ri_calibration_gamma`, `ri_uplift_range`, `ri_max_mult_range`.
 
 **H3 metrics:** `multiplier_h3` (scaling factor for 3-month risk), `use_mr_outcomes` (enable H3→H6 extrapolation), `mr_min_obs_per_bin`, `mr_extrapolation_method` (`"linear"` / `"power"` / `"logistic"` / `"auto"`), `mr_extrapolation_curvature` (power exponent; ignored when method is `"auto"` — curvature is fitted from main-period data via weighted log-log regression in `fit_h3_extrapolation_curve`), `mr_maturity_months` (min months since booking for H6 maturity filter), `mr_extrapolation_risk_multiplier` (relative ceiling for MR risk), `mr_extrapolation_hard_cap` (absolute ceiling for risk %).
+
+**Out-of-time backtest (M4):** `run_backtest.py` + `src/backtest.py` apply a completed run's **frozen** accepted-cell set (`accepted_cells*.csv`) **as-is** to a held-out out-of-time cohort and compare realized vs predicted risk/production. Distinct from the inline MR check (`mr_pipeline.process_mr_period`), which **re-optimizes** the mask and is risk-only — the backtest never re-fits bins/model/mask (read-only; writes only under `--output`). The held-out window is auto-derived as `(date_fin_book_obs, max(mis_date) − maturity_months]` (the post-training cohorts old enough to have a realized H6; trades recency for maturity, no H3 extrapolation). Risk is compared directly (a rate); the clean same-basis drift signal is **in-sample realized → OOT realized** (both booked-only under the identical cutoff) — `predicted` (from `optimal_solution*.csv`) carries reject-inference + stress conservatism, so it is a different basis. Production is reported as rates (acceptance %, realized €), since absolute € is not comparable across periods of different size. Per-cell calibration (predicted vs realized per accepted cell, with booked counts) flags thin cells.
 
 **Stress & transformation:** `stress_mode` ("global"/"per_bin"/"disabled"), `per_bin_tasa_fin` (compute transformation rate per grid cell).
 
