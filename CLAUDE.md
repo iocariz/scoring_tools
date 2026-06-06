@@ -67,6 +67,13 @@ uv run python run_backtest.py --data-dir output --output output/backtest --scena
 uv run python run_backtest.py -s no_premium_cd --holdout-start 2025-06-01 --holdout-end 2025-08-01  # override auto-window
 # Writes under `--output`: `backtest_<segment><suffix>.csv` (+ `_calibration.csv`), `backtest_consolidated<suffix>.csv`, `backtest_summary<suffix>.md`
 
+# Reproducibility check — golden headline numbers (M5)
+uv run python run_reproducibility.py -s no_premium_cd                       # re-derive + compare to committed reference
+uv run python run_reproducibility.py -s no_premium_cd --update-reference    # (re)establish the committed reference
+uv run python run_reproducibility.py -s no_premium_cd --model-path <dir>    # reuse a trained model (faster)
+uv run python run_reproducibility.py -s no_premium_cd --risk-tol-pp 0.02 --prod-tol-pct 0.5
+# PASS iff headline (risk/production/cells/accepted-set) reproduces within tolerance AND data SHA-256 matches the reference
+
 # Generate presentation (.pptx / .pdf)
 uv run python generate_presentation.py
 uv run python generate_presentation.py --pdf     # also convert to PDF (requires LibreOffice)
@@ -114,7 +121,7 @@ Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `mak
   - Reject inference: `reject_inference.py`, `reject_inference_optimizer.py`
   - Analysis: `mr_pipeline.py`, `stability.py`, `sensitivity.py`, `trends.py`, `alerts.py`, `audit.py`, `selection_bias.py`, `selection_bias_plots.py`
   - Output: `consolidation.py`, `reporting.py`, `plots.py`, `styles.py`, `metrics.py`, `utils.py`, `portfolio_owner.py`
-- Entry points: `main.py` (single segment), `run_batch.py` (multi-segment with global bin learning + supersegment model sharing), `run_allocation.py` (MILP allocation with segment constraints/locking), `run_backtest.py` (out-of-time backtest of frozen cutoffs, M4), `generate_presentation.py` (PowerPoint/PDF output), `run_score_metrics.py` (score discriminance), `run_selection_bias_analysis.py` (selection bias diagnostics), `dashboard.py` / `interactive_allocator.py` (Dash web UIs), `gradio_dashboard.py` (Gradio web UI)
+- Entry points: `main.py` (single segment), `run_batch.py` (multi-segment with global bin learning + supersegment model sharing), `run_allocation.py` (MILP allocation with segment constraints/locking), `run_backtest.py` (out-of-time backtest of frozen cutoffs, M4), `run_reproducibility.py` (golden-numbers reproducibility check, M5), `generate_presentation.py` (PowerPoint/PDF output), `run_score_metrics.py` (score discriminance), `run_selection_bias_analysis.py` (selection bias diagnostics), `dashboard.py` / `interactive_allocator.py` (Dash web UIs), `gradio_dashboard.py` (Gradio web UI)
 
 ### Key Design Patterns
 
@@ -145,6 +152,8 @@ Two-tier config: `config.toml` (global defaults) overridden per-segment by `segm
 **H3 metrics:** `multiplier_h3` (scaling factor for 3-month risk), `use_mr_outcomes` (enable H3→H6 extrapolation), `mr_min_obs_per_bin`, `mr_extrapolation_method` (`"linear"` / `"power"` / `"logistic"` / `"auto"`), `mr_extrapolation_curvature` (power exponent; ignored when method is `"auto"` — curvature is fitted from main-period data via weighted log-log regression in `fit_h3_extrapolation_curve`), `mr_maturity_months` (min months since booking for H6 maturity filter), `mr_extrapolation_risk_multiplier` (relative ceiling for MR risk), `mr_extrapolation_hard_cap` (absolute ceiling for risk %).
 
 **Out-of-time backtest (M4):** `run_backtest.py` + `src/backtest.py` apply a completed run's **frozen** accepted-cell set (`accepted_cells*.csv`) **as-is** to a held-out out-of-time cohort and compare realized vs predicted risk/production. Distinct from the inline MR check (`mr_pipeline.process_mr_period`), which **re-optimizes** the mask and is risk-only — the backtest never re-fits bins/model/mask (read-only; writes only under `--output`). The held-out window is auto-derived as `(date_fin_book_obs, max(mis_date) − maturity_months]` (the post-training cohorts old enough to have a realized H6; trades recency for maturity, no H3 extrapolation). Risk is compared directly (a rate); the clean same-basis drift signal is **in-sample realized → OOT realized** (both booked-only under the identical cutoff) — `predicted` (from `optimal_solution*.csv`) carries reject-inference + stress conservatism, so it is a different basis. Production is reported as rates (acceptance %, realized €), since absolute € is not comparable across periods of different size. Per-cell calibration (predicted vs realized per accepted cell, with booked counts) flags thin cells.
+
+**Validation & reproducibility (M5):** the validation pack lives in `reports/validation/` — `assumptions_register.md` (every load-bearing assumption with value/source/governance tier; `multiplier`/`multiplier_h3` are FIXED constants), `reproduction_runbook.md` (independent-reviewer steps), `model_validation_report.md` (reproduction + adversarial "break the numbers" findings), `mrm_signoff.md` (sign-off + residual risks + conditions for live/automated cutoffs), and `reference/<segment>_headline.json` (committed golden numbers + the data SHA-256/git/config they pin to). `run_reproducibility.py` + `src/reproducibility.py` re-derive a segment's headline (risk/production/accepted-cells) and PASS only if it reproduces within tolerance **and** the data SHA-256 still matches the reference (a changed snapshot fails loudly → re-validate). It reproduces under `allow_dq_warnings=True` (the same DQ posture the headline was set with). Standalone single-segment; production pooled-`total` numbers are validated via the M4 backtest + the #7 multi-segment validation.
 
 **Stress & transformation:** `stress_mode` ("global"/"per_bin"/"disabled"), `per_bin_tasa_fin` (compute transformation rate per grid cell).
 
