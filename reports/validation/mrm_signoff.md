@@ -32,10 +32,12 @@ is the maturity anchor; `use_mr_outcomes` is validation-only (M3a).
 | Model-selection change (#7) | `todo-list.md` #7 + 2026-05-31 validation | **Validated** multi-segment on the pooled `total` model (pre-#7 Lasso α≈0 vs post-#7 Linear Regression — near-identical; aggregate −0.42%) |
 
 ## 4. Residual risks & limitations
-1. **Out-of-time risk drift (HIGH — monitor).** The M4 backtest found realized risk on the post-training mature cohort
-   ran **above** prediction for the no_premium family (no_premium_cd ~0.97%→2.11%, no_premium_ef ~1.08%→2.62% booked-only
-   realized); premium/precon/ab held. Small mature windows (~2 cohorts, 21–27% mature) — a signal to **monitor**, not a
-   conclusion. **Condition:** re-run the M4 backtest each period and investigate if drift persists/widens.
+1. **Out-of-time risk drift (INCONCLUSIVE — monitor).** The M4 backtest point estimates *look* like upward drift for the
+   no_premium family (cd 0.97%→2.11%, ef 1.08%→2.62%), but on investigation (2026-06) this is **within sampling noise**:
+   every OOT bootstrap CI overlaps its in-sample CI, **no segment flags DRIFT** under the noise-aware rule, the counts
+   are tiny (cd 12 defaults, ef 2), and it is **not a maturity artifact** (`pile_h6/pile_h3` ≈ 1.68 in- and
+   out-of-sample). cd is the only borderline case (Poisson p=0.057). **Condition:** re-run the M4 backtest as more
+   cohorts mature (the window is currently only ~2 cohorts) and investigate if a *significant* drift emerges.
 2. **Single data snapshot.** All numbers are from one extraction (pinned by SHA-256). **Condition:** re-validate (re-run
    the reproducibility check; it fails loudly on a new SHA) on each new snapshot.
 3. **Reject-inference sensitivity.** RI levers are material where rejections are score-driven (no_premium family) and

@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -34,6 +35,10 @@ from src.utils import calculate_b2_ever_h6
 
 if TYPE_CHECKING:
     from src.config import PreprocessingSettings
+
+# A realized risk rate needs enough defaults to be meaningful; below this the out-of-time
+# read is treated as INCONCLUSIVE rather than DRIFT (M4/M5 thin-window finding).
+MIN_DEFAULTS_FOR_DRIFT = 10
 
 
 class BacktestError(RuntimeError):
@@ -54,6 +59,26 @@ class BacktestResult:
     out_of_time: dict = field(default_factory=dict)  # frozen cutoff on the held-out window
     calibration: pd.DataFrame = field(default_factory=pd.DataFrame)  # per-cell predicted vs realized
 
+    def drift_flag(self) -> str:
+        """Noise-aware out-of-time drift verdict: OK / DRIFT / INCONCLUSIVE / —.
+
+        DRIFT only when there are enough OOT defaults to estimate a rate AND the OOT risk CI
+        does NOT overlap the in-sample CI. Too few defaults → INCONCLUSIVE (thin window);
+        overlapping CIs → OK (within sampling noise). This replaces the old point-estimate
+        |Δ|>0.5pp flag that overstated thin-window noise as drift (M4/M5 finding).
+        """
+        if not self.sufficient:
+            return "—"
+        n_def = self.out_of_time.get("n_defaults")
+        oot_lo = self.out_of_time.get("risk_ci_lower")
+        ins_hi = self.in_sample.get("risk_ci_upper")
+        if n_def is None or n_def < MIN_DEFAULTS_FOR_DRIFT:
+            return "INCONCLUSIVE"
+        if oot_lo is None or ins_hi is None:
+            return "INCONCLUSIVE"
+        # Clearly higher iff the OOT CI sits entirely above the in-sample CI.
+        return "DRIFT" if oot_lo > ins_hi else "OK"
+
     def aggregate_row(self) -> dict:
         """Flat one-row summary for the consolidated report."""
         oot_risk = self.out_of_time.get("risk")
@@ -65,14 +90,18 @@ class BacktestResult:
         return {
             "segment": self.segment,
             "sufficient": self.sufficient,
+            "drift_flag": self.drift_flag(),
             "holdout_start": self.window.get("start"),
             "holdout_end": self.window.get("end"),
             "n_booked_oot": self.coverage.get("n_booked_oot"),
+            "n_defaults_oot": self.out_of_time.get("n_defaults"),
             "pct_mature": self.coverage.get("pct_mature"),
             "predicted_risk_pct": pred_risk,
             "in_sample_realized_risk_pct": ins_risk,
+            "in_sample_risk_ci": [self.in_sample.get("risk_ci_lower"), self.in_sample.get("risk_ci_upper")],
             "oot_realized_risk_pct": oot_risk,
-            "oot_minus_insample_pp": realized_delta,  # same-basis drift (headline)
+            "oot_risk_ci": [self.out_of_time.get("risk_ci_lower"), self.out_of_time.get("risk_ci_upper")],
+            "oot_minus_insample_pp": realized_delta,  # same-basis point delta (read with the CIs)
             "oot_minus_predicted_pp": pred_delta,  # predicted carries RI+stress conservatism
             "in_sample_acceptance_rate": self.in_sample.get("acceptance_rate"),
             "oot_acceptance_rate": self.out_of_time.get("acceptance_rate"),
@@ -150,16 +179,44 @@ def apply_policy(df: pd.DataFrame, variables: list[str], accepted_set: set[tuple
 # --------------------------------------------------------------------------- #
 
 
+def _bootstrap_risk_ci(acc: pd.DataFrame, multiplier: float, n_boot: int = 1000, seed: int = 42) -> tuple:
+    """Bootstrap 95% CI for realized b2 over the accepted-booked subset (resample loans).
+
+    Returns (lo, hi) percentiles, or (None, None) when there is nothing to resample. The
+    realized risk estimate is dominated by a handful of defaults on a thin window, so a CI
+    is the honest companion to the point estimate (M4/M5 drift was within noise).
+    """
+    bad = acc["todu_30ever_h6"].to_numpy(dtype="float64")
+    pile = acc["todu_amt_pile_h6"].to_numpy(dtype="float64")
+    keep = ~(np.isnan(bad) | np.isnan(pile))
+    bad, pile = bad[keep], pile[keep]
+    m = len(bad)
+    if m == 0 or pile.sum() <= 0:
+        return (None, None)
+    rng = np.random.RandomState(seed)
+    draws = np.empty(n_boot)
+    for i in range(n_boot):
+        idx = rng.randint(0, m, m)
+        p = pile[idx].sum()
+        draws[i] = multiplier * bad[idx].sum() / p * 100 if p > 0 else np.nan
+    lo, hi = np.nanpercentile(draws, [2.5, 97.5])
+    return (round(float(lo), 4), round(float(hi), 4))
+
+
 def _realized_metrics(booked: pd.DataFrame, accepted: pd.Series, multiplier: float) -> dict:
-    """Realized production (€) + risk (%) over the accepted, booked subset."""
+    """Realized production (€) + risk (%) + default count + bootstrap CI over the accepted, booked subset."""
     acc = booked[accepted]
     t30 = float(acc["todu_30ever_h6"].sum())
     tamt = float(acc["todu_amt_pile_h6"].sum())
     risk = float(calculate_b2_ever_h6(t30, tamt, multiplier=multiplier, as_percentage=True)) if tamt > 0 else None
+    risk_ci_lo, risk_ci_hi = _bootstrap_risk_ci(acc, multiplier)
     return {
         "production": float(acc["oa_amt_h0"].sum()),
         "risk": risk,
+        "risk_ci_lower": risk_ci_lo,
+        "risk_ci_upper": risk_ci_hi,
         "n_accepted_booked": int(len(acc)),
+        "n_defaults": int((acc["todu_30ever_h6"] > 0).sum()),
         "todu_30ever_h6": t30,
         "todu_amt_pile_h6": tamt,
     }
@@ -384,9 +441,10 @@ def write_consolidated_report(results: list[BacktestResult], out_dir: Path, suff
         "is not comparable across periods of different size.\n",
         "**Reading the risk columns:** `predicted` is the optimizer's figure for the chosen solution and "
         "**includes reject-inference + stress conservatism**, so it is not the same basis as a booked-only "
-        "realized rate. The clean, same-basis drift signal is **in-sample realized → OOT realized** (both "
-        "booked-only under the identical frozen cutoff); the `[OK]/[DRIFT]` flag is based on that. Small "
-        "mature windows give noisy per-cell numbers — read the booked counts.\n",
+        "realized rate. The clean, same-basis signal is **in-sample realized → OOT realized** (both booked-only "
+        "under the identical frozen cutoff), **read with bootstrap CIs**. The flag is noise-aware: **DRIFT** only "
+        f"when there are ≥{MIN_DEFAULTS_FOR_DRIFT} OOT defaults AND the OOT risk CI sits entirely above the "
+        "in-sample CI; **INCONCLUSIVE** when too few defaults; **OK** when the CIs overlap (within noise).\n",
     ]
     for r in results:
         if not r.sufficient:
@@ -395,18 +453,16 @@ def write_consolidated_report(results: list[BacktestResult], out_dir: Path, suff
         pred = r.predicted.get("risk")
         ins = r.in_sample.get("risk")
         oot = r.out_of_time.get("risk")
-        # Flag on the same-basis (booked-only realized) drift: in-sample vs OOT.
-        realized_delta = (oot - ins) if (ins is not None and oot is not None) else None
         pred_delta = (oot - pred) if (pred is not None and oot is not None) else None
-        flag = "—"
-        if realized_delta is not None:
-            flag = "OK" if abs(realized_delta) <= 0.5 else "DRIFT"
+        flag = r.drift_flag()
         win = r.window
+        ins_ci = f"[{_fmt(r.in_sample.get('risk_ci_lower'), 2)}, {_fmt(r.in_sample.get('risk_ci_upper'), 2)}]"
+        oot_ci = f"[{_fmt(r.out_of_time.get('risk_ci_lower'), 2)}, {_fmt(r.out_of_time.get('risk_ci_upper'), 2)}]"
         lines.append(
             f"- **{r.segment}** [{flag}]: window {win['start'].date()}→{win['end'].date()} "
-            f"({r.coverage.get('n_booked_oot')} booked, {_fmt_pct(r.coverage.get('pct_mature'))} mature) | "
-            f"realized {_fmt(ins)}% (in-sample) → {_fmt(oot)}% (OOT), Δ {_fmt(realized_delta)} pp | "
-            f"predicted {_fmt(pred)}% (RI+stress) → OOT Δ {_fmt(pred_delta)} pp | "
+            f"({r.coverage.get('n_booked_oot')} booked, **{r.out_of_time.get('n_defaults')} defaults**, "
+            f"{_fmt_pct(r.coverage.get('pct_mature'))} mature) | realized {_fmt(ins)}% {ins_ci} (in-sample) → "
+            f"{_fmt(oot)}% {oot_ci} (OOT) | predicted {_fmt(pred)}% (RI+stress) → OOT Δ {_fmt(pred_delta)} pp | "
             f"acceptance {_fmt_pct(r.in_sample.get('acceptance_rate'))} → "
             f"{_fmt_pct(r.out_of_time.get('acceptance_rate'))}"
         )
