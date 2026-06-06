@@ -1080,22 +1080,12 @@ class TestExportConsolidatedExcel:
         wb = openpyxl.load_workbook(xlsx_path)
         sheet_names = wb.sheetnames
         assert "Executive Summary" in sheet_names
-        assert "Portfolio Summary" in sheet_names
-        assert "Segment Detail" in sheet_names
-        assert "Cutoff Comparison" in sheet_names
-        assert "Grid seg1" in sheet_names
         assert "RP seg1" in sheet_names
+        # Removed as redundant: the scenario/total tables + acceptance grids live on the
+        # Executive Summary, and per-segment detail on the RP sheets.
+        for removed in ("Portfolio Summary", "Segment Detail", "Cutoff Comparison", "Grid seg1"):
+            assert removed not in sheet_names
         wb.close()
-
-    def test_sheet_contents(self, temp_output_dir):
-        """Verify Portfolio Summary sheet has correct rows/columns."""
-        df = self._make_consolidated_df()
-        xlsx_path = export_consolidated_excel(df, temp_output_dir, {})
-
-        result = pd.read_excel(xlsx_path, sheet_name="Portfolio Summary")
-        assert len(result) == 2  # TOTAL + supersegment_ss1
-        assert "Actual Production (€)" in result.columns
-        assert result["Actual Production (€)"].iloc[0] == 1000000
 
     def test_executive_summary_has_kpi_cards(self, temp_output_dir):
         """Verify Executive Summary sheet has KPI values and table."""
@@ -1138,8 +1128,8 @@ class TestExportConsolidatedExcel:
         import openpyxl
 
         wb = openpyxl.load_workbook(xlsx_path)
-        ws = wb["Grid seg1"]
-        # Collect all cell values in the grid sheet
+        ws = wb["Executive Summary"]  # acceptance grids are inlined here (Grid sheets removed)
+        # Collect all cell values in the sheet
         all_values = []
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column, values_only=True):
             all_values.extend(v for v in row if v is not None)
@@ -1177,7 +1167,7 @@ class TestExportConsolidatedExcel:
         import openpyxl
 
         wb = openpyxl.load_workbook(xlsx_path)
-        ws = wb["Grid seg1"]
+        ws = wb["Executive Summary"]  # acceptance grids are inlined here (Grid sheets removed)
         # Collect all values — should have slice labels like "income_bin=1"
         all_values = [
             str(ws.cell(row=r, column=c).value or "")

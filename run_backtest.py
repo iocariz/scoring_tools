@@ -54,6 +54,68 @@ def _discover_segments(data_dir: Path, suffix: str, wanted: list[str] | None) ->
     return found
 
 
+def backtest_all(
+    full_data,
+    data_dir: str | Path = "output",
+    out_dir: str | Path = "output/backtest",
+    scenario: str = "base",
+    maturity_months: int = 6,
+    segments: list[str] | None = None,
+    holdout_start: str | None = None,
+    holdout_end: str | None = None,
+) -> list:
+    """Backtest every frozen segment under *data_dir* against a held-out cohort.
+
+    Writes per-segment + consolidated reports under *out_dir* and returns the list of
+    ``BacktestResult``. Shared by the CLI and ``run_batch`` (which passes its already-loaded
+    ``full_data`` so the SAS file isn't re-read).
+    """
+    suffix = _scenario_suffix(scenario)
+    data_dir, out_dir = Path(data_dir), Path(out_dir)
+    seg_dirs = _discover_segments(data_dir, suffix, segments)
+    if not seg_dirs:
+        logger.warning(f"No frozen segments with accepted_cells{suffix}.csv under {data_dir} — skipping backtest.")
+        return []
+
+    logger.info(f"Backtesting {len(seg_dirs)} segment(s) on scenario '{scenario}' → {out_dir}")
+    results = []
+    for seg_dir in seg_dirs:
+        try:
+            settings = PreprocessingSettings.from_toml(str(seg_dir / "config_segment.toml"))
+            result = backtest_segment(
+                full_data,
+                settings,
+                seg_dir,
+                suffix=suffix,
+                maturity_months=maturity_months,
+                holdout_start=holdout_start,
+                holdout_end=holdout_end,
+            )
+        except BacktestError as e:
+            logger.error(f"[{seg_dir.name}] backtest failed: {e}")
+            continue
+        except Exception:
+            logger.exception(f"[{seg_dir.name}] unexpected backtest error")
+            continue
+
+        write_backtest_report(result, out_dir, suffix)
+        results.append(result)
+        if result.sufficient:
+            logger.info(
+                f"[{result.segment}] {result.drift_flag()} | window "
+                f"{result.window['start'].date()}→{result.window['end'].date()} | "
+                f"defaults={result.out_of_time.get('n_defaults')} | "
+                f"in-sample {result.in_sample.get('risk')}% → OOT {result.out_of_time.get('risk')}%"
+            )
+        else:
+            logger.warning(f"[{result.segment}] {result.message}")
+
+    if results:
+        paths = write_consolidated_report(results, out_dir, suffix)
+        logger.info(f"Consolidated backtest: {paths['consolidated']}")
+    return results
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Out-of-time backtest of frozen cutoffs (M4).",
@@ -70,17 +132,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--holdout-end", default=None, help="Override: held-out window end (YYYY-MM-DD).")
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
-    suffix = _scenario_suffix(args.scenario)
-    data_dir = Path(args.data_dir)
-    out_dir = Path(args.output)
-
-    if not data_dir.exists():
-        logger.error(f"--data-dir not found: {data_dir}")
-        return 1
-
-    seg_dirs = _discover_segments(data_dir, suffix, args.segments)
-    if not seg_dirs:
-        logger.error(f"No frozen segments with accepted_cells{suffix}.csv under {data_dir}")
+    if not Path(args.data_dir).exists():
+        logger.error(f"--data-dir not found: {args.data_dir}")
         return 1
 
     # Load + standardize the SAS once, shared across all segments.
@@ -94,48 +147,19 @@ def main(argv: list[str] | None = None) -> int:
         logger.error(f"Could not load/standardize data from {data_path}")
         return 1
 
-    logger.info(f"Backtesting {len(seg_dirs)} segment(s) on scenario '{args.scenario}' → {out_dir}")
-    results = []
-    for seg_dir in seg_dirs:
-        try:
-            settings = PreprocessingSettings.from_toml(str(seg_dir / "config_segment.toml"))
-            result = backtest_segment(
-                full_data,
-                settings,
-                seg_dir,
-                suffix=suffix,
-                maturity_months=args.maturity_months,
-                holdout_start=args.holdout_start,
-                holdout_end=args.holdout_end,
-            )
-        except BacktestError as e:
-            logger.error(f"[{seg_dir.name}] backtest failed: {e}")
-            continue
-        except Exception:
-            logger.exception(f"[{seg_dir.name}] unexpected backtest error")
-            continue
-
-        write_backtest_report(result, out_dir, suffix)
-        results.append(result)
-        if result.sufficient:
-            pred, oot = result.predicted.get("risk"), result.out_of_time.get("risk")
-            delta = (oot - pred) if (pred is not None and oot is not None) else None
-            logger.info(
-                f"[{result.segment}] window {result.window['start'].date()}→{result.window['end'].date()} | "
-                f"booked_oot={result.coverage.get('n_booked_oot')} | "
-                f"predicted={pred} → OOT realized={oot} (Δ={delta} pp) | "
-                f"acceptance {result.in_sample.get('acceptance_rate')}→{result.out_of_time.get('acceptance_rate')}"
-            )
-        else:
-            logger.warning(f"[{result.segment}] {result.message}")
-
+    results = backtest_all(
+        full_data,
+        data_dir=args.data_dir,
+        out_dir=args.output,
+        scenario=args.scenario,
+        maturity_months=args.maturity_months,
+        segments=args.segments,
+        holdout_start=args.holdout_start,
+        holdout_end=args.holdout_end,
+    )
     if not results:
         logger.error("No segments produced a backtest result.")
         return 1
-
-    paths = write_consolidated_report(results, out_dir, suffix)
-    logger.info(f"Consolidated backtest: {paths['consolidated']}")
-    logger.info(f"Summary narrative:     {paths['summary']}")
     return 0
 
 

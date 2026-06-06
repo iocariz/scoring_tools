@@ -2024,8 +2024,28 @@ def _style_table(ws, df_cols, *, header_row: int = 1, highlight_total: bool = Tr
     )
 
 
-def _write_kpi_card(ws, row, col, label, value_str, delta_str=None, delta_positive: bool = True) -> None:
-    """Write a KPI card block: 2 rows × 2 columns. Pure helper."""
+def _ci_pct(row, lo_key: str, hi_key: str) -> str | None:
+    """Format a percentage CI for a KPI label, e.g. '95% CI [0.42–1.24]'. None if missing/degenerate."""
+    lo, hi = row.get(lo_key), row.get(hi_key)
+    if lo is None or hi is None or pd.isna(lo) or pd.isna(hi) or lo == hi:
+        return None  # missing or zero-width (placeholder) → no band rather than a misleading one
+    return f"95% CI [{lo:.2f}–{hi:.2f}]"
+
+
+def _ci_eur(row, lo_key: str, hi_key: str) -> str | None:
+    """Format a € CI (in millions) for a KPI label, e.g. '95% CI [€39.4M–€42.0M]'. None if missing/degenerate."""
+    lo, hi = row.get(lo_key), row.get(hi_key)
+    if lo is None or hi is None or pd.isna(lo) or pd.isna(hi) or lo == hi:
+        return None
+    return f"95% CI [€{lo / 1e6:.1f}M–€{hi / 1e6:.1f}M]"
+
+
+def _write_kpi_card(ws, row, col, label, value_str, delta_str=None, delta_positive: bool = True, ci_str=None) -> None:
+    """Write a KPI card block: 2 rows × 2 columns. Pure helper.
+
+    ``ci_str`` (e.g. "95% CI [0.42–1.24]") is appended to the label line so the headline value
+    is read as a band, not a point — no extra cells, layout unchanged.
+    """
     val_cell = ws.cell(row=row, column=col)
     val_cell.value = value_str
     val_cell.font = _FONT_KPI_VALUE
@@ -2043,7 +2063,7 @@ def _write_kpi_card(ws, row, col, label, value_str, delta_str=None, delta_positi
         ws.cell(row=row, column=col + 1).fill = _FILL_KPI
         ws.cell(row=row, column=col + 1).border = _BORDER_ALL
     lc = ws.cell(row=row + 1, column=col)
-    lc.value = label
+    lc.value = f"{label}   {ci_str}" if ci_str else label
     lc.font = _FONT_KPI_LABEL
     lc.fill = _FILL_KPI
     lc.alignment = Alignment(horizontal="center", vertical="top")
@@ -3422,67 +3442,6 @@ def _build_classification_grid(
 # writer and the data it needs; no segment-level closures.
 
 
-def _write_sheet_portfolio_summary(writer, consolidated_df: pd.DataFrame) -> None:
-    """Write the Portfolio Summary sheet: TOTAL + supersegment rows."""
-    portfolio_mask = consolidated_df["group"].str.match(r"^(TOTAL|supersegment_)")
-    portfolio_cols = [
-        "group",
-        "period",
-        "scenario",
-        "n_segments",
-        "actual_production",
-        "optimum_production",
-        "production_delta",
-        "production_delta_pct",
-        "actual_risk_pct",
-        "optimum_risk_pct",
-        "risk_delta_pct",
-        "actual_rejection_rate_pct",
-        "optimum_rejection_rate_pct",
-        "total_demand",
-        "production_ci_lower",
-        "production_ci_upper",
-        "risk_ci_lower",
-        "risk_ci_upper",
-    ]
-    portfolio_df = _prepare_export_df(consolidated_df[portfolio_mask], portfolio_cols)
-    if not portfolio_df.empty:
-        portfolio_df.to_excel(writer, sheet_name="Portfolio Summary", index=False)
-        _style_table(writer.sheets["Portfolio Summary"], portfolio_df.columns)
-        writer.sheets["Portfolio Summary"].sheet_properties.tabColor = _CLR_TAB_PORTFOLIO
-        _apply_page_setup(writer.sheets["Portfolio Summary"])
-
-
-def _write_sheet_segment_detail(writer, consolidated_df: pd.DataFrame) -> None:
-    """Write the Segment Detail sheet: per-segment rows."""
-    segment_mask = ~consolidated_df["group"].str.match(r"^(TOTAL|supersegment_)")
-    segment_cols = [
-        "group",
-        "period",
-        "scenario",
-        "segments",
-        "actual_production",
-        "optimum_production",
-        "production_delta",
-        "production_delta_pct",
-        "actual_risk_pct",
-        "optimum_risk_pct",
-        "risk_delta_pct",
-        "actual_risk_h3_pct",
-        "optimum_risk_h3_pct",
-        "actual_rejection_rate_pct",
-        "optimum_rejection_rate_pct",
-        "swap_in_production",
-        "swap_out_production",
-    ]
-    segment_df = _prepare_export_df(consolidated_df[segment_mask], segment_cols)
-    if not segment_df.empty:
-        segment_df.to_excel(writer, sheet_name="Segment Detail", index=False)
-        _style_table(writer.sheets["Segment Detail"], segment_df.columns)
-        writer.sheets["Segment Detail"].sheet_properties.tabColor = _CLR_TAB_SEGMENT
-        _apply_page_setup(writer.sheets["Segment Detail"])
-
-
 def _write_per_segment_rp_sheets(
     writer,
     wb,
@@ -3691,49 +3650,6 @@ def _resolve_segment_income_threshold(
     return _income_th
 
 
-def _write_per_segment_grid_sheets(wb, cutoff_data: dict) -> None:
-    """Create one 'Grid {seg_name}' sheet per segment with its acceptance grids.
-
-    Each sheet gets a title bar + one sub-grid per scenario
-    (pessimistic/base/optimistic). Extracted in R2b-iii step 13.
-    """
-    for seg_name, df_cut in cutoff_data.items():
-        sheet_name = f"Grid {seg_name}"[:31]
-        ws_grid = wb.create_sheet(sheet_name)
-        ws_grid.sheet_properties.tabColor = _CLR_TAB_GRID
-        ws_grid.sheet_view.showGridLines = False
-
-        # Title bar
-        title_fill = PatternFill(start_color=_CLR_PRIMARY, end_color=_CLR_PRIMARY, fill_type="solid")
-        ws_grid.merge_cells(start_row=1, start_column=1, end_row=1, end_column=14)
-        t = ws_grid.cell(row=1, column=1)
-        t.value = f"  Acceptance Grid — {seg_name}"
-        t.font = Font(bold=True, color=_CLR_WHITE, size=16, name=_FN)
-        t.fill = title_fill
-        t.alignment = _ALIGN_LEFT
-        ws_grid.row_dimensions[1].height = 36
-        for gc in range(1, 15):
-            ws_grid.cell(row=2, column=gc).border = Border(top=Side(style="medium", color=_CLR_ACCENT))
-        ws_grid.row_dimensions[2].height = 4
-
-        # Draw grids per scenario
-        cur_row = 4
-        for scen in ["pessimistic", "base", "optimistic"]:
-            if "scenario" in df_cut.columns and scen in df_cut["scenario"].values:
-                cur_row = _write_acceptance_grid(ws_grid, df_cut, f"{scen.title()}", cur_row, scenario=scen)
-        _apply_page_setup(ws_grid)
-
-
-def _write_sheet_cutoff_comparison(writer, cutoff_data: dict) -> None:
-    """Write the Cutoff Comparison sheet: concatenated per-segment cutoffs."""
-    if cutoff_data:
-        all_cutoffs = pd.concat(cutoff_data.values(), ignore_index=True)
-        all_cutoffs.to_excel(writer, sheet_name="Cutoff Comparison", index=False)
-        _style_table(writer.sheets["Cutoff Comparison"], all_cutoffs.columns, highlight_total=False)
-        writer.sheets["Cutoff Comparison"].sheet_properties.tabColor = _CLR_TAB_CUTOFF
-        _apply_page_setup(writer.sheets["Cutoff Comparison"])
-
-
 def _batch_provenance_suffix(output_base: str | Path, segments: dict[str, dict[str, Any]]) -> str:
     """Compact provenance line from a representative segment's run_lineage.json (M2).
 
@@ -3762,6 +3678,358 @@ def _batch_provenance_suffix(output_base: str | Path, segments: dict[str, dict[s
             return "  |  " + "  |  ".join(parts)
         return ""
     return ""
+
+
+# --------------------------------------------------------------------------- #
+# Trust-layer readers + sheets (validation/governance + out-of-time backtest)
+# --------------------------------------------------------------------------- #
+
+# Governance tier per assumption (from the M3 audit). FIXED = definitional constant, never tune.
+_ASSUMPTION_TIERS: dict[str, tuple[str, str]] = {
+    "multiplier": ("FIXED", "H0..H6 = 7 months; locked to the metric, never tune"),
+    "multiplier_h3": ("FIXED", "H0..H3 = 4 months; locked"),
+    "optimum_risk": ("Core", "risk target the optimizer selects against"),
+    "risk_step": ("Core", "Pareto-frontier resolution"),
+    "stress_mode": ("Tuning", "material; segment-dependent (M3)"),
+    "reject_inference_method": ("Tuning", "selection-bias correction"),
+    "reject_parceling_method": ("Tuning", "RI shape; material on no_premium, inert on premium"),
+    "ri_calibration_gamma": ("Tuning", "active RI lever when optimizer is on"),
+    "use_mr_outcomes": ("Expert", "validation/monitoring-only — does not feed cutoffs (M3a)"),
+    "mr_maturity_months": ("Expert", "H6 maturity anchor"),
+}
+
+
+def _read_backtest_consolidated(output_base: str | Path, suffix: str) -> pd.DataFrame | None:
+    """Read the out-of-time backtest consolidated CSV (written by run_batch/run_backtest), if present."""
+    path = Path(output_base) / "backtest" / f"backtest_consolidated{suffix}.csv"
+    if not path.exists():
+        return None
+    try:
+        return pd.read_csv(path)
+    except Exception:
+        return None
+
+
+def _read_segment_stability(output_base: str | Path, seg: str, suffix: str) -> dict:
+    """Per-segment PSI/drift summary from drift_alerts + stability_psi. Empty dict if absent."""
+    base = Path(output_base) / seg / "data"
+    out: dict = {}
+    alerts_path = base / f"drift_alerts{suffix}.json"
+    if alerts_path.exists():
+        try:
+            d = json.loads(alerts_path.read_text())
+            out.update(d.get("summary", {}))  # info / warning / critical
+        except Exception:
+            pass
+    psi_path = base / f"stability_psi{suffix}.csv"
+    if psi_path.exists():
+        try:
+            df = pd.read_csv(psi_path)
+            if "psi" in df.columns and len(df):
+                out["max_psi"] = float(df["psi"].max())
+            if "status" in df.columns and len(df):
+                out["worst_status"] = (
+                    "unstable"
+                    if (df["status"] == "unstable").any()
+                    else ("moderate" if (df["status"] == "moderate").any() else "stable")
+                )
+        except Exception:
+            pass
+    return out
+
+
+def _read_lineage_dict(output_base: str | Path, segments: dict) -> dict:
+    """First available per-segment run_lineage.json as a dict (snapshot/assumptions/git)."""
+    base = Path(output_base)
+    for seg in segments:
+        path = base / seg / "data" / "run_lineage.json"
+        if path.exists():
+            try:
+                return json.loads(path.read_text())
+            except Exception:
+                continue
+    return {}
+
+
+def _read_reproducibility_reference(seg: str) -> dict | None:
+    """Committed golden reference for a segment (M5), if present."""
+    path = Path("reports/validation/reference") / f"{seg}_headline.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def _segment_status(backtest_flag: str | None, stability: dict) -> tuple[str, str]:
+    """Combine the OOT backtest flag + PSI severity into a traffic-light (text, fill color)."""
+    crit = stability.get("critical", 0) or 0
+    warn = stability.get("warning", 0) or 0
+    if backtest_flag == "DRIFT" or crit > 0:
+        return "REVIEW", _CLR_BAD_LIGHT
+    if backtest_flag == "INCONCLUSIVE" or warn > 0 or stability.get("worst_status") == "moderate":
+        return "WATCH", "FCF3CF"  # pale amber
+    return "OK", _CLR_GOOD_LIGHT
+
+
+def _sheet_banner(ws, title: str, subtitle: str, ncols: int = 8) -> None:
+    """Two-row title banner + accent line, matching the RP-sheet look."""
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncols)
+    t = ws.cell(row=1, column=1)
+    t.value = f"  {title}"
+    t.font = Font(bold=True, color=_CLR_WHITE, size=14, name=_FN)
+    t.fill = PatternFill(start_color=_CLR_PRIMARY, end_color=_CLR_PRIMARY, fill_type="solid")
+    t.alignment = _ALIGN_LEFT
+    ws.row_dimensions[1].height = 30
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=ncols)
+    s = ws.cell(row=2, column=1)
+    s.value = f"  {subtitle}"
+    s.font = _FONT_SUBTITLE
+    s.alignment = _ALIGN_LEFT
+    for c in range(1, ncols + 1):
+        ws.cell(row=3, column=c).border = Border(top=Side(style="medium", color=_CLR_ACCENT))
+
+
+def _section_title(ws, row: int, text: str, ncols: int = 8) -> int:
+    """Write a section header row; return the next free row."""
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=ncols)
+    c = ws.cell(row=row, column=1)
+    c.value = text
+    c.font = _FONT_SECTION
+    c.fill = _FILL_SECTION
+    return row + 1
+
+
+def _kv(ws, row: int, key: str, value: str, note: str = "") -> int:
+    """Write a key/value(/note) row; return next row."""
+    ws.cell(row=row, column=1).value = key
+    ws.cell(row=row, column=1).font = Font(bold=True, color=_CLR_PRIMARY, size=10, name=_FN)
+    vc = ws.cell(row=row, column=2)
+    vc.value = value
+    vc.font = Font(size=10, name=_FN)
+    if note:
+        ws.cell(row=row, column=4).value = note
+        ws.cell(row=row, column=4).font = _FONT_SUBTITLE
+    return row + 1
+
+
+def _write_exec_recommendation(ws, start_row: int, consolidated_df, output_base, segments: dict, suffix: str) -> int:
+    """Plain-language 'Recommendation & key risks' block on the Exec Summary. Returns next free row."""
+    row = _section_title(ws, start_row, "Recommendation & key risks", ncols=12)
+    lines: list[str] = []
+
+    tr = _get_total_row(consolidated_df, "main")
+    if tr is not None:
+        ci = _ci_pct(tr, "risk_ci_lower", "risk_ci_upper") or ""
+        lines.append(
+            f"Recommended cutoffs change portfolio production {tr.get('production_delta_pct', 0):+.1f}% "
+            f"(€{tr.get('production_delta', 0):+,.0f}) at optimum risk {tr.get('optimum_risk_pct', 0):.2f}% {ci}."
+        )
+
+    bt = _read_backtest_consolidated(output_base, suffix)
+    if bt is not None and not bt.empty and "drift_flag" in bt.columns:
+        vc = bt["drift_flag"].value_counts()
+        lines.append(
+            f"Out-of-time validation: {int(vc.get('OK', 0))} OK, {int(vc.get('INCONCLUSIVE', 0))} inconclusive, "
+            f"{int(vc.get('DRIFT', 0))} drift (of {len(bt)} segments backtested). See 'Out-of-time Validation' sheet."
+        )
+    else:
+        lines.append("Out-of-time validation: not available — run the backtest (see 'Out-of-time Validation' sheet).")
+
+    n_ok = n_watch = n_review = 0
+    bt_flags = dict(zip(bt.get("segment", []), bt.get("drift_flag", []), strict=False)) if bt is not None else {}
+    for seg in segments:
+        status, _ = _segment_status(bt_flags.get(seg), _read_segment_stability(output_base, seg, suffix))
+        n_ok += status == "OK"
+        n_watch += status == "WATCH"
+        n_review += status == "REVIEW"
+    lines.append(
+        f"Per-segment status: {n_ok} OK · {n_watch} watch · {n_review} review (population stability + OOT flag)."
+    )
+    lines.append(
+        "Residual: any out-of-time risk drift is currently within sampling noise on a thin mature window — "
+        "monitor as cohorts mature. Provenance, assumptions & sign-off on the 'Validation & Governance' sheet."
+    )
+
+    for line in lines:
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=12)
+        c = ws.cell(row=row, column=1)
+        c.value = line
+        c.font = Font(size=10, name=_FN)
+        c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        row += 1
+    return row + 1
+
+
+def _write_sheet_validation_governance(wb, output_base, segments: dict, consolidated_df: pd.DataFrame, suffix: str):
+    """New sheet (position 1): data snapshot, assumptions+tiers, reproducibility, stability, sign-off."""
+    ws = wb.create_sheet("Validation & Governance", 1)
+    ws.sheet_properties.tabColor = _CLR_PRIMARY
+    _sheet_banner(ws, "Validation & Governance", "Audit-ready provenance, assumptions, reproducibility & stability", 8)
+    row = 5
+
+    lin = _read_lineage_dict(output_base, segments)
+    data = lin.get("data", {}) or {}
+    git = lin.get("git", {}) or {}
+    cfg = lin.get("config", {}) or {}
+
+    row = _section_title(ws, row, "Data snapshot (pinned)")
+    row = _kv(ws, row, "Data file", str(data.get("path", "n/a")))
+    row = _kv(ws, row, "SHA-256", str(data.get("sha256", "n/a")))
+    row = _kv(
+        ws,
+        row,
+        "Modified / rows",
+        f"{data.get('mtime', 'n/a')}  ·  {data.get('rows_loaded', 'n/a'):,}"
+        if isinstance(data.get("rows_loaded"), int)
+        else f"{data.get('mtime', 'n/a')}",
+    )
+    row = _kv(
+        ws,
+        row,
+        "Run / git / config",
+        f"{lin.get('run_id', 'n/a')}  ·  git {git.get('short', 'n/a')}{' (dirty)' if git.get('dirty') else ''}  ·  cfg {cfg.get('hash', 'n/a')}",
+    )
+    row += 1
+
+    row = _section_title(ws, row, "Key assumptions & governance tier")
+    hdr = ["Assumption", "Value", "Tier", "Note"]
+    for j, h in enumerate(hdr, start=1):
+        cell = ws.cell(row=row, column=j)
+        cell.value = h
+        cell.font = _FONT_HEADER
+        cell.fill = _FILL_HEADER
+    row += 1
+    assumptions = lin.get("assumptions", {}) or {}
+    for key, (tier, note) in _ASSUMPTION_TIERS.items():
+        val = assumptions.get(key, "per-segment" if key in ("optimum_risk", "risk_step") else "—")
+        ws.cell(row=row, column=1).value = key
+        ws.cell(row=row, column=2).value = str(val)
+        tcell = ws.cell(row=row, column=3)
+        tcell.value = tier
+        if tier == "FIXED":
+            tcell.fill = PatternFill(start_color=_CLR_BAD_LIGHT, end_color=_CLR_BAD_LIGHT, fill_type="solid")
+            tcell.font = Font(bold=True, color=_CLR_BAD, size=10, name=_FN)
+        ws.cell(row=row, column=4).value = note
+        ws.cell(row=row, column=4).font = _FONT_SUBTITLE
+        row += 1
+    row += 1
+
+    row = _section_title(ws, row, "Reproducibility & stability (per segment)")
+    hdr = ["Segment", "Repro reference", "Snapshot match", "PSI worst", "Drift alerts (c/w/i)", "Status"]
+    for j, h in enumerate(hdr, start=1):
+        cell = ws.cell(row=row, column=j)
+        cell.value = h
+        cell.font = _FONT_HEADER
+        cell.fill = _FILL_HEADER
+    row += 1
+    bt = _read_backtest_consolidated(output_base, suffix)
+    bt_flags = dict(zip(bt.get("segment", []), bt.get("drift_flag", []), strict=False)) if bt is not None else {}
+    for seg in segments:
+        ref = _read_reproducibility_reference(seg)
+        stab = _read_segment_stability(output_base, seg, suffix)
+        snap = "n/a"
+        if ref and ref.get("data_sha256") and data.get("sha256"):
+            snap = "match" if ref["data_sha256"] == data["sha256"] else "CHANGED — re-validate"
+        status, fill = _segment_status(bt_flags.get(seg), stab)
+        vals = [
+            seg,
+            "yes" if ref else "no",
+            snap,
+            stab.get("worst_status", "n/a"),
+            f"{stab.get('critical', 0)}/{stab.get('warning', 0)}/{stab.get('info', 0)}",
+            status,
+        ]
+        for j, v in enumerate(vals, start=1):
+            ws.cell(row=row, column=j).value = v
+        ws.cell(row=row, column=6).fill = PatternFill(start_color=fill, end_color=fill, fill_type="solid")
+        row += 1
+    row += 1
+
+    row = _section_title(ws, row, "Sign-off")
+    row = _kv(
+        ws,
+        row,
+        "Validation pack",
+        "reports/validation/  (assumptions_register · reproduction_runbook · model_validation_report · mrm_signoff)",
+    )
+    row = _kv(
+        ws,
+        row,
+        "MRM sign-off",
+        "reports/validation/mrm_signoff.md  — complete validator/owner lines before automated live cutoffs",
+    )
+
+    for col, w in {"A": 22, "B": 30, "C": 22, "D": 40, "E": 22, "F": 12}.items():
+        ws.column_dimensions[col].width = w
+    _apply_page_setup(ws)
+
+
+def _write_sheet_oot_validation(wb, output_base, suffix: str):
+    """New sheet: the M4 out-of-time backtest (predicted vs realized, noise-aware flag)."""
+    ws = wb.create_sheet("Out-of-time Validation", 2)
+    ws.sheet_properties.tabColor = _CLR_TAB_CUTOFF
+    _sheet_banner(
+        ws, "Out-of-time Validation (backtest)", "Frozen cutoffs vs held-out cohort — realized vs predicted", 9
+    )
+    note = ws.cell(row=4, column=1)
+    note.value = (
+        "Flag is noise-aware: DRIFT only with ≥10 OOT defaults AND non-overlapping CIs; INCONCLUSIVE if too few "
+        "defaults; OK if CIs overlap. Production is rates, not absolute € (different population sizes)."
+    )
+    note.font = _FONT_SUBTITLE
+    ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=9)
+
+    bt = _read_backtest_consolidated(output_base, suffix)
+    if bt is None or bt.empty:
+        c = ws.cell(row=6, column=1)
+        c.value = "Out-of-time backtest not available — run `run_backtest.py` (or run_batch without --no-backtest)."
+        c.font = Font(italic=True, color=_CLR_NEUTRAL_MID, size=11, name=_FN)
+        _apply_page_setup(ws)
+        return
+
+    cols = [
+        ("segment", "Segment"),
+        ("drift_flag", "Flag"),
+        ("n_defaults_oot", "OOT defaults"),
+        ("predicted_risk_pct", "Predicted risk %"),
+        ("in_sample_realized_risk_pct", "In-sample realized %"),
+        ("in_sample_risk_ci", "In-sample CI"),
+        ("oot_realized_risk_pct", "OOT realized %"),
+        ("oot_risk_ci", "OOT CI"),
+        ("in_sample_acceptance_rate", "Accept (in)"),
+        ("oot_acceptance_rate", "Accept (OOT)"),
+        ("holdout_start", "Window start"),
+        ("holdout_end", "Window end"),
+        ("pct_mature", "% mature"),
+    ]
+    hdr_row = 6
+    for j, (_, label) in enumerate(cols, start=1):
+        cell = ws.cell(row=hdr_row, column=j)
+        cell.value = label
+        cell.font = _FONT_HEADER
+        cell.fill = _FILL_HEADER
+    flag_fill = {
+        "OK": _CLR_GOOD_LIGHT,
+        "INCONCLUSIVE": "FCF3CF",
+        "DRIFT": _CLR_BAD_LIGHT,
+    }
+    for i, (_, r) in enumerate(bt.iterrows()):
+        rr = hdr_row + 1 + i
+        for j, (key, _) in enumerate(cols, start=1):
+            val = r.get(key)
+            if isinstance(val, float):
+                val = round(val, 4)
+            ws.cell(row=rr, column=j).value = val
+        fcell = ws.cell(row=rr, column=2)
+        fill = flag_fill.get(str(r.get("drift_flag")))
+        if fill:
+            fcell.fill = PatternFill(start_color=fill, end_color=fill, fill_type="solid")
+            fcell.font = Font(bold=True, size=10, name=_FN)
+    for col, w in {"A": 16, "B": 14, "C": 12, "D": 14, "E": 18, "F": 16, "G": 14, "H": 16}.items():
+        ws.column_dimensions[col].width = w
+    _apply_page_setup(ws)
 
 
 def export_consolidated_excel(
@@ -3871,7 +4139,14 @@ def export_consolidated_excel(
         ws_exec.row_dimensions[kpi_row + 1].height = 22
 
         if tr_main is not None:
-            _write_kpi_card(ws_exec, kpi_row, 1, "Optimum Production", f"€{tr_main.get('optimum_production', 0):,.0f}")
+            _write_kpi_card(
+                ws_exec,
+                kpi_row,
+                1,
+                "Optimum Production",
+                f"€{tr_main.get('optimum_production', 0):,.0f}",
+                ci_str=_ci_eur(tr_main, "production_ci_lower", "production_ci_upper"),
+            )
             pd_val = tr_main.get("production_delta", 0)
             _write_kpi_card(
                 ws_exec,
@@ -3891,6 +4166,7 @@ def export_consolidated_excel(
                 f"{tr_main.get('optimum_risk_pct', 0):.2f}%",
                 delta_str=f"{rd:+.2f} pp",
                 delta_positive=rd <= 0,
+                ci_str=_ci_pct(tr_main, "risk_ci_lower", "risk_ci_upper"),
             )
             _write_kpi_card(
                 ws_exec, kpi_row, 7, "Rejection Rate", f"{tr_main.get('optimum_rejection_rate_pct', 0):.1f}%"
@@ -3910,7 +4186,14 @@ def export_consolidated_excel(
         ws_exec.row_dimensions[mr_row + 1].height = 22
 
         if tr_mr is not None:
-            _write_kpi_card(ws_exec, mr_row, 1, "MR Optimum Prod.", f"€{tr_mr.get('optimum_production', 0):,.0f}")
+            _write_kpi_card(
+                ws_exec,
+                mr_row,
+                1,
+                "MR Optimum Prod.",
+                f"€{tr_mr.get('optimum_production', 0):,.0f}",
+                ci_str=_ci_eur(tr_mr, "production_ci_lower", "production_ci_upper"),
+            )
             mr_pd = tr_mr.get("production_delta", 0)
             _write_kpi_card(
                 ws_exec,
@@ -3930,6 +4213,7 @@ def export_consolidated_excel(
                 f"{tr_mr.get('optimum_risk_pct', 0):.2f}%",
                 delta_str=f"{mr_rd:+.2f} pp",
                 delta_positive=mr_rd <= 0,
+                ci_str=_ci_pct(tr_mr, "risk_ci_lower", "risk_ci_upper"),
             )
             _write_kpi_card(
                 ws_exec, mr_row, 7, "MR Rejection Rate", f"{tr_mr.get('optimum_rejection_rate_pct', 0):.1f}%"
@@ -3949,6 +4233,12 @@ def export_consolidated_excel(
         # --- Spacer ---
         ws_exec.row_dimensions[8].height = 10
         next_row = 9
+
+        # --- Recommendation & key risks (plain-language; dynamic row flow) ---
+        try:
+            next_row = _write_exec_recommendation(ws_exec, next_row, consolidated_df, output_base, segments, "_base")
+        except Exception:
+            logger.warning("Could not write exec recommendation block", exc_info=True)
 
         # --- Main-period summary table ---
         exec_cols = [
@@ -4040,16 +4330,22 @@ def export_consolidated_excel(
         _apply_page_setup(ws_exec)
 
         # =============================================================
-        # Sheets 2–4: Portfolio Summary, Segment Detail, Cutoff Comparison
+        # Trust-layer sheets (Validation & Governance @1, Out-of-time @2).
+        # Guarded: a reporting-artifact failure must never break the workbook.
         # =============================================================
-        _write_sheet_portfolio_summary(writer, consolidated_df)
-        _write_sheet_segment_detail(writer, consolidated_df)
-        _write_sheet_cutoff_comparison(writer, cutoff_data)
+        try:
+            _write_sheet_validation_governance(wb, output_base, segments, consolidated_df, "_base")
+        except Exception:
+            logger.warning("Could not write Validation & Governance sheet", exc_info=True)
+        try:
+            _write_sheet_oot_validation(wb, output_base, "_base")
+        except Exception:
+            logger.warning("Could not write Out-of-time Validation sheet", exc_info=True)
 
-        # =============================================================
-        # Per-segment acceptance grid sheets
-        # =============================================================
-        _write_per_segment_grid_sheets(wb, cutoff_data)
+        # Portfolio Summary / Segment Detail / Cutoff Comparison and the per-segment
+        # acceptance-grid sheets were removed (redundant): the scenario/total tables live on
+        # the Executive Summary, the acceptance grids are inlined there too, and the
+        # per-segment RP sheets carry the detail.
 
         # =============================================================
         # Per-segment RP summary sheets (Main + MR)
