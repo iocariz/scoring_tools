@@ -25,6 +25,8 @@ A credit risk scoring and portfolio optimization pipeline that processes loan ap
 - **Score Discriminance**: Gini, lift, precision-recall, ROC analysis, and DeLong pairwise model comparison.
 - **Trend Monitoring**: Monthly metric aggregation with SPC-based anomaly detection.
 - **Bootstrap Confidence Intervals**: Quantifies uncertainty on production and risk estimates.
+- **Out-of-Time Backtest (M4)**: Applies a run's *frozen* accepted-cell set to a held-out, matured cohort and compares realized vs predicted risk/production with a noise-aware drift flag (OK / INCONCLUSIVE / DRIFT). Runs automatically inside `run_batch.py` (gated by `--no-backtest`).
+- **Validation & Governance Trust Layer**: The consolidated Excel surfaces audit-ready evidence for credit-risk/policy consumers — bootstrap CI bands and a "Recommendation & key risks" narrative on the Executive Summary, plus dedicated *Validation & Governance* (data-snapshot provenance, assumption governance tiers, per-segment reproducibility/stability) and *Out-of-time Validation* sheets.
 - **Interactive Dashboards**: Plotly/Dash web applications for exploring results.
 
 ---
@@ -97,7 +99,7 @@ uv run python main.py --model-path output/_supersegment_no_premium/models/model_
 
 ### 2. `run_batch.py` -- Multi-Segment Batch Processing
 
-Orchestrates the pipeline across all segments defined in `segments.toml`. Handles supersegment model training, per-segment optimization, and consolidated reporting.
+Orchestrates the pipeline across all segments defined in `segments.toml`. Handles supersegment model training, per-segment optimization, an automatic out-of-time backtest (M4, gated by `--no-backtest`, reusing the already-loaded data), and consolidated reporting.
 
 ```bash
 uv run python run_batch.py [OPTIONS]
@@ -116,6 +118,7 @@ uv run python run_batch.py [OPTIONS]
 | `--clean` | | Remove output directories before running |
 | `--clean-only` | | Only clean output directories, don't run pipeline |
 | `--skip-dq-checks` | | Skip data quality checks |
+| `--allow-dq-warnings` | | Analyst escape hatch: proceed past non-critical DQ **warnings** instead of halting (DQ is fail-closed by default; FAILED-severity checks still halt) |
 | `--no-consolidation` | | Skip consolidated report generation |
 | `--consolidate-only` | | Only generate consolidated report (skip segments) |
 | `--training-only` | | Only run data quality + model training (skip optimization/reporting steps) |
@@ -123,6 +126,7 @@ uv run python run_batch.py [OPTIONS]
 | `--base-only` | | Run only the base scenario for all segments (skip pessimistic/optimistic) |
 | `--cutoff-ordering-mode` | | Cutoff ordering direction: `bottom_up` (default) or `top_down`. Enforces nested acceptance across segments via each segment's `cutoff_floor_segment` |
 | `--no-report` | | Skip generating HTML reports |
+| `--no-backtest` | | Skip the out-of-time backtest step (M4) that runs after segments and feeds the consolidated report's Out-of-time Validation sheet |
 | `--log-file PATH` | | Capture all logs to a file (DEBUG level) |
 | `--resimulate R [R ...]` | | Resimulation across segments: risk target(s) in % applied to all segments, or a `scenarios.toml` path for per-segment targets |
 
@@ -317,7 +321,7 @@ Outputs are saved to `sensitivity_analysis_base.csv`, `sensitivity_analysis_cell
 
 ### Phase 8: Trend Analysis
 
-Computes monthly aggregated metrics (approval rate, production, risk) and detects anomalies using robust Statistical Process Control: a one-period-lagged rolling median with MAD-based scale, plus a t-distribution adjustment for small windows.
+Computes monthly aggregated metrics (approval rate, production, risk) and detects anomalies using robust Statistical Process Control: a one-period-lagged rolling median as the centre line and a robust moving-range (I-MR) scale — the median of consecutive absolute month-to-month differences divided by the d4 constant 0.9539 — with a fixed `n_sigma` (default 3) Shewhart band. Series shorter than the rolling window have anomaly detection disabled.
 
 ---
 
@@ -372,7 +376,7 @@ Directions control the monotonicity constraints in the MILP.
 
 ### Annualization
 
-All indicator columns (`todu_30ever_h6`, `todu_amt_pile_h6`, `oa_amt_h0`) are scaled by an **annual coefficient** before aggregation:
+The configured indicator columns (e.g. `todu_30ever_h6`, `todu_amt_pile_h6`, `oa_amt_h0`) are scaled by an **annual coefficient** as part of grid aggregation — the per-bin sums are multiplied by `annual_coef` (scaling a sum by a scalar is identical to scaling each row first):
 
 ```
 annual_coef = 12 / n_months_in_observation_period
@@ -402,7 +406,7 @@ The stress factor adjusts repesca risk predictions upward based on the observed 
 stress_factor = worst_bad_rate / overall_bad_rate
 ```
 
-where `worst_bad_rate` is the risk rate of the bottom 5% of booked applications (by score), and `overall_bad_rate` is the risk rate of all booked applications. Applied multiplicatively:
+where `worst_bad_rate` is the risk rate of the worst-scoring 5% of booked applications — by default the *lowest*-scoring 5% (`higher_is_worse=False`, i.e. it assumes a lower score = worse credit quality) — and `overall_bad_rate` is the risk rate of all booked applications. Applied multiplicatively:
 
 ```
 b2_ever_h6_repesca = stress_factor × model.predict(X)
@@ -460,12 +464,14 @@ Steady, interpretable penalty. Best for general use.
 
 **Power**: `multiplier = (1 / clip(acceptance_rate, 0.01, 1.0)) ^ uplift_factor`
 
-| Acceptance rate | Factor = 1.0 | Factor = 1.5 |
+The table below shows the **raw formula value** before the floor/cap; the default `reject_max_risk_multiplier = 3.0` would clamp every entry above 3.0× down to 3.0× (e.g. the 31.6× raw value below becomes 3.0× in practice).
+
+| Acceptance rate | Factor = 1.0 (raw) | Factor = 1.5 (raw) |
 |---|---|---|
 | 1.0 | 1.0× | 1.0× |
 | 0.5 | 2.0× | 2.83× |
 | 0.2 | 5.0× | 11.2× |
-| 0.1 | 10.0× | 31.6× (capped) |
+| 0.1 | 10.0× | 31.6× |
 
 Grows super-linearly at low acceptance rates. Best for heavy-tail risk when risk concentrates in the rejection tail.
 
@@ -474,9 +480,9 @@ Grows super-linearly at low acceptance rates. Best for heavy-tail risk when risk
 | Acceptance rate | Factor = 1.5 |
 |---|---|
 | 1.0 | ~1.00× |
-| 0.7 | ~1.04× |
+| 0.7 | ~1.18× |
 | 0.5 | 1.75× |
-| 0.3 | ~2.46× |
+| 0.3 | ~2.32× |
 | 0.0 | ~2.50× |
 
 Smooth S-curve: gentle at the extremes, steep transition around 50%. Best when the risk-selectivity relationship saturates — very selective bins are not infinitely riskier, and fully accepting bins still have some baseline uncertainty.
@@ -485,15 +491,15 @@ All multipliers are floored at 1.0 and capped at `reject_max_risk_multiplier` (d
 
 **Monotonicity Enforcement** (optional, `reject_enforce_monotonicity = true`): Post-processes multipliers using `sklearn.isotonic.IsotonicRegression` to ensure they are non-decreasing along each variable axis (marginal monotonicity). The direction of monotonicity respects each variable's risk ordering. Enforcement operates via alternating projections: for each variable, multipliers are averaged across the other axes, fit with isotonic regression along that variable's sorted bins, and mapped back. Iterates until convergence (max change < 1e-6) or 10 iterations.
 
-**Per-Bin Confidence Scores**: Each bin receives a confidence score: `confidence = 1 - exp(-n_total_effective / 50)`.
+**Per-Bin Confidence Scores**: Each bin receives a confidence score `confidence = 1 - exp(-n_total_effective / reject_confidence_scale)`, tied to the same `reject_confidence_scale` (default **10.0**) used by the no/low-demand shrinkage:
 
-| Total observations | Confidence |
+| Effective observations | Confidence (scale = 10) |
 |---|---|
-| 10 | 0.18 |
-| 25 | 0.39 |
-| 50 | 0.63 |
-| 100 | 0.86 |
-| 200 | 0.98 |
+| 5 | 0.39 |
+| 10 | 0.63 |
+| 20 | 0.86 |
+| 30 | 0.95 |
+| 50 | 0.99 |
 
 In outputs, confidence diagnostics include:
 - `ri_bin_count`: raw integer count (booked + rejected) for backward compatibility
@@ -506,7 +512,7 @@ Low-confidence bins (< 0.5) have sparse effective evidence. Confidence diagnosti
 
 | Guardrail | Mechanism |
 |---|---|
-| **Unseen bins** | Repesca bins with no matching demand data receive the median observed acceptance rate (or 0.5 if unavailable). When Bayesian smoothing is active, the smoothed median is used. |
+| **No/low-demand bins** | Repesca bins with no matching demand data are shrunk to a conservative **low anchor** — the `reject_no_demand_anchor_percentile` (default 10th) percentile of observed acceptance rates, floored at 0.01 (or 0.05 when no rates are observable) — via the confidence weight `1 − exp(−n/reject_confidence_scale)`; sparse-but-nonzero bins are partially shrunk toward the same anchor. (The legacy median / 0.5 fill was removed — see *No / low-demand bins* above.) |
 | **Floor** | Multiplier is floored at 1.0 — risk is never adjusted downward. |
 | **Cap** | Multiplier is capped at `reject_max_risk_multiplier` (default 3.0). |
 | **Monotonicity** | When enabled, isotonic regression enforces non-decreasing multipliers along each variable axis. |
@@ -581,7 +587,7 @@ x[riskier_cell] - x[safer_cell] ≤ 0
 
 This ensures: if a safer cell is rejected, all riskier cells along that dimension must also be rejected. The result is a "staircase" acceptance pattern. Monotonicity is enforced **marginally** (per dimension independently), not jointly.
 
-**Uncertainty-aware relaxation** (optional, `monotonicity_relaxation_enabled = true`): in sparse or statistically ambiguous cell adjacencies — where the empirical risk ordering is within noise — the local monotonicity constraint can be relaxed rather than imposed. Gating is controlled by `monotonicity_uncertainty_min_exposure` (skip relaxation below this exposure) and `monotonicity_uncertainty_z_threshold` (how ambiguous the adjacency must be). Default off: the strict staircase is enforced everywhere.
+**Uncertainty-aware relaxation** (optional, `monotonicity_relaxation_enabled = true`): in sparse or statistically ambiguous cell adjacencies — where the empirical risk ordering is within noise — the local monotonicity constraint can be relaxed rather than imposed. Gating requires **both** conditions to hold for an adjacent pair: its exposure falls **below** `monotonicity_uncertainty_min_exposure` (sparse enough) **and** the empirical risk ordering is ambiguous within `monotonicity_uncertainty_z_threshold` pooled standard errors. Pairs above the exposure threshold — or with an unambiguous ordering — keep the strict constraint. Default off: the strict staircase is enforced everywhere.
 
 #### Swap-In Constraints
 
@@ -618,10 +624,11 @@ The MILP is solved using `scipy.optimize.milp` with a configurable time limit (d
 
 #### Pareto Filtering
 
-Solutions are sorted by ascending risk and filtered for Pareto optimality:
+Solutions are sorted by ascending risk and filtered for Pareto optimality via a single sort-and-sweep:
 
-1. **Monotone production filter**: Keep solution `i` only if its production exceeds all solutions with lower risk.
-2. **Full dominance filter**: Remove any solution dominated by another (lower or equal risk AND higher or equal production, with at least one strict inequality).
+1. **Monotone production filter**: Keep solution `i` only if its production strictly exceeds every solution with lower risk.
+
+For the standard two-objective case (risk vs production) this sweep is already exact, so the separate full-dominance pass — remove any solution with lower-or-equal risk **and** higher-or-equal production (≥ 1 strict inequality) — is intentionally skipped; it would not change the frontier.
 
 The resulting frontier has strictly increasing production as risk increases.
 
@@ -648,7 +655,7 @@ For each bin, the pipeline selects a risk estimate by evaluating these condition
 | Priority | Source | Condition | Method |
 |:---------|:-------|:----------|:-------|
 | 1 | `mr_observed` | `n_obs_mr ≥ mr_min_obs_per_bin` (enough mature MR-period H6) | Direct MR-period `b2_ever_h6` |
-| 2 | `h3_extrapolated` | MR H6 insufficient, but mature MR H3 exists (`n_obs_mr_h3 ≥ min_obs`) and the main-period H6/H3 ratio is finite | MR-observed H3 scaled by the main-period H6/H3 ratio |
+| 2 | `h3_extrapolated` | MR H6 insufficient, but mature MR H3 exists (`n_obs_mr_h3 ≥ max(mr_min_obs_per_bin // 2, 10)`, the relaxed H3 gate) and the main-period H6/H3 ratio is finite | MR-observed H3 scaled by the main-period H6/H3 ratio |
 | 3 | `main_imputed` | Main-period bin exists but MR evidence is insufficient (default) | Main-period `b2_ever_h6` |
 | 4 | `model_fallback` | Bin absent from the main period (`b2_main` is NaN) with no usable MR H6 or H3 | Inferred via the trained risk model |
 
@@ -682,7 +689,7 @@ If α's 95% CI includes 1.0, selects `linear`; otherwise selects `power` with fi
 - `α > 1.0`: Convex (risk accelerates with time)
 - `α < 1.0`: Concave (risk saturates)
 
-**Safeguards:** Bins where `b2_main_h3 ≈ 0` skip extrapolation. For the `power` method, bins where `b2_main_h3` is NaN (e.g., MR-only bins with no main-period data) automatically fall back to `linear` extrapolation for those specific bins rather than producing NaN. The number of MR accounts with mature H3 must meet `mr_min_obs_per_bin`. Auto-calibration requires non-degenerate log-H3 design.
+**Safeguards:** Bins where `b2_main_h3 ≈ 0` skip extrapolation. For the `power` method, bins where `b2_main_h3` is NaN (e.g., MR-only bins with no main-period data) automatically fall back to `linear` extrapolation for those specific bins rather than producing NaN. The number of MR accounts with mature H3 must meet the relaxed H3 gate `max(mr_min_obs_per_bin // 2, 10)` (half the H6 threshold, floored at 10, since H3 matures faster). Auto-calibration requires non-degenerate log-H3 design.
 
 #### Worked Example
 
@@ -719,7 +726,7 @@ todu_amt_pile_h6_account = (todu_amt_pile_h6_bin / oa_amt_bin) × oa_amt_account
 The risk numerator is derived via inverse formula:
 
 ```
-todu_30ever_h6 = b2_ever_h6 × todu_amt_pile_h6 / multiplier_h6
+todu_30ever_h6 = b2_ever_h6 × todu_amt_pile_h6 / multiplier
 ```
 
 #### Risk Production Summary
@@ -831,7 +838,7 @@ PSI is computed per binned variable. CSI (Characteristic Stability Index) uses t
 
 ### Sensitivity Analysis
 
-When enabled, the system perturbs cutoffs at configurable levels (default: ±5%, ±10%, ±20%) and re-evaluates production and risk at each perturbation. Outputs include aggregate summaries (cell flips, transitions) and per-cell flip thresholds.
+When enabled, the system scales the repesca risk column `todu_30ever_h6_rep` at configurable levels (default: ±5%, ±10%, ±20%), **re-solves the MILP** at each level, and compares the resulting production and risk against the unperturbed solution. The cutoffs are an output that may shift, not the quantity perturbed. Outputs include aggregate summaries (cell flips, transitions) and per-cell flip thresholds.
 
 ### Marginal Impact
 
@@ -839,7 +846,7 @@ For each cell, analytically computes the effect of flipping its status (accept �
 
 ### Trend Analysis and Monitoring
 
-Monthly metrics are tracked over time with **Statistical Process Control (SPC)** anomaly detection: a lagged rolling median as center line, MAD-based scale, and t-distribution adjustment for small windows.
+Monthly metrics are tracked over time with **Statistical Process Control (SPC)** anomaly detection: a lagged rolling median centre line and a robust moving-range (I-MR) scale (median of consecutive absolute differences ÷ 0.9539), with a fixed `n_sigma` (default 3) Shewhart band. The moving range captures short-term variation, so the band does not inflate during a slow drift the way a MAD/std of the levels would; series shorter than the rolling window have detection disabled rather than switching estimators.
 
 ### Data Flow Diagram
 
@@ -1496,6 +1503,7 @@ new_efx_clus = [5, 6, 8]
 | `consolidated_risk_production.csv` | Aggregated metrics across all segments |
 | `consolidated_risk_production.html` | Portfolio-level interactive dashboard with segment comparison (main + MR periods) |
 | `consolidated_risk_production.xlsx` | Management-ready Excel workbook (see below) |
+| `backtest/backtest_consolidated_{scenario}.csv` | Out-of-time backtest (M4): predicted vs in-sample vs OOT-realized risk per segment + noise-aware drift flag. Auto-generated by `run_batch.py` (unless `--no-backtest`); accompanied by `backtest_{segment}_{scenario}.csv`, `_calibration.csv`, and `backtest_summary_{scenario}.md` |
 | `score_discriminance.csv` | Gini and discriminance metrics per score |
 | `score_discriminance_*.png` | Score discrimination plots |
 | `allocation_results.csv` | Global allocation: per-segment chosen frontier row (if `run_allocation.py` was run) |
@@ -1506,13 +1514,13 @@ new_efx_clus = [5, 6, 8]
 
 #### Excel Workbook Sheets
 
+Sheet order: **Executive Summary → Validation & Governance → Out-of-time Validation → per-segment RP / RP MR**. The first three are the **trust layer** consumed by credit-risk and policy teams; all trust-layer readers degrade gracefully (a missing artifact shows a note rather than crashing the workbook). (The former Portfolio Summary, Segment Detail, Cutoff Comparison, and per-segment Grid sheets were removed — they duplicated the scenario/total tables and the acceptance grids already inlined on the Executive Summary and the per-segment RP sheets.)
+
 | Sheet | Content |
 |:------|:--------|
-| **Executive Summary** | KPI cards (main + MR), base-scenario summary tables, top segment opportunities, acceptance grids |
-| **Portfolio Summary** | TOTAL and supersegment rows across all scenarios and periods |
-| **Segment Detail** | Per-segment rows with actual/optimum production, risk (H6 + H3), rejection rates |
-| **Cutoff Comparison** | Concatenated cutoff data across all segments |
-| **Grid {segment}** | Acceptance/rejection grid per segment with A/R colored cells |
+| **Executive Summary** | KPI cards (main + MR) now carrying bootstrap **CI bands** on risk and production (degenerate zero-width CIs suppressed), a plain-language **"Recommendation & key risks"** narrative (portfolio Δ + risk[CI], out-of-time verdict counts, per-segment status, residual-risk note), base-scenario summary tables, top segment opportunities, and inlined per-segment acceptance grids |
+| **Validation & Governance** | Data snapshot (SHA-256 / mtime / rows / git / config from M2 lineage), key assumptions + governance tier (`multiplier` / `multiplier_h3` flagged **FIXED**; Core / Tuning / Expert), per-segment reproducibility (M5 reference + snapshot match) and PSI/stability traffic-light status, and the MRM sign-off pointer (`reports/validation/`) |
+| **Out-of-time Validation** | M4 backtest per segment: predicted vs in-sample-realized vs OOT-realized risk with CIs, OOT default counts, a colour-coded **noise-aware flag** (OK / INCONCLUSIVE / DRIFT), acceptance drift (in-sample vs OOT), held-out window, and % mature |
 | **RP {segment}** | Main-period risk production summary (Actual / Swap-in / Swap-out / Optimum / Summary) |
 | **RP MR {segment}** | MR-period risk production summary with observed H6 and H3 risk |
 
@@ -1533,11 +1541,12 @@ vim config.toml
 # 2. Define segments and supersegments
 vim segments.toml
 
-# 3. Run the full batch pipeline
+# 3. Run the full batch pipeline (also runs the M4 out-of-time backtest, then consolidation)
 uv run python run_batch.py --clean --parallel
 
-# 4. Review consolidated report
+# 4. Review consolidated report (HTML dashboard; xlsx adds the validation/governance trust layer)
 open output/consolidated_risk_production.html
+open output/consolidated_risk_production.xlsx
 
 # 5. (Optional) Run score discriminance analysis
 uv run python run_score_metrics.py
