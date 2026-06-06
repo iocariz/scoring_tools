@@ -3442,67 +3442,6 @@ def _build_classification_grid(
 # writer and the data it needs; no segment-level closures.
 
 
-def _write_sheet_portfolio_summary(writer, consolidated_df: pd.DataFrame) -> None:
-    """Write the Portfolio Summary sheet: TOTAL + supersegment rows."""
-    portfolio_mask = consolidated_df["group"].str.match(r"^(TOTAL|supersegment_)")
-    portfolio_cols = [
-        "group",
-        "period",
-        "scenario",
-        "n_segments",
-        "actual_production",
-        "optimum_production",
-        "production_delta",
-        "production_delta_pct",
-        "actual_risk_pct",
-        "optimum_risk_pct",
-        "risk_delta_pct",
-        "actual_rejection_rate_pct",
-        "optimum_rejection_rate_pct",
-        "total_demand",
-        "production_ci_lower",
-        "production_ci_upper",
-        "risk_ci_lower",
-        "risk_ci_upper",
-    ]
-    portfolio_df = _prepare_export_df(consolidated_df[portfolio_mask], portfolio_cols)
-    if not portfolio_df.empty:
-        portfolio_df.to_excel(writer, sheet_name="Portfolio Summary", index=False)
-        _style_table(writer.sheets["Portfolio Summary"], portfolio_df.columns)
-        writer.sheets["Portfolio Summary"].sheet_properties.tabColor = _CLR_TAB_PORTFOLIO
-        _apply_page_setup(writer.sheets["Portfolio Summary"])
-
-
-def _write_sheet_segment_detail(writer, consolidated_df: pd.DataFrame) -> None:
-    """Write the Segment Detail sheet: per-segment rows."""
-    segment_mask = ~consolidated_df["group"].str.match(r"^(TOTAL|supersegment_)")
-    segment_cols = [
-        "group",
-        "period",
-        "scenario",
-        "segments",
-        "actual_production",
-        "optimum_production",
-        "production_delta",
-        "production_delta_pct",
-        "actual_risk_pct",
-        "optimum_risk_pct",
-        "risk_delta_pct",
-        "actual_risk_h3_pct",
-        "optimum_risk_h3_pct",
-        "actual_rejection_rate_pct",
-        "optimum_rejection_rate_pct",
-        "swap_in_production",
-        "swap_out_production",
-    ]
-    segment_df = _prepare_export_df(consolidated_df[segment_mask], segment_cols)
-    if not segment_df.empty:
-        segment_df.to_excel(writer, sheet_name="Segment Detail", index=False)
-        _style_table(writer.sheets["Segment Detail"], segment_df.columns)
-        writer.sheets["Segment Detail"].sheet_properties.tabColor = _CLR_TAB_SEGMENT
-        _apply_page_setup(writer.sheets["Segment Detail"])
-
-
 def _write_per_segment_rp_sheets(
     writer,
     wb,
@@ -3709,49 +3648,6 @@ def _resolve_segment_income_threshold(
                 if len(finite) == 1:
                     _income_th = finite[0]
     return _income_th
-
-
-def _write_per_segment_grid_sheets(wb, cutoff_data: dict) -> None:
-    """Create one 'Grid {seg_name}' sheet per segment with its acceptance grids.
-
-    Each sheet gets a title bar + one sub-grid per scenario
-    (pessimistic/base/optimistic). Extracted in R2b-iii step 13.
-    """
-    for seg_name, df_cut in cutoff_data.items():
-        sheet_name = f"Grid {seg_name}"[:31]
-        ws_grid = wb.create_sheet(sheet_name)
-        ws_grid.sheet_properties.tabColor = _CLR_TAB_GRID
-        ws_grid.sheet_view.showGridLines = False
-
-        # Title bar
-        title_fill = PatternFill(start_color=_CLR_PRIMARY, end_color=_CLR_PRIMARY, fill_type="solid")
-        ws_grid.merge_cells(start_row=1, start_column=1, end_row=1, end_column=14)
-        t = ws_grid.cell(row=1, column=1)
-        t.value = f"  Acceptance Grid — {seg_name}"
-        t.font = Font(bold=True, color=_CLR_WHITE, size=16, name=_FN)
-        t.fill = title_fill
-        t.alignment = _ALIGN_LEFT
-        ws_grid.row_dimensions[1].height = 36
-        for gc in range(1, 15):
-            ws_grid.cell(row=2, column=gc).border = Border(top=Side(style="medium", color=_CLR_ACCENT))
-        ws_grid.row_dimensions[2].height = 4
-
-        # Draw grids per scenario
-        cur_row = 4
-        for scen in ["pessimistic", "base", "optimistic"]:
-            if "scenario" in df_cut.columns and scen in df_cut["scenario"].values:
-                cur_row = _write_acceptance_grid(ws_grid, df_cut, f"{scen.title()}", cur_row, scenario=scen)
-        _apply_page_setup(ws_grid)
-
-
-def _write_sheet_cutoff_comparison(writer, cutoff_data: dict) -> None:
-    """Write the Cutoff Comparison sheet: concatenated per-segment cutoffs."""
-    if cutoff_data:
-        all_cutoffs = pd.concat(cutoff_data.values(), ignore_index=True)
-        all_cutoffs.to_excel(writer, sheet_name="Cutoff Comparison", index=False)
-        _style_table(writer.sheets["Cutoff Comparison"], all_cutoffs.columns, highlight_total=False)
-        writer.sheets["Cutoff Comparison"].sheet_properties.tabColor = _CLR_TAB_CUTOFF
-        _apply_page_setup(writer.sheets["Cutoff Comparison"])
 
 
 def _batch_provenance_suffix(output_base: str | Path, segments: dict[str, dict[str, Any]]) -> str:
@@ -4446,17 +4342,10 @@ def export_consolidated_excel(
         except Exception:
             logger.warning("Could not write Out-of-time Validation sheet", exc_info=True)
 
-        # =============================================================
-        # Sheets: Portfolio Summary, Segment Detail, Cutoff Comparison
-        # =============================================================
-        _write_sheet_portfolio_summary(writer, consolidated_df)
-        _write_sheet_segment_detail(writer, consolidated_df)
-        _write_sheet_cutoff_comparison(writer, cutoff_data)
-
-        # =============================================================
-        # Per-segment acceptance grid sheets
-        # =============================================================
-        _write_per_segment_grid_sheets(wb, cutoff_data)
+        # Portfolio Summary / Segment Detail / Cutoff Comparison and the per-segment
+        # acceptance-grid sheets were removed (redundant): the scenario/total tables live on
+        # the Executive Summary, the acceptance grids are inlined there too, and the
+        # per-segment RP sheets carry the detail.
 
         # =============================================================
         # Per-segment RP summary sheets (Main + MR)
