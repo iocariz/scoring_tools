@@ -95,9 +95,16 @@ uv run python plot_risk_surface.py --scenario base --no-supersegments
 # "booked before" = cell had booked exposure. One category per cell (segments are unambiguous; supersegments resolve by exposure-weighted
 # majority). Writes HTML under --output (default output/risk_surfaces) + index.html.
 
-# Generate presentation (.pptx / .pdf)
+# Generate methodology presentation (.pptx / .pdf) — explains HOW the pipeline works
 uv run python generate_presentation.py
 uv run python generate_presentation.py --pdf     # also convert to PDF (requires LibreOffice)
+
+# Generate management RESULTS presentation (.pptx) — the actual numbers for management
+uv run python generate_results_presentation.py                       # reads output/consolidated_risk_production.csv + backtest + risk surfaces
+uv run python generate_results_presentation.py --surface-segment premium --pdf
+# ~9-slide exec deck (title/recommendation, exec summary KPIs, production/risk/acceptance by segment, swap-in/out bridge,
+# 2D+3D risk surfaces, out-of-time validation, next steps). Charts via src/presentation_charts.py (matplotlib + kaleido for 3D).
+# Writes output/results_deck/Credit_Risk_Results_<scenario>.pptx (+ images/). 3D snapshot needs kaleido==0.2.1 (degrades to 2D-only if absent).
 
 # Tests
 uv run pytest tests/                                    # all tests

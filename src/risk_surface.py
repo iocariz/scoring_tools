@@ -171,6 +171,7 @@ def build_risk_surface_figure(
                 customdata=label,
                 showscale=(col == 1),
                 colorbar=dict(
+                    title=dict(text="audit category", side="right"),
                     tickvals=[0, 1, 2, 3],
                     ticktext=[CATEGORY_LABELS[c] for c in CATEGORY_ORDER],
                     len=0.55,
@@ -192,6 +193,7 @@ def build_risk_surface_figure(
         yaxis=dict(title=y_var),
         zaxis=dict(title="b2_ever_h6 (%)", range=[0, zmax * 1.05]),
         aspectratio=dict(x=1, y=1, z=0.8),
+        camera=dict(eye=dict(x=1.7, y=1.7, z=1.0)),  # consistent slide-friendly angle
     )
     layout_scenes = {("scene" if i == 1 else f"scene{i}"): scene for i in range(1, n + 1)}
     fig.update_layout(
