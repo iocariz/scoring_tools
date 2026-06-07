@@ -27,6 +27,7 @@ A credit risk scoring and portfolio optimization pipeline that processes loan ap
 - **Bootstrap Confidence Intervals**: Quantifies uncertainty on production and risk estimates.
 - **Out-of-Time Backtest (M4)**: Applies a run's *frozen* accepted-cell set to a held-out, matured cohort and compares realized vs predicted risk/production with a noise-aware drift flag (OK / INCONCLUSIVE / DRIFT). Runs automatically inside `run_batch.py` (gated by `--no-backtest`).
 - **Validation & Governance Trust Layer**: The consolidated Excel surfaces audit-ready evidence for credit-risk/policy consumers — bootstrap CI bands and a "Recommendation & key risks" narrative on the Executive Summary, plus dedicated *Validation & Governance* (data-snapshot provenance, assumption governance tiers, per-segment reproducibility/stability) and *Out-of-time Validation* sheets.
+- **Policy Registry & Champion/Challenger**: Maintains a committed, per-segment registry of deployed cutoff policies (one champion each, linked to its validation evidence) and scores a *challenger* — the latest run's base policy — against the live *champion* on a common matured out-of-time cohort, reporting a cell-level accept/reject diff and a noise-aware risk verdict (BETTER / WORSE / INCONCLUSIVE).
 - **Interactive Dashboards**: Plotly/Dash web applications for exploring results.
 
 ---
@@ -1020,6 +1021,32 @@ When multiple segments share similar populations, a **supersegment** trains a si
 
 When using supersegments, the risk surface tends to be flatter since the segment represents a narrow slice of the combined population. Pair `supersegment` with `run_ri_optimizer = false` and aggressive manual reject inference factors (`reject_uplift_factor = 3.0+`) to capture the specific rejection bias.
 
+### Policy Registry & Champion/Challenger
+
+Maintains a committed, per-segment registry of deployed cutoff policies and compares a proposed policy against the one currently live — closing the loop between the validation evidence and what is actually deployed. Reporting-only and read-only with respect to the pipeline (no change to cutoffs, the model, or the optimization).
+
+A **policy** is a frozen base-scenario accepted-cell set plus the bin edges and provenance needed to apply and reproduce it. The registry (`reports/policy_registry/<segment>.json`, git-tracked and append-only) holds one **champion** per segment — the policy designated live. A **challenger** (the latest run's base policy) is scored against the champion on the same auto-derived matured out-of-time cohort the M4 backtest uses, reusing that machinery (apply the frozen set → realized risk + production with bootstrap CIs) and the M5 headline/provenance.
+
+The comparison reports a **cell-level diff** (cells the challenger newly accepts vs newly rejects) and a **noise-aware risk verdict**: `BETTER` / `WORSE` only when both policies have ≥ 10 realized defaults *and* their realized-risk CIs are fully separated; otherwise `INCONCLUSIVE`. The verdict is risk-only; production delta is reported alongside for the human trade-off.
+
+```bash
+# Freeze each segment's current base policy into the registry
+# (the first policy for a segment auto-becomes champion; --make-champion promotes a later one)
+uv run python run_policy_registry.py --register
+uv run python run_policy_registry.py --register -s no_premium_cd --make-champion
+
+# Inspect the registry (champion + policy history)
+uv run python run_policy_registry.py --list -s no_premium_cd
+
+# Score the current base policy (challenger) against the champion on the matured holdout cohort
+uv run python run_policy_registry.py --compare
+uv run python run_policy_registry.py --compare -s no_premium_cd --holdout-start 2025-06-01 --holdout-end 2025-08-01
+```
+
+`--compare` writes under `--output` (default `output/policy_registry/`): per-segment `policy_compare_{segment}_{scenario}.csv` (+ `_celldiff.csv` when cells changed), `policy_compare_consolidated_{scenario}.csv`, and `policy_compare_summary_{scenario}.md`.
+
+**Design decisions:** one champion per segment (base scenario — what is actually deployed); a git-tracked registry (diffable in PRs, replayable from a clone); and the comparison cohort defaults to the auto-derived matured holdout, override-able with `--holdout-start` / `--holdout-end`.
+
 ---
 
 ## Configuration
@@ -1394,6 +1421,9 @@ new_efx_clus = [5, 6, 8]
 | `run_batch.py` | Multi-segment batch orchestrator with supersegment support |
 | `run_allocation.py` | Global portfolio risk allocation |
 | `run_score_metrics.py` | Score discriminance analysis |
+| `run_backtest.py` | Out-of-time backtest of frozen cutoffs (M4) |
+| `run_reproducibility.py` | Golden-numbers reproducibility check (M5) |
+| `run_policy_registry.py` | Policy registry + champion/challenger comparison |
 | `dashboard.py` | Interactive Dash results dashboard |
 | `interactive_allocator.py` | Interactive allocation dashboard |
 | `gradio_dashboard.py` | Gradio web UI for results exploration |
@@ -1429,6 +1459,10 @@ new_efx_clus = [5, 6, 8]
 | `trends.py` | Monthly metrics aggregation and anomaly detection |
 | `audit.py` | Record-level classification (keep/swap-in/swap-out/rejected) |
 | `consolidation.py` | Multi-segment aggregation and consolidated reporting |
+| `lineage.py` | Data lineage / provenance capture (M2): data SHA-256, git, config hash, assumptions |
+| `backtest.py` | Out-of-time backtest of frozen cutoffs (M4): `load_frozen_policy`, `apply_policy`, realized metrics + noise-aware drift flag |
+| `reproducibility.py` | Golden-numbers reproducibility (M5): `Headline`, `extract_headline`, `compare_headline` |
+| `policy_registry.py` | Policy registry + champion/challenger: `PolicyEntry`, registry I/O, `compare_policies` (reuses M4/M5) |
 | `global_optimizer.py` | MILP and greedy global portfolio allocation |
 | `portfolio_owner.py` | Policy/cutoff tables and allocation constraint narratives for `run_allocation.py` |
 | `metrics.py` | Gini, lift, precision-recall, ROC, DeLong test |
@@ -1504,6 +1538,7 @@ new_efx_clus = [5, 6, 8]
 | `consolidated_risk_production.html` | Portfolio-level interactive dashboard with segment comparison (main + MR periods) |
 | `consolidated_risk_production.xlsx` | Management-ready Excel workbook (see below) |
 | `backtest/backtest_consolidated_{scenario}.csv` | Out-of-time backtest (M4): predicted vs in-sample vs OOT-realized risk per segment + noise-aware drift flag. Auto-generated by `run_batch.py` (unless `--no-backtest`); accompanied by `backtest_{segment}_{scenario}.csv`, `_calibration.csv`, and `backtest_summary_{scenario}.md` |
+| `policy_registry/policy_compare_consolidated_{scenario}.csv` | Champion vs challenger per segment (verdict, cell-diff counts, realized risk/production + CIs). Written by `run_policy_registry.py --compare`; accompanied by `policy_compare_{segment}_{scenario}.csv` (+ `_celldiff.csv`) and `policy_compare_summary_{scenario}.md`. The committed registry itself lives in `reports/policy_registry/<segment>.json` |
 | `score_discriminance.csv` | Gini and discriminance metrics per score |
 | `score_discriminance_*.png` | Score discrimination plots |
 | `allocation_results.csv` | Global allocation: per-segment chosen frontier row (if `run_allocation.py` was run) |
