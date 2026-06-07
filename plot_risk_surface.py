@@ -28,7 +28,7 @@ from pathlib import Path
 import pandas as pd
 from loguru import logger
 
-from src.risk_surface import aggregate_classified, build_risk_surface_figure, classify_cells
+from src.risk_surface import aggregate_to_cells, build_risk_surface_figure, classify_cells
 
 
 def _scenario_suffix(scenario: str) -> str:
@@ -109,12 +109,12 @@ def _figure_for_unit(units: list[tuple], title: str):
     variables = units[0][2]
     multiplier = units[0][3]
     long_parts = [classify_cells(summary, acc, variables) for summary, acc, _vars, _mult in units]
-    classified = aggregate_classified(pd.concat(long_parts, ignore_index=True), variables, multiplier)
-    if classified.empty:
+    cells = aggregate_to_cells(pd.concat(long_parts, ignore_index=True), variables, multiplier)
+    if cells.empty:
         return None
     score_vars = variables[:2]
     facet_var = variables[2] if len(variables) > 2 else None
-    return build_risk_surface_figure(classified, score_vars, facet_var, title)
+    return build_risk_surface_figure(cells, score_vars, facet_var, title)
 
 
 def generate_all(
