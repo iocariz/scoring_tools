@@ -90,7 +90,7 @@ uv run python plot_risk_surface.py                          # all segments + rep
 uv run python plot_risk_surface.py -s no_premium_cd premium # specific segments
 uv run python plot_risk_surface.py --scenario base --no-supersegments
 # Reads a completed run's data_summary_desagregado_*.csv + accepted_cells_*.csv; categories: keep/swap_out (booked),
-# swap_in/rejected (repesca). Facets side-by-side per income_bin (3rd grid var). Writes HTML under --output (default output/risk_surfaces) + index.html.
+# swap_in/rejected (repesca). Non-overlapping grid: rows = category, columns = income_bin (3rd grid var) side-by-side. Writes HTML under --output (default output/risk_surfaces) + index.html.
 
 # Generate presentation (.pptx / .pdf)
 uv run python generate_presentation.py

@@ -10,9 +10,10 @@ mask) splits each into two audit categories:
 | Repesca    | **swap_in**   | **rejected**  |
 
 This module classifies the per-cell summary into those four categories (each carrying the
-risk of its own population), and renders a 3D figure: x/y = the two score bins,
-z = ``b2_ever_h6`` (%), one coloured surface per category. When a third grid variable
-(e.g. ``income_bin``) is present, the figure is faceted side-by-side, one 3D scene per value.
+risk of its own population), and renders a non-overlapping **grid** of 3D panels:
+x/y = the two score bins, z = ``b2_ever_h6`` (%). Rows = audit category; columns = the third
+grid variable (e.g. ``income_bin``) side-by-side, so booked (keep/swap_out) and repesca
+(swap_in/rejected) risk are read in separate panels instead of stacked surfaces.
 
 Pure / IO-light: ``plot_risk_surface.py`` handles discovery and file IO.
 """
@@ -103,40 +104,43 @@ def build_risk_surface_figure(
     facet_var: str | None,
     title: str,
 ) -> go.Figure:
-    """Render the 4-category 3D risk surfaces, faceted side-by-side by ``facet_var`` if given.
+    """Render the audit-category risk surfaces as a non-overlapping grid of 3D panels.
 
-    ``score_vars`` = the two score-bin columns (x, y); z = ``b2_ever_h6`` (%). One surface per
-    audit category; a category surface only "lights up" the cells it owns (NaN elsewhere).
+    Layout: **rows = audit category**, **columns = ``facet_var``** (e.g. income bin) side-by-side.
+    Each panel holds exactly one category's surface, so nothing overlaps — booked (keep/swap_out)
+    and repesca (swap_in/rejected) risk are read in separate panels rather than stacked. x/y = the
+    two score bins, z = ``b2_ever_h6`` (%), with a shared z-range across panels for comparability.
     """
     x_var, y_var = score_vars
     all_x = sorted(classified[x_var].unique())
     all_y = sorted(classified[y_var].unique())
     zmax = float(classified["b2_ever_h6"].max()) if not classified.empty else 1.0
+    present_cats = [c for c in CATEGORY_ORDER if (classified["category"] == c).any()] or [CATEGORY_ORDER[0]]
 
     facet_vals: list = sorted(classified[facet_var].unique()) if facet_var else [None]
-    n = len(facet_vals)
+    nrows, ncols = len(present_cats), len(facet_vals)
     fig = make_subplots(
-        rows=1,
-        cols=n,
-        specs=[[{"type": "surface"} for _ in facet_vals]],
-        subplot_titles=[f"{facet_var} = {v:g}" for v in facet_vals] if facet_var else None,
-        horizontal_spacing=0.01,
+        rows=nrows,
+        cols=ncols,
+        specs=[[{"type": "surface"} for _ in range(ncols)] for _ in range(nrows)],
+        column_titles=[f"{facet_var} = {v:g}" for v in facet_vals] if facet_var else None,
+        row_titles=[CATEGORY_LABELS[c] for c in present_cats],
+        horizontal_spacing=0.03,
+        vertical_spacing=0.04,
     )
 
-    for col, fv in enumerate(facet_vals, start=1):
-        sub = classified if fv is None else classified[classified[facet_var] == fv]
-        for cat in CATEGORY_ORDER:
+    for row, cat in enumerate(present_cats, start=1):
+        color = CATEGORY_COLORS[cat]
+        for col, fv in enumerate(facet_vals, start=1):
+            sub = classified if fv is None else classified[classified[facet_var] == fv]
             cat_df = sub[sub["category"] == cat]
-            grid = (
-                cat_df.pivot_table(index=y_var, columns=x_var, values="b2_ever_h6", aggfunc="first").reindex(
-                    index=all_y, columns=all_x
-                )
-                if not cat_df.empty
-                else None
-            )
-            if grid is None or not np.isfinite(grid.to_numpy(dtype="float64")).any():
+            if cat_df.empty:
                 continue
-            color = CATEGORY_COLORS[cat]
+            grid = cat_df.pivot_table(index=y_var, columns=x_var, values="b2_ever_h6", aggfunc="first").reindex(
+                index=all_y, columns=all_x
+            )
+            if not np.isfinite(grid.to_numpy(dtype="float64")).any():
+                continue
             fig.add_trace(
                 go.Surface(
                     x=all_x,
@@ -144,34 +148,33 @@ def build_risk_surface_figure(
                     z=grid.to_numpy(dtype="float64"),
                     colorscale=[[0, color], [1, color]],
                     showscale=False,
-                    opacity=0.85,
+                    opacity=0.95,
                     name=CATEGORY_LABELS[cat],
-                    legendgroup=cat,
-                    showlegend=(col == 1),
+                    showlegend=False,
                     connectgaps=False,
                     hovertemplate=(
                         f"{CATEGORY_LABELS[cat]}<br>{x_var}=%{{x}}<br>{y_var}=%{{y}}"
                         "<br>b2_ever_h6=%{z:.2f}%<extra></extra>"
                     ),
                 ),
-                row=1,
+                row=row,
                 col=col,
             )
 
     scene = dict(
         xaxis=dict(title=x_var),
         yaxis=dict(title=y_var),
-        zaxis=dict(title="b2_ever_h6 (%)", range=[0, zmax * 1.05]),
-        aspectratio=dict(x=1, y=1, z=0.8),
+        zaxis=dict(title="b2 (%)", range=[0, zmax * 1.05]),
+        aspectratio=dict(x=1, y=1, z=0.7),
     )
-    layout_scenes = {("scene" if i == 1 else f"scene{i}"): scene for i in range(1, n + 1)}
+    n_scenes = nrows * ncols
+    layout_scenes = {("scene" if i == 1 else f"scene{i}"): scene for i in range(1, n_scenes + 1)}
     fig.update_layout(
         title=dict(text=title, x=0.5, font=dict(size=18, color="#2C3E50")),
-        font=dict(family="Arial, sans-serif", size=12, color="#2C3E50"),
-        width=max(700, 560 * n),
-        height=720,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.08, xanchor="center", x=0.5),
-        margin=dict(l=10, r=10, t=70, b=10),
+        font=dict(family="Arial, sans-serif", size=11, color="#2C3E50"),
+        width=max(720, 520 * ncols),
+        height=max(420, 430 * nrows),
+        margin=dict(l=10, r=70, t=80, b=10),
         **layout_scenes,
     )
     return fig

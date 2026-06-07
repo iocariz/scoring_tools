@@ -105,9 +105,25 @@ def test_build_figure_facets_per_income_bin():
     long = classify_cells(summary, {(1.0, 1.0, 1.0)}, ["a", "b", "income_bin"])
     agg = aggregate_classified(long, ["a", "b", "income_bin"], multiplier=7.0)
     fig = build_risk_surface_figure(agg, ["a", "b"], "income_bin", "title")
-    # one 3D scene per income_bin value (2 facets)
+    # grid: rows = present categories, cols = income bins (2) → multiple 3D scenes
     assert "scene" in fig.layout and "scene2" in fig.layout
     assert fig.layout.scene2 is not None
+
+
+def test_build_figure_grid_has_no_overlap():
+    """Each 3D scene holds at most one category surface → no overlapping surfaces."""
+    from collections import Counter
+
+    summary = _summary()
+    summary["income_bin"] = [1.0, 1.0, 2.0]
+    agg = aggregate_classified(
+        classify_cells(summary, {(1.0, 1.0, 1.0)}, ["a", "b", "income_bin"]), ["a", "b", "income_bin"], 7.0
+    )
+    fig = build_risk_surface_figure(agg, ["a", "b"], "income_bin", "title")
+    surfaces = [t for t in fig.data if t.type == "surface"]
+    per_scene = Counter(t.scene for t in surfaces)
+    assert per_scene  # at least one surface placed
+    assert max(per_scene.values()) == 1  # no scene has two surfaces → nothing overlaps
 
 
 def test_category_order_constant():
