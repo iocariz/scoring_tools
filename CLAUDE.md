@@ -75,6 +75,16 @@ uv run python run_reproducibility.py -s no_premium_cd --model-path <dir>    # re
 uv run python run_reproducibility.py -s no_premium_cd --risk-tol-pp 0.02 --prod-tol-pct 0.5
 # PASS iff headline (risk/production/cells/accepted-set) reproduces within tolerance AND data SHA-256 matches the reference
 
+# Policy registry + champion/challenger comparison (phase 1)
+uv run python run_policy_registry.py --register                       # freeze each segment's base policy into the registry
+uv run python run_policy_registry.py --register -s no_premium_cd --make-champion  # promote to champion (else first is auto-champion)
+uv run python run_policy_registry.py --list -s no_premium_cd          # champion + policy history
+uv run python run_policy_registry.py --compare                        # challenger (current base policy) vs champion on the matured holdout
+uv run python run_policy_registry.py --compare -s no_premium_cd --holdout-start 2025-06-01 --holdout-end 2025-08-01  # pinned eval window
+# Committed registry: reports/policy_registry/<segment>.json (one champion/segment, base scenario). --compare writes under --output (default output/policy_registry):
+#   policy_compare_<segment>_base.csv (+ _celldiff.csv), policy_compare_consolidated_base.csv, policy_compare_summary_base.md
+# Verdict is risk-only + noise-aware (BETTER/WORSE only with >=10 realized defaults in both policies AND fully separated risk CIs; else INCONCLUSIVE); reuses the M4 backtest + M5 headline/provenance, read-only w.r.t. the pipeline.
+
 # Generate presentation (.pptx / .pdf)
 uv run python generate_presentation.py
 uv run python generate_presentation.py --pdf     # also convert to PDF (requires LibreOffice)
@@ -121,8 +131,9 @@ Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `mak
   - Optimization: `optimization_utils.py`, `global_optimizer.py`
   - Reject inference: `reject_inference.py`, `reject_inference_optimizer.py`
   - Analysis: `mr_pipeline.py`, `stability.py`, `sensitivity.py`, `trends.py`, `alerts.py`, `audit.py`, `selection_bias.py`, `selection_bias_plots.py`
+  - Validation & governance: `lineage.py` (M2 data lineage), `backtest.py` (M4 out-of-time backtest), `reproducibility.py` (M5 golden-numbers), `policy_registry.py` (policy registry + champion/challenger)
   - Output: `consolidation.py`, `reporting.py`, `plots.py`, `styles.py`, `metrics.py`, `utils.py`, `portfolio_owner.py`
-- Entry points: `main.py` (single segment), `run_batch.py` (multi-segment with global bin learning + supersegment model sharing), `run_allocation.py` (MILP allocation with segment constraints/locking), `run_backtest.py` (out-of-time backtest of frozen cutoffs, M4), `run_reproducibility.py` (golden-numbers reproducibility check, M5), `generate_presentation.py` (PowerPoint/PDF output), `run_score_metrics.py` (score discriminance), `run_selection_bias_analysis.py` (selection bias diagnostics), `dashboard.py` / `interactive_allocator.py` (Dash web UIs), `gradio_dashboard.py` (Gradio web UI)
+- Entry points: `main.py` (single segment), `run_batch.py` (multi-segment with global bin learning + supersegment model sharing), `run_allocation.py` (MILP allocation with segment constraints/locking), `run_backtest.py` (out-of-time backtest of frozen cutoffs, M4), `run_reproducibility.py` (golden-numbers reproducibility check, M5), `run_policy_registry.py` (policy registry + champion/challenger comparison), `generate_presentation.py` (PowerPoint/PDF output), `run_score_metrics.py` (score discriminance), `run_selection_bias_analysis.py` (selection bias diagnostics), `dashboard.py` / `interactive_allocator.py` (Dash web UIs), `gradio_dashboard.py` (Gradio web UI)
 
 ### Key Design Patterns
 
