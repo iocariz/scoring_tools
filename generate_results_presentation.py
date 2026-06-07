@@ -27,6 +27,7 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
 
+from plot_risk_surface import _discover_segments, _load_unit, _reporting_supersegments
 from src import presentation_charts as pc
 from src.risk_surface import aggregate_to_cells, build_risk_surface_figure, classify_cells
 
@@ -128,30 +129,36 @@ def _fmt_eur(v: float) -> str:
     return f"€{v / 1e6:,.1f}M"
 
 
-def _pick_surface_segment(data_dir: Path, consolidated: pd.DataFrame, suffix: str, override: str | None) -> str | None:
-    """Largest-production segment that has both a per-cell summary and a mask (or the override)."""
+def _all_surface_units(
+    data_dir: Path, segments_config: Path, suffix: str, only: str | None = None, include_supersegments: bool = True
+) -> list[tuple[str, pd.DataFrame, list[str]]]:
+    """Enumerate (label, classified-cells, variables) for every segment (+ reporting supersegment).
 
-    def _ok(name: str) -> bool:
-        d = data_dir / name / "data"
-        return (d / f"accepted_cells{suffix}.csv").exists() and (d / f"data_summary_desagregado{suffix}.csv").exists()
-
-    if override:
-        return override if _ok(override) else None
-    seg = pc._segments_frame(consolidated)
-    for name in seg["segment"]:
-        if _ok(name):
-            return name
-    return None
-
-
-def _surface_cells(data_dir: Path, segment: str, suffix: str):
-    d = data_dir / segment / "data"
-    acc = pd.read_csv(d / f"accepted_cells{suffix}.csv")
-    variables = list(acc.columns)
-    accset = {tuple(float(r[v]) for v in variables) for _, r in acc.iterrows()}
-    summ = pd.read_csv(d / f"data_summary_desagregado{suffix}.csv")
-    cells = aggregate_to_cells(classify_cells(summ, accset, variables), variables)
-    return cells, variables
+    Reuses the same discovery + supersegment aggregation as ``plot_risk_surface``; ``only`` restricts
+    to a single segment.
+    """
+    seg_dirs = _discover_segments(Path(data_dir), suffix, [only] if only else None)
+    loaded: dict[str, tuple] = {}
+    units: list[tuple[str, pd.DataFrame, list[str]]] = []
+    for seg_dir in seg_dirs:
+        u = _load_unit(seg_dir, suffix)
+        if u is None:
+            continue
+        loaded[seg_dir.name] = u
+        cells = aggregate_to_cells(classify_cells(u[0], u[1], u[2]), u[2], u[3])
+        if not cells.empty:
+            units.append((seg_dir.name, cells, u[2]))
+    if include_supersegments and not only:
+        for name, members in _reporting_supersegments(Path(segments_config), set(loaded)).items():
+            us = [loaded[m] for m in members]
+            if len({tuple(x[2]) for x in us}) != 1:
+                continue
+            variables, mult = us[0][2], us[0][3]
+            long = pd.concat([classify_cells(s, a, variables) for s, a, _v, _m in us], ignore_index=True)
+            cells = aggregate_to_cells(long, variables, mult)
+            if not cells.empty:
+                units.append((f"{name} (supersegment)", cells, variables))
+    return units
 
 
 # --------------------------------------------------------------------------- #
@@ -164,6 +171,7 @@ def build_results_presentation(
     out_dir: str | Path = "output/results_deck",
     scenario: str = "base",
     surface_segment: str | None = None,
+    segments_config: str | Path = "segments.toml",
     today: str = "",
 ) -> Path:
     """Build the management results deck. Returns the saved .pptx path."""
@@ -188,17 +196,18 @@ def build_results_presentation(
     if bt is not None and not bt.empty:
         paths["backtest"] = pc.save_chart(pc.chart_backtest_validation(bt), img_dir / "backtest.png")
 
-    seg_name = _pick_surface_segment(data_dir, cons, suffix, surface_segment)
-    heatmap_path = surf3d_path = None
-    if seg_name:
-        cells, variables = _surface_cells(data_dir, seg_name, suffix)
+    # --- risk surfaces for ALL segments (+ reporting supersegments) ---
+    surface_slides: list[tuple[str, Path | None, Path | None]] = []
+    for label, cells, variables in _all_surface_units(data_dir, segments_config, suffix, only=surface_segment):
         facet = variables[2] if len(variables) > 2 else None
-        heatmap_path = pc.save_chart(
-            pc.chart_category_heatmap(cells, variables[:2], facet, f"Risk surface — {seg_name}"),
-            img_dir / "heatmap.png",
+        safe = label.split(" ")[0].replace("/", "_")
+        hp = pc.save_chart(
+            pc.chart_category_heatmap(cells, variables[:2], facet, f"Risk surface — {label}"),
+            img_dir / f"heatmap_{safe}.png",
         )
-        fig3d = build_risk_surface_figure(cells, variables[:2], facet, f"Risk surface — {seg_name}")
-        surf3d_path = pc.export_surface_png(fig3d, img_dir / "surface3d.png")
+        fig3d = build_risk_surface_figure(cells, variables[:2], facet, f"Risk surface — {label}")
+        sp = pc.export_surface_png(fig3d, img_dir / f"surface3d_{safe}.png")
+        surface_slides.append((label, hp, sp))
 
     # --- deck ---
     prs = Presentation()
@@ -206,6 +215,7 @@ def build_results_presentation(
 
     _slide_title(prs, total, scenario, today)
     _slide_exec_summary(prs, total, bt)
+    _slide_methodology(prs)
     _slide_chart(
         prs,
         "Production by segment",
@@ -230,8 +240,9 @@ def build_results_presentation(
         paths["acceptance"],
         "Share of demand accepted under the current vs proposed cutoffs.",
     )
-    if heatmap_path or surf3d_path:
-        _slide_surfaces(prs, seg_name, heatmap_path, surf3d_path)
+    for label, hp, sp in surface_slides:
+        if hp or sp:
+            _slide_surfaces(prs, label, hp, sp)
     if "backtest" in paths:
         _slide_chart(
             prs,
@@ -336,6 +347,51 @@ def _recommendation_bullets(total, bt):
     return out
 
 
+def _slide_methodology(prs):
+    slide = _blank(prs)
+    _title_bar(slide, prs, "How these numbers are produced", "Methodology in brief")
+    items = [
+        (
+            "Populations: booked loans (observed outcomes), score-rejected 'repesca' (outcomes inferred), and "
+            "policy-rejected (excluded — their rejection is unrelated to the credit score).",
+            NAVY,
+        ),
+        (
+            "Risk metric: b2_ever_h6 — the annualised, exposure-weighted 6-month delinquency rate. Repesca risk is "
+            "predicted by a trained model, then corrected for selection bias (stress factor + reject inference).",
+            GREY,
+        ),
+        (
+            "Cutoffs: a Mixed-Integer Linear Program maximises booked production within a risk budget, under "
+            "monotonicity (a 'staircase' — never accept a riskier cell while rejecting a safer one).",
+            GREY,
+        ),
+        (
+            "A menu, not a point: a Pareto frontier of risk vs production is built; three operating points "
+            "(pessimistic / base / optimistic) bracket the risk appetite.",
+            GREY,
+        ),
+        (
+            "Validation & governance: out-of-time backtest on matured cohorts, bootstrap confidence intervals, "
+            "PSI/CSI stability, and a reproducibility + champion-policy registry.",
+            GREY,
+        ),
+    ]
+    _bullets(slide, 0.7, 1.4, 12.0, 5.2, items, size=15)
+    _box(
+        slide,
+        0.6,
+        6.7,
+        12.1,
+        0.5,
+        "Booked → bin scores → infer repesca risk → MILP cutoffs → Pareto scenarios → out-of-time validation",
+        size=13,
+        color=ACCENT,
+        bold=True,
+        align=PP_ALIGN.CENTER,
+    )
+
+
 def _slide_chart(prs, title, img_path, caption=""):
     slide = _blank(prs)
     _title_bar(slide, prs, title)
@@ -410,8 +466,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", "-o", default="output/results_deck", help="Output dir for the deck + images.")
     parser.add_argument("--scenario", default="base", help="Scenario suffix (default: base).")
     parser.add_argument(
-        "--surface-segment", default=None, help="Segment for the risk-surface slide (default: largest)."
+        "--surface-segment", default=None, help="Restrict risk-surface slides to one segment (default: all)."
     )
+    parser.add_argument("--segments-config", default="segments.toml", help="For reporting-supersegment surfaces.")
     parser.add_argument("--today", default="", help="Date string for the title slide.")
     parser.add_argument("--pdf", action="store_true", help="Also export a PDF (requires LibreOffice).")
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
@@ -426,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
         out_dir=args.output,
         scenario=args.scenario,
         surface_segment=args.surface_segment,
+        segments_config=args.segments_config,
         today=args.today,
     )
     if args.pdf:

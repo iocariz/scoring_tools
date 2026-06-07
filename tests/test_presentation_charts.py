@@ -146,8 +146,22 @@ def test_build_deck_smoke(tmp_path, monkeypatch):
     import generate_results_presentation as grp
 
     tree = _build_output_tree(tmp_path)
-    out = grp.build_results_presentation(data_dir=tree, out_dir=tree / "deck", scenario="base")
+    out = grp.build_results_presentation(
+        data_dir=tree, out_dir=tree / "deck", scenario="base", segments_config=tree / "no_such.toml"
+    )
     assert out.exists() and out.suffix == ".pptx"
     from pptx import Presentation
 
-    assert len(Presentation(str(out)).slides) >= 7
+    # title + exec + methodology + 4 charts + >=1 surface + next steps
+    assert len(Presentation(str(out)).slides) >= 8
+
+
+def test_all_surface_units_enumerates_segments(tmp_path):
+    import generate_results_presentation as grp
+
+    tree = _build_output_tree(tmp_path)
+    units = grp._all_surface_units(tree, tree / "no_such.toml", "_base")
+    names = [u[0] for u in units]
+    assert "seg_a" in names
+    cells = dict(zip(names, [u[1] for u in units]))["seg_a"]
+    assert set(cells["category"]).issubset({"keep", "swap_in", "swap_out", "rejected"})

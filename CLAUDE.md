@@ -101,10 +101,11 @@ uv run python generate_presentation.py --pdf     # also convert to PDF (requires
 
 # Generate management RESULTS presentation (.pptx) — the actual numbers for management
 uv run python generate_results_presentation.py                       # reads output/consolidated_risk_production.csv + backtest + risk surfaces
-uv run python generate_results_presentation.py --surface-segment premium --pdf
-# ~9-slide exec deck (title/recommendation, exec summary KPIs, production/risk/acceptance by segment, swap-in/out bridge,
-# 2D+3D risk surfaces, out-of-time validation, next steps). Charts via src/presentation_charts.py (matplotlib + kaleido for 3D).
-# Writes output/results_deck/Credit_Risk_Results_<scenario>.pptx (+ images/). 3D snapshot needs kaleido==0.2.1 (degrades to 2D-only if absent).
+uv run python generate_results_presentation.py --surface-segment premium --pdf  # restrict surfaces to one segment (default: all)
+# Exec deck: title/recommendation, exec-summary KPIs, methodology-in-brief slide, production/risk/acceptance by segment,
+# swap-in/out bridge, a 2D+3D risk-surface slide PER segment AND reporting supersegment, out-of-time validation, next steps.
+# Charts via src/presentation_charts.py (matplotlib + kaleido for 3D). Writes output/results_deck/Credit_Risk_Results_<scenario>.pptx
+# (+ images/). 3D snapshot needs kaleido==0.2.1 (degrades to 2D-only if absent).
 
 # Tests
 uv run pytest tests/                                    # all tests
