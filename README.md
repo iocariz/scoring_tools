@@ -28,6 +28,7 @@ A credit risk scoring and portfolio optimization pipeline that processes loan ap
 - **Out-of-Time Backtest (M4)**: Applies a run's *frozen* accepted-cell set to a held-out, matured cohort and compares realized vs predicted risk/production with a noise-aware drift flag (OK / INCONCLUSIVE / DRIFT). Runs automatically inside `run_batch.py` (gated by `--no-backtest`).
 - **Validation & Governance Trust Layer**: The consolidated Excel surfaces audit-ready evidence for credit-risk/policy consumers — bootstrap CI bands and a "Recommendation & key risks" narrative on the Executive Summary, plus dedicated *Validation & Governance* (data-snapshot provenance, assumption governance tiers, per-segment reproducibility/stability) and *Out-of-time Validation* sheets.
 - **Policy Registry & Champion/Challenger**: Maintains a committed, per-segment registry of deployed cutoff policies (one champion each, linked to its validation evidence) and scores a *challenger* — the latest run's base policy — against the live *champion* on a common matured out-of-time cohort, reporting a cell-level accept/reject diff and a noise-aware risk verdict (BETTER / WORSE / INCONCLUSIVE).
+- **Risk Surfaces**: A continuous 3D surface of `b2_ever_h6` over the two score bins, coloured per cell by audit category (keep / swap-in / swap-out / rejected = booked-before × accepted-now), faceted side-by-side per income bin, per segment and reporting supersegment.
 - **Interactive Dashboards**: Plotly/Dash web applications for exploring results.
 
 ---
@@ -1047,6 +1048,27 @@ uv run python run_policy_registry.py --compare -s no_premium_cd --holdout-start 
 
 **Design decisions:** one champion per segment (base scenario — what is actually deployed); a git-tracked registry (diffable in PRs, replayable from a clone); and the comparison cohort defaults to the auto-derived matured holdout, override-able with `--holdout-start` / `--holdout-end`.
 
+### Risk Surfaces
+
+Renders, per segment and per reporting supersegment, **one continuous 3D surface** of `b2_ever_h6` over the two score bins, with each cell **coloured by its audit category**. Read-only over a completed run's outputs (`data_summary_desagregado_*.csv` + `accepted_cells_*.csv`).
+
+Each cell maps to exactly one category from **(booked-before × accepted-now)**:
+
+| | Accepted now | Rejected now |
+|:--|:--|:--|
+| **Booked before** (had booked exposure) | keep | swap-out |
+| **Rejected before** (repesca-only) | swap-in | rejected |
+
+"Booked before" = the cell had booked exposure (it was being booked under the current policy); "accepted now" = the cell is in the proposed cutoff mask. Because both are cell-level facts, a **single segment partitions cleanly — one category per cell, no overlap**. A supersegment can have members disagree on a cell; it is resolved to one category by exposure-weighted majority, so the surface stays single-valued. The z-axis is the cell's combined `b2_ever_h6` (defined for every populated cell, so the surface is continuous); colour is a discrete 4-band bar. When a third grid variable (e.g. `income_bin`) is present, the figure is faceted side-by-side, one continuous surface per value.
+
+```bash
+uv run python plot_risk_surface.py                          # all segments + reporting supersegments
+uv run python plot_risk_surface.py -s no_premium_cd premium # specific segments
+uv run python plot_risk_surface.py --scenario base --no-supersegments
+```
+
+Writes one HTML per unit under `--output` (default `output/risk_surfaces/`) plus an `index.html`.
+
 ---
 
 ## Configuration
@@ -1424,6 +1446,7 @@ new_efx_clus = [5, 6, 8]
 | `run_backtest.py` | Out-of-time backtest of frozen cutoffs (M4) |
 | `run_reproducibility.py` | Golden-numbers reproducibility check (M5) |
 | `run_policy_registry.py` | Policy registry + champion/challenger comparison |
+| `plot_risk_surface.py` | 3D risk surfaces (`b2_ever_h6` by score bin, coloured by audit category) |
 | `dashboard.py` | Interactive Dash results dashboard |
 | `interactive_allocator.py` | Interactive allocation dashboard |
 | `gradio_dashboard.py` | Gradio web UI for results exploration |
@@ -1463,6 +1486,7 @@ new_efx_clus = [5, 6, 8]
 | `backtest.py` | Out-of-time backtest of frozen cutoffs (M4): `load_frozen_policy`, `apply_policy`, realized metrics + noise-aware drift flag |
 | `reproducibility.py` | Golden-numbers reproducibility (M5): `Headline`, `extract_headline`, `compare_headline` |
 | `policy_registry.py` | Policy registry + champion/challenger: `PolicyEntry`, registry I/O, `compare_policies` (reuses M4/M5) |
+| `risk_surface.py` | Continuous 3D risk surfaces: `classify_cells`, `aggregate_to_cells` (one category per cell), `build_risk_surface_figure` |
 | `global_optimizer.py` | MILP and greedy global portfolio allocation |
 | `portfolio_owner.py` | Policy/cutoff tables and allocation constraint narratives for `run_allocation.py` |
 | `metrics.py` | Gini, lift, precision-recall, ROC, DeLong test |
@@ -1539,6 +1563,7 @@ new_efx_clus = [5, 6, 8]
 | `consolidated_risk_production.xlsx` | Management-ready Excel workbook (see below) |
 | `backtest/backtest_consolidated_{scenario}.csv` | Out-of-time backtest (M4): predicted vs in-sample vs OOT-realized risk per segment + noise-aware drift flag. Auto-generated by `run_batch.py` (unless `--no-backtest`); accompanied by `backtest_{segment}_{scenario}.csv`, `_calibration.csv`, and `backtest_summary_{scenario}.md` |
 | `policy_registry/policy_compare_consolidated_{scenario}.csv` | Champion vs challenger per segment (verdict, cell-diff counts, realized risk/production + CIs). Written by `run_policy_registry.py --compare`; accompanied by `policy_compare_{segment}_{scenario}.csv` (+ `_celldiff.csv`) and `policy_compare_summary_{scenario}.md`. The committed registry itself lives in `reports/policy_registry/<segment>.json` |
+| `risk_surfaces/risk_surface_{unit}_{scenario}.html` | 3D `b2_ever_h6` risk surface coloured by audit category, per segment + reporting supersegment. Written by `plot_risk_surface.py`; `index.html` links them all |
 | `score_discriminance.csv` | Gini and discriminance metrics per score |
 | `score_discriminance_*.png` | Score discrimination plots |
 | `allocation_results.csv` | Global allocation: per-segment chosen frontier row (if `run_allocation.py` was run) |
