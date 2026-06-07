@@ -42,6 +42,7 @@ dev = [
     "pytest-cov>=4.1.0",
     "python-docx>=1.1.0",
     "python-pptx>=1.0.2",
+    "kaleido==0.2.1",  # self-contained chromium (no external Chrome needed) for 3D surface PNG export
 ]
 
 [tool.ruff]
