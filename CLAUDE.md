@@ -85,6 +85,13 @@ uv run python run_policy_registry.py --compare -s no_premium_cd --holdout-start 
 #   policy_compare_<segment>_base.csv (+ _celldiff.csv), policy_compare_consolidated_base.csv, policy_compare_summary_base.md
 # Verdict is risk-only + noise-aware (BETTER/WORSE only with >=10 realized defaults in both policies AND fully separated risk CIs; else INCONCLUSIVE); reuses the M4 backtest + M5 headline/provenance, read-only w.r.t. the pipeline.
 
+# 3D risk surfaces (b2_ever_h6 over the two score bins, one coloured surface per audit category)
+uv run python plot_risk_surface.py                          # all segments + reporting supersegments
+uv run python plot_risk_surface.py -s no_premium_cd premium # specific segments
+uv run python plot_risk_surface.py --scenario base --no-supersegments
+# Reads a completed run's data_summary_desagregado_*.csv + accepted_cells_*.csv; categories: keep/swap_out (booked),
+# swap_in/rejected (repesca). Facets side-by-side per income_bin (3rd grid var). Writes HTML under --output (default output/risk_surfaces) + index.html.
+
 # Generate presentation (.pptx / .pdf)
 uv run python generate_presentation.py
 uv run python generate_presentation.py --pdf     # also convert to PDF (requires LibreOffice)
