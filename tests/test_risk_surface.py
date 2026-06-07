@@ -142,3 +142,13 @@ def test_build_facets_one_surface_each():
 def test_category_code_order():
     assert CATEGORY_ORDER == ["keep", "swap_in", "swap_out", "rejected"]
     assert CATEGORY_CODE == {"keep": 0, "swap_in": 1, "swap_out": 2, "rejected": 3}
+
+
+def test_summary_path_selects_period():
+    from pathlib import Path
+
+    from plot_risk_surface import _summary_path
+
+    data = Path("/x/data")
+    assert _summary_path(data, "_base", "main").name == "data_summary_desagregado_base.csv"
+    assert _summary_path(data, "_base", "mr").name == "data_summary_desagregado_mr_base.csv"
