@@ -89,8 +89,10 @@ uv run python run_policy_registry.py --compare -s no_premium_cd --holdout-start 
 uv run python plot_risk_surface.py                          # all segments + reporting supersegments
 uv run python plot_risk_surface.py -s no_premium_cd premium # specific segments
 uv run python plot_risk_surface.py --scenario base --no-supersegments
-# Reads a completed run's data_summary_desagregado_*.csv + accepted_cells_*.csv; categories: keep/swap_out (booked),
-# swap_in/rejected (repesca). Non-overlapping grid: rows = category, columns = income_bin (3rd grid var) side-by-side. Writes HTML under --output (default output/risk_surfaces) + index.html.
+# Reads a completed run's data_summary_desagregado_*.csv + accepted_cells_*.csv. ONE continuous b2_ever_h6 surface per income_bin
+# (3rd grid var, faceted side-by-side), coloured per cell by audit category = (booked-before x accepted-now): keep/swap_out/swap_in/rejected.
+# "booked before" = cell had booked exposure. One category per cell (segments are unambiguous; supersegments resolve by exposure-weighted
+# majority). Writes HTML under --output (default output/risk_surfaces) + index.html.
 
 # Generate presentation (.pptx / .pdf)
 uv run python generate_presentation.py
