@@ -86,7 +86,8 @@ uv run python run_policy_registry.py --compare -s no_premium_cd --holdout-start 
 # Verdict is risk-only + noise-aware (BETTER/WORSE only with >=10 realized defaults in both policies AND fully separated risk CIs; else INCONCLUSIVE); reuses the M4 backtest + M5 headline/provenance, read-only w.r.t. the pipeline.
 
 # 3D risk surfaces (b2_ever_h6 over the two score bins, one coloured surface per audit category)
-uv run python plot_risk_surface.py                          # all segments + reporting supersegments
+uv run python plot_risk_surface.py                          # all segments + reporting supersegments (main period)
+uv run python plot_risk_surface.py --period mr              # the proposed cutoff applied to the out-of-time (MR) cohort
 uv run python plot_risk_surface.py -s no_premium_cd premium # specific segments
 uv run python plot_risk_surface.py --scenario base --no-supersegments
 # Reads a completed run's data_summary_desagregado_*.csv + accepted_cells_*.csv. ONE continuous b2_ever_h6 surface per income_bin

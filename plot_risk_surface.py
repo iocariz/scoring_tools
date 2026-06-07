@@ -12,7 +12,8 @@ category comes from that member's own mask), so a reporting group shows the comb
 
 Usage
 -----
-    uv run python plot_risk_surface.py                          # all segments + reporting supersegments
+    uv run python plot_risk_surface.py                          # all segments + reporting supersegments (main period)
+    uv run python plot_risk_surface.py --period mr              # the proposed cutoff applied to the out-of-time (MR) cohort
     uv run python plot_risk_surface.py -s no_premium_cd premium # specific segments
     uv run python plot_risk_surface.py --scenario base --no-supersegments
     uv run python plot_risk_surface.py --data-dir output --output output/risk_surfaces
@@ -40,10 +41,21 @@ def _read_cell_key(accepted_path: Path) -> list[str]:
     return list(pd.read_csv(accepted_path, nrows=0).columns)
 
 
-def _load_unit(seg_dir: Path, suffix: str) -> tuple[pd.DataFrame, set, list[str], float] | None:
-    """Load one segment's (summary, accepted_set, variables, multiplier), or None if incomplete."""
+def _summary_path(data: Path, suffix: str, period: str) -> Path:
+    """Per-cell summary for the chosen period (the MR file carries an extra ``_mr`` infix)."""
+    infix = "_mr" if period == "mr" else ""
+    return data / f"data_summary_desagregado{infix}{suffix}.csv"
+
+
+def _load_unit(seg_dir: Path, suffix: str, period: str = "main") -> tuple[pd.DataFrame, set, list[str], float] | None:
+    """Load one segment's (summary, accepted_set, variables, multiplier), or None if incomplete.
+
+    The cutoff mask (``accepted_cells``) is the same policy for both periods; only the per-cell
+    summary differs (main vs MR), so the MR surface shows the proposed cutoff applied to the
+    out-of-time cohort.
+    """
     data = seg_dir / "data"
-    summary_path = data / f"data_summary_desagregado{suffix}.csv"
+    summary_path = _summary_path(data, suffix, period)
     accepted_path = data / f"accepted_cells{suffix}.csv"
     if not summary_path.exists() or not accepted_path.exists():
         return None
@@ -124,9 +136,12 @@ def generate_all(
     scenario: str = "base",
     segments: list[str] | None = None,
     include_supersegments: bool = True,
+    period: str = "main",
 ) -> list[Path]:
     """Write a 3D risk-surface HTML per segment (and reporting supersegment). Returns the paths."""
     suffix = _scenario_suffix(scenario)
+    ptag = "_mr" if period == "mr" else ""  # distinguishes MR files/index from main
+    plabel = "MR period" if period == "mr" else "main period"
     data_dir, out_dir = Path(data_dir), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -138,15 +153,15 @@ def generate_all(
     loaded: dict[str, tuple] = {}
     written: list[Path] = []
     for seg_dir in seg_dirs:
-        unit = _load_unit(seg_dir, suffix)
+        unit = _load_unit(seg_dir, suffix, period)
         if unit is None:
             continue
         loaded[seg_dir.name] = unit
-        fig = _figure_for_unit([unit], f"Risk surface — {seg_dir.name} ({scenario})")
+        fig = _figure_for_unit([unit], f"Risk surface — {seg_dir.name} ({scenario}, {plabel})")
         if fig is None:
             logger.warning(f"[{seg_dir.name}] no classifiable cells; skipping.")
             continue
-        path = out_dir / f"risk_surface_{seg_dir.name}{suffix}.html"
+        path = out_dir / f"risk_surface_{seg_dir.name}{ptag}{suffix}.html"
         fig.write_html(str(path), include_plotlyjs="cdn")
         written.append(path)
         logger.info(f"[{seg_dir.name}] wrote {path}")
@@ -159,31 +174,31 @@ def generate_all(
             if len({tuple(u[2]) for u in units}) != 1:
                 logger.warning(f"[{name}] members have differing grid variables; skipping supersegment.")
                 continue
-            fig = _figure_for_unit(units, f"Risk surface — {name} [{'+'.join(members)}] ({scenario})")
+            fig = _figure_for_unit(units, f"Risk surface — {name} [{'+'.join(members)}] ({scenario}, {plabel})")
             if fig is None:
                 continue
-            path = out_dir / f"risk_surface_supersegment_{name}{suffix}.html"
+            path = out_dir / f"risk_surface_supersegment_{name}{ptag}{suffix}.html"
             fig.write_html(str(path), include_plotlyjs="cdn")
             written.append(path)
             logger.info(f"[{name}] (supersegment: {', '.join(members)}) wrote {path}")
 
     if written:
-        _write_index(out_dir, written, scenario)
+        _write_index(out_dir, written, scenario, plabel, ptag)
     return written
 
 
-def _write_index(out_dir: Path, paths: list[Path], scenario: str) -> Path:
+def _write_index(out_dir: Path, paths: list[Path], scenario: str, plabel: str = "main period", ptag: str = "") -> Path:
     """A small index.html linking every generated surface."""
     items = "\n".join(f'  <li><a href="{p.name}">{p.stem}</a></li>' for p in sorted(paths))
     html = (
         "<!doctype html><meta charset='utf-8'>"
-        f"<title>Risk surfaces ({scenario})</title>"
+        f"<title>Risk surfaces ({scenario}, {plabel})</title>"
         "<style>body{font-family:Arial,sans-serif;color:#2C3E50;margin:40px}"
         "h1{font-size:20px}li{margin:4px 0}</style>"
-        f"<h1>Risk surfaces — b2_ever_h6 by score bin & audit category ({scenario})</h1>"
+        f"<h1>Risk surfaces — b2_ever_h6 by score bin & audit category ({scenario}, {plabel})</h1>"
         f"<ul>\n{items}\n</ul>"
     )
-    idx = out_dir / "index.html"
+    idx = out_dir / f"index{ptag}.html"
     idx.write_text(html, encoding="utf-8")
     return idx
 
@@ -200,6 +215,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scenario", default="base", help="Scenario suffix (default: base).")
     parser.add_argument("--segments", "-s", nargs="+", default=None, help="Subset of segments (default: all).")
     parser.add_argument("--no-supersegments", action="store_true", help="Skip reporting-supersegment figures.")
+    parser.add_argument(
+        "--period",
+        choices=["main", "mr"],
+        default="main",
+        help="Period: 'main' (default) or 'mr' (the proposed cutoff applied to the out-of-time cohort).",
+    )
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
     if not Path(args.data_dir).exists():
@@ -213,11 +234,13 @@ def main(argv: list[str] | None = None) -> int:
         scenario=args.scenario,
         segments=args.segments,
         include_supersegments=not args.no_supersegments,
+        period=args.period,
     )
     if not written:
         logger.error("No risk-surface figures were generated.")
         return 1
-    logger.info(f"Wrote {len(written)} figure(s) → {args.output} (open index.html)")
+    idx = "index_mr.html" if args.period == "mr" else "index.html"
+    logger.info(f"Wrote {len(written)} figure(s) → {args.output} (open {idx})")
     return 0
 
 

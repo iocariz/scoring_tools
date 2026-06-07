@@ -1062,12 +1062,13 @@ Each cell maps to exactly one category from **(booked-before × accepted-now)**:
 "Booked before" = the cell had booked exposure (it was being booked under the current policy); "accepted now" = the cell is in the proposed cutoff mask. Because both are cell-level facts, a **single segment partitions cleanly — one category per cell, no overlap**. A supersegment can have members disagree on a cell; it is resolved to one category by exposure-weighted majority, so the surface stays single-valued. The z-axis is the cell's combined `b2_ever_h6` (defined for every populated cell, so the surface is continuous); colour is a discrete 4-band bar. When a third grid variable (e.g. `income_bin`) is present, the figure is faceted side-by-side, one continuous surface per value.
 
 ```bash
-uv run python plot_risk_surface.py                          # all segments + reporting supersegments
+uv run python plot_risk_surface.py                          # all segments + reporting supersegments (main period)
+uv run python plot_risk_surface.py --period mr              # the proposed cutoff applied to the out-of-time (MR) cohort
 uv run python plot_risk_surface.py -s no_premium_cd premium # specific segments
 uv run python plot_risk_surface.py --scenario base --no-supersegments
 ```
 
-Writes one HTML per unit under `--output` (default `output/risk_surfaces/`) plus an `index.html`.
+`--period mr` renders the same surfaces on the MR (out-of-time) cohort — the proposed cutoff applied to the recent period, using `data_summary_desagregado_mr_*.csv` and the same mask. Writes one HTML per unit under `--output` (default `output/risk_surfaces/`) plus an `index.html` (`index_mr.html` for the MR period).
 
 ---
 
