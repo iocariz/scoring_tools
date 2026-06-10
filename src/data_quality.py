@@ -375,6 +375,28 @@ def check_indicator_values(df: pd.DataFrame, indicators: list[str]) -> CheckResu
         )
 
 
+def _segment_demand_scope(df: pd.DataFrame, segment_filter: str | None) -> pd.DataFrame:
+    """The segment's demand population: segment rows minus fuera_norma/fraud/legal.
+
+    DQ runs before the pipeline applies the segment filter, so the raw frame
+    spans all segments plus fraud/legal rows. Content checks computed file-wide
+    cut both ways (audit #34): a per-segment defect is diluted below threshold
+    by the file-wide denominator, while a defect confined to a segment you are
+    NOT running halts every segment. Mirrors preprocess_data filtering.
+    """
+    scoped = df
+    if segment_filter and "segment_cut_off" in scoped.columns:
+        seg_col = scoped["segment_cut_off"].astype(str)
+        seg_mask = seg_col.str.match(segment_filter, na=False) if "|" in segment_filter else (seg_col == segment_filter)
+        scoped = scoped[seg_mask]
+    for excl_col, keep_val in (("fuera_norma", "n"), ("fraud_flag", "n")):
+        if excl_col in scoped.columns:
+            scoped = scoped[scoped[excl_col].astype(str).str.lower() == keep_val]
+    if "nature_holder" in scoped.columns:
+        scoped = scoped[scoped["nature_holder"].astype(str).str.lower() != "legal"]
+    return scoped
+
+
 def check_booked_ratio(
     df: pd.DataFrame,
     status_column: str = "status_name",
@@ -397,16 +419,7 @@ def check_booked_ratio(
 
     # Restrict to the segment's demand population so the ratio reflects the segment, not the
     # whole file (audit #18). Mirrors check_segment_exists / preprocess_data filtering.
-    scoped = df
-    if segment_filter and "segment_cut_off" in scoped.columns:
-        seg_col = scoped["segment_cut_off"].astype(str)
-        seg_mask = seg_col.str.match(segment_filter, na=False) if "|" in segment_filter else (seg_col == segment_filter)
-        scoped = scoped[seg_mask]
-    for excl_col, keep_val in (("fuera_norma", "n"), ("fraud_flag", "n")):
-        if excl_col in scoped.columns:
-            scoped = scoped[scoped[excl_col].astype(str).str.lower() == keep_val]
-    if "nature_holder" in scoped.columns:
-        scoped = scoped[scoped["nature_holder"].astype(str).str.lower() != "legal"]
+    scoped = _segment_demand_scope(df, segment_filter)
 
     status_lower = scoped[status_column].astype(str).str.lower()
     booked_count = (status_lower == booked_value.lower()).sum()
@@ -496,16 +509,36 @@ def run_data_quality_checks(
 
     logger.info("Running data quality checks...")
 
+    # Content checks run on the SEGMENT's demand population (audit #34): the
+    # file-wide basis diluted per-segment defects below threshold (a small
+    # segment could be 100%-missing on a score and PASS) and halted every
+    # segment on a defect confined to one you are not running. Structural
+    # checks (columns present, segment exists/size) stay file-level.
+    scoped = _segment_demand_scope(df, segment_filter)
+    if scoped.empty:
+        # Segment absent → check_segment_exists FAILS below and gates the run;
+        # run the content checks on the full frame so they stay meaningful.
+        logger.warning(
+            f"DQ: segment '{segment_filter}' demand population is empty — "
+            "content checks fall back to the full frame (segment-exists will FAIL)."
+        )
+        scoped = df
+    else:
+        logger.info(
+            f"DQ content checks scoped to segment '{segment_filter}' demand population "
+            f"({len(scoped):,} of {len(df):,} rows)."
+        )
+
     # Run checks
     report.add(check_required_columns(df, required_columns))
-    report.add(check_missing_values(df, missing_check_columns))
+    report.add(check_missing_values(scoped, missing_check_columns))
     report.add(check_segment_exists(df, segment_filter))
     report.add(check_segment_size(df, segment_filter))
-    report.add(check_date_range(df, "mis_date", date_ini, date_fin))
-    report.add(check_numeric_outliers(df, indicators))
-    report.add(check_indicator_values(df, indicators))
+    report.add(check_date_range(scoped, "mis_date", date_ini, date_fin))
+    report.add(check_numeric_outliers(scoped, indicators))
+    report.add(check_indicator_values(scoped, indicators))
     report.add(check_booked_ratio(df, segment_filter=segment_filter))
-    report.add(check_duplicate_rows(df))
+    report.add(check_duplicate_rows(scoped))
 
     if verbose:
         report.print_report()
