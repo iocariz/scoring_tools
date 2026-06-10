@@ -43,3 +43,19 @@ Each run writes `output/<segment>/data/run_lineage.json` (M2) capturing the data
 commit, config hash, and the headline assumptions. The committed golden reference
 (`reports/validation/reference/<segment>_headline.json`) records the headline numbers **and** the SHA-256 they were
 measured on. `run_reproducibility.py` re-derives the headline and fails loudly if the snapshot, code, or config drifted.
+
+## Uncertainty of the optimized headline (audit #28)
+The reported optimum is the **in-sample estimate of an optimized cutoff**: the selection picks the max-production
+frontier point whose point-estimate risk sits under the target, so the headline risk is **optimistic at the binding
+boundary (winner's curse)**. The **M4 out-of-time backtest is the unbiased check** of the frozen policy.
+
+The bootstrap CI on the "Optimum selected" row (Phase A of #28):
+- **Basis** — `risk_ci_*` is computed on the **blended booked + reject-inferred basis** (the same quantity as the
+  headline `b2_ever_h6`), with the repesca component resampled via the rejected-population composition
+  (`risk_ci_basis = "blended_booked_plus_ri"`). The booked-only realized CI is reported separately
+  (`risk_booked_ci_*`). Before #28 the CI silently measured booked-only realized risk while decorating the blended
+  headline, and the repesca production entered every replicate as a constant (zero variance).
+- **What it captures** — sampling variance of the booked and score-rejected populations under the **fixed** chosen
+  cutoff. **What it does not capture** — model/RI parameter uncertainty (the cell-level RI transformation is held
+  fixed), and the re-optimization/selection step itself (quantified separately by the #28 Phase B selection-aware
+  bootstrap and optimism estimate, when available).

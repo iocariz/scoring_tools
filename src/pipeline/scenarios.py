@@ -17,6 +17,7 @@ from src.audit import (
     validate_audit_against_summary,
 )
 from src.config import OutputPaths, PreprocessingSettings
+from src.constants import Columns, RejectReason, StatusName
 from src.mr_pipeline import process_mr_period
 from src.optimization_utils import (
     CellGrid,
@@ -156,11 +157,22 @@ def run_scenario_analysis(
         passes = spec.classify(data_summary_desagregado)
         repesca_production = data_summary_desagregado.loc[passes, "oa_amt_h0_rep"].sum()
 
-    # Pass model CV SE so bootstrap CI accounts for model prediction uncertainty
-    model_cv_se = None
-    if risk_inference:
-        best_info = risk_inference.get("best_model_info", {})
-        model_cv_se = best_info.get("cv_std_rmse") or best_info.get("cv_std_r2")
+    # Score-rejected loans of the main period: lets the bootstrap resample the
+    # reject-inferred component so the risk CI matches the blended headline
+    # basis instead of bracketing booked-only realized risk (audit #28).
+    rejected_loans_main = pd.DataFrame()
+    if "oa_amt_h0_rep" in data_summary_desagregado.columns:
+        rejected_loans_main = filter_by_date(
+            data_clean,
+            "mis_date",
+            settings.date_ini_book_obs,
+            settings.date_fin_book_obs,
+        )
+        rejected_loans_main = rejected_loans_main[
+            (rejected_loans_main[Columns.STATUS_NAME] == StatusName.REJECTED.value)
+            & (rejected_loans_main[Columns.REJECT_REASON] == RejectReason.SCORE.value)
+        ]
+
     ci_data = calculate_bootstrap_intervals(
         data_booked=data_booked,
         cut_map=cut_map,
@@ -168,11 +180,12 @@ def run_scenario_analysis(
         multiplier=settings.multiplier,
         n_bootstraps=settings.n_bootstraps,
         inv_var1=inv_var1,
-        model_cv_se_risk=model_cv_se,
         annual_coef=annual_coef_main,
         repesca_production=repesca_production,
         mask=selected_mask,
         grid=grid,
+        rejected_loans=rejected_loans_main,
+        rep_cells=data_summary_desagregado,
     )
     logger.debug(f"[{segment}] Scenario {scenario_name} CI: {ci_data}")
 
@@ -234,11 +247,17 @@ def run_scenario_analysis(
         summary_table = reconcile_risk_production_summary_with_audit(summary_table, audit_main)
         validate_audit_against_summary(audit_main, summary_table)
 
-    # Add CI columns to summary table (only for Optimum selected row; others stay NaN)
+    # Add CI columns to summary table (only for Optimum selected row; others stay NaN).
+    # risk_ci_* is on the blended booked+RI basis (matching the headline) when the
+    # repesca context was available; risk_ci_basis records which basis was used and
+    # risk_booked_ci_* always carries the booked-only realized CI (audit #28).
     summary_table["production_ci_lower"] = np.nan
     summary_table["production_ci_upper"] = np.nan
     summary_table["risk_ci_lower"] = np.nan
     summary_table["risk_ci_upper"] = np.nan
+    summary_table["risk_ci_basis"] = None
+    summary_table["risk_booked_ci_lower"] = np.nan
+    summary_table["risk_booked_ci_upper"] = np.nan
 
     if ci_data:
         mask_opt = summary_table["Metric"] == "Optimum selected"
@@ -247,6 +266,9 @@ def run_scenario_analysis(
             summary_table.loc[mask_opt, "production_ci_upper"] = ci_data.get("production_ci_upper", 0.0)
             summary_table.loc[mask_opt, "risk_ci_lower"] = ci_data.get("risk_ci_lower", 0.0)
             summary_table.loc[mask_opt, "risk_ci_upper"] = ci_data.get("risk_ci_upper", 0.0)
+            summary_table.loc[mask_opt, "risk_ci_basis"] = ci_data.get("risk_ci_basis", "booked_realized")
+            summary_table.loc[mask_opt, "risk_booked_ci_lower"] = ci_data.get("risk_booked_ci_lower", np.nan)
+            summary_table.loc[mask_opt, "risk_booked_ci_upper"] = ci_data.get("risk_booked_ci_upper", np.nan)
 
     # Add swap-in risk adjustment diagnostics to summary table (Swap-in row only)
     for diag_col, diag_label in [
