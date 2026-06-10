@@ -343,9 +343,16 @@ def what_if_dataframe_row(
     result: AllocationResult,
     target_risk_pct: float,
     *,
-    feasible: bool = True,
+    feasible: bool | None = None,
 ) -> dict:
-    """One row for the what-if comparison table."""
+    """One row for the what-if comparison table.
+
+    ``feasible`` defaults to the result's own flag (audit #42 — the old
+    ``True`` default let infeasible best-effort allocations appear feasible
+    in the persisted what-if CSV); pass it explicitly only to override.
+    """
+    if feasible is None:
+        feasible = bool(getattr(result, "feasible", True))
     return {
         "target_risk_pct": target_risk_pct,
         "achieved_global_risk_pct": result.global_risk,

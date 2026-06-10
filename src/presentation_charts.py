@@ -66,9 +66,9 @@ def save_chart(fig: plt.Figure, path: str | Path, dpi: int = 150) -> Path:
 # --------------------------------------------------------------------------- #
 
 
-def chart_production_by_segment(consolidated: pd.DataFrame) -> plt.Figure:
+def chart_production_by_segment(consolidated: pd.DataFrame, scenario: str = "base") -> plt.Figure:
     """Grouped bars: current (actual) vs proposed (optimum) booked production per segment (€M)."""
-    df = _segments_frame(consolidated)
+    df = _segments_frame(consolidated, scenario=scenario)
     seg = df["segment"].to_numpy()
     actual = df["actual_production"].to_numpy() / 1e6
     optimum = df["optimum_production"].to_numpy() / 1e6
@@ -88,9 +88,9 @@ def chart_production_by_segment(consolidated: pd.DataFrame) -> plt.Figure:
     return fig
 
 
-def chart_risk_by_segment(consolidated: pd.DataFrame) -> plt.Figure:
+def chart_risk_by_segment(consolidated: pd.DataFrame, scenario: str = "base") -> plt.Figure:
     """Grouped bars: current vs proposed annualised risk (b2_ever_h6 %) per segment."""
-    df = _segments_frame(consolidated)
+    df = _segments_frame(consolidated, scenario=scenario)
     seg = df["segment"].to_numpy()
     actual = df["actual_risk_pct"].to_numpy()
     optimum = df["optimum_risk_pct"].to_numpy()
@@ -110,11 +110,11 @@ def chart_risk_by_segment(consolidated: pd.DataFrame) -> plt.Figure:
     return fig
 
 
-def chart_swap_waterfall(consolidated: pd.DataFrame) -> plt.Figure:
+def chart_swap_waterfall(consolidated: pd.DataFrame, scenario: str = "base") -> plt.Figure:
     """Waterfall on the TOTAL row: current production → +swap-in − swap-out → proposed."""
-    tr = _total_row(consolidated)
+    tr = _total_row(consolidated, scenario=scenario)
     if tr is None:
-        df = _segments_frame(consolidated)
+        df = _segments_frame(consolidated, scenario=scenario)
         actual, swin, swout, opt = (
             df["actual_production"].sum(),
             df["swap_in_production"].sum(),
@@ -158,9 +158,9 @@ def chart_swap_waterfall(consolidated: pd.DataFrame) -> plt.Figure:
     return fig
 
 
-def chart_acceptance_by_segment(consolidated: pd.DataFrame) -> plt.Figure:
+def chart_acceptance_by_segment(consolidated: pd.DataFrame, scenario: str = "base") -> plt.Figure:
     """Grouped bars: current vs proposed acceptance rate (100 − rejection %) per segment."""
-    df = _segments_frame(consolidated)
+    df = _segments_frame(consolidated, scenario=scenario)
     seg = df["segment"].to_numpy()
     actual = 100 - df["actual_rejection_rate_pct"].to_numpy()
     optimum = 100 - df["optimum_rejection_rate_pct"].to_numpy()

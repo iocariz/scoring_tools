@@ -84,3 +84,23 @@ def test_policy_table_summary_only():
     df = policy_cutoff_table_from_allocation(segment_details)
     assert len(df) == 1
     assert df.iloc[0]["policy_type"] == "summary_only"
+
+
+def test_what_if_row_propagates_infeasible_flag():
+    """Audit #42: the row's feasible flag defaults to the result's own flag —
+    the old `feasible=True` default published infeasible best-effort
+    allocations as feasible in the what-if CSV."""
+    result = AllocationResult(
+        global_risk=1.02,
+        global_production=50.0,
+        allocations={"A": 0},
+        segment_metrics={"A": {"risk": 1.02, "production": 50.0}},
+        method="greedy",
+        target=0.3,
+        binding_constraints=[],
+        feasible=False,
+        message="best-effort: target unreachable",
+    )
+    assert what_if_dataframe_row(result, 0.3)["feasible"] is False
+    # explicit override still possible
+    assert what_if_dataframe_row(result, 0.3, feasible=True)["feasible"] is True
