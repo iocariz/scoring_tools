@@ -32,17 +32,88 @@ from scipy import stats
 from scipy.stats import rankdata
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import auc, average_precision_score, precision_recall_curve, roc_curve
+from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 
 from src.constants import DEFAULT_N_BOOTSTRAPS, DEFAULT_RANDOM_STATE, PSI_EPSILON
 
 
 def train_logistic_regression(X, y):
-    """Train logistic regression on standardized data."""
+    """Train logistic regression on standardized data.
+
+    NOTE (audit #35): scoring this model on its own training rows inflates the
+    combined score's Gini/AUC/KS relative to the raw (unfitted) scores it is
+    compared against. Use :func:`combined_score_cv` for evaluation.
+    """
     scaler = StandardScaler()
     X_standardized = scaler.fit_transform(X)
     log_reg = LogisticRegression().fit(X_standardized, y)
     return log_reg, X_standardized
+
+
+def combined_score_cv(X: pd.DataFrame, y, n_splits: int = 5, random_state: int = DEFAULT_RANDOM_STATE) -> np.ndarray:
+    """OUT-OF-FOLD logistic-regression combined score (audit #35).
+
+    Unlike the raw scores it is compared against, the combined score involves
+    FITTING — evaluating it in-sample is not like-for-like. Each row's combined
+    score here comes from a model that never saw that row (StratifiedKFold;
+    the scaler is fit on the train fold only). Rows in folds that cannot be
+    fit (single-class train fold) come back NaN — callers mask them.
+    """
+    Xv = np.asarray(X, dtype=float)
+    yv = np.asarray(y)
+    out = np.full(len(Xv), np.nan)
+    n_splits = min(n_splits, max(2, int(min(np.sum(yv == 1), np.sum(yv == 0)))))
+    if n_splits < 2:
+        return out
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    for tr, te in skf.split(Xv, yv):
+        if len(np.unique(yv[tr])) < 2:
+            continue
+        scaler = StandardScaler().fit(Xv[tr])
+        model = LogisticRegression().fit(scaler.transform(Xv[tr]), yv[tr])
+        out[te] = model.decision_function(scaler.transform(Xv[te]))
+    return out
+
+
+def _bootstrap_ci_combined(
+    X: pd.DataFrame,
+    y,
+    n_iterations: int = DEFAULT_N_BOOTSTRAPS,
+    alpha: float = 0.05,
+    random_state: int = DEFAULT_RANDOM_STATE,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Bootstrap CI for the combined score, REFITTING per resample (audit #35).
+
+    The plain bootstrap held the fitted coefficients fixed and resampled scored
+    rows, ignoring coefficient-estimation uncertainty — too narrow for a fitted
+    score. Each replicate refits scaler+logistic on the resampled rows and
+    evaluates Gini/KS on the OUT-OF-BAG rows (those not drawn), so the
+    replicate metric is itself out-of-sample.
+    """
+    Xv = np.asarray(X, dtype=float)
+    yv = np.asarray(y)
+    rng = np.random.RandomState(random_state)
+    n = len(yv)
+    ginis, kss = [], []
+    for _ in range(n_iterations):
+        idx = rng.choice(n, n, replace=True)
+        oob = np.setdiff1d(np.arange(n), idx, assume_unique=False)
+        if len(np.unique(yv[idx])) < 2 or len(oob) == 0 or len(np.unique(yv[oob])) < 2:
+            continue
+        scaler = StandardScaler().fit(Xv[idx])
+        model = LogisticRegression().fit(scaler.transform(Xv[idx]), yv[idx])
+        scores_oob = model.decision_function(scaler.transform(Xv[oob]))
+        gini, _, ks, _ = compute_metrics(yv[oob], scores_oob)
+        ginis.append(gini)
+        kss.append(ks)
+    if not ginis:
+        return (np.nan, np.nan), (np.nan, np.nan)
+    lo, hi = 100 * alpha / 2, 100 * (1 - alpha / 2)
+    return (
+        (float(np.percentile(ginis, lo)), float(np.percentile(ginis, hi))),
+        (float(np.percentile(kss, lo)), float(np.percentile(kss, hi))),
+    )
 
 
 def ks_statistic(y_true, y_scores):
@@ -339,10 +410,13 @@ def model_summary(
         name: (-1 if info["negate"] else 1) * df[info["column"]].values for name, info in score_columns.items()
     }
 
+    combined_names = set()
     if combined_columns:
         for name, columns in combined_columns.items():
-            log_reg, X_standardized = train_logistic_regression(df[list(columns)], y_true)
-            scores_dict[name] = (log_reg.coef_[0] * X_standardized).sum(axis=1)
+            # OUT-OF-FOLD combined score (audit #35): the in-sample fit inflated
+            # the combined model's metrics vs the unfitted raw scores.
+            scores_dict[name] = combined_score_cv(df[list(columns)], y_true)
+            combined_names.add(name)
 
     # Compute Metrics and Rejection Thresholds
     metrics_data = {
@@ -359,9 +433,20 @@ def model_summary(
     }
 
     for name, scores in scores_dict.items():
-        gini, roc_auc, ks, _ = compute_metrics(y_true, scores)
-        gini_ci, ks_ci = bootstrap_confidence_interval(y_true, pd.Series(scores), n_iterations, alpha)
-        rejection_thresholds = calculate_rejection_thresholds(y_true, scores)
+        scores = np.asarray(scores, dtype=float)
+        valid = ~np.isnan(scores)
+        y_eval = y_true[valid] if not valid.all() else y_true
+        s_eval = scores[valid] if not valid.all() else scores
+        gini, roc_auc, ks, _ = compute_metrics(y_eval, s_eval)
+        if name in combined_names:
+            # Refit per resample (audit #35): the plain bootstrap held the fitted
+            # coefficients fixed — too narrow for a fitted score.
+            gini_ci, ks_ci = _bootstrap_ci_combined(df[list(combined_columns[name])], y_true, n_iterations, alpha)
+        else:
+            gini_ci, ks_ci = bootstrap_confidence_interval(
+                pd.Series(np.asarray(y_eval)), pd.Series(s_eval), n_iterations, alpha
+            )
+        rejection_thresholds = calculate_rejection_thresholds(y_eval, s_eval)
 
         metrics_data["Model"].append(name)
         metrics_data["Gini Score"].append(gini)
@@ -430,12 +515,16 @@ def compute_score_discriminance(
 
     if combined_columns:
         for name, columns in combined_columns.items():
-            log_reg, X_std = train_logistic_regression(df[list(columns)], y_true)
-            scores_dict[name] = (log_reg.coef_[0] * X_std).sum(axis=1)
+            # OUT-OF-FOLD combined score (audit #35) — like-for-like with the raw scores.
+            scores_dict[name] = combined_score_cv(df[list(columns)], y_true)
 
     rows = []
     for name, scores in scores_dict.items():
-        gini, roc_auc, ks, _ = compute_metrics(y_true, scores)
+        scores = np.asarray(scores, dtype=float)
+        valid = ~np.isnan(scores)
+        gini, roc_auc, ks, _ = compute_metrics(
+            y_true[valid] if not valid.all() else y_true, scores[valid] if not valid.all() else scores
+        )
         rows.append(
             {
                 "score": name,
