@@ -192,8 +192,9 @@ def simulate_range_restriction(
 ) -> pd.DataFrame:
     """Progressively truncate the booked population and measure Gini decay.
 
-    At each step, the riskiest (lowest-score) percentile is removed,
-    simulating a tighter acceptance cutoff.
+    At each step, the riskiest tail (per the score's risk orientation, i.e.
+    after applying ``negate``) is removed, simulating a tighter acceptance
+    cutoff: the retained population is the safest ``pct`` of the book.
 
     Parameters
     ----------
@@ -226,8 +227,11 @@ def simulate_range_restriction(
         sign = -1 if info.get("negate") else 1
         scores_raw = df[col].values
 
-        # Sort by score descending (safest first) — truncation removes the bottom
-        order = np.argsort(sign * scores_raw)[::-1]
+        # sign*score is higher = riskier (module convention), so an ASCENDING
+        # sort puts the safest first; keeping [:n_keep] removes the riskiest
+        # tail — a tighter cutoff. (Audit #23: the old descending sort kept the
+        # riskiest pct and removed the safest — the inverted restriction.)
+        order = np.argsort(sign * scores_raw)
         sorted_target = df[target_col].values[order]
         sorted_scores = (sign * scores_raw)[order]
 
