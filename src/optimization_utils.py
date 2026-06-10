@@ -1910,7 +1910,15 @@ def get_fact_sol(
     from .utils import optimize_dtypes
 
     n_bins = len(values_var0)
-    cut_values = np.array(sorted(set([0] + list(values_var1))))
+    # Reject-the-whole-bin sentinel by direction (audit #37): under the normal
+    # var1 <= cut rule, 0 rejects everything in a var0 bin; under the inverted
+    # var1 >= cut rule, 0 ACCEPTS everything and reject-all needs a sentinel
+    # ABOVE max(var1).
+    if inv_var1:
+        sentinel = float(max(values_var1)) + 1.0
+    else:
+        sentinel = 0.0
+    cut_values = np.array(sorted(set([sentinel] + list(values_var1))))
 
     logger.info("--Getting feasible solutions (legacy enumeration)")
     logger.info(f"Bins: {n_bins}, Cut values: {len(cut_values)}")
