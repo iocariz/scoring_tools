@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -156,27 +157,32 @@ def test_verdict_inconclusive_when_few_defaults():
     assert _risk_verdict(champ, chal) == "INCONCLUSIVE"  # min defaults 5 < 10
 
 
-def test_verdict_better_when_challenger_ci_below():
-    champ = {"n_defaults": 30, "risk_ci_lower": 2.0, "risk_ci_upper": 3.0}
-    chal = {"n_defaults": 30, "risk_ci_lower": 0.5, "risk_ci_upper": 1.0}
-    assert _risk_verdict(champ, chal) == "BETTER"
+def test_verdict_better_when_delta_ci_below_zero():
+    """Audit #31: the verdict is driven by the PAIRED-bootstrap CI of
+    (challenger − champion), not by separation of the two marginal CIs —
+    the estimates share most of their loans, so marginal separation was
+    structurally unreachable and the verdict was locked at INCONCLUSIVE."""
+    champ = {"n_defaults": 30}
+    chal = {"n_defaults": 30}
+    assert _risk_verdict(champ, chal, delta_ci=(-1.0, -0.2)) == "BETTER"
 
 
-def test_verdict_worse_when_challenger_ci_above():
-    champ = {"n_defaults": 30, "risk_ci_lower": 0.5, "risk_ci_upper": 1.0}
-    chal = {"n_defaults": 30, "risk_ci_lower": 2.0, "risk_ci_upper": 3.0}
-    assert _risk_verdict(champ, chal) == "WORSE"
+def test_verdict_worse_when_delta_ci_above_zero():
+    champ = {"n_defaults": 30}
+    chal = {"n_defaults": 30}
+    assert _risk_verdict(champ, chal, delta_ci=(0.2, 1.0)) == "WORSE"
 
 
-def test_verdict_inconclusive_when_ci_overlap():
-    champ = {"n_defaults": 30, "risk_ci_lower": 1.0, "risk_ci_upper": 3.0}
-    chal = {"n_defaults": 30, "risk_ci_lower": 2.0, "risk_ci_upper": 4.0}
-    assert _risk_verdict(champ, chal) == "INCONCLUSIVE"
+def test_verdict_inconclusive_when_delta_ci_straddles_zero():
+    champ = {"n_defaults": 30}
+    chal = {"n_defaults": 30}
+    assert _risk_verdict(champ, chal, delta_ci=(-0.5, 0.5)) == "INCONCLUSIVE"
 
 
-def test_verdict_inconclusive_when_ci_missing():
-    champ = {"n_defaults": 30, "risk_ci_lower": None, "risk_ci_upper": None}
-    chal = {"n_defaults": 30, "risk_ci_lower": 0.5, "risk_ci_upper": 1.0}
+def test_verdict_inconclusive_when_delta_ci_missing():
+    champ = {"n_defaults": 30}
+    chal = {"n_defaults": 30}
+    assert _risk_verdict(champ, chal, delta_ci=(None, None)) == "INCONCLUSIVE"
     assert _risk_verdict(champ, chal) == "INCONCLUSIVE"
 
 
@@ -277,3 +283,89 @@ def test_write_comparison_consolidated(tmp_path):
     assert set(rows["segment"]) == {"seg_a", "seg_b"}
     md = paths["summary"].read_text()
     assert "seg_a" in md and "no champion" in md
+
+
+# --------------------------------------------------------------------------- #
+# Audit #31 — paired bootstrap, survivorship guard, bin-edge guard
+# --------------------------------------------------------------------------- #
+
+
+def _shared_cohort(n_shared=400, n_added=25, seed=0):
+    """Booked cohort: a large shared cell (1,10) with some defaults and a
+    genuinely riskier — but small — cell (9,10) only the challenger accepts.
+    Sized so the MARGINAL risk CIs overlap (the shared mass dominates both
+    estimates) while the paired Δ-CI cleanly excludes 0."""
+    rng = np.random.RandomState(seed)
+    shared_bad = (rng.uniform(size=n_shared) < 0.05).astype(float)  # ~5% default
+    added_bad = (rng.uniform(size=n_added) < 0.30).astype(float)  # ~30% default
+    return pd.DataFrame(
+        {
+            "a": [1.0] * n_shared + [9.0] * n_added,
+            "b": [10.0] * (n_shared + n_added),
+            "oa_amt_h0": 100.0,
+            "todu_30ever_h6": np.concatenate([shared_bad, added_bad]),
+            "todu_amt_pile_h6": 7.0,
+        }
+    )
+
+
+def test_paired_bootstrap_unlocks_verdict_marginal_cis_cannot_see():
+    """The headline #31 regression: champion and challenger share ~87% of their
+    loans, so their MARGINAL risk CIs overlap (old rule → INCONCLUSIVE forever)
+    even though the challenger's added cell is catastrophically risky. The
+    paired Δ-CI isolates the swapped cells and yields WORSE."""
+    cohort = _shared_cohort()
+    champion = {(1.0, 10.0)}
+    challenger = {(1.0, 10.0), (9.0, 10.0)}
+
+    cmp = compare_policies(champion, challenger, cohort, ["a", "b"], 7.0)
+
+    # the old rule's precondition: marginal CIs overlap on this cohort
+    assert cmp.challenger["risk_ci_lower"] <= cmp.champion["risk_ci_upper"]
+    # paired Δ-CI sits entirely above zero → verdict unlocked
+    assert cmp.risk_delta_ci[0] > 0
+    assert cmp.verdict == "WORSE"
+
+
+def test_better_blocked_when_added_cells_unobservable():
+    """Survivorship guard: the challenger drops the cohort's risky observed
+    cell (lower realized risk → BETTER) while ADDING a cell with no booked
+    loans. With material unobservable demand exposure, BETTER is blocked."""
+    cohort = _shared_cohort()
+    champion = {(1.0, 10.0), (9.0, 10.0)}
+    challenger = {(1.0, 10.0), (5.0, 10.0)}  # (5,10) has NO booked loans
+
+    demand = pd.DataFrame(
+        {
+            "a": [1.0] * 50 + [5.0] * 50,  # half the challenger demand is unobservable
+            "b": 10.0,
+            "oa_amt_h0": 100.0,
+        }
+    )
+    cmp = compare_policies(champion, challenger, cohort, ["a", "b"], 7.0, cohort_demand=demand)
+    assert cmp.n_added_cells_unobserved == 1
+    assert cmp.unobservable_added_share == pytest.approx(0.5)
+    assert cmp.verdict == "INCONCLUSIVE"
+    assert "BETTER blocked" in cmp.message
+
+    # with negligible unobservable exposure the verdict stands
+    demand_tiny = pd.DataFrame({"a": [1.0] * 99 + [5.0], "b": 10.0, "oa_amt_h0": 100.0})
+    cmp2 = compare_policies(champion, challenger, cohort, ["a", "b"], 7.0, cohort_demand=demand_tiny)
+    assert cmp2.unobservable_added_share == pytest.approx(0.01)
+    assert cmp2.verdict == "BETTER"
+
+    # fail-closed without a demand frame
+    cmp3 = compare_policies(champion, challenger, cohort, ["a", "b"], 7.0)
+    assert cmp3.verdict == "INCONCLUSIVE"
+    assert "fail-closed" in cmp3.message
+
+
+def test_bin_edges_match_guard():
+    from src.policy_registry import bin_edges_match
+
+    inf = float("inf")
+    a = {"income_bin": [-inf, 2000.0, inf], "x": [0.0, 1.0]}
+    assert bin_edges_match(a, {"income_bin": [-inf, 2000.0, inf], "x": [0.0, 1.0]})
+    assert not bin_edges_match(a, {"income_bin": [-inf, 1750.0, inf], "x": [0.0, 1.0]})  # value changed
+    assert not bin_edges_match(a, {"income_bin": [-inf, 2000.0, inf]})  # key missing
+    assert not bin_edges_match(a, {"income_bin": [-inf, 1000.0, 2000.0, inf], "x": [0.0, 1.0]})  # count changed

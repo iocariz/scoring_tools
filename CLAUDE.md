@@ -83,7 +83,7 @@ uv run python run_policy_registry.py --compare                        # challeng
 uv run python run_policy_registry.py --compare -s no_premium_cd --holdout-start 2025-06-01 --holdout-end 2025-08-01  # pinned eval window
 # Committed registry: reports/policy_registry/<segment>.json (one champion/segment, base scenario). --compare writes under --output (default output/policy_registry):
 #   policy_compare_<segment>_base.csv (+ _celldiff.csv), policy_compare_consolidated_base.csv, policy_compare_summary_base.md
-# Verdict is risk-only + noise-aware (BETTER/WORSE only with >=10 realized defaults in both policies AND fully separated risk CIs; else INCONCLUSIVE); reuses the M4 backtest + M5 headline/provenance, read-only w.r.t. the pipeline.
+# Verdict is risk-only + noise-aware (audit #31): BETTER/WORSE only with >=10 realized defaults in both policies AND the PAIRED-bootstrap CI of (challenger − champion) excluding 0 — the policies share most of their loans, so the old marginal-CI-separation rule was structurally locked at INCONCLUSIVE. Survivorship guard: BETTER is blocked when >5% of challenger-accepted demand production sits in ADDED cells with no booked loans (their risk is unobservable on a cohort booked under the incumbent). The champion's frozen bin_edges/variables are validated against the current config before comparing (mismatch → refuse; the cell indices would mean different score regions). Reuses the M4 backtest + M5 headline/provenance, read-only w.r.t. the pipeline.
 
 # 3D risk surfaces (b2_ever_h6 over the two score bins, one coloured surface per audit category)
 uv run python plot_risk_surface.py                          # all segments + reporting supersegments (main period)
