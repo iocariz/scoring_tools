@@ -30,6 +30,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -43,6 +44,12 @@ from src.reproducibility import REFERENCE_DIR, extract_headline
 
 REGISTRY_DIR = Path("reports/policy_registry")
 MRM_SIGNOFF = "reports/validation/mrm_signoff.md"
+
+#: BETTER is blocked when more than this share of the challenger-accepted demand
+#: production sits in ADDED cells with no booked loans on the comparison cohort
+#: (audit #31 — the challenger's realized risk omits exactly the loans where it
+#: differs from the champion, biasing it toward "same or BETTER").
+MAX_UNOBSERVABLE_SHARE_FOR_BETTER = 0.05
 
 Cell = tuple[float, ...]
 
@@ -243,7 +250,14 @@ class PolicyComparison:
     champion: dict = field(default_factory=dict)  # realized metrics
     challenger: dict = field(default_factory=dict)
     risk_delta_pp: float | None = None  # challenger − champion (realized risk %)
+    risk_delta_ci: list = field(default_factory=lambda: [None, None])  # paired-bootstrap Δ CI (pp)
     production_delta_pct: float | None = None  # challenger vs champion (realized €)
+    #: Added cells with NO booked loans on the cohort — the challenger's risk
+    #: there is unobservable (audit #31 survivorship).
+    n_added_cells_unobserved: int = 0
+    #: Share of challenger-accepted demand production sitting in unobserved
+    #: added cells (None when no demand frame was provided).
+    unobservable_added_share: float | None = None
     verdict: str = "INCONCLUSIVE"  # BETTER / WORSE / INCONCLUSIVE (risk, noise-aware)
     window: dict = field(default_factory=dict)
 
@@ -264,6 +278,9 @@ class PolicyComparison:
             "challenger_risk_pct": self.challenger.get("risk"),
             "challenger_risk_ci": [self.challenger.get("risk_ci_lower"), self.challenger.get("risk_ci_upper")],
             "risk_delta_pp": self.risk_delta_pp,
+            "risk_delta_ci": list(self.risk_delta_ci),
+            "n_added_cells_unobserved": self.n_added_cells_unobserved,
+            "unobservable_added_share": self.unobservable_added_share,
             "champion_production_eur": self.champion.get("production"),
             "challenger_production_eur": self.challenger.get("production"),
             "production_delta_pct": self.production_delta_pct,
@@ -275,25 +292,97 @@ class PolicyComparison:
         }
 
 
-def _risk_verdict(champion: dict, challenger: dict) -> str:
-    """Noise-aware risk verdict (lower realized risk = BETTER). Mirrors backtest drift logic.
+def settings_bin_edges(settings) -> dict:
+    """The frozen bin edges a run's policy coordinates are defined on (same
+    extraction as :func:`build_policy_entry`)."""
+    return {var: list(bc.bin_edges) for var, bc in (settings.bins or {}).items() if bc.bin_edges}
 
-    BETTER/WORSE only when both policies have ≥ MIN_DEFAULTS_FOR_DRIFT realized defaults AND the
-    challenger's risk CI is fully separated from the champion's; otherwise INCONCLUSIVE (within
-    sampling noise on a thin window).
+
+def bin_edges_match(a: dict, b: dict) -> bool:
+    """Float-safe equality of two ``{var: edges}`` dicts (±inf compares equal).
+
+    Audit #31: a champion's cell indices refer to score regions DEFINED by its
+    frozen edges — applying them under different current edges silently scores
+    a different policy (or fail-closes cells to reject on a changed bin count).
+    """
+    if set(a.keys()) != set(b.keys()):
+        return False
+    for k in a:
+        ea = np.asarray(a[k], dtype=float)
+        eb = np.asarray(b[k], dtype=float)
+        if ea.shape != eb.shape:
+            return False
+        if not np.all((ea == eb) | np.isclose(ea, eb, rtol=1e-9, atol=1e-12)):
+            return False
+    return True
+
+
+def _paired_bootstrap_delta_ci(
+    cohort_booked: pd.DataFrame,
+    champ_accepted: pd.Series,
+    chal_accepted: pd.Series,
+    multiplier: float,
+    n_boot: int = 1000,
+    seed: int = 42,
+) -> tuple:
+    """95% CI for (challenger − champion) realized risk via a PAIRED bootstrap.
+
+    Champion and challenger are evaluated on largely the same loans, so their
+    risk estimates are strongly positively correlated; requiring two *marginal*
+    CIs to fully separate (the old rule) treats them as independent —
+    ``Var(Δ) = Var(C)+Var(H)−2Cov`` is far smaller, so genuine differences
+    driven by the swapped cells essentially never produced a verdict
+    (audit #31). Here each replicate resamples the SHARED cohort once and
+    scores both policies on the same draw, so the common loans cancel and the
+    CI is on the difference itself.
+
+    Returns (lo, hi) in percentage points, or (None, None) when undefined.
+    """
+    bad = cohort_booked["todu_30ever_h6"].to_numpy(dtype="float64")
+    pile = cohort_booked["todu_amt_pile_h6"].to_numpy(dtype="float64")
+    keep = ~(np.isnan(bad) | np.isnan(pile))
+    bad, pile = bad[keep], pile[keep]
+    cm = champ_accepted.to_numpy(dtype=bool)[keep]
+    hm = chal_accepted.to_numpy(dtype=bool)[keep]
+    m = len(bad)
+    if m == 0:
+        return (None, None)
+
+    rng = np.random.RandomState(seed)
+    deltas = np.full(n_boot, np.nan)
+    for i in range(n_boot):
+        idx = rng.randint(0, m, m)
+        b, p = bad[idx], pile[idx]
+        ci, hi_ = cm[idx], hm[idx]
+        pc, ph = float(p[ci].sum()), float(p[hi_].sum())
+        if pc > 0 and ph > 0:
+            deltas[i] = multiplier * (b[hi_].sum() / ph - b[ci].sum() / pc) * 100
+    if np.isnan(deltas).all():
+        return (None, None)
+    lo, hi = np.nanpercentile(deltas, [2.5, 97.5])
+    return (round(float(lo), 4), round(float(hi), 4))
+
+
+def _risk_verdict(champion: dict, challenger: dict, delta_ci: tuple = (None, None)) -> str:
+    """Noise-aware risk verdict (lower realized risk = BETTER).
+
+    BETTER/WORSE only when both policies have ≥ MIN_DEFAULTS_FOR_DRIFT realized
+    defaults AND the PAIRED-bootstrap CI of (challenger − champion) excludes 0
+    (audit #31 — the old marginal-CI-separation rule was structurally locked at
+    INCONCLUSIVE because the two estimates share most of their loans);
+    otherwise INCONCLUSIVE (within sampling noise on a thin window).
     """
     nd = min(champion.get("n_defaults") or 0, challenger.get("n_defaults") or 0)
     if nd < MIN_DEFAULTS_FOR_DRIFT:
         return "INCONCLUSIVE"
-    c_lo, c_hi = champion.get("risk_ci_lower"), champion.get("risk_ci_upper")
-    h_lo, h_hi = challenger.get("risk_ci_lower"), challenger.get("risk_ci_upper")
-    if None in (c_lo, c_hi, h_lo, h_hi):
+    lo, hi = delta_ci
+    if lo is None or hi is None:
         return "INCONCLUSIVE"
-    if h_hi < c_lo:
-        return "BETTER"  # challenger CI entirely below champion's → lower risk
-    if h_lo > c_hi:
-        return "WORSE"  # challenger CI entirely above champion's → higher risk
-    return "INCONCLUSIVE"  # overlapping CIs → within noise
+    if hi < 0:
+        return "BETTER"  # Δ-CI entirely below 0 → challenger risk lower
+    if lo > 0:
+        return "WORSE"  # Δ-CI entirely above 0 → challenger risk higher
+    return "INCONCLUSIVE"  # Δ-CI straddles 0 → within noise
 
 
 def compare_policies(
@@ -307,19 +396,31 @@ def compare_policies(
     champion_id: str | None = None,
     challenger_id: str | None = None,
     basis: str = "realized_oot",
+    cohort_demand: pd.DataFrame | None = None,
 ) -> PolicyComparison:
     """Score two accepted-cell sets on the SAME booked cohort and diff them.
 
     ``added`` = cells the challenger accepts but the champion does not; ``removed`` = the
     reverse. Realized risk/production (with bootstrap CIs) come from the shared backtest
-    helpers, applied to the identical cohort so the comparison is same-basis. The verdict is
-    risk-only and noise-aware; ``production_delta_pct`` is reported for the human trade-off.
+    helpers, applied to the identical cohort so the comparison is same-basis. The verdict
+    is risk-only and noise-aware, based on the PAIRED-bootstrap CI of the risk difference
+    (audit #31); ``production_delta_pct`` is reported for the human trade-off.
+
+    Survivorship guard (audit #31): the cohort was booked under the incumbent policy, so
+    cells the challenger ADDS may have no booked loans — the challenger's realized risk
+    omits exactly the loans where it differs from the champion. When *cohort_demand* is
+    given, the share of challenger-accepted demand production in unobserved added cells is
+    computed and a BETTER verdict is blocked above ``MAX_UNOBSERVABLE_SHARE_FOR_BETTER``;
+    without a demand frame, BETTER is blocked whenever any added cell is unobserved
+    (fail-closed).
     """
     added = sorted(challenger_set - champion_set)
     removed = sorted(champion_set - challenger_set)
 
-    champ = _realized_metrics(cohort_booked, apply_policy(cohort_booked, variables, champion_set), multiplier)
-    chal = _realized_metrics(cohort_booked, apply_policy(cohort_booked, variables, challenger_set), multiplier)
+    champ_acc = apply_policy(cohort_booked, variables, champion_set)
+    chal_acc = apply_policy(cohort_booked, variables, challenger_set)
+    champ = _realized_metrics(cohort_booked, champ_acc, multiplier)
+    chal = _realized_metrics(cohort_booked, chal_acc, multiplier)
 
     risk_delta = (
         chal["risk"] - champ["risk"] if (chal.get("risk") is not None and champ.get("risk") is not None) else None
@@ -328,9 +429,48 @@ def compare_policies(
         (chal["production"] - champ["production"]) / champ["production"] * 100 if champ.get("production") else None
     )
 
+    delta_ci = _paired_bootstrap_delta_ci(cohort_booked, champ_acc, chal_acc, multiplier)
+    verdict = _risk_verdict(champ, chal, delta_ci)
+
+    # --- Observability of the challenger's ADDED cells on this cohort ---
+    added_set = set(added)
+    booked_in_added = apply_policy(cohort_booked, variables, added_set)
+    observed_added = (
+        {tuple(float(row[v]) for v in variables) for _, row in cohort_booked.loc[booked_in_added].iterrows()}
+        if booked_in_added.any()
+        else set()
+    )
+    unobserved_added = added_set - observed_added
+    unobservable_share = None
+    if cohort_demand is not None and not cohort_demand.empty and added_set:
+        prod_col = "oa_amt_h0" if "oa_amt_h0" in cohort_demand.columns else "oa_amt"
+        chal_demand = apply_policy(cohort_demand, variables, challenger_set)
+        total_prod = float(cohort_demand.loc[chal_demand, prod_col].sum())
+        unobs_prod = float(cohort_demand.loc[apply_policy(cohort_demand, variables, unobserved_added), prod_col].sum())
+        unobservable_share = (unobs_prod / total_prod) if total_prod > 0 else None
+    elif not added_set:
+        unobservable_share = 0.0
+
+    message = ""
+    if verdict == "BETTER":
+        if unobservable_share is not None and unobservable_share > MAX_UNOBSERVABLE_SHARE_FOR_BETTER:
+            verdict = "INCONCLUSIVE"
+            message = (
+                f"BETTER blocked: {unobservable_share:.1%} of challenger-accepted demand production sits in "
+                f"{len(unobserved_added)} added cell(s) with no booked loans — the challenger's risk there is "
+                "unobservable on this cohort (survivorship)."
+            )
+        elif unobservable_share is None and unobserved_added:
+            verdict = "INCONCLUSIVE"
+            message = (
+                f"BETTER blocked (fail-closed): {len(unobserved_added)} added cell(s) have no booked loans and "
+                "no demand frame was provided to size the unobservable exposure."
+            )
+
     return PolicyComparison(
         segment=segment,
         basis=basis,
+        message=message,
         variables=list(variables),
         champion_policy_id=champion_id,
         challenger_policy_id=challenger_id,
@@ -341,8 +481,11 @@ def compare_policies(
         champion=champ,
         challenger=chal,
         risk_delta_pp=risk_delta,
+        risk_delta_ci=list(delta_ci),
         production_delta_pct=prod_delta_pct,
-        verdict=_risk_verdict(champ, chal),
+        n_added_cells_unobserved=len(unobserved_added),
+        unobservable_added_share=unobservable_share,
+        verdict=verdict,
     )
 
 

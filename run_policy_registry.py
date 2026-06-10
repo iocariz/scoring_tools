@@ -43,11 +43,13 @@ from src.constants import StatusName
 from src.policy_registry import (
     REGISTRY_DIR,
     PolicyComparison,
+    bin_edges_match,
     build_policy_entry,
     compare_policies,
     get_champion,
     load_registry,
     register_policy,
+    settings_bin_edges,
     write_comparison_consolidated,
     write_comparison_report,
 )
@@ -149,6 +151,37 @@ def compare_segment(
     challenger_id = f"{segment}-{_accepted_set_hash(challenger_set)[:8]}"
     champion_set = champion.accepted_set()
 
+    # Audit #31: the champion's cell indices are only meaningful on the bin
+    # edges it was registered with — refuse to score it on different edges
+    # (the comparison would silently evaluate a different policy).
+    current_edges = settings_bin_edges(settings)
+    if champion.bin_edges and not bin_edges_match(champion.bin_edges, current_edges):
+        logger.error(
+            f"[{segment}] champion bin edges differ from the current config "
+            f"(champion: {champion.bin_edges} | current: {current_edges}) — refusing to compare."
+        )
+        return PolicyComparison(
+            segment=segment,
+            basis="realized_oot",
+            sufficient=False,
+            message="bin edges changed since champion registration — re-register the champion "
+            "(or restore the edges); comparing would score a different policy",
+            champion_policy_id=champion.policy_id,
+            challenger_policy_id=challenger_id,
+        )
+    if list(champion.variables) != variables:
+        logger.error(
+            f"[{segment}] champion variables {list(champion.variables)} != current {variables} — refusing to compare."
+        )
+        return PolicyComparison(
+            segment=segment,
+            basis="realized_oot",
+            sufficient=False,
+            message="grid variables changed since champion registration — re-register the champion",
+            champion_policy_id=champion.policy_id,
+            challenger_policy_id=challenger_id,
+        )
+
     # Bin the full population with the frozen edges, then slice the matured out-of-time cohort.
     data_clean = _run_data_transformations(full_data, settings)
     if holdout_start and holdout_end:
@@ -177,6 +210,11 @@ def compare_segment(
     booked_mis = pd.to_datetime(booked["mis_date"])
     booked_oot = booked[(booked_mis > window["start"]) & (booked_mis <= window["end"])]
 
+    # Full demand of the same window — sizes the unobservable exposure of the
+    # challenger's added cells for the survivorship guard (audit #31).
+    all_mis = pd.to_datetime(data_clean["mis_date"])
+    demand_oot = data_clean[(all_mis > window["start"]) & (all_mis <= window["end"])]
+
     cmp = compare_policies(
         champion_set,
         challenger_set,
@@ -186,6 +224,7 @@ def compare_segment(
         segment=segment,
         champion_id=champion.policy_id,
         challenger_id=challenger_id,
+        cohort_demand=demand_oot,
     )
     cmp.window = window
     return cmp
