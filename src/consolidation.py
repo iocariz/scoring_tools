@@ -3869,6 +3869,11 @@ def _write_exec_recommendation(ws, start_row: int, consolidated_df, output_base,
         "Residual: any out-of-time risk drift is currently within sampling noise on a thin mature window — "
         "monitor as cohorts mature. Provenance, assumptions & sign-off on the 'Validation & Governance' sheet."
     )
+    lines.append(
+        "Note on the optimum risk figure: it is the in-sample estimate of an OPTIMIZED cutoff and is therefore "
+        "optimistic at the binding risk boundary (winner's curse) — the out-of-time backtest above is the "
+        "unbiased check. The CI band reflects sampling noise of the chosen policy, not the optimization itself."
+    )
 
     for line in lines:
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=12)

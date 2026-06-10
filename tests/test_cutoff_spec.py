@@ -246,3 +246,115 @@ class TestBootstrapBackwardCompat:
         )
         with pytest.raises(ValueError, match="CutoffSpec"):
             calculate_bootstrap_intervals(booked, multiplier=7.0, n_bootstraps=5)
+
+
+class TestBootstrapRepescaBasis:
+    """Audit #28 (Phase A): the risk CI must bracket the blended booked+RI
+    headline it decorates, and the repesca component must carry sampling
+    variance instead of entering every replicate as a constant."""
+
+    @staticmethod
+    def _fixture(rep_risk_rate=0.5, rejected_amounts=None):
+        variables = ["v0", "v1"]
+        # 60 IDENTICAL booked rows: resampling them changes nothing, so any
+        # CI width must come from the repesca resampling.
+        booked = pd.DataFrame(
+            {
+                "v0": 1.0,
+                "v1": 1.0,
+                "oa_amt_h0": 1000.0,
+                "todu_30ever_h6": 1.0,
+                "todu_amt_pile_h6": 700.0,
+            },
+            index=range(60),
+        )
+        if rejected_amounts is None:
+            rejected_amounts = np.linspace(100, 5000, 40)
+        rejected = pd.DataFrame(
+            {
+                "v0": 1.0,
+                "v1": 1.0,
+                "oa_amt_h0": rejected_amounts,
+            }
+        )
+        rep_cells = pd.DataFrame(
+            {
+                "v0": [1.0],
+                "v1": [1.0],
+                "oa_amt_h0_rep": [20000.0],
+                "todu_30ever_h6_rep": [rep_risk_rate * 7000.0 / 7.0],
+                "todu_amt_pile_h6_rep": [7000.0],
+            }
+        )
+        spec = CutoffSpec.from_cut_map({1.0: 1.0}, variables)
+        return booked, rejected, rep_cells, spec, variables
+
+    def _ci(self, with_rep=True, **kwargs):
+        from src.utils import calculate_bootstrap_intervals
+
+        booked, rejected, rep_cells, spec, variables = self._fixture(**kwargs)
+        return calculate_bootstrap_intervals(
+            booked,
+            spec=spec,
+            variables=variables,
+            multiplier=7.0,
+            n_bootstraps=60,
+            random_state=42,
+            rejected_loans=rejected if with_rep else None,
+            rep_cells=rep_cells if with_rep else None,
+            repesca_production=20000.0,
+        )
+
+    def test_repesca_component_carries_sampling_variance(self):
+        """Booked rows are identical, so production-CI width comes ONLY from
+        resampling the rejected population — the old constant-repesca
+        bootstrap returned a zero-width production CI here."""
+        out = self._ci(with_rep=True)
+        assert out["production_ci_upper"] > out["production_ci_lower"]
+
+    def test_risk_ci_on_blended_basis_and_labeled(self):
+        """With a high-risk repesca component the blended CI must sit ABOVE
+        the booked-only realized CI, and the basis must be labeled."""
+        out = self._ci(with_rep=True)
+        assert out["risk_ci_basis"] == "blended_booked_plus_ri"
+        # booked-only realized risk = 7*1/700 = 1% exactly (identical rows)
+        assert out["risk_booked_ci_lower"] == pytest.approx(1.0, abs=1e-6)
+        assert out["risk_booked_ci_upper"] == pytest.approx(1.0, abs=1e-6)
+        # rep rate is 50% on a comparable exposure → blended far above booked
+        assert out["risk_ci_lower"] > out["risk_booked_ci_upper"]
+
+    def test_legacy_path_unchanged_and_labeled(self):
+        out = self._ci(with_rep=False)
+        assert out["risk_ci_basis"] == "booked_realized"
+        assert out["risk_ci_lower"] == pytest.approx(out["risk_booked_ci_lower"])
+        assert out["risk_ci_upper"] == pytest.approx(out["risk_booked_ci_upper"])
+        # constant repesca production + identical booked rows → zero-width CI
+        assert out["production_ci_upper"] == pytest.approx(out["production_ci_lower"])
+
+    def test_blend_math_exact_with_annual_coef(self):
+        """Identical rejected loans → every replicate's ratio is 1, so the
+        blended risk is deterministic: mult*(coef*bn + rn)/(coef*bd + rd)."""
+        from src.utils import calculate_bootstrap_intervals
+
+        booked, _, rep_cells, spec, variables = self._fixture()
+        rejected = pd.DataFrame({"v0": 1.0, "v1": 1.0, "oa_amt_h0": np.full(30, 500.0)})
+        coef = 2.0
+        out = calculate_bootstrap_intervals(
+            booked,
+            spec=spec,
+            variables=variables,
+            multiplier=7.0,
+            n_bootstraps=25,
+            random_state=7,
+            annual_coef=coef,
+            rejected_loans=rejected,
+            rep_cells=rep_cells,
+        )
+        bn, bd = 60 * 1.0, 60 * 700.0
+        rn, rd = rep_cells["todu_30ever_h6_rep"][0], rep_cells["todu_amt_pile_h6_rep"][0]
+        expected = 7.0 * (coef * bn + rn) / (coef * bd + rd) * 100
+        # worker rounds the fraction-scale risk to 6 decimals → 5e-3pp slack
+        assert out["risk_ci_lower"] == pytest.approx(expected, abs=5e-3)
+        assert out["risk_ci_upper"] == pytest.approx(expected, abs=5e-3)
+        assert out["risk_ci_upper"] == pytest.approx(out["risk_ci_lower"], abs=1e-9)
+        assert out["production_ci_lower"] == pytest.approx(60 * 1000.0 * coef + 20000.0, rel=1e-9)
