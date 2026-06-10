@@ -118,6 +118,25 @@ def run_ri_optimizer_phase(
             per_bin_stress=per_bin_stress,
         )
 
+        # Stress-free repesca frame for the calibration objective (audit #29):
+        # the 1/a^gamma target is built from raw booked outcomes, so candidates
+        # must not be scored on a stressed blend — otherwise the chosen uplift
+        # cancels the stress factor. Only recomputed when stress is active.
+        repesca_pre_ri_cal = repesca_pre_ri
+        if stress_factor != 1.0 or per_bin_stress is not None:
+            _, repesca_pre_ri_cal = compute_pre_reject_inference_data(
+                data_booked=train_booked,
+                data_demand=train_demand,
+                risk_inference=risk_inference,
+                reg_todu_amt_pile=reg_todu_amt_pile,
+                stressor=1.0,
+                indicators=settings.indicators,
+                variables=settings.variables,
+                annual_coef=annual_coef,
+                multiplier=settings.multiplier,
+                per_bin_stress=None,
+            )
+
         # Step 3: Compute acceptance rates (on training split)
         # Propagate Bayesian smoothing settings so optimizer uses the same rates as main pipeline
         acceptance_rates = compute_acceptance_rates(
@@ -135,6 +154,7 @@ def run_ri_optimizer_phase(
         optimizer_inputs = OptimizerInputs(
             booked_summary=booked_summary,
             repesca_pre_ri=repesca_pre_ri,
+            repesca_pre_ri_calibration=repesca_pre_ri_cal,
             acceptance_rates=acceptance_rates,
             tasa_fin=tasa_fin,
             variables=settings.variables,
@@ -184,6 +204,20 @@ def run_ri_optimizer_phase(
                     multiplier=settings.multiplier,
                     per_bin_stress=per_bin_stress,
                 )
+                val_repesca_pre_ri_cal = val_repesca_pre_ri
+                if stress_factor != 1.0 or per_bin_stress is not None:
+                    _, val_repesca_pre_ri_cal = compute_pre_reject_inference_data(
+                        data_booked=val_booked,
+                        data_demand=val_demand,
+                        risk_inference=risk_inference,
+                        reg_todu_amt_pile=reg_todu_amt_pile,
+                        stressor=1.0,
+                        indicators=settings.indicators,
+                        variables=settings.variables,
+                        annual_coef=annual_coef,
+                        multiplier=settings.multiplier,
+                        per_bin_stress=None,
+                    )
                 val_acceptance_rates = compute_acceptance_rates(
                     val_demand,
                     settings.variables,
@@ -197,6 +231,7 @@ def run_ri_optimizer_phase(
                 val_optimizer_inputs = OptimizerInputs(
                     booked_summary=val_booked_summary,
                     repesca_pre_ri=val_repesca_pre_ri,
+                    repesca_pre_ri_calibration=val_repesca_pre_ri_cal,
                     acceptance_rates=val_acceptance_rates,
                     tasa_fin=tasa_fin,
                     variables=settings.variables,

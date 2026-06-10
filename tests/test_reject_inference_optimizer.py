@@ -553,3 +553,70 @@ class TestConfigFields:
             PreprocessingSettings(**self._make_base_config(ri_optuna_n_trials=5))
         with pytest.raises(ValueError):
             PreprocessingSettings(**self._make_base_config(ri_optuna_n_trials=20000))
+
+
+# =============================================================================
+# Audit #29 — calibration basis + conservative tie-break
+# =============================================================================
+
+
+class TestCalibrationBasis:
+    """The calibration objective must share the raw-demand basis of the
+    1/a^gamma target: stress-free and NOT financing-rate weighted. The old
+    code calibrated the stressed, tasa_fin-scaled production blend against the
+    raw target — the chosen uplift cancelled the stress factor and varied with
+    the financing rate."""
+
+    def test_calibration_error_invariant_to_tasa_fin(self):
+        """tasa_fin scales the production blend (real economics for cutoffs)
+        but has nothing to do with selection bias — the calibration error must
+        not move with it."""
+        res_full = evaluate_ri_params(
+            _make_optimizer_inputs(tasa_fin=1.0), uplift_factor=1.5, max_risk_multiplier=3.0, risk_target=20.0
+        )
+        res_half = evaluate_ri_params(
+            _make_optimizer_inputs(tasa_fin=0.5), uplift_factor=1.5, max_risk_multiplier=3.0, risk_target=20.0
+        )
+        assert res_full["calibration_error"] == pytest.approx(res_half["calibration_error"], rel=1e-12)
+        # the production blend DOES keep the financing rate
+        assert res_half["oa_amt_h0"] < res_full["oa_amt_h0"]
+
+    def test_calibration_error_invariant_to_stress(self):
+        """With the stress-free calibration frame supplied, a stressed
+        production repesca must not change the calibration error — otherwise
+        the optimizer tunes uplift to cancel the stress factor."""
+        base = _make_optimizer_inputs()
+        stressed = _make_optimizer_inputs()
+        # simulate the stress factor baked into the production rep numerator
+        stressed.repesca_pre_ri = stressed.repesca_pre_ri.copy()
+        stressed.repesca_pre_ri["todu_30ever_h6"] *= 1.3
+        stressed.repesca_pre_ri_calibration = base.repesca_pre_ri  # stress-free frame
+
+        res_base = evaluate_ri_params(base, uplift_factor=1.5, max_risk_multiplier=3.0, risk_target=20.0)
+        res_stressed = evaluate_ri_params(stressed, uplift_factor=1.5, max_risk_multiplier=3.0, risk_target=20.0)
+        assert res_stressed["calibration_error"] == pytest.approx(res_base["calibration_error"], rel=1e-12)
+        # the production blend DOES keep the stress (riskier blend at the same target)
+        assert res_stressed["oa_amt_h0"] <= res_base["oa_amt_h0"]
+
+    def test_select_best_breaks_ties_conservatively(self):
+        """Within the 5% calibration band the parameters are statistically
+        indistinguishable ASSUMPTIONS — pick the most prudent (lowest
+        production at the risk target), not the loosest the noise allows."""
+        results_df = pd.DataFrame(
+            {
+                "uplift_factor": [1.0, 2.0, 0.5],
+                "max_risk_multiplier": [2.0, 2.0, 2.0],
+                "oa_amt_h0": [1000.0, 900.0, 1100.0],
+                "b2_ever_h6": [1.0, 1.05, 0.95],
+                "feasible": [True, True, True],
+                # all within 5% of the min error 0.30
+                "calibration_error": [0.31, 0.30, 0.312],
+            }
+        )
+        out_df, best = _select_best(results_df.copy())
+        assert best["uplift_factor"] == 2.0  # lowest production = most conservative
+        assert best["oa_amt_h0"] == 900.0
+        # candidate clearly OUTSIDE the band is never chosen even if conservative
+        results_df.loc[3] = [3.0, 2.0, 800.0, 1.2, True, 0.9]
+        _, best2 = _select_best(results_df.copy())
+        assert best2["uplift_factor"] == 2.0
