@@ -674,6 +674,10 @@ def patch_consolidated_production_from_segment_audits(
             )
         return False
 
+    def _detail_segment_mask(s: pd.Series) -> pd.Series:
+        g = s.astype(str)
+        return (g != "TOTAL") & ~g.str.startswith("supersegment_")
+
     for seg_name in segments:
         if _is_baseline_segment(seg_name):
             continue
@@ -689,19 +693,20 @@ def patch_consolidated_production_from_segment_audits(
                 except (pd.errors.ParserError, OSError, ValueError):
                     continue
                 kpis = audit_production_kpis(audit)
+                # Restrict to detail-segment rows: a single-member supersegment row
+                # carries the member's name in `segments` too, and patching it here
+                # would be overwritten by the re-aggregation below while the member
+                # row stayed unpatched — losing the audit correction (audit #25).
                 mask = (
                     (work["segments"].astype(str).str.strip() == seg_name)
                     & (work["period"] == period)
                     & (work["scenario"] == sc)
+                    & _detail_segment_mask(work["group"])
                 )
                 hit = work.loc[mask]
                 if hit.empty:
                     continue
                 _apply_kpis(int(hit.index[0]), kpis)
-
-    def _detail_segment_mask(s: pd.Series) -> pd.Series:
-        g = s.astype(str)
-        return (g != "TOTAL") & ~g.str.startswith("supersegment_")
 
     # Supersegment rows = sum of member segment rows (disjoint segments)
     ss_idx = work["group"].astype(str).str.startswith("supersegment_")

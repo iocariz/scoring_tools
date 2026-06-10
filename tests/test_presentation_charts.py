@@ -66,6 +66,24 @@ def test_segments_frame_excludes_total_and_sorts():
     assert df.iloc[0]["segment"] == "seg_a"  # higher optimum production first
 
 
+def test_segments_frame_excludes_supersegment_rows():
+    """Audit #24: supersegment aggregate rows duplicate their members' euros —
+    keeping them double-counts the by-segment charts and breaks the sum-to-TOTAL."""
+    cons = _consolidated()
+    ss_row = cons.iloc[[0]].copy()
+    ss_row["group"] = "supersegment_pl_known"
+    ss_row["actual_production"] = 150.0  # = seg_a + seg_b (aggregate of the members)
+    ss_row["optimum_production"] = 145.0
+    cons = pd.concat([ss_row, cons], ignore_index=True)  # aggregate row first, worst case
+
+    df = pc._segments_frame(cons)
+    assert not df["group"].str.startswith("supersegment_").any()
+    assert sorted(df["segment"]) == ["seg_a", "seg_b"]
+    # by-segment bars must reconcile with the TOTAL row again
+    total = pc._total_row(cons)
+    assert df["actual_production"].sum() == total["actual_production"]
+
+
 def test_total_row():
     tr = pc._total_row(_consolidated())
     assert tr is not None and tr["group"] == "TOTAL"

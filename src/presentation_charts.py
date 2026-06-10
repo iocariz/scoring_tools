@@ -36,9 +36,14 @@ def _seg_label(group: str) -> str:
 
 
 def _segments_frame(consolidated: pd.DataFrame, scenario: str = "base", period: str = "main") -> pd.DataFrame:
-    """Per-segment base/main rows (TOTAL excluded), sorted by optimum production desc."""
+    """Per-segment base/main rows (TOTAL and supersegment aggregates excluded), sorted by optimum production desc.
+
+    Supersegment rows duplicate their member segments' production/risk, so keeping
+    them would double-count every euro in the by-segment charts (audit #24).
+    """
     df = consolidated[(consolidated["scenario"] == scenario) & (consolidated["period"] == period)].copy()
-    df = df[df["group"] != "TOTAL"]
+    group = df["group"].astype(str)
+    df = df[(group != "TOTAL") & ~group.str.startswith("supersegment_")]
     df["segment"] = df["group"].map(_seg_label)
     return df.sort_values("optimum_production", ascending=False).reset_index(drop=True)
 

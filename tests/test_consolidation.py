@@ -32,6 +32,7 @@ from src.consolidation import (
     extract_metrics_from_table,
     find_scenario_suffix,
     map_scenario_names,
+    patch_consolidated_production_from_segment_audits,
 )
 
 # =============================================================================
@@ -1192,6 +1193,95 @@ class TestExportConsolidatedExcel:
         wb = openpyxl.load_workbook(xlsx_path)
         assert "Executive Summary" in wb.sheetnames
         wb.close()
+
+
+# =============================================================================
+# Audit patching (audit #25)
+# =============================================================================
+
+
+class TestPatchFromSegmentAudits:
+    """Regression tests for patch_consolidated_production_from_segment_audits."""
+
+    @staticmethod
+    def _write_audit(output_base: Path, seg: str) -> None:
+        """Audit CSV: actual=120 (booked), swap_out=20, swap_in=30 → optimum=130."""
+        d = output_base / seg / "data"
+        d.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            {
+                "status_name": ["booked", "booked", "rejected"],
+                "classification": ["keep", "swap_out", "swap_in"],
+                "oa_amt": [100.0, 20.0, 30.0],
+            }
+        ).to_csv(d / "audit_base.csv", index=False)
+
+    @staticmethod
+    def _row(group: str, segments: str) -> dict:
+        return {
+            "group": group,
+            "segments": segments,
+            "period": "main",
+            "scenario": "base",
+            "actual_production": 1.0,  # stale RP-table number the audit must overwrite
+            "optimum_production": 1.0,
+            "swap_in_production": 0.0,
+            "swap_out_production": 0.0,
+            "production_delta": 0.0,
+            "production_delta_pct": 0.0,
+        }
+
+    def test_single_member_supersegment_patch_lands_on_member_row(self, temp_output_dir):
+        """Audit #25: a one-member supersegment row carries the member's name in
+        `segments` and (listed first) used to swallow the audit patch, which the
+        re-aggregation then overwrote from the unpatched member — correction lost."""
+        self._write_audit(temp_output_dir, "new_ob")
+        df = pd.DataFrame(
+            [
+                self._row("supersegment_pl_new", "new_ob"),  # aggregate FIRST: the failure ordering
+                self._row("pl_new/new_ob", "new_ob"),  # member rows are named "<ss>/<seg>"
+                self._row("TOTAL", "new_ob"),
+            ]
+        )
+
+        out = patch_consolidated_production_from_segment_audits(df, temp_output_dir, {"new_ob": {}})
+
+        member = out[out["group"] == "pl_new/new_ob"].iloc[0]
+        ss = out[out["group"] == "supersegment_pl_new"].iloc[0]
+        total = out[out["group"] == "TOTAL"].iloc[0]
+        # member row patched from the audit
+        assert member["actual_production"] == 120.0
+        assert member["optimum_production"] == 130.0
+        assert member["swap_in_production"] == 30.0
+        assert member["swap_out_production"] == 20.0
+        # supersegment + TOTAL re-aggregated from the PATCHED member
+        assert ss["actual_production"] == 120.0
+        assert ss["optimum_production"] == 130.0
+        assert total["actual_production"] == 120.0
+        assert total["optimum_production"] == 130.0
+
+    def test_multi_member_supersegment_unaffected(self, temp_output_dir):
+        """Multi-member supersegments (segments = comma list) never matched the
+        member mask; verify they still re-aggregate from patched members."""
+        self._write_audit(temp_output_dir, "seg_a")
+        self._write_audit(temp_output_dir, "seg_b")
+        df = pd.DataFrame(
+            [
+                self._row("supersegment_pl_known", "seg_a, seg_b"),
+                self._row("segment_seg_a", "seg_a"),
+                self._row("segment_seg_b", "seg_b"),
+                self._row("TOTAL", "seg_a, seg_b"),
+            ]
+        )
+
+        out = patch_consolidated_production_from_segment_audits(df, temp_output_dir, {"seg_a": {}, "seg_b": {}})
+
+        ss = out[out["group"] == "supersegment_pl_known"].iloc[0]
+        total = out[out["group"] == "TOTAL"].iloc[0]
+        assert ss["actual_production"] == 240.0  # 120 + 120
+        assert ss["optimum_production"] == 260.0
+        assert total["actual_production"] == 240.0
+        assert total["optimum_production"] == 260.0
 
 
 # =============================================================================
