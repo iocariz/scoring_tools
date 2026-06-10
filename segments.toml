@@ -22,133 +22,25 @@
 
 
 [modelling_supersegments.total]
-segment_filters = ["no_premium_ab", "no_premium_cd", "no_premium_ef", "premium", "new_nofintonic_ob", "conso_known", "precon", "conso_new"]
+segment_filters = ["known_af", "new"]
 
-[reporting_supersegments.pl_new]
-segment_filters = ["new_nofintonic_ob"]
-bin_edges.income_bin = [-inf, 1750.0, inf]
+[reporting_supersegments.ecommerce_inf_tel]
+segment_filters = ["known_af", "new"]
 
-[reporting_supersegments.pl_known_no_premium]
-segment_filters = ["no_premium_ab", "no_premium_cd", "no_premium_ef"]
-bin_edges.income_bin = [-inf, 2000.0, inf]
-
-[reporting_supersegments.pl_known_premium_precon]
-segment_filters = ["premium", "precon"]
-bin_edges.income_bin = [-inf, 2000.0, inf]
-
-[reporting_supersegments.consolidation]
-segment_filters = ["conso_known","conso_new"]
-bin_edges.income_bin = [-inf, 2000.0, inf]
-
-[segments.conso_known]
-segment_filter = "conso_known"
-optimum_risk = 0.96  # CHANGED (was 1.3)
-risk_step = 0.1
-reporting_supersegment = "consolidation"
+[segments.known]
+segment_filter = "known_af"
+optimum_risk = 3.5  
+risk_step = 0.5
+reporting_supersegment = "ecommerce_inf_tel"
 modelling_supersegment = "total"
-min_risk = 0.7  # Optional: minimum risk for global allocation
-max_risk = 1.4  # Optional: maximum risk for global allocation
 
-[segments.conso_known.min_accepted_bin_by_variable.new_efx_clus]
-1 = 4
-2 = 2
-
-[segments.conso_known.min_accepted_bin_by_variable.sc_octroi_new_clus]
-1 = 2
-2 = 1
-
-[segments.conso_new]
-segment_filter = "conso_new"
-reporting_supersegment = "consolidation"
+[segments.new]
+segment_filter = "new"
+optimum_risk = 3.5  
+risk_step = 0.5
+reporting_supersegment = "ecommerce_inf_tel"
 modelling_supersegment = "total"
-baseline_mode = true
 
-[segments.new_nofintonic_ob]
-segment_filter = "new_nofintonic_ob"
-optimum_risk = 1.14  # CHANGED (was 1.1)
-risk_step = 0.1
-reporting_supersegment = "pl_new"
-modelling_supersegment = "total"
-min_risk = 0.8  # Optional: minimum risk for global allocation
-max_risk = 1.3  # Optional: maximum risk for global allocation
-
-[segments.no_premium_ab]
-segment_filter = "no_premium_ab"
-optimum_risk = 1.25
-risk_step = 0.1
-reporting_supersegment = "pl_known_no_premium"
-modelling_supersegment = "total"
-min_risk = 0.8
-max_risk = 1.4
-cutoff_floor_segment = "no_premium_cd"  # Must accept at least what cd accepts (least restrictive)
-
-[segments.no_premium_ab.fixed_cutoffs]
-sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]   # var0 bin values
-
-# new_efx_clus cutoffs vary by income_bin value (conditioning variable):
-[segments.no_premium_ab.fixed_cutoffs.new_efx_clus]
-1 = [21, 21, 21, 21, 21, 9, 8, 7, 7, 7]     # when income_bin = 1
-2 = [21, 8, 8, 8, 8, 8, 5, 5, 5, 5]    # when income_bin = 2
-strict_validation = false
-# run_all_scenarios = false
-
-[segments.no_premium_cd]
-segment_filter = "no_premium_cd"
-optimum_risk = 1.40
-risk_step = 0.1
-reporting_supersegment = "pl_known_no_premium"
-modelling_supersegment = "total"
-min_risk = 0.8
-max_risk = 1.6
-cutoff_floor_segment = "no_premium_ef"  # Must accept at least what ef accepts
-
-[segments.no_premium_cd.min_accepted_bin_by_variable.new_efx_clus]
-1 = 4
-2 = 2
-
-[segments.no_premium_cd.min_accepted_bin_by_variable.sc_octroi_new_clus]
-1 = 2
-2 = 1
-
-[segments.no_premium_ef]
-segment_filter = "no_premium_ef"
-optimum_risk = 1.40  # CHANGED (was 1.09)
-risk_step = 0.1
-reporting_supersegment = "pl_known_no_premium"
-modelling_supersegment = "total"
-min_risk = 0.8
-max_risk = 1.5
-
-[segments.no_premium_ef.min_accepted_bin_by_variable.new_efx_clus]
-1 = 4
-2 = 2
-
-[segments.no_premium_ef.min_accepted_bin_by_variable.sc_octroi_new_clus]
-1 = 2
-2 = 1
-
-[segments.premium]
-segment_filter = "premium"
-optimum_risk = 1.2
-risk_step = 0.1
-reporting_supersegment = "pl_known_premium_precon"
-modelling_supersegment = "total"
-min_risk = 0.8
-max_risk = 1.4
-
-[segments.premium.min_accepted_bin_by_variable.new_efx_clus]
-1 = 4
-2 = 2
-
-[segments.premium.min_accepted_bin_by_variable.sc_octroi_new_clus]
-1 = 2
-2 = 1
-
-[segments.precon]
-segment_filter = "precon"
-reporting_supersegment = "pl_known_premium_precon"
-modelling_supersegment = "total"
-baseline_mode = true
 
 # Add more segments as needed:
 # [segments.another_segment]
