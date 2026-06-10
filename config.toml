@@ -39,7 +39,7 @@ z_threshold = 3.0
 cv_folds = 4
 run_sensitivity = true
 sensitivity_levels = [-30, -20, -10, -5, 5, 10, 20, 30]
-base_scenario_only = true
+#base_scenario_only = false
 
 pareto_n_points  = 100
 

@@ -29,15 +29,16 @@ segment_filters = ["known_af", "new"]
 
 [segments.known]
 segment_filter = "known_af"
-optimum_risk = 3.5  
+optimum_risk = 2.0  
 risk_step = 0.5
 reporting_supersegment = "ecommerce_inf_tel"
 modelling_supersegment = "total"
 
 [segments.new]
 segment_filter = "new"
-optimum_risk = 3.5  
+optimum_risk = 4  
 risk_step = 0.5
+run_ri_optimizer = false
 reporting_supersegment = "ecommerce_inf_tel"
 modelling_supersegment = "total"
 

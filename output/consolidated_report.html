@@ -1,0 +1,2076 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Consolidated Report</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+    <style>
+        :root {
+            --primary: #1a56db;
+            --primary-light: #e1effe;
+            --primary-dark: #1e3a5f;
+            --primary-darker: #0f2440;
+            --accent-green: #2ECC71;
+            --accent-green-light: #eafaf1;
+            --accent-red: #E74C3C;
+            --accent-red-light: #fdedec;
+            --accent-teal: #0d9488;
+            --accent-purple: #7c3aed;
+            --bg: #f3f4f6;
+            --card-bg: #ffffff;
+            --border: #e5e7eb;
+            --border-light: #f0f0f0;
+            --text: #1f2937;
+            --text-muted: #6b7280;
+            --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+            --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+            --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
+        }
+
+        html { scroll-behavior: smooth; }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+            font-feature-settings: "tnum";
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 2rem;
+        }
+
+        .container { max-width: 1400px; margin: 0 auto; }
+
+        /* ── Header ────────────────────────────────────── */
+        header {
+            background: linear-gradient(135deg, var(--primary-darker) 0%, var(--primary-dark) 40%, var(--primary) 100%);
+            color: #fff;
+            padding: 2rem 2.5rem;
+            border-radius: 16px;
+            margin-bottom: 1.5rem;
+            box-shadow: var(--shadow-lg);
+            position: relative;
+            overflow: hidden;
+        }
+        header::after {
+            content: '';
+            position: absolute;
+            top: 0; right: 0; bottom: 0; left: 0;
+            background: radial-gradient(ellipse at 80% 20%, rgba(255,255,255,0.08) 0%, transparent 60%);
+            pointer-events: none;
+        }
+        header h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.01em; position: relative; z-index: 1; }
+        header .meta {
+            display: inline-block;
+            font-size: 0.8rem;
+            opacity: 0.9;
+            margin-top: 0.5rem;
+            background: rgba(255,255,255,0.12);
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* ── Navigation ────────────────────────────────── */
+        nav {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 0.75rem 1.25rem;
+            margin-bottom: 1.5rem;
+            box-shadow: var(--shadow-sm);
+            overflow-x: auto;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .nav-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        nav ul { list-style: none; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+        nav a {
+            color: var(--primary);
+            text-decoration: none;
+            font-size: 0.8rem;
+            font-weight: 500;
+            padding: 0.3rem 0.85rem;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+        nav a:hover {
+            background: var(--primary);
+            color: #fff;
+            border-color: var(--primary);
+            box-shadow: 0 2px 8px rgba(26,86,219,0.25);
+            transform: translateY(-1px);
+        }
+
+        /* ── Section Cards ─────────────────────────────── */
+        .section {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--primary);
+            border-radius: 16px;
+            padding: 1.75rem 2rem;
+            margin-bottom: 1.5rem;
+            box-shadow: var(--shadow-sm);
+            transition: box-shadow 0.25s ease;
+            animation: fadeIn 0.4s ease both;
+        }
+        .section:hover { box-shadow: var(--shadow-md); }
+
+        /* Section-type accent colors via nth-of-type for variety */
+        .section:nth-of-type(3n+1) { border-left-color: var(--primary); }
+        .section:nth-of-type(3n+2) { border-left-color: var(--accent-teal); }
+        .section:nth-of-type(3n) { border-left-color: var(--accent-purple); }
+
+        .section h2 {
+            font-size: 1.35rem;
+            font-weight: 700;
+            color: var(--text);
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 0.6rem;
+            margin-bottom: 1.25rem;
+        }
+        .section h4 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin: 1.25rem 0 0.6rem;
+            color: var(--text);
+            border-left: 3px solid var(--primary);
+            padding-left: 0.75rem;
+        }
+        .chart-container {
+            margin-bottom: 1.5rem;
+            overflow-x: auto;
+        }
+
+        /* ── Tables ────────────────────────────────────── */
+        .table-wrapper {
+            overflow: auto;
+            max-height: 70vh;
+            margin-bottom: 1.25rem;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+        }
+        .report-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            margin: 0;
+        }
+        .report-table th, .report-table td {
+            padding: 0.65rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-light);
+        }
+        .report-table thead th {
+            background: linear-gradient(180deg, var(--primary) 0%, #1547b5 100%);
+            color: #fff;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.04em;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+        .report-table thead th:first-child { border-radius: 0; }
+        .report-table thead th:last-child { border-radius: 0; }
+        .report-table tbody tr { transition: background 0.15s ease; }
+        .report-table tbody tr:nth-child(even) { background: #fafbfc; }
+        .report-table tbody tr:hover {
+            background: var(--primary-light);
+            border-left: 3px solid var(--primary);
+        }
+        .report-table tbody tr:last-child td { border-bottom: none; }
+        .report-table tbody td:first-child { font-weight: 600; color: var(--text); }
+
+        /* Portfolio metric row classes */
+        .row-actual td { /* default styling */ }
+        .row-optimum td { background: var(--accent-green-light); }
+        .row-optimum:hover td { background: #d5f5e3; }
+        .row-swap td { opacity: 0.75; }
+        .kpi-highlight { font-size: 1rem; font-weight: 700; }
+
+        /* Acceptance matrix — compact heatmap grid */
+        .cell-accept { background: var(--accent-green); color: #fff; text-align: center; border-radius: 3px; }
+        .cell-reject { background: var(--accent-red-light); color: #922B21; text-align: center; border-radius: 3px; }
+        .cell-missing { background: #EAECEE; color: #7f8c8d; text-align: center; border-radius: 3px; }
+
+        .matrix-grid {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            align-items: flex-start;
+            padding-bottom: 0.25rem;
+        }
+        .matrix-cell { flex: 0 0 auto; }
+        .matrix-label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--primary);
+            background: var(--primary-light);
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 10px;
+            margin-bottom: 0.3rem;
+        }
+        .matrix-table {
+            border-collapse: collapse;
+            font-size: 0.72rem;
+        }
+        .matrix-table td { padding: 0; text-align: center; }
+        .matrix-corner {
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            padding: 2px 4px;
+            text-align: left;
+            white-space: nowrap;
+        }
+        .matrix-col-hdr {
+            font-weight: 600;
+            color: var(--text-muted);
+            padding: 1px 2px 3px;
+            font-size: 0.68rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .matrix-row-hdr {
+            font-weight: 600;
+            color: var(--text-muted);
+            padding: 1px 5px 1px 2px;
+            text-align: right;
+            font-size: 0.68rem;
+            border-right: 1px solid var(--border);
+            white-space: nowrap;
+        }
+        .m-ok { width: 22px; height: 22px; background: var(--accent-green); border-radius: 3px; border: 1px solid rgba(255,255,255,0.6); }
+        .m-no { width: 22px; height: 22px; background: var(--accent-red); border-radius: 3px; border: 1px solid rgba(255,255,255,0.6); opacity: 0.7; }
+        .m-na { width: 22px; height: 22px; background: var(--border); border-radius: 3px; border: 1px solid rgba(255,255,255,0.6); }
+        .matrix-legend {
+            display: flex;
+            gap: 0.75rem;
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        .matrix-legend span {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+        .matrix-legend i {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
+            font-style: normal;
+        }
+
+        /* ── 1D Acceptance Strip ──────────────────────── */
+        .strip-summary {
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+        .acceptance-strip {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .strip-label {
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            white-space: nowrap;
+            min-width: 80px;
+        }
+        .strip-cells {
+            display: flex;
+            gap: 2px;
+            flex-wrap: wrap;
+        }
+        .strip-cell {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 36px;
+            height: 36px;
+            border-radius: 4px;
+            border: 1px solid rgba(255,255,255,0.6);
+            cursor: default;
+            transition: transform 0.15s ease;
+        }
+        .strip-cell:hover { transform: scale(1.15); z-index: 1; }
+        .strip-cell.m-ok { background: var(--accent-green); }
+        .strip-cell.m-no { background: var(--accent-red); opacity: 0.7; }
+        .strip-bin {
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        /* ── Cutoff Reference Table ────────────────────── */
+        .cutoff-ref-table .col-bin {
+            background: #f0f4ff;
+            font-weight: 600;
+            text-align: center;
+            border-right: 2px solid var(--border);
+            white-space: nowrap;
+        }
+        .cutoff-ref-table thead .col-bin {
+            background: var(--primary-dark);
+        }
+        .cutoff-ref-table .scenario-header td {
+            background: var(--bg);
+            padding: 0.6rem 1rem;
+            border-bottom: 2px solid var(--border);
+            font-weight: 600;
+        }
+        .cutoff-ref-table .risk-low { color: var(--accent-green); font-weight: 600; }
+        .cutoff-ref-table .risk-med { color: #d97706; font-weight: 600; }
+        .cutoff-ref-table .risk-high { color: var(--accent-red); font-weight: 600; }
+
+        /* ── Utility Classes ───────────────────────────── */
+        .num { text-align: right; font-variant-numeric: tabular-nums; }
+        .ci { color: var(--text-muted); font-size: 0.9em; }
+        .badge {
+            display: inline-block;
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.25em 0.75em;
+            border-radius: 20px;
+            border: 1px solid transparent;
+        }
+        .badge-pessimistic { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+        .badge-base { background: #dbeafe; color: #1e40af; border-color: #bfdbfe; }
+        .badge-optimistic { background: #d1fae5; color: #065f46; border-color: #a7f3d0; }
+
+        /* ── Footer ────────────────────────────────────── */
+        footer {
+            text-align: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 2rem;
+            padding: 1.25rem 1rem;
+            border-top: 1px solid var(--border);
+        }
+        footer a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+            margin-left: 1rem;
+        }
+        footer a:hover { text-decoration: underline; }
+
+        /* ── Animations ────────────────────────────────── */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* ── Print ─────────────────────────────────────── */
+        @media print {
+            body { padding: 0; background: #fff; }
+            header { box-shadow: none; border-radius: 0; }
+            .section {
+                box-shadow: none;
+                break-inside: avoid;
+                page-break-before: auto;
+                border-radius: 0;
+                animation: none;
+            }
+            nav { display: none; }
+            footer a { display: none; }
+            .report-table thead th { background: var(--primary) !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .badge, .cell-accept, .cell-reject, .cell-missing, .row-optimum td {
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+        }
+    </style>
+</head>
+<body id="top">
+<div class="container">
+    <header>
+        <h1>Consolidated Report</h1>
+        <div class="meta">Generated 2026-06-10 20:49 | Segments: known, new</div>
+    </header>
+
+    
+    <nav>
+        <span class="nav-label">Jump to:</span>
+        <ul>
+            
+            <li><a href="#portfolio-ecommerce_inf_tel">Portfolio Summary — ecommerce_inf_tel</a></li>
+            
+            <li><a href="#portfolio-total">Portfolio Summary — Total</a></li>
+            
+            <li><a href="#mr-portfolio-ecommerce_inf_tel">MR Validation — ecommerce_inf_tel</a></li>
+            
+            <li><a href="#mr-portfolio-total">MR Validation — Total</a></li>
+            
+            <li><a href="#consolidated-dashboard">Consolidated Dashboard</a></li>
+            
+            <li><a href="#segment-comparison">Segment Comparison — Main Period</a></li>
+            
+            <li><a href="#segment-comparison-mr">Segment Comparison — MR Period</a></li>
+            
+            <li><a href="#cutoff-comparison">Cutoff Comparison</a></li>
+            
+        </ul>
+    </nav>
+    
+
+    
+    <div class="section" id="portfolio-ecommerce_inf_tel">
+        <h2>Portfolio Summary — ecommerce_inf_tel</h2>
+
+        
+
+        
+        <div class="table-wrapper"><h4><span class="badge badge-pessimistic">Pessimistic</span></h4><table class="report-table" border="0">
+<thead><tr>
+<th>Metric</th>
+<th class="num">Risk (%)</th>
+<th class="num">Production (€)</th>
+<th class="num">Production (%)</th>
+<th class="num">Rejection Rate (%)</th>
+<th class="num">Production CI Lower</th>
+<th class="num">Production CI Upper</th>
+<th class="num">Risk CI Lower</th>
+<th class="num">Risk CI Upper</th>
+</tr></thead>
+<tbody>
+<tr class="row-actual">
+<td><strong>Actual</strong></td>
+<td class="num kpi-highlight">3.65</td>
+<td class="num kpi-highlight">106,306,426</td>
+<td class="num">—</td>
+<td class="num">74.24</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+<tr class="row-optimum">
+<td><strong>Optimum</strong></td>
+<td class="num kpi-highlight">3.01</td>
+<td class="num kpi-highlight">113,950,786</td>
+<td class="num">+7.2</td>
+<td class="num">72.39</td>
+<td class="num ci">113,580,725</td>
+<td class="num ci">114,320,847</td>
+<td class="num ci">2.87</td>
+<td class="num ci">3.14</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-in</strong></td>
+<td class="num">7.46</td>
+<td class="num">12,578,388</td>
+<td class="num">—</td>
+<td class="num">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-out</strong></td>
+<td class="num">21.23</td>
+<td class="num">4,934,028</td>
+<td class="num">—</td>
+<td class="num">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+</tbody></table></div>
+        
+        <div class="table-wrapper"><h4><span class="badge badge-base">Base</span></h4><table class="report-table" border="0">
+<thead><tr>
+<th>Metric</th>
+<th class="num">Risk (%)</th>
+<th class="num">Production (€)</th>
+<th class="num">Production (%)</th>
+<th class="num">Rejection Rate (%)</th>
+<th class="num">Production CI Lower</th>
+<th class="num">Production CI Upper</th>
+<th class="num">Risk CI Lower</th>
+<th class="num">Risk CI Upper</th>
+</tr></thead>
+<tbody>
+<tr class="row-actual">
+<td><strong>Actual</strong></td>
+<td class="num kpi-highlight">3.65</td>
+<td class="num kpi-highlight">106,306,426</td>
+<td class="num">—</td>
+<td class="num">74.02</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+<tr class="row-optimum">
+<td><strong>Optimum</strong></td>
+<td class="num kpi-highlight">3.49</td>
+<td class="num kpi-highlight">119,287,016</td>
+<td class="num">+12.2</td>
+<td class="num">70.85</td>
+<td class="num ci">118,941,607</td>
+<td class="num ci">119,632,424</td>
+<td class="num ci">3.35</td>
+<td class="num ci">3.62</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-in</strong></td>
+<td class="num">8.47</td>
+<td class="num">14,749,823</td>
+<td class="num">—</td>
+<td class="num">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-out</strong></td>
+<td class="num">30.48</td>
+<td class="num">1,769,233</td>
+<td class="num">—</td>
+<td class="num">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+</tbody></table></div>
+        
+        <div class="table-wrapper"><h4><span class="badge badge-optimistic">Optimistic</span></h4><table class="report-table" border="0">
+<thead><tr>
+<th>Metric</th>
+<th class="num">Risk (%)</th>
+<th class="num">Production (€)</th>
+<th class="num">Production (%)</th>
+<th class="num">Rejection Rate (%)</th>
+<th class="num">Production CI Lower</th>
+<th class="num">Production CI Upper</th>
+<th class="num">Risk CI Lower</th>
+<th class="num">Risk CI Upper</th>
+</tr></thead>
+<tbody>
+<tr class="row-actual">
+<td><strong>Actual</strong></td>
+<td class="num kpi-highlight">3.65</td>
+<td class="num kpi-highlight">106,306,426</td>
+<td class="num">—</td>
+<td class="num">73.81</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+<tr class="row-optimum">
+<td><strong>Optimum</strong></td>
+<td class="num kpi-highlight">3.94</td>
+<td class="num kpi-highlight">122,599,925</td>
+<td class="num">+15.3</td>
+<td class="num">69.80</td>
+<td class="num ci">122,262,187</td>
+<td class="num ci">122,937,663</td>
+<td class="num ci">3.80</td>
+<td class="num ci">4.09</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-in</strong></td>
+<td class="num">9.74</td>
+<td class="num">16,532,755</td>
+<td class="num">—</td>
+<td class="num">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-out</strong></td>
+<td class="num">48.76</td>
+<td class="num">239,255</td>
+<td class="num">—</td>
+<td class="num">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+</tbody></table></div>
+        
+    </div>
+    
+    <div class="section" id="portfolio-total">
+        <h2>Portfolio Summary — Total</h2>
+
+        
+
+        
+        <div class="table-wrapper"><h4><span class="badge badge-pessimistic">Pessimistic</span></h4><table class="report-table" border="0">
+<thead><tr>
+<th>Metric</th>
+<th class="num">Risk (%)</th>
+<th class="num">Production (€)</th>
+<th class="num">Production (%)</th>
+<th class="num">Rejection Rate (%)</th>
+<th class="num">Production CI Lower</th>
+<th class="num">Production CI Upper</th>
+<th class="num">Risk CI Lower</th>
+<th class="num">Risk CI Upper</th>
+</tr></thead>
+<tbody>
+<tr class="row-actual">
+<td><strong>Actual</strong></td>
+<td class="num kpi-highlight">3.65</td>
+<td class="num kpi-highlight">106,306,426</td>
+<td class="num">—</td>
+<td class="num">74.24</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+<tr class="row-optimum">
+<td><strong>Optimum</strong></td>
+<td class="num kpi-highlight">3.01</td>
+<td class="num kpi-highlight">113,950,786</td>
+<td class="num">+7.2</td>
+<td class="num">72.39</td>
+<td class="num ci">113,580,725</td>
+<td class="num ci">114,320,847</td>
+<td class="num ci">2.87</td>
+<td class="num ci">3.14</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-in</strong></td>
+<td class="num">7.46</td>
+<td class="num">12,578,388</td>
+<td class="num">—</td>
+<td class="num">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-out</strong></td>
+<td class="num">21.23</td>
+<td class="num">4,934,028</td>
+<td class="num">—</td>
+<td class="num">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+</tbody></table></div>
+        
+        <div class="table-wrapper"><h4><span class="badge badge-base">Base</span></h4><table class="report-table" border="0">
+<thead><tr>
+<th>Metric</th>
+<th class="num">Risk (%)</th>
+<th class="num">Production (€)</th>
+<th class="num">Production (%)</th>
+<th class="num">Rejection Rate (%)</th>
+<th class="num">Production CI Lower</th>
+<th class="num">Production CI Upper</th>
+<th class="num">Risk CI Lower</th>
+<th class="num">Risk CI Upper</th>
+</tr></thead>
+<tbody>
+<tr class="row-actual">
+<td><strong>Actual</strong></td>
+<td class="num kpi-highlight">3.65</td>
+<td class="num kpi-highlight">106,306,426</td>
+<td class="num">—</td>
+<td class="num">74.02</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+<tr class="row-optimum">
+<td><strong>Optimum</strong></td>
+<td class="num kpi-highlight">3.49</td>
+<td class="num kpi-highlight">119,287,016</td>
+<td class="num">+12.2</td>
+<td class="num">70.85</td>
+<td class="num ci">118,941,607</td>
+<td class="num ci">119,632,424</td>
+<td class="num ci">3.35</td>
+<td class="num ci">3.62</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-in</strong></td>
+<td class="num">8.47</td>
+<td class="num">14,749,823</td>
+<td class="num">—</td>
+<td class="num">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-out</strong></td>
+<td class="num">30.48</td>
+<td class="num">1,769,233</td>
+<td class="num">—</td>
+<td class="num">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+</tbody></table></div>
+        
+        <div class="table-wrapper"><h4><span class="badge badge-optimistic">Optimistic</span></h4><table class="report-table" border="0">
+<thead><tr>
+<th>Metric</th>
+<th class="num">Risk (%)</th>
+<th class="num">Production (€)</th>
+<th class="num">Production (%)</th>
+<th class="num">Rejection Rate (%)</th>
+<th class="num">Production CI Lower</th>
+<th class="num">Production CI Upper</th>
+<th class="num">Risk CI Lower</th>
+<th class="num">Risk CI Upper</th>
+</tr></thead>
+<tbody>
+<tr class="row-actual">
+<td><strong>Actual</strong></td>
+<td class="num kpi-highlight">3.65</td>
+<td class="num kpi-highlight">106,306,426</td>
+<td class="num">—</td>
+<td class="num">73.81</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+<tr class="row-optimum">
+<td><strong>Optimum</strong></td>
+<td class="num kpi-highlight">3.94</td>
+<td class="num kpi-highlight">122,599,925</td>
+<td class="num">+15.3</td>
+<td class="num">69.80</td>
+<td class="num ci">122,262,187</td>
+<td class="num ci">122,937,663</td>
+<td class="num ci">3.80</td>
+<td class="num ci">4.09</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-in</strong></td>
+<td class="num">9.74</td>
+<td class="num">16,532,755</td>
+<td class="num">—</td>
+<td class="num">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-out</strong></td>
+<td class="num">48.76</td>
+<td class="num">239,255</td>
+<td class="num">—</td>
+<td class="num">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+<td class="num ci">—</td>
+</tr>
+</tbody></table></div>
+        
+    </div>
+    
+    <div class="section" id="mr-portfolio-ecommerce_inf_tel">
+        <h2>MR Validation — ecommerce_inf_tel</h2>
+
+        
+
+        
+        <div class="table-wrapper"><h4><span class="badge badge-pessimistic">Pessimistic</span></h4><table class="report-table" border="0">
+<thead><tr>
+<th>Metric</th>
+<th class="num">Risk (%)</th>
+<th class="num">Production (€)</th>
+<th class="num">Production (%)</th>
+<th class="num">Rejection Rate (%)</th>
+</tr></thead>
+<tbody>
+<tr class="row-actual">
+<td><strong>Actual</strong></td>
+<td class="num kpi-highlight">3.51</td>
+<td class="num kpi-highlight">139,864,413</td>
+<td class="num">—</td>
+<td class="num">71.19</td>
+</tr>
+<tr class="row-optimum">
+<td><strong>Optimum</strong></td>
+<td class="num kpi-highlight">3.04</td>
+<td class="num kpi-highlight">145,515,061</td>
+<td class="num">+4.0</td>
+<td class="num">70.02</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-in</strong></td>
+<td class="num">9.17</td>
+<td class="num">7,637,830</td>
+<td class="num">—</td>
+<td class="num">—</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-out</strong></td>
+<td class="num">11.46</td>
+<td class="num">1,987,181</td>
+<td class="num">—</td>
+<td class="num">—</td>
+</tr>
+</tbody></table></div>
+        
+        <div class="table-wrapper"><h4><span class="badge badge-base">Base</span></h4><table class="report-table" border="0">
+<thead><tr>
+<th>Metric</th>
+<th class="num">Risk (%)</th>
+<th class="num">Production (€)</th>
+<th class="num">Production (%)</th>
+<th class="num">Rejection Rate (%)</th>
+</tr></thead>
+<tbody>
+<tr class="row-actual">
+<td><strong>Actual</strong></td>
+<td class="num kpi-highlight">3.51</td>
+<td class="num kpi-highlight">139,864,413</td>
+<td class="num">—</td>
+<td class="num">70.57</td>
+</tr>
+<tr class="row-optimum">
+<td><strong>Optimum</strong></td>
+<td class="num kpi-highlight">3.53</td>
+<td class="num kpi-highlight">153,677,298</td>
+<td class="num">+9.9</td>
+<td class="num">67.66</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-in</strong></td>
+<td class="num">11.80</td>
+<td class="num">13,833,134</td>
+<td class="num">—</td>
+<td class="num">—</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-out</strong></td>
+<td class="num">15.55</td>
+<td class="num">20,248</td>
+<td class="num">—</td>
+<td class="num">—</td>
+</tr>
+</tbody></table></div>
+        
+        <div class="table-wrapper"><h4><span class="badge badge-optimistic">Optimistic</span></h4><table class="report-table" border="0">
+<thead><tr>
+<th>Metric</th>
+<th class="num">Risk (%)</th>
+<th class="num">Production (€)</th>
+<th class="num">Production (%)</th>
+<th class="num">Rejection Rate (%)</th>
+</tr></thead>
+<tbody>
+<tr class="row-actual">
+<td><strong>Actual</strong></td>
+<td class="num kpi-highlight">3.51</td>
+<td class="num kpi-highlight">139,864,413</td>
+<td class="num">—</td>
+<td class="num">70.05</td>
+</tr>
+<tr class="row-optimum">
+<td><strong>Optimum</strong></td>
+<td class="num kpi-highlight">3.99</td>
+<td class="num kpi-highlight">158,111,639</td>
+<td class="num">+13.0</td>
+<td class="num">66.15</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-in</strong></td>
+<td class="num">14.21</td>
+<td class="num">18,247,226</td>
+<td class="num">—</td>
+<td class="num">—</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-out</strong></td>
+<td class="num">0.00</td>
+<td class="num">0</td>
+<td class="num">—</td>
+<td class="num">—</td>
+</tr>
+</tbody></table></div>
+        
+    </div>
+    
+    <div class="section" id="mr-portfolio-total">
+        <h2>MR Validation — Total</h2>
+
+        
+
+        
+        <div class="table-wrapper"><h4><span class="badge badge-pessimistic">Pessimistic</span></h4><table class="report-table" border="0">
+<thead><tr>
+<th>Metric</th>
+<th class="num">Risk (%)</th>
+<th class="num">Production (€)</th>
+<th class="num">Production (%)</th>
+<th class="num">Rejection Rate (%)</th>
+</tr></thead>
+<tbody>
+<tr class="row-actual">
+<td><strong>Actual</strong></td>
+<td class="num kpi-highlight">3.51</td>
+<td class="num kpi-highlight">139,864,413</td>
+<td class="num">—</td>
+<td class="num">71.19</td>
+</tr>
+<tr class="row-optimum">
+<td><strong>Optimum</strong></td>
+<td class="num kpi-highlight">3.04</td>
+<td class="num kpi-highlight">145,515,061</td>
+<td class="num">+4.0</td>
+<td class="num">70.02</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-in</strong></td>
+<td class="num">9.17</td>
+<td class="num">7,637,830</td>
+<td class="num">—</td>
+<td class="num">—</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-out</strong></td>
+<td class="num">11.46</td>
+<td class="num">1,987,181</td>
+<td class="num">—</td>
+<td class="num">—</td>
+</tr>
+</tbody></table></div>
+        
+        <div class="table-wrapper"><h4><span class="badge badge-base">Base</span></h4><table class="report-table" border="0">
+<thead><tr>
+<th>Metric</th>
+<th class="num">Risk (%)</th>
+<th class="num">Production (€)</th>
+<th class="num">Production (%)</th>
+<th class="num">Rejection Rate (%)</th>
+</tr></thead>
+<tbody>
+<tr class="row-actual">
+<td><strong>Actual</strong></td>
+<td class="num kpi-highlight">3.51</td>
+<td class="num kpi-highlight">139,864,413</td>
+<td class="num">—</td>
+<td class="num">70.57</td>
+</tr>
+<tr class="row-optimum">
+<td><strong>Optimum</strong></td>
+<td class="num kpi-highlight">3.53</td>
+<td class="num kpi-highlight">153,677,298</td>
+<td class="num">+9.9</td>
+<td class="num">67.66</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-in</strong></td>
+<td class="num">11.80</td>
+<td class="num">13,833,134</td>
+<td class="num">—</td>
+<td class="num">—</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-out</strong></td>
+<td class="num">15.55</td>
+<td class="num">20,248</td>
+<td class="num">—</td>
+<td class="num">—</td>
+</tr>
+</tbody></table></div>
+        
+        <div class="table-wrapper"><h4><span class="badge badge-optimistic">Optimistic</span></h4><table class="report-table" border="0">
+<thead><tr>
+<th>Metric</th>
+<th class="num">Risk (%)</th>
+<th class="num">Production (€)</th>
+<th class="num">Production (%)</th>
+<th class="num">Rejection Rate (%)</th>
+</tr></thead>
+<tbody>
+<tr class="row-actual">
+<td><strong>Actual</strong></td>
+<td class="num kpi-highlight">3.51</td>
+<td class="num kpi-highlight">139,864,413</td>
+<td class="num">—</td>
+<td class="num">70.05</td>
+</tr>
+<tr class="row-optimum">
+<td><strong>Optimum</strong></td>
+<td class="num kpi-highlight">3.99</td>
+<td class="num kpi-highlight">158,111,639</td>
+<td class="num">+13.0</td>
+<td class="num">66.15</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-in</strong></td>
+<td class="num">14.21</td>
+<td class="num">18,247,226</td>
+<td class="num">—</td>
+<td class="num">—</td>
+</tr>
+<tr class="row-swap">
+<td><strong>Swap-out</strong></td>
+<td class="num">0.00</td>
+<td class="num">0</td>
+<td class="num">—</td>
+<td class="num">—</td>
+</tr>
+</tbody></table></div>
+        
+    </div>
+    
+    <div class="section" id="consolidated-dashboard">
+        <h2>Consolidated Dashboard</h2>
+
+        
+        <div class="chart-container"><div id="2d2fd746-4147-4dd2-9eb7-2c5c8d132f43" class="plotly-graph-div" style="height:1450px; width:100%;"></div>            <script type="text/javascript">                window.PLOTLYENV=window.PLOTLYENV || {};                                if (document.getElementById("2d2fd746-4147-4dd2-9eb7-2c5c8d132f43")) {                    Plotly.newPlot(                        "2d2fd746-4147-4dd2-9eb7-2c5c8d132f43",                        [{"delta":{"decreasing":{"color":"#dc2626"},"increasing":{"color":"#2563eb"},"reference":106306425.63999999,"relative":true,"valueformat":".1%"},"mode":"number+delta","number":{"font":{"color":"#0f172a","size":30},"prefix":"€","suffix":"","valueformat":",.0f"},"title":{"text":"\u003cspan style='font-size:0.88em;color:#0f172a'\u003eMain period optimum production\u003c\u002fspan\u003e\u003cbr\u003e\u003cspan style='font-size:0.74em;color:#64748b'\u003eActual baseline: €106,306,426\u003c\u002fspan\u003e"},"value":119287015.90424328,"type":"indicator","domain":{"x":[0.0,0.46],"y":[0.8784000000000001,1.0]}},{"delta":{"decreasing":{"color":"#059669"},"increasing":{"color":"#dc2626"},"reference":3.648618,"relative":false,"valueformat":".2f"},"mode":"number+delta","number":{"font":{"color":"#0f172a","size":30},"prefix":"","suffix":"%","valueformat":".2f"},"title":{"text":"\u003cspan style='font-size:0.88em;color:#0f172a'\u003eMain period optimum risk\u003c\u002fspan\u003e\u003cbr\u003e\u003cspan style='font-size:0.74em;color:#64748b'\u003eActual baseline: 3.65%\u003c\u002fspan\u003e"},"value":3.485765,"type":"indicator","domain":{"x":[0.54,1.0],"y":[0.8784000000000001,1.0]}},{"delta":{"decreasing":{"color":"#dc2626"},"increasing":{"color":"#2563eb"},"reference":139864412.8581818,"relative":true,"valueformat":".1%"},"mode":"number+delta","number":{"font":{"color":"#0f172a","size":30},"prefix":"€","suffix":"","valueformat":",.0f"},"title":{"text":"\u003cspan style='font-size:0.88em;color:#0f172a'\u003eMR period optimum production\u003c\u002fspan\u003e\u003cbr\u003e\u003cspan style='font-size:0.74em;color:#64748b'\u003eActual baseline: €139,864,413\u003c\u002fspan\u003e"},"value":153677298.3693739,"type":"indicator","domain":{"x":[0.0,0.46],"y":[0.6768000000000001,0.7984000000000001]}},{"delta":{"decreasing":{"color":"#059669"},"increasing":{"color":"#dc2626"},"reference":3.510753,"relative":false,"valueformat":".2f"},"mode":"number+delta","number":{"font":{"color":"#0f172a","size":30},"prefix":"","suffix":"%","valueformat":".2f"},"title":{"text":"\u003cspan style='font-size:0.88em;color:#0f172a'\u003eMR period optimum risk\u003c\u002fspan\u003e\u003cbr\u003e\u003cspan style='font-size:0.74em;color:#64748b'\u003eActual baseline: 3.51%\u003c\u002fspan\u003e"},"value":3.529503,"type":"indicator","domain":{"x":[0.54,1.0],"y":[0.6768000000000001,0.7984000000000001]}},{"hovertemplate":"\u003cb\u003e%{x}\u003c\u002fb\u003e\u003cbr\u003ePeriod: MAIN\u003cbr\u003eActual production: €%{y:,.0f}\u003cextra\u003e\u003c\u002fextra\u003e","legendgroup":"main-production","marker":{"color":"#93c5fd"},"name":"MAIN Actual","offsetgroup":"main-actual","opacity":0.82,"x":["Pessimistic","Base","Optimistic"],"y":{"dtype":"f8","bdata":"KFyP5m1YmUEoXI\u002fmbViZQShcj+ZtWJlB"},"type":"bar","xaxis":"x","yaxis":"y"},{"cliponaxis":false,"customdata":{"dtype":"f8","bdata":"yFnY0w5\u002f5L9AGof6XdjEv6CFPe3w19I\u002f","shape":"3, 1"},"error_y":{"array":[370061.11926445365,345408.5389942676,337738.0768417418],"arrayminus":[370061.11926445365,345408.5389942676,337738.0768417418],"type":"data","visible":true},"hovertemplate":"\u003cb\u003e%{x}\u003c\u002fb\u003e\u003cbr\u003ePeriod: MAIN\u003cbr\u003eOptimum production: €%{y:,.0f}\u003cbr\u003eProduction delta: %{text}\u003cbr\u003eRisk delta: %{customdata[0]:+.2f} pp\u003cextra\u003e\u003c\u002fextra\u003e","legendgroup":"main-production","marker":{"color":"#2563eb"},"name":"MAIN Optimum","offsetgroup":"main-optimum","text":["+7.2%","+12.2%","+15.3%"],"textposition":"outside","x":["Pessimistic","Base","Optimistic"],"y":{"dtype":"f8","bdata":"MSO0BwErm0Hz8Z2fs3CcQU+sidXnOp1B"},"type":"bar","xaxis":"x","yaxis":"y"},{"customdata":{"dtype":"f8","bdata":"4k2ZAfgYUkAK1ay4SrZRQCatMNMdc1FA","shape":"3, 1"},"hovertemplate":"\u003cb\u003e%{text}\u003c\u002fb\u003e\u003cbr\u003ePeriod: MAIN\u003cbr\u003eOptimum risk: %{x:.2f}%\u003cbr\u003eOptimum production: €%{y:,.0f}\u003cbr\u003eOptimum rejection rate: %{customdata[0]:.1f}%\u003cextra\u003e\u003c\u002fextra\u003e","line":{"color":"#1d4ed8","width":3},"marker":{"color":"#2563eb","line":{"color":"#ffffff","width":1.5},"size":12},"mode":"lines+markers+text","name":"MAIN Optimum path","showlegend":false,"text":["Pessimistic","Base","Optimistic"],"textposition":"top center","x":{"dtype":"f8","bdata":"ELBW7ZoQCEDeVKTC2OILQDZ39L9ciw9A"},"y":{"dtype":"f8","bdata":"MSO0BwErm0Hz8Z2fs3CcQU+sidXnOp1B"},"type":"scatter","xaxis":"x2","yaxis":"y2"},{"hovertemplate":"\u003cb\u003eActual baseline\u003c\u002fb\u003e\u003cbr\u003ePeriod: MAIN\u003cbr\u003eRisk: %{x:.2f}%\u003cbr\u003eProduction: €%{y:,.0f}\u003cextra\u003e\u003c\u002fextra\u003e","marker":{"color":"#93c5fd","line":{"color":"#1d4ed8","width":2},"size":15,"symbol":"diamond"},"mode":"markers+text","name":"MAIN Actual baseline","showlegend":false,"text":["MAIN Actual"],"textposition":"bottom center","x":[3.648618],"y":[106306425.63999999],"type":"scatter","xaxis":"x2","yaxis":"y2"},{"hovertemplate":"\u003cb\u003e%{x}\u003c\u002fb\u003e\u003cbr\u003ePeriod: MR\u003cbr\u003eActual production: €%{y:,.0f}\u003cextra\u003e\u003c\u002fextra\u003e","legendgroup":"mr-production","marker":{"color":"#fdba74"},"name":"MR Actual","offsetgroup":"mr-actual","opacity":0.82,"x":["Pessimistic","Base","Optimistic"],"y":{"dtype":"f8","bdata":"m2O3uVKsoEGbY7e5UqygQZtjt7lSrKBB"},"type":"bar","xaxis":"x","yaxis":"y"},{"cliponaxis":false,"customdata":{"dtype":"f8","bdata":"MF1PdF343b+AMzMzMzOTPzDkEdxI2d4\u002f","shape":"3, 1"},"error_y":{"array":[0.0,0.0,0.0],"arrayminus":[0.0,0.0,0.0],"type":"data","visible":false},"hovertemplate":"\u003cb\u003e%{x}\u003c\u002fb\u003e\u003cbr\u003ePeriod: MR\u003cbr\u003eOptimum production: €%{y:,.0f}\u003cbr\u003eProduction delta: %{text}\u003cbr\u003eRisk delta: %{customdata[0]:+.2f} pp\u003cextra\u003e\u003c\u002fextra\u003e","legendgroup":"mr-production","marker":{"color":"#f97316"},"name":"MR Optimum","offsetgroup":"mr-optimum","text":["+4.0%","+9.9%","+13.0%"],"textposition":"outside","x":["Pessimistic","Base","Optimistic"],"y":{"dtype":"f8","bdata":"X4fPasRYoUGTHr3k21GiQf+hbi4v2aJB"},"type":"bar","xaxis":"x","yaxis":"y"},{"customdata":{"dtype":"f8","bdata":"zbD\u002fhXqBUUCw7H9UU+pQQNXYgSBwiVBA","shape":"3, 1"},"hovertemplate":"\u003cb\u003e%{text}\u003c\u002fb\u003e\u003cbr\u003ePeriod: MR\u003cbr\u003eOptimum risk: %{x:.2f}%\u003cbr\u003eOptimum production: €%{y:,.0f}\u003cbr\u003eOptimum rejection rate: %{customdata[0]:.1f}%\u003cextra\u003e\u003c\u002fextra\u003e","line":{"color":"#ea580c","width":3},"marker":{"color":"#f97316","line":{"color":"#ffffff","width":1.5},"size":12},"mode":"lines+markers+text","name":"MR Optimum path","showlegend":false,"text":["Pessimistic","Base","Optimistic"],"textposition":"top center","x":{"dtype":"f8","bdata":"J8Cw\u002fPlWCEA0EqERbDwMQFPovMYu8Q9A"},"y":{"dtype":"f8","bdata":"X4fPasRYoUGTHr3k21GiQf+hbi4v2aJB"},"type":"scatter","xaxis":"x2","yaxis":"y2"},{"hovertemplate":"\u003cb\u003eActual baseline\u003c\u002fb\u003e\u003cbr\u003ePeriod: MR\u003cbr\u003eRisk: %{x:.2f}%\u003cbr\u003eProduction: €%{y:,.0f}\u003cextra\u003e\u003c\u002fextra\u003e","marker":{"color":"#fdba74","line":{"color":"#ea580c","width":2},"size":15,"symbol":"diamond"},"mode":"markers+text","name":"MR Actual baseline","showlegend":false,"text":["MR Actual"],"textposition":"bottom center","x":[3.510753],"y":[139864412.8581818],"type":"scatter","xaxis":"x2","yaxis":"y2"},{"colorbar":{"ticksuffix":"%","title":{"text":"Prod Δ %"}},"colorscale":[[0.0,"#b91c1c"],[0.5,"#f8fafc"],[1.0,"#15803d"]],"hovertemplate":"%{hovertext}\u003cextra\u003e\u003c\u002fextra\u003e","hovertext":[["\u003cb\u003eTotal\u003c\u002fb\u003e\u003cbr\u003ePeriod: MAIN\u003cbr\u003eProduction delta: €12,980,590\u003cbr\u003eProduction delta %: +12.2%\u003cbr\u003eRisk delta: -0.16 pp","\u003cb\u003eTotal\u003c\u002fb\u003e\u003cbr\u003ePeriod: MR\u003cbr\u003eProduction delta: €13,812,886\u003cbr\u003eProduction delta %: +9.9%\u003cbr\u003eRisk delta: +0.02 pp"],["\u003cb\u003eSupersegment · ecommerce_inf_tel\u003c\u002fb\u003e\u003cbr\u003ePeriod: MAIN\u003cbr\u003eProduction delta: €12,980,590\u003cbr\u003eProduction delta %: +12.2%\u003cbr\u003eRisk delta: -0.16 pp","\u003cb\u003eSupersegment · ecommerce_inf_tel\u003c\u002fb\u003e\u003cbr\u003ePeriod: MR\u003cbr\u003eProduction delta: €13,812,886\u003cbr\u003eProduction delta %: +9.9%\u003cbr\u003eRisk delta: +0.02 pp"],["\u003cb\u003eknown · ecommerce_inf_tel\u003c\u002fb\u003e\u003cbr\u003ePeriod: MAIN\u003cbr\u003eProduction delta: €2,271,368\u003cbr\u003eProduction delta %: +8.3%\u003cbr\u003eRisk delta: -0.14 pp","\u003cb\u003eknown · ecommerce_inf_tel\u003c\u002fb\u003e\u003cbr\u003ePeriod: MR\u003cbr\u003eProduction delta: €1,700,884\u003cbr\u003eProduction delta %: +5.0%\u003cbr\u003eRisk delta: -0.06 pp"],["\u003cb\u003enew · ecommerce_inf_tel\u003c\u002fb\u003e\u003cbr\u003ePeriod: MAIN\u003cbr\u003eProduction delta: €10,709,222\u003cbr\u003eProduction delta %: +13.6%\u003cbr\u003eRisk delta: -0.18 pp","\u003cb\u003enew · ecommerce_inf_tel\u003c\u002fb\u003e\u003cbr\u003ePeriod: MR\u003cbr\u003eProduction delta: €12,112,002\u003cbr\u003eProduction delta %: +11.5%\u003cbr\u003eRisk delta: +0.04 pp"]],"text":[["+12.2%","+9.9%"],["+12.2%","+9.9%"],["+8.3%","+5.0%"],["+13.6%","+11.5%"]],"textfont":{"size":11},"texttemplate":"%{text}","x":["MAIN","MR"],"y":["Total","Supersegment · ecommerce_inf_tel","known · ecommerce_inf_tel","new · ecommerce_inf_tel"],"z":{"dtype":"f8","bdata":"ruXXGcxrKEDB8ut1d8AjQK7l1xnMayhAwfLrdXfAI0ANKxnRG5QgQF1VeI7q7RNAIcusNQElK0AeqTxueukmQA==","shape":"4, 2"},"zmid":0,"type":"heatmap","xaxis":"x3","yaxis":"y3"},{"cliponaxis":false,"customdata":{"dtype":"f8","bdata":"kDf5LTpZwr+WCFT\u002fINL\u002fP5AxsI7jh8a\u002fL+Blho3yD0A=","shape":"2, 2"},"hovertemplate":"\u003cb\u003e%{y}\u003c\u002fb\u003e\u003cbr\u003ePeriod: MAIN\u003cbr\u003eProduction delta: €%{x:,.0f}\u003cbr\u003eProduction delta %: %{text}\u003cbr\u003eRisk delta: %{customdata[0]:+.2f} pp\u003cbr\u003eOptimum risk: %{customdata[1]:.2f}%\u003cextra\u003e\u003c\u002fextra\u003e","marker":{"color":"#2563eb"},"name":"MAIN Production Δ","orientation":"h","text":["+8.3%","+13.6%"],"textposition":"outside","x":{"dtype":"f8","bdata":"IIZL90NUQUHQzKHKHG1kQQ=="},"y":["known · ecommerce_inf_tel","new · ecommerce_inf_tel"],"type":"bar","xaxis":"x4","yaxis":"y4"},{"cliponaxis":false,"customdata":{"dtype":"f8","bdata":"4J212y40r7+fd2NBYdD\u002fP8BfBI2ZRKU\u002frU7OUNzxD0A=","shape":"2, 2"},"hovertemplate":"\u003cb\u003e%{y}\u003c\u002fb\u003e\u003cbr\u003ePeriod: MR\u003cbr\u003eProduction delta: €%{x:,.0f}\u003cbr\u003eProduction delta %: %{text}\u003cbr\u003eRisk delta: %{customdata[0]:+.2f} pp\u003cbr\u003eOptimum risk: %{customdata[1]:.2f}%\u003cextra\u003e\u003c\u002fextra\u003e","marker":{"color":"#f97316"},"name":"MR Production Δ","orientation":"h","text":["+5.0%","+11.5%"],"textposition":"outside","x":{"dtype":"f8","bdata":"IPE18xP0OUFg8fQxEBpnQQ=="},"y":["known · ecommerce_inf_tel","new · ecommerce_inf_tel"],"type":"bar","xaxis":"x4","yaxis":"y4"}],                        {"template":{"data":{"barpolar":[{"marker":{"line":{"color":"white","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"barpolar"}],"bar":[{"error_x":{"color":"#2a3f5f"},"error_y":{"color":"#2a3f5f"},"marker":{"line":{"color":"white","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"bar"}],"carpet":[{"aaxis":{"endlinecolor":"#2a3f5f","gridcolor":"#C8D4E3","linecolor":"#C8D4E3","minorgridcolor":"#C8D4E3","startlinecolor":"#2a3f5f"},"baxis":{"endlinecolor":"#2a3f5f","gridcolor":"#C8D4E3","linecolor":"#C8D4E3","minorgridcolor":"#C8D4E3","startlinecolor":"#2a3f5f"},"type":"carpet"}],"choropleth":[{"colorbar":{"outlinewidth":0,"ticks":""},"type":"choropleth"}],"contourcarpet":[{"colorbar":{"outlinewidth":0,"ticks":""},"type":"contourcarpet"}],"contour":[{"colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"type":"contour"}],"heatmap":[{"colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"type":"heatmap"}],"histogram2dcontour":[{"colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"type":"histogram2dcontour"}],"histogram2d":[{"colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"type":"histogram2d"}],"histogram":[{"marker":{"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"histogram"}],"mesh3d":[{"colorbar":{"outlinewidth":0,"ticks":""},"type":"mesh3d"}],"parcoords":[{"line":{"colorbar":{"outlinewidth":0,"ticks":""}},"type":"parcoords"}],"pie":[{"automargin":true,"type":"pie"}],"scatter3d":[{"line":{"colorbar":{"outlinewidth":0,"ticks":""}},"marker":{"colorbar":{"outlinewidth":0,"ticks":""}},"type":"scatter3d"}],"scattercarpet":[{"marker":{"colorbar":{"outlinewidth":0,"ticks":""}},"type":"scattercarpet"}],"scattergeo":[{"marker":{"colorbar":{"outlinewidth":0,"ticks":""}},"type":"scattergeo"}],"scattergl":[{"marker":{"colorbar":{"outlinewidth":0,"ticks":""}},"type":"scattergl"}],"scattermapbox":[{"marker":{"colorbar":{"outlinewidth":0,"ticks":""}},"type":"scattermapbox"}],"scattermap":[{"marker":{"colorbar":{"outlinewidth":0,"ticks":""}},"type":"scattermap"}],"scatterpolargl":[{"marker":{"colorbar":{"outlinewidth":0,"ticks":""}},"type":"scatterpolargl"}],"scatterpolar":[{"marker":{"colorbar":{"outlinewidth":0,"ticks":""}},"type":"scatterpolar"}],"scatter":[{"fillpattern":{"fillmode":"overlay","size":10,"solidity":0.2},"type":"scatter"}],"scatterternary":[{"marker":{"colorbar":{"outlinewidth":0,"ticks":""}},"type":"scatterternary"}],"surface":[{"colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"type":"surface"}],"table":[{"cells":{"fill":{"color":"#EBF0F8"},"line":{"color":"white"}},"header":{"fill":{"color":"#C8D4E3"},"line":{"color":"white"}},"type":"table"}]},"layout":{"annotationdefaults":{"arrowcolor":"#2a3f5f","arrowhead":0,"arrowwidth":1},"autotypenumbers":"strict","coloraxis":{"colorbar":{"outlinewidth":0,"ticks":""}},"colorscale":{"diverging":[[0,"#8e0152"],[0.1,"#c51b7d"],[0.2,"#de77ae"],[0.3,"#f1b6da"],[0.4,"#fde0ef"],[0.5,"#f7f7f7"],[0.6,"#e6f5d0"],[0.7,"#b8e186"],[0.8,"#7fbc41"],[0.9,"#4d9221"],[1,"#276419"]],"sequential":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"sequentialminus":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]},"colorway":["#636efa","#EF553B","#00cc96","#ab63fa","#FFA15A","#19d3f3","#FF6692","#B6E880","#FF97FF","#FECB52"],"font":{"color":"#2a3f5f"},"geo":{"bgcolor":"white","lakecolor":"white","landcolor":"white","showlakes":true,"showland":true,"subunitcolor":"#C8D4E3"},"hoverlabel":{"align":"left"},"hovermode":"closest","mapbox":{"style":"light"},"paper_bgcolor":"white","plot_bgcolor":"white","polar":{"angularaxis":{"gridcolor":"#EBF0F8","linecolor":"#EBF0F8","ticks":""},"bgcolor":"white","radialaxis":{"gridcolor":"#EBF0F8","linecolor":"#EBF0F8","ticks":""}},"scene":{"xaxis":{"backgroundcolor":"white","gridcolor":"#DFE8F3","gridwidth":2,"linecolor":"#EBF0F8","showbackground":true,"ticks":"","zerolinecolor":"#EBF0F8"},"yaxis":{"backgroundcolor":"white","gridcolor":"#DFE8F3","gridwidth":2,"linecolor":"#EBF0F8","showbackground":true,"ticks":"","zerolinecolor":"#EBF0F8"},"zaxis":{"backgroundcolor":"white","gridcolor":"#DFE8F3","gridwidth":2,"linecolor":"#EBF0F8","showbackground":true,"ticks":"","zerolinecolor":"#EBF0F8"}},"shapedefaults":{"line":{"color":"#2a3f5f"}},"ternary":{"aaxis":{"gridcolor":"#DFE8F3","linecolor":"#A2B1C6","ticks":""},"baxis":{"gridcolor":"#DFE8F3","linecolor":"#A2B1C6","ticks":""},"bgcolor":"white","caxis":{"gridcolor":"#DFE8F3","linecolor":"#A2B1C6","ticks":""}},"title":{"x":0.05},"xaxis":{"automargin":true,"gridcolor":"#EBF0F8","linecolor":"#EBF0F8","ticks":"","title":{"standoff":15},"zerolinecolor":"#EBF0F8","zerolinewidth":2},"yaxis":{"automargin":true,"gridcolor":"#EBF0F8","linecolor":"#EBF0F8","ticks":"","title":{"standoff":15},"zerolinecolor":"#EBF0F8","zerolinewidth":2}}},"xaxis":{"anchor":"y","domain":[0.0,0.46],"title":{"text":"Scenario"},"categoryorder":"array","categoryarray":["Pessimistic","Base","Optimistic"]},"yaxis":{"anchor":"x","domain":[0.33840000000000003,0.5968],"title":{"text":"Production (€)"},"tickformat":",.0f"},"xaxis2":{"anchor":"y2","domain":[0.54,1.0],"title":{"text":"Risk (%)"},"ticksuffix":"%"},"yaxis2":{"anchor":"x2","domain":[0.33840000000000003,0.5968],"title":{"text":"Production (€)"},"tickformat":",.0f"},"xaxis3":{"anchor":"y3","domain":[0.0,0.46],"title":{"text":"Period"}},"yaxis3":{"anchor":"x3","domain":[0.0,0.2584],"title":{"text":"Group"},"automargin":true},"xaxis4":{"anchor":"y4","domain":[0.54,1.0],"title":{"text":"Production Delta (€)"},"tickformat":",.0f","zeroline":true,"zerolinecolor":"#cbd5e1"},"yaxis4":{"anchor":"x4","domain":[0.0,0.2584],"title":{"text":"Group"},"automargin":true},"annotations":[{"font":{"size":13,"color":"#0f172a"},"showarrow":false,"text":"Main Base — Optimum Production","x":0.23,"xanchor":"center","xref":"paper","y":1.0,"yanchor":"bottom","yref":"paper"},{"font":{"size":13,"color":"#0f172a"},"showarrow":false,"text":"Main Base — Optimum Risk","x":0.77,"xanchor":"center","xref":"paper","y":1.0,"yanchor":"bottom","yref":"paper"},{"font":{"size":13,"color":"#0f172a"},"showarrow":false,"text":"MR Base — Optimum Production","x":0.23,"xanchor":"center","xref":"paper","y":0.7984000000000001,"yanchor":"bottom","yref":"paper"},{"font":{"size":13,"color":"#0f172a"},"showarrow":false,"text":"MR Base — Optimum Risk","x":0.77,"xanchor":"center","xref":"paper","y":0.7984000000000001,"yanchor":"bottom","yref":"paper"},{"font":{"size":13,"color":"#0f172a"},"showarrow":false,"text":"Total Production by Scenario","x":0.23,"xanchor":"center","xref":"paper","y":0.5968,"yanchor":"bottom","yref":"paper"},{"font":{"size":13,"color":"#0f172a"},"showarrow":false,"text":"Risk vs Production by Scenario","x":0.77,"xanchor":"center","xref":"paper","y":0.5968,"yanchor":"bottom","yref":"paper"},{"font":{"size":13,"color":"#0f172a"},"showarrow":false,"text":"Base Scenario — Production Delta Heatmap","x":0.23,"xanchor":"center","xref":"paper","y":0.2584,"yanchor":"bottom","yref":"paper"},{"font":{"size":13,"color":"#0f172a"},"showarrow":false,"text":"Top Groups — Base Scenario","x":0.77,"xanchor":"center","xref":"paper","y":0.2584,"yanchor":"bottom","yref":"paper"}],"title":{"text":"Consolidated Risk Production Report\u003cbr\u003e\u003csup\u003eExecutive portfolio view across scenarios, periods, and segment opportunities\u003c\u002fsup\u003e","x":0.5,"xanchor":"center"},"margin":{"t":120,"r":40,"b":70,"l":70},"font":{"family":"Arial, sans-serif","size":12,"color":"#0f172a"},"legend":{"orientation":"h","yanchor":"bottom","y":-0.06,"xanchor":"center","x":0.5,"bgcolor":"rgba(255,255,255,0.85)"},"hoverlabel":{"font":{"color":"#ffffff"},"bgcolor":"#0f172a"},"height":1450,"barmode":"group","paper_bgcolor":"#f8fafc","plot_bgcolor":"#ffffff"},                        {"displaylogo": false, "responsive": true, "modeBarButtonsToRemove": ["lasso2d", "select2d"]}                    )                };            </script></div>
+        
+
+        
+    </div>
+    
+    <div class="section" id="segment-comparison">
+        <h2>Segment Comparison — Main Period</h2>
+
+        
+
+        
+        <div class="table-wrapper"><h4>known</h4><table class="dataframe report-table">
+  <thead>
+    <tr style="text-align: right;">
+      <th>Metric</th>
+      <th>Risk (%)</th>
+      <th>Production (€)</th>
+      <th>Production (%)</th>
+      <th>Rejection Rate (%)</th>
+      <th>production_ci_lower</th>
+      <th>production_ci_upper</th>
+      <th>risk_ci_lower</th>
+      <th>risk_ci_upper</th>
+      <th>risk_ci_basis</th>
+      <th>risk_booked_ci_lower</th>
+      <th>risk_booked_ci_upper</th>
+      <th>risk_ci_sel_lower</th>
+      <th>risk_ci_sel_upper</th>
+      <th>selection_optimism_pp</th>
+      <th>selection_reselect_pct</th>
+      <th>ri_multiplier_min</th>
+      <th>ri_multiplier_avg</th>
+      <th>ri_multiplier_max</th>
+      <th>stress_factor_min</th>
+      <th>stress_factor_avg</th>
+      <th>stress_factor_max</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Actual</td>
+      <td>2.13</td>
+      <td>27,401,286.69</td>
+      <td>1.00</td>
+      <td>56.32</td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>Swap-in</td>
+      <td>5.05</td>
+      <td>2,535,473.32</td>
+      <td>0.09</td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td>1.00</td>
+      <td>1.00</td>
+      <td>1.00</td>
+      <td>1.00</td>
+      <td>1.00</td>
+      <td>1.00</td>
+    </tr>
+    <tr>
+      <td>Swap-out</td>
+      <td>30.01</td>
+      <td>264,105.39</td>
+      <td>0.01</td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>Optimum selected</td>
+      <td>1.99</td>
+      <td>29,672,654.62</td>
+      <td>1.08</td>
+      <td>52.70</td>
+      <td>29,420,298.84</td>
+      <td>29,798,968.14</td>
+      <td>1.78</td>
+      <td>2.19</td>
+      <td>blended_booked_plus_ri</td>
+      <td>1.63</td>
+      <td>2.06</td>
+      <td>1.96</td>
+      <td>2.00</td>
+      <td>0.01</td>
+      <td>92.80</td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>Summary</td>
+      <td>-0.14</td>
+      <td>2,271,367.93</td>
+      <td>0.08</td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+    </tr>
+  </tbody>
+</table></div>
+        
+        <div class="table-wrapper"><h4>new</h4><table class="dataframe report-table">
+  <thead>
+    <tr style="text-align: right;">
+      <th>Metric</th>
+      <th>Risk (%)</th>
+      <th>Production (€)</th>
+      <th>Production (%)</th>
+      <th>Rejection Rate (%)</th>
+      <th>production_ci_lower</th>
+      <th>production_ci_upper</th>
+      <th>risk_ci_lower</th>
+      <th>risk_ci_upper</th>
+      <th>risk_ci_basis</th>
+      <th>risk_booked_ci_lower</th>
+      <th>risk_booked_ci_upper</th>
+      <th>risk_ci_sel_lower</th>
+      <th>risk_ci_sel_upper</th>
+      <th>selection_optimism_pp</th>
+      <th>selection_reselect_pct</th>
+      <th>ri_multiplier_min</th>
+      <th>ri_multiplier_avg</th>
+      <th>ri_multiplier_max</th>
+      <th>stress_factor_min</th>
+      <th>stress_factor_avg</th>
+      <th>stress_factor_max</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Actual</td>
+      <td>4.17</td>
+      <td>78,905,138.95</td>
+      <td>1.00</td>
+      <td>77.23</td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>Swap-in</td>
+      <td>9.25</td>
+      <td>12,214,349.98</td>
+      <td>0.15</td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td>1.02</td>
+      <td>1.64</td>
+      <td>2.19</td>
+      <td>1.00</td>
+      <td>1.00</td>
+      <td>1.00</td>
+    </tr>
+    <tr>
+      <td>Swap-out</td>
+      <td>30.56</td>
+      <td>1,505,127.65</td>
+      <td>0.02</td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>Optimum selected</td>
+      <td>3.99</td>
+      <td>89,614,361.28</td>
+      <td>1.14</td>
+      <td>74.13</td>
+      <td>87,983,684.35</td>
+      <td>88,561,471.33</td>
+      <td>3.83</td>
+      <td>4.17</td>
+      <td>blended_booked_plus_ri</td>
+      <td>3.45</td>
+      <td>3.80</td>
+      <td>3.96</td>
+      <td>4.00</td>
+      <td>0.01</td>
+      <td>92.00</td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>Summary</td>
+      <td>-0.18</td>
+      <td>10,709,222.33</td>
+      <td>0.14</td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+    </tr>
+  </tbody>
+</table></div>
+        
+    </div>
+    
+    <div class="section" id="segment-comparison-mr">
+        <h2>Segment Comparison — MR Period</h2>
+
+        
+
+        
+        <div class="table-wrapper"><h4>known</h4><table class="dataframe report-table">
+  <thead>
+    <tr style="text-align: right;">
+      <th>Metric</th>
+      <th>Risk (%)</th>
+      <th>Production (€)</th>
+      <th>Production (%)</th>
+      <th>Rejection Rate (%)</th>
+      <th>Risk H3 (%)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Actual</td>
+      <td>2.05</td>
+      <td>34,138,254.81</td>
+      <td>1.00</td>
+      <td>49.39</td>
+      <td>1.09</td>
+    </tr>
+    <tr>
+      <td>Swap-in</td>
+      <td>7.61</td>
+      <td>1,721,132.13</td>
+      <td>0.05</td>
+      <td></td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>Swap-out</td>
+      <td>17.11</td>
+      <td>20,248.18</td>
+      <td>0.00</td>
+      <td></td>
+      <td>11.80</td>
+    </tr>
+    <tr>
+      <td>Optimum selected</td>
+      <td>1.99</td>
+      <td>35,839,138.76</td>
+      <td>1.05</td>
+      <td>46.87</td>
+      <td>0.96</td>
+    </tr>
+  </tbody>
+</table></div>
+        
+        <div class="table-wrapper"><h4>new</h4><table class="dataframe report-table">
+  <thead>
+    <tr style="text-align: right;">
+      <th>Metric</th>
+      <th>Risk (%)</th>
+      <th>Production (€)</th>
+      <th>Production (%)</th>
+      <th>Rejection Rate (%)</th>
+      <th>Risk H3 (%)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Actual</td>
+      <td>3.95</td>
+      <td>105,726,158.05</td>
+      <td>1.00</td>
+      <td>74.07</td>
+      <td>2.53</td>
+    </tr>
+    <tr>
+      <td>Swap-in</td>
+      <td>12.62</td>
+      <td>12,112,001.56</td>
+      <td>0.11</td>
+      <td></td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>Swap-out</td>
+      <td>15.27</td>
+      <td>0.00</td>
+      <td>0.00</td>
+      <td></td>
+      <td>8.32</td>
+    </tr>
+    <tr>
+      <td>Optimum selected</td>
+      <td>3.99</td>
+      <td>117,838,159.61</td>
+      <td>1.11</td>
+      <td>71.10</td>
+      <td>2.41</td>
+    </tr>
+  </tbody>
+</table></div>
+        
+    </div>
+    
+    <div class="section" id="cutoff-comparison">
+        <h2>Cutoff Comparison</h2>
+
+        
+
+        
+        <div class="table-wrapper"><h4>Scenario KPI Summary</h4><table class="report-table" border="0">
+<thead><tr>
+<th>Segment</th>
+<th>Scenario</th>
+<th class="num">Risk (%)</th>
+<th class="num">Production (M)</th>
+<th class="num">Risk CI</th>
+<th class="num">Prod CI (M)</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>known_af</td>
+<td><span class="badge badge-pessimistic">pessimistic</span></td>
+<td class="num">1.50</td>
+<td class="num">27.52</td>
+<td class="num ci">[1.30, 1.67]</td>
+<td class="num ci">[27.28, 27.69]</td>
+</tr>
+<tr>
+<td>known_af</td>
+<td><span class="badge badge-base">base</span></td>
+<td class="num">1.99</td>
+<td class="num">29.67</td>
+<td class="num ci">[1.78, 2.19]</td>
+<td class="num ci">[29.42, 29.80]</td>
+</tr>
+<tr>
+<td>known_af</td>
+<td><span class="badge badge-optimistic">optimistic</span></td>
+<td class="num">2.29</td>
+<td class="num">30.10</td>
+<td class="num ci">[2.06, 2.50]</td>
+<td class="num ci">[29.86, 30.23]</td>
+</tr>
+<tr>
+<td>new</td>
+<td><span class="badge badge-pessimistic">pessimistic</span></td>
+<td class="num">3.50</td>
+<td class="num">86.43</td>
+<td class="num ci">[3.33, 3.66]</td>
+<td class="num ci">[85.23, 85.84]</td>
+</tr>
+<tr>
+<td>new</td>
+<td><span class="badge badge-base">base</span></td>
+<td class="num">3.99</td>
+<td class="num">89.61</td>
+<td class="num ci">[3.83, 4.17]</td>
+<td class="num ci">[87.98, 88.56]</td>
+</tr>
+<tr>
+<td>new</td>
+<td><span class="badge badge-optimistic">optimistic</span></td>
+<td class="num">4.50</td>
+<td class="num">92.50</td>
+<td class="num ci">[4.32, 4.67]</td>
+<td class="num ci">[90.42, 90.98]</td>
+</tr>
+</tbody></table></div>
+        
+        <div class="table-wrapper"><h4>Acceptance Matrices (Base Scenario)</h4><div class="matrix-legend"><span><i style="background: var(--accent-green)"></i> Accept</span><span><i style="background: var(--accent-red); opacity: 0.7"></i> Reject</span><span><i style="background: var(--border)"></i> N/A</span></div><h4>known_af</h4>
+<div class="matrix-grid">
+<div class="matrix-cell">
+<table class="matrix-table">
+<tr><td class="matrix-corner">sc_octroi_new_clus \ new_efx_clus</td>
+<td class="matrix-col-hdr">1</td>
+<td class="matrix-col-hdr">2</td>
+<td class="matrix-col-hdr">3</td>
+<td class="matrix-col-hdr">4</td>
+<td class="matrix-col-hdr">5</td>
+<td class="matrix-col-hdr">6</td>
+<td class="matrix-col-hdr">7</td>
+<td class="matrix-col-hdr">8</td>
+<td class="matrix-col-hdr">9</td>
+<td class="matrix-col-hdr">10</td>
+<td class="matrix-col-hdr">11</td>
+<td class="matrix-col-hdr">12</td>
+<td class="matrix-col-hdr">13</td>
+<td class="matrix-col-hdr">14</td>
+<td class="matrix-col-hdr">15</td>
+<td class="matrix-col-hdr">16</td>
+<td class="matrix-col-hdr">17</td>
+<td class="matrix-col-hdr">18</td>
+<td class="matrix-col-hdr">19</td>
+<td class="matrix-col-hdr">20</td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">1</td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">2</td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">3</td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">4</td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">5</td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">6</td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">7</td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">8</td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">9</td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">10</td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+</table>
+</div>
+</div>
+<h4>new</h4>
+<div class="matrix-grid">
+<div class="matrix-cell">
+<table class="matrix-table">
+<tr><td class="matrix-corner">sc_octroi_new_clus \ new_efx_clus</td>
+<td class="matrix-col-hdr">1</td>
+<td class="matrix-col-hdr">2</td>
+<td class="matrix-col-hdr">3</td>
+<td class="matrix-col-hdr">4</td>
+<td class="matrix-col-hdr">5</td>
+<td class="matrix-col-hdr">6</td>
+<td class="matrix-col-hdr">7</td>
+<td class="matrix-col-hdr">8</td>
+<td class="matrix-col-hdr">9</td>
+<td class="matrix-col-hdr">10</td>
+<td class="matrix-col-hdr">11</td>
+<td class="matrix-col-hdr">12</td>
+<td class="matrix-col-hdr">13</td>
+<td class="matrix-col-hdr">14</td>
+<td class="matrix-col-hdr">15</td>
+<td class="matrix-col-hdr">16</td>
+<td class="matrix-col-hdr">17</td>
+<td class="matrix-col-hdr">18</td>
+<td class="matrix-col-hdr">19</td>
+<td class="matrix-col-hdr">20</td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">1</td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">2</td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">3</td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">4</td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">5</td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">6</td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">7</td>
+<td class="m-no"></td>
+<td class="m-no"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">8</td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">9</td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+<tr>
+<td class="matrix-row-hdr">10</td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+<td class="m-ok"></td>
+</tr>
+</table>
+</div>
+</div></div>
+        
+    </div>
+    
+
+    <footer>
+        Scoring Tools &mdash; Consolidated Report &mdash; 2026-06-10 20:49
+        <a href="#top">Back to top</a>
+    </footer>
+</div>
+</body>
+</html>
