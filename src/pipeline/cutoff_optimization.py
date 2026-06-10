@@ -233,13 +233,17 @@ def run_optimization_phase(
                 inv_var1=inv_var1,
             )
 
-            # Calculate KPIs for the fixed cutoff solution
+            # Calculate KPIs for the fixed cutoff solution. inv_var1 must reach
+            # the KPI evaluation too (audit #37): without it the sums ran on the
+            # var1 <= cutoff side while audit/bootstrap/MR classified var1 >= cutoff
+            # — the same run described two different policies.
             data_summary = kpi_of_fact_sol(
                 df_v=df_v,
                 values_var0=values_var0,
                 data_sumary_desagregado=data_summary_desagregado,
                 variables=settings.variables,
                 indicadores=settings.indicators,
+                inv_var1=inv_var1,
                 chunk_size=100000,
                 multiplier=settings.multiplier,
                 multiplier_h3=settings.multiplier_h3,
@@ -437,13 +441,22 @@ def run_optimization_phase(
             else:
                 logger.warning(f"[{segment}] MILP produced no solutions, falling back to legacy enumeration")
                 try:
-                    df_v = get_fact_sol(values_var0=values_var0, values_var1=values_var1, chunk_size=10000)
+                    # inv_var1 must reach BOTH the enumeration (sentinel/ordering)
+                    # and the KPI evaluation (>= vs <= side) — audit #37.
+                    legacy_inv_var1 = settings.variables[1] in settings.inv_vars
+                    df_v = get_fact_sol(
+                        values_var0=values_var0,
+                        values_var1=values_var1,
+                        inv_var1=legacy_inv_var1,
+                        chunk_size=10000,
+                    )
                     data_summary = kpi_of_fact_sol(
                         df_v=df_v,
                         values_var0=values_var0,
                         data_sumary_desagregado=data_summary_desagregado,
                         variables=settings.variables,
                         indicadores=settings.indicators,
+                        inv_var1=legacy_inv_var1,
                         chunk_size=100000,
                         multiplier=settings.multiplier,
                         multiplier_h3=settings.multiplier_h3,

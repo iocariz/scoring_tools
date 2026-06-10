@@ -579,6 +579,72 @@ class TestRunOptimizationPhase:
         assert Path(output.pareto_solutions_csv).exists()
 
 
+class TestInvVar1ReachesKpiEvaluation:
+    def test_fixed_cutoff_path_passes_inv_var1(self, monkeypatch, tmp_path):
+        """Audit #37: with variables[1] inverted, the fixed-cutoff path computed
+        inv_var1 for solution VALIDATION but not for the KPI evaluation — the
+        frontier KPIs summed the var1 <= cutoff side while audit/bootstrap/MR
+        classified var1 >= cutoff."""
+        settings = make_settings(
+            fixed_cutoffs={
+                "sc_octroi_new_clus": [1.0, 2.0],
+                "new_efx_clus": [1.0, 2.0],
+            },
+            inv_vars=["new_efx_clus"],  # variables[1] inverted
+        )
+        output = OutputPaths(base_dir=tmp_path)
+        output.ensure_dirs()
+        captured = {}
+        summary_desagregado = pd.DataFrame(
+            {
+                "sc_octroi_new_clus": [1, 2],
+                "new_efx_clus": [1, 2],
+                "oa_amt_h0": [1000.0, 2000.0],
+                "todu_30ever_h6": [10.0, 20.0],
+                "todu_amt_pile_h6": [100.0, 200.0],
+            }
+        )
+        monkeypatch.setattr(
+            optimization_module, "run_optimization_pipeline", lambda **kwargs: summary_desagregado.copy()
+        )
+        monkeypatch.setattr(
+            optimization_module,
+            "create_fixed_cutoff_solution",
+            lambda **kwargs: pd.DataFrame({"sol_fac": [0], "1": [1.0], "2": [2.0]}),
+        )
+
+        def fake_kpi_of_fact_sol(**kwargs):
+            captured["kpi"] = kwargs
+            return pd.DataFrame(
+                {
+                    "sol_fac": [0],
+                    "oa_amt_h0": [2500.0],
+                    "todu_30ever_h6": [25.0],
+                    "todu_amt_pile_h6": [250.0],
+                    "b2_ever_h6": [70.0],
+                }
+            )
+
+        monkeypatch.setattr(optimization_module, "kpi_of_fact_sol", fake_kpi_of_fact_sol)
+
+        optimization_module.run_optimization_phase(
+            data_booked=pd.DataFrame(),
+            data_demand=pd.DataFrame(),
+            risk_inference={},
+            reg_todu_amt_pile="reg",
+            stress_factor=1.0,
+            tasa_fin=1.0,
+            settings=settings,
+            annual_coef=1.0,
+            output=output,
+        )
+
+        assert captured["kpi"].get("inv_var1") is True, (
+            "inv_var1 must reach the KPI evaluation (audit #37) — without it the "
+            "frontier sums the wrong side of the cutoff for inverted var1"
+        )
+
+
 class TestLegacyEnumerationSkippedWithConstraints:
     def test_2var_with_swapin_cap_skips_constraint_blind_legacy_enum(self, monkeypatch, tmp_path):
         """Audit #36: the legacy 2-var enumeration cannot express cell pins or

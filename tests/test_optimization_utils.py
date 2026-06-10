@@ -20,6 +20,7 @@ from src.optimization_utils import (
     decode_mask,
     evaluate_solution,
     get_fact_sol,
+    kpi_of_fact_sol,
     mask_to_cutoffs,
     milp_solve_cutoffs,
     pareto_keep_indices,
@@ -2304,3 +2305,56 @@ class TestParetoKeepIndices:
                 expected.append(i)
                 prev = p
         assert pareto_keep_indices(prod) == expected
+
+
+class TestInvVar1KpiSide:
+    """Audit #37: with variables[1] inverted (higher bin = safer), the KPI
+    evaluation must sum the var1 >= cutoff side — the old call sites defaulted
+    inv_var1=False and summed var1 <= cutoff, so the frontier KPIs described a
+    different policy than the audit/bootstrap/MR classification."""
+
+    def test_kpi_sums_geq_side_when_inverted(self):
+        df = _make_summary_2d(2, 3)
+        # one solution: cut var1 at 2 for both var0 bins
+        df_v = pd.DataFrame({"sol_fac": [0], 1: [2.0], 2: [2.0]})
+
+        kpi_inv = kpi_of_fact_sol(
+            df_v=df_v,
+            values_var0=[1, 2],
+            data_sumary_desagregado=df,
+            variables=["var0", "var1"],
+            indicadores=["oa_amt_h0"],
+            inv_var1=True,
+            multiplier=7,
+        )
+        expected_geq = df.loc[df["var1"] >= 2.0, "oa_amt_h0"].sum()
+        expected_leq = df.loc[df["var1"] <= 2.0, "oa_amt_h0"].sum()
+        assert expected_geq != expected_leq  # the two sides genuinely differ
+        assert kpi_inv["oa_amt_h0"].iloc[0] == pytest.approx(expected_geq)
+
+        # and the two directions partition the total at adjacent cuts
+        kpi_norm = kpi_of_fact_sol(
+            df_v=pd.DataFrame({"sol_fac": [0], 1: [1.0], 2: [1.0]}),
+            values_var0=[1, 2],
+            data_sumary_desagregado=df,
+            variables=["var0", "var1"],
+            indicadores=["oa_amt_h0"],
+            inv_var1=False,
+            multiplier=7,
+        )
+        total = df["oa_amt_h0"].sum()
+        assert kpi_norm["oa_amt_h0"].iloc[0] + kpi_inv["oa_amt_h0"].iloc[0] == pytest.approx(total)
+
+    def test_get_fact_sol_inverted_has_reject_all_sentinel(self):
+        """Under var1 >= cut, reject-the-whole-bin needs a sentinel ABOVE
+        max(var1); the old [0] sentinel meant accept-all under inversion and
+        reject-all was unrepresentable."""
+        values_var1 = [1.0, 2.0, 3.0]
+        df_v = get_fact_sol([1.0, 2.0], values_var1, inv_var1=True)
+        bin_cols = [c for c in df_v.columns if c != "sol_fac"]
+        assert df_v[bin_cols].values.max() == 4.0  # max(var1) + 1 sentinel present
+        # a full reject-all solution exists
+        assert (df_v[bin_cols] == 4.0).all(axis=1).any()
+        # normal direction keeps the 0 sentinel
+        df_n = get_fact_sol([1.0, 2.0], values_var1, inv_var1=False)
+        assert (df_n[[c for c in df_n.columns if c != "sol_fac"]] == 0.0).all(axis=1).any()
