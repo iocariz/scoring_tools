@@ -30,11 +30,11 @@ from run_batch import (
 )
 from src.metrics import (
     calculate_lift_table,
+    combined_score_cv,
     compute_metrics,
     compute_precision_recall,
     compute_score_discriminance,
     delong_test,
-    train_logistic_regression,
 )
 from src.plots import plot_precision_recall_curve, plot_roc_curve, plot_score_distribution
 from src.styles import (
@@ -127,8 +127,15 @@ def _prepare_scores(df: pd.DataFrame, include_combined: bool = False) -> dict[st
         for cname, columns in COMBINED_COLUMNS.items():
             if any(c not in df.columns for c in columns):
                 continue
-            log_reg, X_std = train_logistic_regression(df[list(columns)], y)
-            scores[cname] = (log_reg.coef_[0] * X_std).sum(axis=1)
+            # OUT-OF-FOLD combined score (audit #35): the in-sample fit inflated
+            # the combined score's lift/DeLong comparisons vs the raw scores.
+            oof = combined_score_cv(df[list(columns)], y)
+            if np.isnan(oof).any():
+                logger.warning(
+                    f"[{cname}] out-of-fold combined score has unfittable folds — skipping the combined entry."
+                )
+                continue
+            scores[cname] = oof
 
     return scores
 

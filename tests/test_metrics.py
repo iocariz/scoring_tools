@@ -498,3 +498,70 @@ class TestDelongTest:
         result2 = delong_test(y_true, scores2, scores1)
         assert result1["p_value"] == pytest.approx(result2["p_value"], abs=1e-10)
         assert result1["auc_diff"] == pytest.approx(-result2["auc_diff"], abs=1e-10)
+
+
+# =============================================================================
+# Audit #35 — combined score must be out-of-fold (like-for-like with raw scores)
+# =============================================================================
+
+
+class TestCombinedScoreCV:
+    @staticmethod
+    def _noise_frame(n=70, n_cols=8, seed=3):
+        """Pure-noise features + random target: any combined-score skill is
+        overfit. The in-sample logistic shows substantial Gini here; the
+        out-of-fold combined score must not."""
+        rng = np.random.RandomState(seed)
+        df = pd.DataFrame({f"x{i}": rng.randn(n) for i in range(n_cols)})
+        df["bad"] = (rng.uniform(size=n) < 0.4).astype(int)
+        return df
+
+    def test_combined_score_on_noise_has_no_skill(self):
+        from src.metrics import compute_score_discriminance, train_logistic_regression
+
+        df = self._noise_frame()
+        cols = [c for c in df.columns if c != "bad"]
+
+        # the OLD in-sample construction shows material (overfit) skill on noise
+        log_reg, X_std = train_logistic_regression(df[cols], df["bad"])
+        in_sample = (log_reg.coef_[0] * X_std).sum(axis=1)
+        gini_in, _, _, _ = compute_metrics(df["bad"], in_sample)
+        assert gini_in > 0.30, "fixture sanity: in-sample fit must overfit the noise"
+
+        out = compute_score_discriminance(df, "bad", {}, combined_columns={"Combined": cols})
+        gini_oof = out.loc[out["score"] == "Combined", "gini"].iloc[0]
+        assert abs(gini_oof) < 0.20, (
+            f"out-of-fold combined Gini on pure noise must be ~0, got {gini_oof} "
+            f"(in-sample was {gini_in:.3f} — audit #35 inflation)"
+        )
+
+    def test_combined_score_keeps_real_signal(self):
+        from src.metrics import combined_score_cv
+
+        rng = np.random.RandomState(1)
+        n = 600
+        signal = rng.randn(n)
+        df = pd.DataFrame({"s1": signal + rng.randn(n) * 0.5, "s2": signal + rng.randn(n) * 0.5})
+        y = (signal + rng.randn(n) * 0.8 > 0.4).astype(int)
+        oof = combined_score_cv(df, y)
+        gini, _, _, _ = compute_metrics(y, oof)
+        assert gini > 0.4, "real signal must survive the out-of-fold construction"
+
+    def test_model_summary_uses_refit_bootstrap_for_combined(self):
+        from src.metrics import model_summary
+
+        df = self._noise_frame(n=120)
+        cols = [c for c in df.columns if c != "bad"][:2]
+        out = model_summary(
+            df,
+            "bad",
+            {"Raw": {"column": "x0", "negate": False}},
+            combined_columns={"Combined": cols},
+            plot=False,
+            n_iterations=50,
+        )
+        comb = out[out["Model"] == "Combined"].iloc[0]
+        # CI exists and is a sane interval around a ~no-skill score
+        lo, hi = comb["Gini CI"]
+        assert lo <= hi
+        assert lo < 0.25, "refit-OOB CI on noise should not sit at overfit levels"
