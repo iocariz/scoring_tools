@@ -93,6 +93,21 @@ def _select(risk: np.ndarray, production: np.ndarray, threshold: float) -> int:
     return 0
 
 
+def select_with_ci_margin(result: SelectionBootstrapResult, threshold: float) -> int | None:
+    """The noise-margin selection rule (audit #28, Phase C).
+
+    Pick the max-production candidate whose per-candidate risk CI **upper**
+    bound sits at or under the threshold — i.e. select with a margin for
+    estimation noise instead of the point estimate. Returns the candidate
+    index (== ``sol_fac``), or ``None`` when no candidate qualifies (the
+    caller falls back to the point rule, loudly)."""
+    eligible = np.isfinite(result.candidate_risk_ci_upper) & (result.candidate_risk_ci_upper <= threshold)
+    if not eligible.any():
+        return None
+    idx = np.flatnonzero(eligible)
+    return int(idx[np.argmax(result.candidate_production_orig[idx])])
+
+
 def selection_aware_bootstrap(
     data_booked: pd.DataFrame,
     grid: CellGrid,

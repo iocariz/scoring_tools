@@ -164,3 +164,53 @@ def test_nan_loan_values_do_not_poison_cell_sums():
     assert np.isfinite(res.risk_ci_sel_lower)
     assert np.isfinite(res.risk_ci_sel_upper)
     assert np.isfinite(res.selection_optimism_pp)
+
+
+def test_select_with_ci_margin():
+    """Phase C rule: max production among candidates whose CI-UPPER clears the
+    threshold; None when no candidate qualifies (caller falls back loudly)."""
+    from src.selection_uncertainty import SelectionBootstrapResult, select_with_ci_margin
+
+    res = SelectionBootstrapResult(
+        risk_ci_sel_lower=0.0,
+        risk_ci_sel_upper=0.0,
+        production_ci_sel_lower=0.0,
+        production_ci_sel_upper=0.0,
+        selection_optimism_pp=0.0,
+        reselect_pct=0.0,
+        candidate_risk_ci_upper=np.array([0.8, 1.05, 1.4]),
+        candidate_risk_orig=np.array([0.7, 0.95, 1.1]),
+        candidate_production_orig=np.array([100.0, 200.0, 300.0]),
+        n_candidates=3,
+        original_selected_index=2,
+    )
+    # threshold 1.1: candidates 0 and 1 qualify by CI-upper; pick the bigger one.
+    # (the point rule would pick candidate 2 — risk 1.1 <= 1.1 — illustrating
+    # the conservatism of the noise-margin rule)
+    assert select_with_ci_margin(res, 1.1) == 1
+    # tight threshold: only candidate 0 qualifies
+    assert select_with_ci_margin(res, 0.9) == 0
+    # unattainable margin
+    assert select_with_ci_margin(res, 0.5) is None
+
+
+def test_config_selection_risk_basis_validation():
+    from src.config import PreprocessingSettings
+
+    base = dict(
+        keep_vars=["mis_date"],
+        indicators=["oa_amt", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"],
+        segment_filter="seg",
+        date_ini_book_obs="2024-01-01",
+        date_fin_book_obs="2024-12-31",
+        variables=["a", "b"],
+        octroi_bins=[0.0, 1.0],
+        efx_bins=[0.0, 1.0],
+    )
+    assert PreprocessingSettings(**base).selection_risk_basis == "point"  # default OFF
+    assert PreprocessingSettings(**base, selection_risk_basis="ci_upper").selection_risk_basis == "ci_upper"
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        PreprocessingSettings(**base, selection_risk_basis="bogus")

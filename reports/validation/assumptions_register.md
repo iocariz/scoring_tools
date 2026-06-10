@@ -24,7 +24,7 @@ Snapshot of `config.toml` at time of writing (the per-run truth is captured in `
 | `ri_optuna_n_trials` | 200 | 100 | `config.py` | **Tuning** | RI optimizer search budget. Affects runtime + tuning stability. | Governed |
 | `mr_maturity_months` | 6 | 6 | `config.py` | **Expert** | **The maturity anchor.** Minimum months since booking for an account to count as H6-mature; younger accounts are excluded from realized risk to avoid diluting it with immature zeros. Used by the MR check (validation-only) and the M4 backtest. | Governed |
 | `use_mr_outcomes` | `true` | `false` | `config.py` | **Expert** | Hybrid MR risk inference. **Validation/monitoring-only — does not feed the optimizer or the cutoffs (M3a).** | Governed |
-| `cv_folds` | 4 | 4 | `config.py` | **Expert** | Cross-validation folds for model training (the #7 fresh-seed k-fold selection). | Governed |
+| `cv_folds` | 4 | 4 | `config.py` | **Expert** | Cross-validation folds for model training (the #7 fresh-seed k-fold selection). | Governed || `selection_risk_basis` | `"point"` | `"point"` | `config.py` | **Expert** | Scenario selection rule. `"ci_upper"` (audit #28 Phase C) requires the candidate's bootstrap risk CI-upper ≤ target — materially more conservative (−61% production on no_premium_cd at the same 1.1% target). Enabling changes cutoffs ⇒ M5-style sign-off required. | Governed |
 
 ## Date windows
 - **Main observation window:** `2024-06-01 → 2025-05-01` (`date_ini_book_obs` / `date_fin_book_obs`).
