@@ -472,6 +472,74 @@ class TestRunDataQualityChecks:
         assert isinstance(report, DataQualityReport)
         assert len(report.checks) > 0
 
+    @staticmethod
+    def _two_segment_df():
+        """Segment A is clean; segment B is 100%-missing on `score`."""
+        n = 200
+        df_a = pd.DataFrame(
+            {
+                "segment_cut_off": ["A"] * n,
+                "status_name": ["booked"] * (n // 2) + ["rejected"] * (n // 2),
+                "mis_date": pd.date_range("2023-01-01", periods=n, freq="D"),
+                "oa_amt": np.random.rand(n) * 1000,
+                "score": np.random.rand(n),
+            }
+        )
+        df_b = df_a.copy()
+        df_b["segment_cut_off"] = "B"
+        df_b["score"] = np.nan
+        return pd.concat([df_a, df_b], ignore_index=True)
+
+    def test_content_checks_scoped_to_segment(self):
+        """Audit #34: a defect confined to segment B must not halt segment A's
+        run (the old file-wide basis saw B's 50%-of-file missing score and
+        flagged A), and must still be caught when running segment B."""
+        df = self._two_segment_df()
+
+        report_a = run_data_quality_checks(df, _make_settings(segment_filter="A"), verbose=False)
+        missing_a = next(c for c in report_a.checks if c.name == "Missing Values")
+        assert missing_a.status == CheckStatus.PASSED, f"segment A flagged for segment B's defect: {missing_a.message}"
+
+        report_b = run_data_quality_checks(df, _make_settings(segment_filter="B"), verbose=False)
+        missing_b = next(c for c in report_b.checks if c.name == "Missing Values")
+        assert missing_b.status == CheckStatus.FAILED, "segment B's 100%-missing score must FAIL its own run"
+
+    def test_dilution_no_longer_hides_small_segment_defect(self):
+        """Audit #34 (the other direction): a tiny segment 100%-missing on a
+        column used to pass because the file-wide missing share stayed under
+        threshold."""
+        n_big = 2000
+        df_big = pd.DataFrame(
+            {
+                "segment_cut_off": ["A"] * n_big,
+                "status_name": ["booked"] * (n_big // 2) + ["rejected"] * (n_big // 2),
+                "mis_date": pd.to_datetime(["2023-03-01"] * n_big),
+                "oa_amt": np.random.rand(n_big) * 1000,
+                "score": np.random.rand(n_big),
+            }
+        )
+        n_small = 40  # 2% of the file → file-wide missing 2% < 5% warn threshold
+        df_small = df_big.iloc[:n_small].copy()
+        df_small["segment_cut_off"] = "B"
+        df_small["score"] = np.nan
+        df = pd.concat([df_big, df_small], ignore_index=True)
+
+        report_b = run_data_quality_checks(df, _make_settings(segment_filter="B"), verbose=False)
+        missing_b = next(c for c in report_b.checks if c.name == "Missing Values")
+        assert missing_b.status == CheckStatus.FAILED, (
+            "the small segment's 100%-missing column must no longer hide behind the file-wide denominator"
+        )
+
+    def test_empty_segment_falls_back_to_full_frame(self):
+        """Missing segment → segment-exists FAILS and gates the run; the content
+        checks fall back to the full frame instead of running on 0 rows."""
+        df = self._make_df()
+        report = run_data_quality_checks(df, _make_settings(segment_filter="NOPE"), verbose=False)
+        seg_check = next(c for c in report.checks if c.name == "Segment Filter")
+        assert seg_check.status == CheckStatus.FAILED
+        missing = next(c for c in report.checks if c.name == "Missing Values")
+        assert missing.status != CheckStatus.SKIPPED  # ran on the full frame, not an empty slice
+
 
 # =============================================================================
 # validate_data_or_fail Tests
