@@ -84,6 +84,26 @@ def test_segments_frame_excludes_supersegment_rows():
     assert df["actual_production"].sum() == total["actual_production"]
 
 
+def test_charts_use_requested_scenario():
+    """Audit #44: the deck chart builders accept a scenario and must plot THAT
+    scenario's rows, not silently fall back to base."""
+    cons = _consolidated()
+    pess = cons.copy()
+    pess["scenario"] = "pessimistic"
+    pess.loc[pess["group"] == "segment_seg_a", "optimum_production"] = 999e6
+    cons = pd.concat([cons, pess], ignore_index=True)
+
+    fig = pc.chart_production_by_segment(cons, scenario="pessimistic")
+    heights = [round(p.get_height(), 6) for p in fig.axes[0].patches]
+    assert 999.0 in heights  # pessimistic value plotted
+    plt.close(fig)
+
+    fig = pc.chart_production_by_segment(cons)  # default stays base
+    heights = [round(p.get_height(), 6) for p in fig.axes[0].patches]
+    assert 999.0 not in heights
+    plt.close(fig)
+
+
 def test_total_row():
     tr = pc._total_row(_consolidated())
     assert tr is not None and tr["group"] == "TOTAL"
@@ -172,6 +192,20 @@ def test_build_deck_smoke(tmp_path, monkeypatch):
 
     # title + exec + methodology + 4 charts + >=1 surface + next steps
     assert len(Presentation(str(out)).slides) >= 8
+
+
+def test_build_deck_unknown_scenario_raises(tmp_path):
+    """Audit #44: a scenario absent from the consolidated CSV must fail loudly,
+    not produce a deck of base numbers under a non-base label."""
+    import pytest
+
+    import generate_results_presentation as grp
+
+    tree = _build_output_tree(tmp_path)
+    with pytest.raises(ValueError, match="pessimistic.*base|base.*pessimistic"):
+        grp.build_results_presentation(
+            data_dir=tree, out_dir=tree / "deck", scenario="pessimistic", segments_config=tree / "no_such.toml"
+        )
 
 
 def test_all_surface_units_enumerates_segments(tmp_path):

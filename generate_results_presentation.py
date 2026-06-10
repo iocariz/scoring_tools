@@ -181,9 +181,16 @@ def build_results_presentation(
     suffix = f"_{scenario}" if scenario else ""
 
     cons = pd.read_csv(data_dir / "consolidated_risk_production.csv")
+    # Fail loudly when the requested scenario isn't in the consolidated CSV —
+    # the charts used to silently fall back to base under a non-base title (audit #44).
+    if pc._segments_frame(cons, scenario=scenario).empty:
+        available = sorted(cons["scenario"].astype(str).unique())
+        raise ValueError(
+            f"Scenario '{scenario}' has no rows in consolidated_risk_production.csv (available: {available})."
+        )
     bt_path = data_dir / "backtest" / f"backtest_consolidated{suffix}.csv"
     bt = pd.read_csv(bt_path) if bt_path.exists() else None
-    total = pc._total_row(cons)
+    total = pc._total_row(cons, scenario=scenario)
 
     # --- charts ---
     charts = {
@@ -192,7 +199,7 @@ def build_results_presentation(
         "swap": pc.chart_swap_waterfall,
         "acceptance": pc.chart_acceptance_by_segment,
     }
-    paths = {k: pc.save_chart(fn(cons), img_dir / f"{k}.png") for k, fn in charts.items()}
+    paths = {k: pc.save_chart(fn(cons, scenario=scenario), img_dir / f"{k}.png") for k, fn in charts.items()}
     if bt is not None and not bt.empty:
         paths["backtest"] = pc.save_chart(pc.chart_backtest_validation(bt), img_dir / "backtest.png")
 
@@ -214,7 +221,7 @@ def build_results_presentation(
     prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
 
     _slide_title(prs, total, scenario, today)
-    _slide_exec_summary(prs, total, bt)
+    _slide_exec_summary(prs, total, bt, scenario=scenario)
     _slide_methodology(prs)
     _slide_chart(
         prs,
@@ -282,9 +289,9 @@ def _slide_title(prs, total, scenario, today):
     _box(slide, 0.8, 4.4, 11.7, 0.5, sub, size=14, color=RGBColor(0xC9, 0xD6, 0xE5))
 
 
-def _slide_exec_summary(prs, total, bt):
+def _slide_exec_summary(prs, total, bt, scenario="base"):
     slide = _blank(prs)
-    _title_bar(slide, prs, "Executive summary", "Current booked portfolio vs proposed cutoffs (base scenario)")
+    _title_bar(slide, prs, "Executive summary", f"Current booked portfolio vs proposed cutoffs ({scenario} scenario)")
     if total is not None:
         ap, op = total["actual_production"], total["optimum_production"]
         ar, orr = total["actual_risk_pct"], total["optimum_risk_pct"]

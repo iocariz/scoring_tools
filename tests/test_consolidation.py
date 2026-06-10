@@ -1285,6 +1285,69 @@ class TestPatchFromSegmentAudits:
 
 
 # =============================================================================
+# Classification grid Total risk (audit #43)
+# =============================================================================
+
+
+def _grid_row(cat, ib, vol, risk, den=None, cnt=1):
+    row = {
+        "category": cat,
+        "income_bin": ib,
+        "income_label": f"ib{ib}",
+        "volume": vol,
+        "risk": risk,
+        "count": cnt,
+    }
+    if den is not None:
+        row["risk_den"] = den
+    return row
+
+
+class TestClassificationGridTotalRisk:
+    """The Total risk column must be an exposure-pooled rate (Σ(risk·den)/Σden ==
+    mult·Σnum/Σden), not a production-volume-weighted mean with None→0 bias."""
+
+    @staticmethod
+    def _keep_total_risk(grid):
+        import openpyxl
+
+        from src.consolidation import _write_classification_grid
+
+        wb = openpyxl.Workbook()
+        _write_classification_grid(wb.active, grid, start_row=1)
+        # layout: data rows start at start_row+3 (Keep first); cols = 1 category +
+        # 3 per income bin (Volume/Risk/Count) + Total group → with 2 bins the
+        # Total risk cell is column 9.
+        return wb.active.cell(row=4, column=9).value
+
+    def test_no_risk_bins_excluded_from_total(self):
+        """A bin without risk data used to contribute 0% to the numerator while its
+        full volume stayed in the denominator — biasing the Total downward."""
+        grid = [
+            _grid_row("Keep", 1, vol=1000.0, risk=1.0, den=100.0),
+            _grid_row("Keep", 2, vol=1000.0, risk=None, den=0.0),
+        ]
+        assert self._keep_total_risk(grid) == 1.0  # old behavior: 0.5
+
+    def test_total_pooled_by_risk_denominator_not_volume(self):
+        """risk_i = mult·num_i/den_i, so Σ(risk·den)/Σden is the exact pooled rate;
+        oa_amt volume is the wrong weight."""
+        grid = [
+            _grid_row("Keep", 1, vol=10000.0, risk=1.0, den=100.0),
+            _grid_row("Keep", 2, vol=10.0, risk=3.0, den=300.0),
+        ]
+        # (1·100 + 3·300) / 400 = 2.5; old volume weighting gave ≈ 1.002
+        assert self._keep_total_risk(grid) == 2.5
+
+    def test_legacy_rows_without_risk_den_fall_back_to_volume_over_risk_bins(self):
+        grid = [
+            _grid_row("Keep", 1, vol=100.0, risk=1.0),
+            _grid_row("Keep", 2, vol=900.0, risk=None),
+        ]
+        assert self._keep_total_risk(grid) == 1.0  # old behavior: 0.1
+
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 

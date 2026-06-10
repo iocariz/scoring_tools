@@ -2326,13 +2326,6 @@ def _write_classification_grid(ws, grid_data, start_row, is_mr=False):
             total_vol += vol
             total_cnt += cnt
 
-            # For totals risk recalculation — accumulate raw numerator/denominator
-            # We stored risk as percentage, but to get a proper weighted total we
-            # need to re-derive from todu sums.  However we only stored the final
-            # risk.  Instead we'll just use the lookup data that was computed with
-            # the correct formula (it aggregates at the per-ib level).
-            # We'll compute total risk separately below.
-
             # Volume cell
             vc = ws.cell(row=r, column=col)
             vc.value = vol
@@ -2374,14 +2367,26 @@ def _write_classification_grid(ws, grid_data, start_row, is_mr=False):
         col += 1
 
         if has_risk:
-            # Total risk: find all rows for this category across income bins
-            # and sum todu values for proper weighted average
+            # Total risk: pool the per-bin rates by their own exposure denominator.
+            # Each bin's risk = mult·num/den, so Σ(risk·den)/Σden == mult·Σnum/Σden —
+            # the exact pooled rate. Bins without risk are excluded from BOTH sides
+            # (the old oa_amt-volume weighting counted them as 0% risk, biasing the
+            # total downward — audit #43). Legacy rows lacking risk_den fall back to
+            # production-volume weights, still over risk-bearing bins only.
             total_risk = None
             cat_rows = [lookup.get((cat, ib), {}) for ib in ib_order]
-            # We don't have raw todu here; use weighted average by volume as approximation
-            weighted_sum = sum((cr.get("risk", 0) or 0) * (cr.get("volume", 0) or 0) for cr in cat_rows)
-            if total_vol > 0 and any(cr.get("risk") is not None for cr in cat_rows):
-                total_risk = weighted_sum / total_vol
+            pairs = []
+            for cr in cat_rows:
+                risk_v = cr.get("risk")
+                if risk_v is None:
+                    continue
+                w = cr.get("risk_den") or 0.0
+                if w <= 0:
+                    w = cr.get("volume", 0) or 0.0
+                if w > 0:
+                    pairs.append((float(risk_v), float(w)))
+            if pairs:
+                total_risk = sum(rv * w for rv, w in pairs) / sum(w for _, w in pairs)
             rc = ws.cell(row=r, column=col)
             rc.value = total_risk if total_risk is not None else ""
             if isinstance(rc.value, float):
@@ -3359,7 +3364,11 @@ def _build_classification_grid(
         return None
 
     # ── Compute risk per (income_bin, category) from desagregado ──
+    # Alongside each risk %, keep its exposure denominator (Σ todu_amt_pile_h6)
+    # so the grid writer can pool an exact Total: since risk = mult·num/den,
+    # Σ(risk·den)/Σden == mult·Σnum/Σden (audit #43).
     risk_lookup: dict[tuple[float, str], float | None] = {}
+    den_lookup: dict[tuple[float, str], float] = {}
     if df_sum is not None and "passes_cut" in df_sum.columns:
         ib_col_ds = pd.to_numeric(df_sum["income_bin"], errors="coerce")
         for iv in ib_vals:
@@ -3378,6 +3387,7 @@ def _build_classification_grid(
                     r_raw = calculate_b2_ever_h6(rn, rd, multiplier=multiplier, as_percentage=True, decimals=4)
                     risk = float(r_raw) if pd.notna(r_raw) else None
                 risk_lookup[(iv, cat)] = risk
+                den_lookup[(iv, cat)] = float(rd) if risk is not None else 0.0
             # Optimum risk = combined kept_boo + swap_in_rep
             sub_pass = sub[sub["passes_cut"]]
             o_rn = (sub_pass["todu_30ever_h6_boo"].sum() if "todu_30ever_h6_boo" in sub_pass.columns else 0) + (
@@ -3391,6 +3401,7 @@ def _build_classification_grid(
                 or_raw = calculate_b2_ever_h6(o_rn, o_rd, multiplier=multiplier, as_percentage=True, decimals=4)
                 opt_risk = float(or_raw) if pd.notna(or_raw) else None
             risk_lookup[(iv, "Optimum")] = opt_risk
+            den_lookup[(iv, "Optimum")] = float(o_rd) if opt_risk is not None else 0.0
 
     # ── Build grid rows from audit (volumes/counts) + risk lookup ──
     cls_col = audit["classification"].astype(str).str.strip()
@@ -3415,6 +3426,7 @@ def _build_classification_grid(
                     "income_label": label,
                     "volume": vol,
                     "risk": risk,
+                    "risk_den": den_lookup.get((iv, grid_cat), 0.0),
                     "count": cnt,
                 }
             )
@@ -3428,6 +3440,7 @@ def _build_classification_grid(
                 "income_label": label,
                 "volume": keep_r["volume"] + si_r["volume"],
                 "risk": risk_lookup.get((iv, "Optimum")),
+                "risk_den": den_lookup.get((iv, "Optimum"), 0.0),
                 "count": keep_r["count"] + si_r["count"],
             }
         )
