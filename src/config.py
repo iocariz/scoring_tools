@@ -406,6 +406,13 @@ class PreprocessingSettings(BaseModel):
     n_bootstraps: int = Field(
         default=DEFAULT_N_BOOTSTRAPS, ge=100, le=50000, description="Bootstrap replicates for CI estimation"
     )
+    # Scenario selection basis (audit #28 Phase C — Expert, default "point"):
+    # "point"    — classic rule: max production whose POINT-estimate risk <= target.
+    # "ci_upper" — noise-margin rule: max production whose bootstrap risk CI
+    #              UPPER bound <= target (per-candidate CI from the selection-aware
+    #              bootstrap). More conservative by construction (less production);
+    #              enabling it changes cutoffs and needs M5-style sign-off.
+    selection_risk_basis: Literal["point", "ci_upper"] = "point"
     # Uncertainty-aware monotonicity relaxation (optional):
     # keep strict monotonicity by default; when enabled, skip local adjacency
     # constraints for pairs that are both sparse and statistically ambiguous.

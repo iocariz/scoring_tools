@@ -87,6 +87,87 @@ def run_scenario_analysis(
     segment = settings.segment_filter
     current_risk = float(round(scenario_risk, 1))
 
+    # Calculate main annual coef for production scaling
+    date_ini_main = settings.get_date("date_ini_book_obs")
+    date_fin_main = settings.get_date("date_fin_book_obs")
+    n_months_main_calc = (
+        (date_fin_main.year - date_ini_main.year) * 12 + (date_fin_main.month - date_ini_main.month) + 1
+    )
+    annual_coef_main = 12 / n_months_main_calc if n_months_main_calc > 0 else 1.0
+
+    # Score-rejected loans of the main period: lets the bootstraps resample the
+    # reject-inferred component so the risk CI matches the blended headline
+    # basis instead of bracketing booked-only realized risk (audit #28).
+    rejected_loans_main = pd.DataFrame()
+    if "oa_amt_h0_rep" in data_summary_desagregado.columns:
+        rejected_loans_main = filter_by_date(
+            data_clean,
+            "mis_date",
+            settings.date_ini_book_obs,
+            settings.date_fin_book_obs,
+        )
+        rejected_loans_main = rejected_loans_main[
+            (rejected_loans_main[Columns.STATUS_NAME] == StatusName.REJECTED.value)
+            & (rejected_loans_main[Columns.REJECT_REASON] == RejectReason.SCORE.value)
+        ]
+
+    # Selection-aware uncertainty (audit #28 Phase B): re-run the SELECTION
+    # inside each bootstrap replicate over the frozen frontier, quantifying the
+    # winner's curse the fixed-mask CI cannot see. Diagnostic — and, when
+    # selection_risk_basis="ci_upper" (Phase C), the source of the
+    # per-candidate CI the noise-margin selection rule consumes.
+    sel_boot = None
+    if grid is not None and pareto_masks:
+        from src.selection_uncertainty import selection_aware_bootstrap
+
+        sel_boot = selection_aware_bootstrap(
+            data_booked=data_booked,
+            grid=grid,
+            pareto_masks=pareto_masks,
+            variables=settings.variables,
+            threshold=current_risk,
+            multiplier=settings.multiplier,
+            annual_coef=annual_coef_main,
+            rejected_loans=rejected_loans_main if not rejected_loans_main.empty else None,
+            rep_cells=data_summary_desagregado,
+            n_bootstraps=settings.n_bootstraps,
+        )
+        if sel_boot is not None:
+            logger.info(
+                f"[{segment}] Scenario {scenario_name} selection-aware CI: "
+                f"risk [{sel_boot.risk_ci_sel_lower:.4f}, {sel_boot.risk_ci_sel_upper:.4f}]% | "
+                f"winner's-curse optimism {sel_boot.selection_optimism_pp:+.4f}pp | "
+                f"re-selection in {sel_boot.reselect_pct:.0f}% of replicates"
+            )
+
+    # Optional noise-margin selection (audit #28 Phase C — Expert, default off):
+    # require the candidate's risk CI UPPER bound under the target instead of
+    # the point estimate. More conservative by construction.
+    target_sol_fac = None
+    if settings.selection_risk_basis == "ci_upper":
+        if sel_boot is None:
+            logger.warning(
+                f"[{segment}] selection_risk_basis='ci_upper' requested but the selection-aware "
+                "bootstrap is unavailable (no frontier masks/grid) — falling back to the point rule."
+            )
+        else:
+            from src.selection_uncertainty import select_with_ci_margin
+
+            j = select_with_ci_margin(sel_boot, current_risk)
+            if j is None:
+                logger.warning(
+                    f"[{segment}] ci_upper selection: NO candidate has risk CI-upper <= "
+                    f"{current_risk:.2f}% — falling back to the point rule (loud: the noise margin "
+                    "is unattainable at this target)."
+                )
+            else:
+                target_sol_fac = j
+                logger.info(
+                    f"[{segment}] ci_upper selection: candidate sol_fac={j} chosen "
+                    f"(risk {sel_boot.candidate_risk_orig[j]:.4f}%, "
+                    f"ci_upper {sel_boot.candidate_risk_ci_upper[j]:.4f}% <= {current_risk:.2f}%)"
+                )
+
     visualizer = RiskProductionVisualizer(
         data_summary=data_summary,
         data_summary_disaggregated=data_summary_desagregado,
@@ -100,6 +181,7 @@ def run_scenario_analysis(
         grid=grid,
         multiplier=settings.multiplier,
         total_demand=total_demand,
+        target_sol_fac=target_sol_fac,
     )
 
     suffix = f"_{scenario_name}"
@@ -121,14 +203,6 @@ def run_scenario_analysis(
 
     inv_var1 = settings.variables[1] in settings.inv_vars if len(settings.variables) > 1 else False
     is_nd = len(settings.variables) != 2
-
-    # Calculate main annual coef for production scaling
-    date_ini_main = settings.get_date("date_ini_book_obs")
-    date_fin_main = settings.get_date("date_fin_book_obs")
-    n_months_main_calc = (
-        (date_fin_main.year - date_ini_main.year) * 12 + (date_fin_main.month - date_ini_main.month) + 1
-    )
-    annual_coef_main = 12 / n_months_main_calc if n_months_main_calc > 0 else 1.0
 
     # Resolve the selected mask from the Pareto frontier (for N-d classify_by_mask usage)
     selected_mask = None
@@ -157,22 +231,6 @@ def run_scenario_analysis(
         passes = spec.classify(data_summary_desagregado)
         repesca_production = data_summary_desagregado.loc[passes, "oa_amt_h0_rep"].sum()
 
-    # Score-rejected loans of the main period: lets the bootstrap resample the
-    # reject-inferred component so the risk CI matches the blended headline
-    # basis instead of bracketing booked-only realized risk (audit #28).
-    rejected_loans_main = pd.DataFrame()
-    if "oa_amt_h0_rep" in data_summary_desagregado.columns:
-        rejected_loans_main = filter_by_date(
-            data_clean,
-            "mis_date",
-            settings.date_ini_book_obs,
-            settings.date_fin_book_obs,
-        )
-        rejected_loans_main = rejected_loans_main[
-            (rejected_loans_main[Columns.STATUS_NAME] == StatusName.REJECTED.value)
-            & (rejected_loans_main[Columns.REJECT_REASON] == RejectReason.SCORE.value)
-        ]
-
     ci_data = calculate_bootstrap_intervals(
         data_booked=data_booked,
         cut_map=cut_map,
@@ -188,34 +246,6 @@ def run_scenario_analysis(
         rep_cells=data_summary_desagregado,
     )
     logger.debug(f"[{segment}] Scenario {scenario_name} CI: {ci_data}")
-
-    # Selection-aware uncertainty (audit #28 Phase B): re-run the SELECTION
-    # inside each bootstrap replicate over the frozen frontier, quantifying the
-    # winner's curse the fixed-mask CI cannot see. Diagnostic only — the
-    # selected cutoff is unchanged. Requires the mask/grid (MILP) path.
-    sel_boot = None
-    if grid is not None and pareto_masks:
-        from src.selection_uncertainty import selection_aware_bootstrap
-
-        sel_boot = selection_aware_bootstrap(
-            data_booked=data_booked,
-            grid=grid,
-            pareto_masks=pareto_masks,
-            variables=settings.variables,
-            threshold=current_risk,
-            multiplier=settings.multiplier,
-            annual_coef=annual_coef_main,
-            rejected_loans=rejected_loans_main if not rejected_loans_main.empty else None,
-            rep_cells=data_summary_desagregado,
-            n_bootstraps=settings.n_bootstraps,
-        )
-        if sel_boot is not None:
-            logger.info(
-                f"[{segment}] Scenario {scenario_name} selection-aware CI: "
-                f"risk [{sel_boot.risk_ci_sel_lower:.4f}, {sel_boot.risk_ci_sel_upper:.4f}]% | "
-                f"winner's-curse optimism {sel_boot.selection_optimism_pp:+.4f}pp | "
-                f"re-selection in {sel_boot.reselect_pct:.0f}% of replicates"
-            )
 
     summary_table = visualizer.get_summary_table()
 
