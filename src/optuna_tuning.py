@@ -82,12 +82,15 @@ def tune_tree_models(
 
     # Hyperparameters are tuned by k-fold CV on the full data (tuning seed); the chosen params are
     # then scored on a FRESH-seed k-fold pass below (a different fold partition) — a selection metric
-    # with a real standard error and no single reused holdout (audit #7). A genuinely held-out 20%
-    # report is computed once on the *winning* model in inference_optimized, never used for selection.
+    # with a real standard error and no single reused holdout (audit #7). KNOWN RESIDUAL BIAS (#32c):
+    # re-partitioning removes partition-overfit but not data-overfit — a best-of-N-trials config keeps
+    # some winner's-curse optimism vs untuned models (nested CV would remove it at ~k× the cost; the
+    # 1SE rule with the NB-corrected SE partially offsets it). The winner-only 20% report in
+    # inference_optimized is post-selection (see evaluate_holdout_rmse).
     tuning_data = raw_data
     fresh_seed = random_state + 1000
 
-    from src.inference_optimized import process_dataset
+    from src.inference_optimized import _nadeau_bengio_cv_se, compute_outlier_stats, process_dataset
 
     def eval_model(model, raw_eval, cv_folds, random_state):
         splits = _stratified_cv_splitter(raw_eval, cv_folds, random_state, indicators)
@@ -95,12 +98,23 @@ def tune_tree_models(
         for train_idx, val_idx in splits:
             raw_train, raw_val = raw_eval.iloc[train_idx].copy(), raw_eval.iloc[val_idx].copy()
 
-            # Aggregate train/val completely independently to prevent validation leakage
+            # Aggregate train/val completely independently to prevent validation leakage.
+            # Outlier stats come from the TRAIN fold (audit #32a): filtering the val fold
+            # by its own target dropped exactly the riskiest val bins from scoring.
             train_agg = process_dataset(
                 raw_train, bins, variables, indicators, target_var, multiplier, variables, z_threshold
             )
+            train_outlier_stats = compute_outlier_stats(train_agg, target_var) if len(train_agg) > 2 else None
             val_agg = process_dataset(
-                raw_val, bins, variables, indicators, target_var, multiplier, variables, z_threshold
+                raw_val,
+                bins,
+                variables,
+                indicators,
+                target_var,
+                multiplier,
+                variables,
+                z_threshold,
+                outlier_stats=train_outlier_stats,
             )
 
             # Skip fold if validation has too few bins for reliable R²
@@ -122,7 +136,8 @@ def tune_tree_models(
                 scores.append(np.sqrt(mean_squared_error(y_val, pred, sample_weight=w_val)))
         if not scores:
             return np.inf, 0.0
-        return np.mean(scores), np.std(scores, ddof=1) / np.sqrt(len(scores))
+        # Nadeau–Bengio corrected SE (audit #32d) — fold scores are correlated.
+        return np.mean(scores), _nadeau_bengio_cv_se(np.std(scores, ddof=1), len(scores))
 
     # --- XGBoost Study ---
     def objective_xgb(trial):
@@ -242,7 +257,7 @@ def tune_linear_models(
     # inference_optimized and is never used for selection.
     tuning_data = raw_data
 
-    from src.inference_optimized import process_dataset
+    from src.inference_optimized import _nadeau_bengio_cv_se, compute_outlier_stats, process_dataset
     from src.models import transform_variables
 
     def _fit_hurdle_per_loan(model_clone, raw_train):
@@ -262,12 +277,23 @@ def tune_linear_models(
         for train_idx, val_idx in splits:
             raw_train, raw_val = raw_eval.iloc[train_idx].copy(), raw_eval.iloc[val_idx].copy()
 
-            # Aggregate train/val completely independently to prevent validation leakage
+            # Aggregate train/val completely independently to prevent validation leakage.
+            # Outlier stats come from the TRAIN fold (audit #32a): filtering the val fold
+            # by its own target dropped exactly the riskiest val bins from scoring.
             train_agg = process_dataset(
                 raw_train, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold
             )
+            train_outlier_stats = compute_outlier_stats(train_agg, target_var) if len(train_agg) > 2 else None
             val_agg = process_dataset(
-                raw_val, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold
+                raw_val,
+                bins,
+                variables,
+                indicators,
+                target_var,
+                multiplier,
+                var_reg,
+                z_threshold,
+                outlier_stats=train_outlier_stats,
             )
 
             # Skip fold if validation has too few bins for reliable R²
@@ -297,7 +323,8 @@ def tune_linear_models(
         if not scores:
             raise optuna.exceptions.TrialPruned()
 
-        return np.mean(scores), np.std(scores, ddof=1) / np.sqrt(len(scores))
+        # Nadeau–Bengio corrected SE (audit #32d) — fold scores are correlated.
+        return np.mean(scores), _nadeau_bengio_cv_se(np.std(scores, ddof=1), len(scores))
 
     def safe_eval(model):
         try:

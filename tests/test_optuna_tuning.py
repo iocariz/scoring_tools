@@ -139,3 +139,49 @@ def test_selection_metric_reports_real_cv_se():
     )
     assert (results_df["CV Std RMSE"] >= 0).all()
     assert (results_df["CV Std RMSE"] > 0).any()  # real k-fold SE, not the all-zero holdout placeholder
+
+
+def test_val_fold_outlier_stats_come_from_train_fold(monkeypatch):
+    """Audit #32a: the validation fold must be outlier-filtered with TRAIN-fold
+    stats — the old call sites omitted outlier_stats, so process_dataset
+    computed median/MAD from the val fold's own target and silently dropped
+    exactly the riskiest validation bins from scoring."""
+    import src.inference_optimized as io_mod
+
+    real_process_dataset = io_mod.process_dataset
+    calls = []
+
+    def recording_process_dataset(*args, **kwargs):
+        calls.append(kwargs.get("outlier_stats"))
+        return real_process_dataset(*args, **kwargs)
+
+    monkeypatch.setattr(io_mod, "process_dataset", recording_process_dataset)
+
+    np.random.seed(42)
+    X = pd.DataFrame(
+        {
+            "var_x": np.random.rand(120),
+            "var_y": np.random.rand(120),
+            "todu_30ever_h6": np.random.rand(120) * 100,
+            "todu_amt_pile_h6": np.random.rand(120) * 1000,
+            "status_name": ["Booked"] * 120,
+        }
+    )
+    tune_tree_models(
+        raw_data=X,
+        bins=None,
+        variables=["var_x", "var_y"],
+        indicators=["todu_30ever_h6", "todu_amt_pile_h6"],
+        target_var="b2_ever_h6",
+        multiplier=100.0,
+        z_threshold=3.0,
+        cv_folds=2,
+        n_trials=1,
+        random_state=42,
+    )
+
+    assert calls, "process_dataset was never invoked"
+    passed_stats = [c for c in calls if c is not None]
+    assert passed_stats, "no val-fold call received train-derived outlier_stats (audit #32a leak)"
+    # calls alternate train (None) / val (train stats): half of them carry stats
+    assert len(passed_stats) == len(calls) // 2

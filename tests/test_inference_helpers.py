@@ -86,6 +86,29 @@ class TestStratifiedCvSplitter:
         splits = list(io._stratified_cv_splitter(df, cv_folds=4, random_state=0, indicators=[]))
         assert len(splits) == 4
 
+    def test_stratifies_on_default_indicator_not_indicators0(self):
+        """Audit #33: on the booked population indicators[0] (acct_booked_h0) is
+        ~all 1s, so the old splitter silently fell back to plain KFold despite
+        the docstring's claim. The splitter must stratify on todu_30ever_h6>0:
+        with 8 defaults over 4 folds, every fold gets exactly 2."""
+        rng = np.random.RandomState(7)
+        n = 400
+        df = pd.DataFrame(
+            {
+                "acct_booked_h0": np.ones(n),  # the old strat column: single class
+                "todu_30ever_h6": np.zeros(n),
+                "other": rng.rand(n),
+            }
+        )
+        df.loc[rng.choice(n, 8, replace=False), "todu_30ever_h6"] = 5.0
+
+        splits = list(io._stratified_cv_splitter(df, cv_folds=4, random_state=0, indicators=["acct_booked_h0"]))
+        assert len(splits) == 4
+        per_fold_defaults = [int((df.iloc[val]["todu_30ever_h6"] > 0).sum()) for _, val in splits]
+        assert per_fold_defaults == [2, 2, 2, 2], (
+            f"defaults not stratified across folds: {per_fold_defaults} (plain-KFold fallback?)"
+        )
+
 
 class TestGenerateRegressionVariables:
     def test_2var_generates_feature_sets(self):
