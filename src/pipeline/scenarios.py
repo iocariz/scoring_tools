@@ -189,6 +189,34 @@ def run_scenario_analysis(
     )
     logger.debug(f"[{segment}] Scenario {scenario_name} CI: {ci_data}")
 
+    # Selection-aware uncertainty (audit #28 Phase B): re-run the SELECTION
+    # inside each bootstrap replicate over the frozen frontier, quantifying the
+    # winner's curse the fixed-mask CI cannot see. Diagnostic only — the
+    # selected cutoff is unchanged. Requires the mask/grid (MILP) path.
+    sel_boot = None
+    if grid is not None and pareto_masks:
+        from src.selection_uncertainty import selection_aware_bootstrap
+
+        sel_boot = selection_aware_bootstrap(
+            data_booked=data_booked,
+            grid=grid,
+            pareto_masks=pareto_masks,
+            variables=settings.variables,
+            threshold=current_risk,
+            multiplier=settings.multiplier,
+            annual_coef=annual_coef_main,
+            rejected_loans=rejected_loans_main if not rejected_loans_main.empty else None,
+            rep_cells=data_summary_desagregado,
+            n_bootstraps=settings.n_bootstraps,
+        )
+        if sel_boot is not None:
+            logger.info(
+                f"[{segment}] Scenario {scenario_name} selection-aware CI: "
+                f"risk [{sel_boot.risk_ci_sel_lower:.4f}, {sel_boot.risk_ci_sel_upper:.4f}]% | "
+                f"winner's-curse optimism {sel_boot.selection_optimism_pp:+.4f}pp | "
+                f"re-selection in {sel_boot.reselect_pct:.0f}% of replicates"
+            )
+
     summary_table = visualizer.get_summary_table()
 
     # Loan-level audit totals are canonical for production (€): reconcile summary before save
@@ -269,6 +297,19 @@ def run_scenario_analysis(
             summary_table.loc[mask_opt, "risk_ci_basis"] = ci_data.get("risk_ci_basis", "booked_realized")
             summary_table.loc[mask_opt, "risk_booked_ci_lower"] = ci_data.get("risk_booked_ci_lower", np.nan)
             summary_table.loc[mask_opt, "risk_booked_ci_upper"] = ci_data.get("risk_booked_ci_upper", np.nan)
+
+    # Selection-aware uncertainty columns (audit #28 Phase B; NaN off the MILP path)
+    summary_table["risk_ci_sel_lower"] = np.nan
+    summary_table["risk_ci_sel_upper"] = np.nan
+    summary_table["selection_optimism_pp"] = np.nan
+    summary_table["selection_reselect_pct"] = np.nan
+    if sel_boot is not None:
+        mask_opt = summary_table["Metric"] == "Optimum selected"
+        if mask_opt.any():
+            summary_table.loc[mask_opt, "risk_ci_sel_lower"] = sel_boot.risk_ci_sel_lower
+            summary_table.loc[mask_opt, "risk_ci_sel_upper"] = sel_boot.risk_ci_sel_upper
+            summary_table.loc[mask_opt, "selection_optimism_pp"] = sel_boot.selection_optimism_pp
+            summary_table.loc[mask_opt, "selection_reselect_pct"] = sel_boot.reselect_pct
 
     # Add swap-in risk adjustment diagnostics to summary table (Swap-in row only)
     for diag_col, diag_label in [
