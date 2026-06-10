@@ -2446,6 +2446,13 @@ class TestTieredReconstruction:
         assert result.iloc[0]["todu_amt_pile_h6"] == 200.0
         # Second account (0 months maturity) should NOT be Tier 1
         assert result.iloc[1]["_mr_tier"] != 1
+        # Audit #30 lifetime regression: the _actual_* columns must SURVIVE
+        # _assign_tiered_risk — process_mr_period later wipes/refills todu_*
+        # with model-predicted reconstructions for all booked accounts and
+        # _restore_tier1_actuals needs the actuals afterwards. (The old code
+        # dropped them here, which silently turned the restore into a no-op.)
+        assert "_actual_todu_30ever_h6" in result.columns
+        assert "_actual_todu_amt_pile_h6" in result.columns
 
     def test_maturity_threshold_custom_and_zero(self, merge_keys, merge_df):
         """Tier boundaries follow configurable mr_maturity_months, including 0."""
@@ -2506,3 +2513,52 @@ class TestTieredReconstruction:
             min_obs_per_bin=30,  # h3_min_obs = 15, so n_obs_mr_h3=5 should fail gate
         )
         assert not (out["_mr_tier"] == 2).any()
+
+
+# =============================================================================
+# Audit #30 — Tier-1 actual H6 outcomes survive the model refill
+# =============================================================================
+
+
+class TestRestoreTier1Actuals:
+    @staticmethod
+    def _frame():
+        """Two mature (Tier-1) accounts + one immature, AFTER the model refill:
+        todu_* carry the model-predicted reconstruction, _actual_* the truth."""
+        return pd.DataFrame(
+            {
+                "_mr_tier": [1, 1, 3],
+                "_actual_todu_30ever_h6": [4.0, 0.0, np.nan],
+                "_actual_todu_amt_pile_h6": [100.0, 80.0, np.nan],
+                # model reconstruction: num_i * (pred_pile/actual_pile) — wrong basis
+                "todu_amt_pile_h6": [150.0, 40.0, 90.0],
+                "todu_30ever_h6": [6.0, 0.0, 1.0],
+            }
+        )
+
+    def test_tier1_actuals_restored_ratio_of_sums(self):
+        from src.mr_pipeline import _restore_tier1_actuals
+
+        df = self._frame()
+        n = _restore_tier1_actuals(df)
+        assert n == 2
+        # Tier-1 rows carry the ACTUAL numerator and denominator again …
+        assert df.loc[0, "todu_30ever_h6"] == 4.0 and df.loc[0, "todu_amt_pile_h6"] == 100.0
+        assert df.loc[1, "todu_30ever_h6"] == 0.0 and df.loc[1, "todu_amt_pile_h6"] == 80.0
+        # … so the bin aggregate is the actual ratio-of-sums (audit #30): the
+        # model reconstruction gave 6/190 ≈ 0.0316; the truth is 4/180 ≈ 0.0222.
+        tier1 = df["_mr_tier"] == 1
+        assert df.loc[tier1, "todu_30ever_h6"].sum() / df.loc[tier1, "todu_amt_pile_h6"].sum() == pytest.approx(
+            4.0 / 180.0
+        )
+        # the immature account keeps its model-based reconstruction
+        assert df.loc[2, "todu_amt_pile_h6"] == 90.0 and df.loc[2, "todu_30ever_h6"] == 1.0
+
+    def test_noop_without_tier_column_or_actuals(self):
+        from src.mr_pipeline import _restore_tier1_actuals
+
+        df = pd.DataFrame({"todu_30ever_h6": [1.0], "todu_amt_pile_h6": [10.0]})
+        assert _restore_tier1_actuals(df) == 0
+        df2 = self._frame().drop(columns=["_actual_todu_30ever_h6"])
+        df2["_actual_todu_30ever_h6"] = np.nan
+        assert _restore_tier1_actuals(df2) == 0

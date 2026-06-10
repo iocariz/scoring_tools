@@ -903,6 +903,39 @@ def _compute_hybrid_mr_risk(
     return merge_df, comparison_df
 
 
+def _restore_tier1_actuals(data_demand_mr: pd.DataFrame) -> int:
+    """Restore ACTUAL H6 numerator/denominator for Tier-1 (mature) accounts (audit #30).
+
+    ``process_mr_period`` wipes and refills ``todu_amt_pile_h6`` (model-predicted,
+    pro-rated by ``oa_amt``) and ``todu_30ever_h6`` (= ``b2_tmp × pile / mult``)
+    for ALL booked accounts — which silently overwrote the Tier-1 actuals that
+    ``_assign_tiered_risk`` had restored. For a mature account the per-account
+    actual rate ``b2_i = mult·num_i/pile_i`` then got multiplied by a DIFFERENT
+    denominator, so the reconstructed numerator was ``num_i·(pred_pile/actual_pile)``
+    and the bin aggregate became a predicted-exposure-weighted mean of per-account
+    ratios instead of the actual ratio-of-sums. This puts the actual numerator AND
+    denominator back, making Tier-1 bins aggregate to Σnum_actual/Σpile_actual.
+
+    Returns the number of restored accounts.
+    """
+    if "_mr_tier" not in data_demand_mr.columns:
+        return 0
+    tier1 = (
+        (data_demand_mr["_mr_tier"] == 1)
+        & data_demand_mr.get("_actual_todu_30ever_h6", pd.Series(dtype=float)).notna()
+        & data_demand_mr.get("_actual_todu_amt_pile_h6", pd.Series(dtype=float)).notna()
+    )
+    n = int(tier1.sum())
+    if n:
+        data_demand_mr.loc[tier1, "todu_amt_pile_h6"] = data_demand_mr.loc[tier1, "_actual_todu_amt_pile_h6"]
+        data_demand_mr.loc[tier1, "todu_30ever_h6"] = data_demand_mr.loc[tier1, "_actual_todu_30ever_h6"]
+        logger.info(
+            f"Tier-1 (mature) accounts: restored ACTUAL H6 outcomes for {n:,} account(s) "
+            "(model-predicted exposure applies to immature tiers only — audit #30)."
+        )
+    return n
+
+
 def _assign_tiered_risk(
     data_demand_mr: pd.DataFrame,
     merge_df: pd.DataFrame,
@@ -1099,10 +1132,10 @@ def _assign_tiered_risk(
             f"Consider lowering mr_min_obs_per_bin or checking bin coverage."
         )
 
-    # Clean up temporary actual columns
-    data_demand_mr = data_demand_mr.drop(
-        columns=["_actual_todu_30ever_h6", "_actual_todu_amt_pile_h6"], errors="ignore"
-    )
+    # NOTE: the _actual_todu_* columns are intentionally KEPT — process_mr_period
+    # wipes/refills todu_* with model-predicted reconstructions for all booked
+    # accounts and _restore_tier1_actuals needs the actuals afterwards (audit #30).
+    # They are dropped there, right after the restore.
 
     return data_demand_mr
 
@@ -2169,6 +2202,13 @@ def process_mr_period(
                 data_demand_mr.loc[calc_mask, "todu_amt_pile_h6"],
                 multiplier=settings.multiplier,
             )
+
+        # Tier-1 (mature) accounts keep their ACTUAL H6 numerator/denominator —
+        # the refill above is for accounts whose H6 is not yet observable (audit #30).
+        _restore_tier1_actuals(data_demand_mr)
+        data_demand_mr = data_demand_mr.drop(
+            columns=["_actual_todu_30ever_h6", "_actual_todu_amt_pile_h6"], errors="ignore"
+        )
 
         # Create data_booked_mr
         data_booked_mr = data_demand_mr[data_demand_mr["status_name"] == StatusName.BOOKED.value].copy()
