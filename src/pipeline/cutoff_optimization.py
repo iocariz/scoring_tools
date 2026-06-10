@@ -396,10 +396,21 @@ def run_optimization_phase(
         )
 
         if pareto_df.empty:
-            # Fallback depending on number of variables
-            if len(settings.variables) != 2:
-                # N!=2: try GA fallback instead of legacy enumeration
-                logger.warning(f"[{segment}] MILP produced no solutions for N!=2, trying GA fallback")
+            # Fallback depending on number of variables. The GA fallback honors
+            # cell pins + swap-in caps; the legacy 2-var enumeration CANNOT
+            # express either, so it is only used when no such constraint is
+            # active (audit #36 — fallbacks must not silently drop constraints).
+            has_side_constraints = bool(floor_fixed_cells) or any(
+                v is not None for v in (settings.max_swapin_production_pct, settings.max_swapin_risk)
+            )
+            if len(settings.variables) != 2 or has_side_constraints:
+                if len(settings.variables) == 2:
+                    logger.warning(
+                        f"[{segment}] MILP produced no solutions; cell pins / swap-in caps are active, "
+                        "so the constraint-blind legacy enumeration is skipped — trying GA fallback"
+                    )
+                else:
+                    logger.warning(f"[{segment}] MILP produced no solutions for N!=2, trying GA fallback")
                 from src.optimization_utils import _ga_pareto_fallback
 
                 pareto_df, grid, pareto_masks = _ga_pareto_fallback(
@@ -411,11 +422,15 @@ def run_optimization_phase(
                     monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
                     monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
                     monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
+                    fixed_cells=floor_fixed_cells,
+                    max_swapin_production_pct=settings.max_swapin_production_pct,
+                    max_swapin_risk=settings.max_swapin_risk,
                 )
                 if pareto_df.empty:
                     raise RuntimeError(
-                        f"[{segment}] Both MILP and GA produced no solutions for N>2 "
-                        f"({len(settings.variables)} variables)."
+                        f"[{segment}] Both MILP and GA produced no solutions "
+                        f"({len(settings.variables)} variables"
+                        f"{', with cell pins / swap-in caps active' if has_side_constraints else ''})."
                     )
                 data_summary = add_bin_columns(pareto_df, pareto_masks, grid, settings.inv_vars)
                 data_summary_sample_no_opt = pd.DataFrame(columns=["oa_amt_h0", "b2_ever_h6"])
@@ -453,6 +468,9 @@ def run_optimization_phase(
                         monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
                         monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
                         monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
+                        fixed_cells=floor_fixed_cells,
+                        max_swapin_production_pct=settings.max_swapin_production_pct,
+                        max_swapin_risk=settings.max_swapin_risk,
                     )
                     if pareto_df.empty:
                         raise RuntimeError(

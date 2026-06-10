@@ -855,20 +855,34 @@ def trace_pareto_frontier(
                         all_masks.append(mask)
 
             if not solutions:
-                # Last resort: accept exactly the floor cells (+ all cells for
-                # max-risk solution) so the constraint is guaranteed satisfied.
+                # Last resort: accept exactly the pinned cells (+ everything the
+                # pins allow as the max-risk upper bound) so the constraint is
+                # guaranteed satisfied.
                 logger.warning("Floor constraint still infeasible. Creating floor-only solution.")
-                floor_mask = np.zeros(len(grid.cell_data), dtype=int)
+                n_cells = len(grid.cell_data)
+                floor_mask = np.zeros(n_cells, dtype=int)
                 for idx, val in fixed_cells.items():
                     floor_mask[idx] = val
                 kpis = evaluate_solution(floor_mask, grid, indicators, multiplier, multiplier_h3=multiplier_h3)
                 solutions.append(kpis)
                 all_masks.append(floor_mask)
-                # Also add accept-all as upper bound
-                all_mask = np.ones(len(grid.cell_data), dtype=int)
+                # Upper bound: accept everything EXCEPT pinned rejects and
+                # phantoms — the old unconditional accept-all violated ceiling
+                # (must-reject) pins and accepted unobserved cells (audit #36).
+                all_mask = np.ones(n_cells, dtype=int)
+                if len(grid.observed) == n_cells:
+                    all_mask[~grid.observed] = 0
+                for idx, val in fixed_cells.items():
+                    all_mask[idx] = val
                 kpis_all = evaluate_solution(all_mask, grid, indicators, multiplier, multiplier_h3=multiplier_h3)
                 solutions.append(kpis_all)
                 all_masks.append(all_mask)
+                if max_swapin_production_pct is not None or max_swapin_risk is not None:
+                    logger.warning(
+                        "Last-resort floor/upper-bound solutions honor the cell pins but NOT the "
+                        "swap-in caps (max_swapin_*) — no fully-feasible solution exists; verify "
+                        "the selected scenario against the caps before shipping it."
+                    )
         else:
             logger.warning("No feasible MILP solutions found. Attempting GA fallback...")
             return _ga_pareto_fallback(
@@ -881,6 +895,9 @@ def trace_pareto_frontier(
                 monotonicity_relaxation_enabled=monotonicity_relaxation_enabled,
                 monotonicity_uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
                 monotonicity_uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
+                fixed_cells=fixed_cells,
+                max_swapin_production_pct=max_swapin_production_pct,
+                max_swapin_risk=max_swapin_risk,
             )
 
     df = pd.DataFrame(solutions)
@@ -1207,8 +1224,17 @@ def _ga_pareto_fallback(
     monotonicity_relaxation_enabled: bool = False,
     monotonicity_uncertainty_min_exposure: float = 0.0,
     monotonicity_uncertainty_z_threshold: float = 0.0,
+    fixed_cells: dict[int, int] | None = None,
+    max_swapin_production_pct: float | None = None,
+    max_swapin_risk: float | None = None,
 ) -> tuple[pd.DataFrame, CellGrid, list[np.ndarray]]:
-    """Fallback GA solver using pymoo. Returns empty DataFrame if pymoo not available."""
+    """Fallback GA solver using pymoo. Returns empty DataFrame if pymoo not available.
+
+    Honors the same side constraints as the MILP path (audit #36): ``fixed_cells``
+    pins are encoded as variable bounds (genes frozen), and the swap-in
+    production/risk caps as extra linear inequality rows — the old fallback
+    silently dropped all of them.
+    """
     try:
         from pymoo.algorithms.soo.nonconvex.ga import GA
         from pymoo.core.problem import Problem
@@ -1239,6 +1265,17 @@ def _ga_pareto_fallback(
         multiplier=multiplier,
     )
 
+    # Swap-in cap rows — identical linearization to milp_solve_cutoffs.
+    extra_constraint_rows: list[np.ndarray] = []
+    if max_swapin_production_pct is not None and "oa_amt_h0_rep" in cell.columns:
+        rep_prod = cell["oa_amt_h0_rep"].values.astype(float)
+        extra_constraint_rows.append(rep_prod - (max_swapin_production_pct / 100.0) * production)
+    if max_swapin_risk is not None and "todu_30ever_h6_rep" in cell.columns and "todu_amt_pile_h6_rep" in cell.columns:
+        rep_t30 = cell["todu_30ever_h6_rep"].values.astype(float)
+        rep_tamt = cell["todu_amt_pile_h6_rep"].values.astype(float)
+        extra_constraint_rows.append(multiplier * rep_t30 - (max_swapin_risk / 100.0) * rep_tamt)
+    A_extra = np.vstack(extra_constraint_rows) if extra_constraint_rows else np.zeros((0, grid.n_cells))
+
     all_t30 = todu_30.sum()
     all_tamt = todu_amt.sum()
     max_risk = float(calculate_b2_ever_h6(all_t30, all_tamt, multiplier=multiplier, as_percentage=True))
@@ -1253,14 +1290,26 @@ def _ga_pareto_fallback(
     for target in _progress_iter(targets, desc="GA Pareto fallback", enabled=show_progress, total=len(targets)):
         risk_coeffs = multiplier * todu_30 - (target / 100.0) * todu_amt
 
-        # Build upper bounds: phantom cells forced to 0
+        # Bounds: phantom cells forced to 0; pinned cells frozen to their value
+        # (pins take precedence, mirroring milp_solve_cutoffs bound order).
+        xl = np.zeros(grid.n_cells)
         xu = np.ones(grid.n_cells)
         if len(grid.observed) == grid.n_cells and not grid.observed.all():
             xu[~grid.observed] = 0
+        if fixed_cells:
+            for idx, val in fixed_cells.items():
+                xl[idx] = val
+                xu[idx] = val
 
         class CutoffProblem(Problem):
-            def __init__(self, _risk_coeffs=risk_coeffs, _xu=xu):
-                super().__init__(n_var=grid.n_cells, n_obj=1, n_ieq_constr=1 + A_mono.shape[0], xl=0, xu=_xu)
+            def __init__(self, _risk_coeffs=risk_coeffs, _xl=xl, _xu=xu):
+                super().__init__(
+                    n_var=grid.n_cells,
+                    n_obj=1,
+                    n_ieq_constr=1 + A_mono.shape[0] + A_extra.shape[0],
+                    xl=_xl,
+                    xu=_xu,
+                )
                 self._risk_coeffs = _risk_coeffs
 
             def _evaluate(self, X, out, *args, **kwargs):
@@ -1268,7 +1317,10 @@ def _ga_pareto_fallback(
                 out["F"] = -(X_round @ production)
                 risk_g = X_round @ self._risk_coeffs
                 mono_g = (A_mono @ X_round.T).T
-                out["G"] = np.column_stack([risk_g.reshape(-1, 1), mono_g])
+                cols = [np.asarray(risk_g).reshape(-1, 1), mono_g]
+                if A_extra.shape[0] > 0:
+                    cols.append((A_extra @ X_round.T).T)
+                out["G"] = np.column_stack(cols)
 
         problem = CutoffProblem()
         algorithm = GA(pop_size=100)
@@ -1286,6 +1338,12 @@ def _ga_pareto_fallback(
             risk_check = mask @ risk_coeffs
             if risk_check > 1e-6:
                 continue  # skip solutions exceeding risk target
+            # Verify pinned cells and swap-in caps (audit #36 — never return a
+            # mask that violates a constraint the MILP path would have enforced)
+            if fixed_cells and any(mask[idx] != val for idx, val in fixed_cells.items()):
+                continue
+            if A_extra.shape[0] > 0 and np.any(A_extra @ mask > 1e-6):
+                continue
             mask_key = tuple(mask.tolist())
             if mask_key not in seen_masks:
                 seen_masks.add(mask_key)

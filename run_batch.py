@@ -160,7 +160,7 @@ def learn_global_bin_edges(data: pd.DataFrame, base_config: dict[str, Any]) -> d
 
 
 def learn_supersegment_bin_edges(
-    data: pd.DataFrame,
+    data: pd.DataFrame | None,
     base_config: dict[str, Any],
     supersegments: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, list[float]]]:
@@ -172,10 +172,17 @@ def learn_supersegment_bin_edges(
     different supersegments to have bin splits tuned to their own data
     distribution.
 
+    Fixed ``bin_edges`` declared on a supersegment are **configuration, not
+    data-derived** — they are extracted even when ``data`` is ``None`` (preload
+    failed), so a transient load hiccup can never silently swap the configured
+    edges for per-segment quantile learning (audit #27). Only the
+    ``learn_own_bin_edges`` path requires data.
+
     Parameters
     ----------
-    data : pd.DataFrame
-        Full pre-loaded and standardized dataset (all segments).
+    data : pd.DataFrame | None
+        Full pre-loaded and standardized dataset (all segments), or ``None``
+        when preloading failed (fixed edges are still extracted).
     base_config : dict
         Base ``[preprocessing]`` configuration dictionary.
     supersegments : dict
@@ -192,18 +199,20 @@ def learn_supersegment_bin_edges(
     if not bins_config:
         return {}
 
-    # Only learn for bins that need it (no fixed bin_edges, have max_bins)
+    # Only learn for bins that need it (no fixed bin_edges, have max_bins).
+    # NOTE: fixed supersegment edges below are extracted even when nothing is
+    # learnable — they are configuration and must always flow through.
     learnable = {
         var_name: bc_raw
         for var_name, bc_raw in bins_config.items()
         if not (bc_raw.get("bin_edges") and len(bc_raw["bin_edges"]) >= 2) and bc_raw.get("max_bins") is not None
     }
-    if not learnable:
-        return {}
 
     # Basic quality filters (no segment filter yet).  Learn on the DEMAND
     # population (all statuses) the bins are applied to — not booked-only.
-    quality_mask = (data["fuera_norma"] == "n") & (data["fraud_flag"] == "n") & (data["nature_holder"] != "legal")
+    quality_mask = None
+    if data is not None:
+        quality_mask = (data["fuera_norma"] == "n") & (data["fraud_flag"] == "n") & (data["nature_holder"] != "legal")
     date_ini = base_config.get("date_ini_book_obs")
     date_fin = base_config.get("date_fin_book_obs")
 
@@ -223,6 +232,13 @@ def learn_supersegment_bin_edges(
 
         if not ss_config.get("learn_own_bin_edges", False):
             continue  # Use global edges (default)
+
+        if data is None:
+            logger.error(
+                f"Supersegment '{ss_name}' requests learn_own_bin_edges but data preloading failed — "
+                "cannot learn shared edges (the batch gate halts the run in this case)."
+            )
+            continue
 
         segment_filters = ss_config.get("segment_filters", [])
         if not segment_filters:
@@ -850,10 +866,17 @@ def run_segments_sequential(
                     floor_cells_path = str(floor_path.resolve())
                     logger.info(f"[{segment_name}] Using {direction} constraint from segment '{constraint_source}'")
                 else:
-                    logger.warning(
-                        f"[{segment_name}] Constraint source '{constraint_source}' "
-                        f"accepted cells file not found: {floor_path}"
+                    # Audit #36: running unconstrained would silently break the
+                    # nested-mask guarantee (mask_dependent ⊆ mask_source) —
+                    # fail the segment instead of degrading.
+                    logger.error(
+                        f"[{segment_name}] Constraint source '{constraint_source}' accepted cells "
+                        f"file not found: {floor_path}. Refusing to run UNCONSTRAINED — the nested "
+                        "cutoff ordering would be silently violated. Re-run the source segment first."
                     )
+                    results[segment_name] = False
+                    seg_progress.set_postfix_str(f"{segment_name} ✗ (no constraint artifact)", refresh=True)
+                    continue
 
             success = run_segment_pipeline(
                 segment_name,
@@ -1076,11 +1099,15 @@ def run_segments_parallel(
         is_top_down = cutoff_ordering_mode == "top_down"
         if is_top_down:
             ordered_constrained = list(reversed(ordered_constrained))
-            reverse_deps: dict[str, str] = {}
+            # dict[str, list[str]] like the sequential path — the old dict[str, str]
+            # silently kept only the LAST dependent per floor segment, so the
+            # ceiling source could differ between --parallel and sequential runs
+            # of the same config (audit #36).
+            reverse_deps: dict[str, list[str]] = {}
             for seg_name, seg_config in constrained.items():
                 floor_seg = seg_config.get("cutoff_floor_segment")
                 if floor_seg:
-                    reverse_deps[floor_seg] = seg_name
+                    reverse_deps.setdefault(floor_seg, []).append(seg_name)
 
         direction = "top-down" if is_top_down else "bottom-up"
         floor_cells_mode = "ceiling" if is_top_down else "floor"
@@ -1096,7 +1123,14 @@ def run_segments_parallel(
 
             floor_cells_path = None
             if is_top_down:
-                constraint_source = reverse_deps.get(segment_name)
+                dep_list = reverse_deps.get(segment_name, [])
+                if len(dep_list) > 1:
+                    logger.warning(
+                        f"[{segment_name}] Multiple segments depend on this segment "
+                        f"as cutoff_floor_segment: {dep_list}. Using '{dep_list[0]}' as "
+                        f"ceiling constraint source."
+                    )
+                constraint_source = dep_list[0] if dep_list else None
             else:
                 constraint_source = segment_config.get("cutoff_floor_segment")
 
@@ -1112,10 +1146,15 @@ def run_segments_parallel(
                     floor_cells_path = str(floor_path.resolve())
                     logger.info(f"[{segment_name}] Using {direction} constraint from segment '{constraint_source}'")
                 else:
-                    logger.warning(
-                        f"[{segment_name}] Constraint source '{constraint_source}' "
-                        f"accepted cells file not found: {floor_path}"
+                    # Audit #36: running unconstrained would silently break the
+                    # nested-mask guarantee — fail the segment instead.
+                    logger.error(
+                        f"[{segment_name}] Constraint source '{constraint_source}' accepted cells "
+                        f"file not found: {floor_path}. Refusing to run UNCONSTRAINED — the nested "
+                        "cutoff ordering would be silently violated. Re-run the source segment first."
                     )
+                    results[segment_name] = False
+                    continue
 
             success = run_segment_pipeline(
                 segment_name,
@@ -1572,15 +1611,48 @@ def main():
     # subpopulation).
     global_bin_edges: dict[str, list[float]] = {}
     supersegment_bin_edges: dict[str, dict[str, list[float]]] = {}
+    reporting_ss = load_reporting_supersegments_config(args.segments_config)
     if preloaded_data is not None:
         global_bin_edges = learn_global_bin_edges(preloaded_data, base_config)
 
         # Learn per-reporting-supersegment bin edges so each supersegment can
         # have splits tuned to its own population (e.g., different income_bin
         # edges for "others" vs "known").
-        reporting_ss = load_reporting_supersegments_config(args.segments_config)
         if reporting_ss:
             supersegment_bin_edges = learn_supersegment_bin_edges(preloaded_data, base_config, reporting_ss)
+    else:
+        # Preload failed. Fixed supersegment edges are CONFIGURATION, not
+        # data-derived — extract them regardless so a transient load failure
+        # can never silently swap the configured grid for per-segment
+        # quantile-learned bins (audit #27).
+        if reporting_ss:
+            supersegment_bin_edges = learn_supersegment_bin_edges(None, base_config, reporting_ss)
+
+        # Fail closed: if any bins were supposed to be LEARNED on the shared
+        # population (globally or per supersegment), proceeding would let each
+        # segment learn its own edges — different grids, different cutoffs,
+        # silently. Halt instead of degrading methodology.
+        bins_config = base_config.get("bins", {})
+        learnable_global = [
+            var
+            for var, bc in bins_config.items()
+            if not (bc.get("bin_edges") and len(bc["bin_edges"]) >= 2) and bc.get("max_bins") is not None
+        ]
+        unresolved_global = [var for var in learnable_global if var not in global_bin_edges]
+        learn_ss = [
+            ss for ss, cfg in reporting_ss.items() if cfg.get("learn_own_bin_edges", False) and not cfg.get("bin_edges")
+        ]
+        if unresolved_global or learn_ss:
+            logger.error(
+                "Data preloading failed but shared bin learning was requested "
+                f"(global learnable bins: {unresolved_global or 'none'}; "
+                f"supersegments with learn_own_bin_edges: {learn_ss or 'none'}). "
+                "Proceeding would silently fall back to per-segment bin learning — "
+                "different grids and cutoffs. Fix the data path/storage and rerun "
+                "(audit #27: fail-closed)."
+            )
+            print("\nERROR: data preload failed while shared bin learning is configured — aborting (see log).")
+            sys.exit(1)
 
     # Resolve cutoff ordering mode: CLI flag overrides config.toml
     cutoff_ordering_mode = args.cutoff_ordering_mode or base_config.get("cutoff_ordering_mode", "bottom_up")

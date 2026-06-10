@@ -112,24 +112,31 @@ def compare_headline(
 ) -> dict:
     """Compare a fresh headline to the committed reference within tolerance.
 
-    `snapshot_match` is False when the data SHA-256 differs from the reference's — the
-    inputs changed, so the comparison is not meaningful and the overall check fails even
-    if the numbers happen to land within tolerance (forces re-validation on a new snapshot).
+    Fail-closed on missing evidence (audit #26): a governance gate must never pass
+    because the thing it verifies is absent. `snapshot_match` is False when the data
+    SHA-256 differs from the reference's **or when either side lacks one** (lineage is
+    best-effort, so a capture hiccup would otherwise silently remove the snapshot pin);
+    likewise a headline whose risk/production value is missing on either side FAILS
+    instead of passing vacuously on the remaining checks.
     """
     reasons: list[str] = []
 
     risk_delta_pp = None
-    risk_ok = True
-    if actual.risk_pct is not None and reference.get("risk_pct") is not None:
+    if actual.risk_pct is None or reference.get("risk_pct") is None:
+        risk_ok = False
+        reasons.append("risk_pct missing on actual/reference side — cannot verify (fail-closed)")
+    else:
         risk_delta_pp = actual.risk_pct - reference["risk_pct"]
         risk_ok = abs(risk_delta_pp) <= risk_tol_pp
         if not risk_ok:
             reasons.append(f"risk drift {risk_delta_pp:+.4f}pp > {risk_tol_pp}pp")
 
     prod_delta_pct = None
-    prod_ok = True
     ref_prod = reference.get("production_eur")
-    if actual.production_eur is not None and ref_prod:
+    if actual.production_eur is None or not ref_prod:
+        prod_ok = False
+        reasons.append("production_eur missing on actual/reference side — cannot verify (fail-closed)")
+    else:
         prod_delta_pct = (actual.production_eur - ref_prod) / ref_prod * 100
         prod_ok = abs(prod_delta_pct) <= prod_tol_pct
         if not prod_ok:
@@ -143,14 +150,24 @@ def compare_headline(
     if not accepted_set_match:
         reasons.append("accepted-cell set changed (hash mismatch)")
 
-    # Snapshot pin: only meaningful when both sides recorded a SHA. Mismatch fails loudly.
+    # Snapshot pin: a missing SHA on either side means the pin cannot be verified —
+    # FAIL, never silently True (the old vacuous pass disappeared whenever lineage
+    # capture hiccuped at reference or check time). Mismatch fails loudly.
     ref_sha = reference.get("data_sha256")
-    snapshot_match = True
-    if ref_sha and actual.data_sha256 and ref_sha != actual.data_sha256:
+    if not ref_sha or not actual.data_sha256:
+        snapshot_match = False
+        missing_side = "reference" if not ref_sha else "current run"
+        reasons.append(
+            f"DATA SNAPSHOT PIN UNAVAILABLE (no SHA-256 on the {missing_side} side) — "
+            "fail-closed; re-establish the reference with lineage enabled"
+        )
+    elif ref_sha != actual.data_sha256:
         snapshot_match = False
         reasons.append(
             f"DATA SNAPSHOT CHANGED (sha {actual.data_sha256[:12]} != reference {ref_sha[:12]}) — re-validate"
         )
+    else:
+        snapshot_match = True
 
     numbers_ok = risk_ok and prod_ok and cells_match and accepted_set_match
     passed = numbers_ok and snapshot_match

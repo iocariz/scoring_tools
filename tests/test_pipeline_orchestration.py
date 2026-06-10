@@ -579,6 +579,81 @@ class TestRunOptimizationPhase:
         assert Path(output.pareto_solutions_csv).exists()
 
 
+class TestLegacyEnumerationSkippedWithConstraints:
+    def test_2var_with_swapin_cap_skips_constraint_blind_legacy_enum(self, monkeypatch, tmp_path):
+        """Audit #36: the legacy 2-var enumeration cannot express cell pins or
+        swap-in caps; with such constraints active the empty-MILP fallback must
+        go to the constraint-aware GA instead."""
+        settings = make_settings(pareto_n_points=5, max_swapin_production_pct=30.0)
+        output = OutputPaths(base_dir=tmp_path)
+        output.ensure_dirs()
+
+        summary_desagregado = pd.DataFrame(
+            {
+                "sc_octroi_new_clus": [1, 2],
+                "new_efx_clus": [1, 2],
+                "oa_amt_h0": [1200.0, 1800.0],
+                "todu_30ever_h6": [12.0, 18.0],
+                "todu_amt_pile_h6": [120.0, 180.0],
+            }
+        )
+        monkeypatch.setattr(
+            optimization_module,
+            "run_optimization_pipeline",
+            lambda **kwargs: summary_desagregado.copy(),
+        )
+
+        dummy_grid = object()
+        monkeypatch.setattr(
+            optimization_module,
+            "trace_pareto_frontier",
+            lambda **kwargs: (pd.DataFrame(), dummy_grid, []),
+        )
+
+        def legacy_must_not_run(*args, **kwargs):
+            raise AssertionError("legacy enumeration must not run with swap-in caps active")
+
+        monkeypatch.setattr(optimization_module, "get_fact_sol", legacy_must_not_run)
+
+        captured_ga = {}
+        fake_pareto_df = pd.DataFrame({"sol_fac": [0], "oa_amt_h0": [999.0], "b2_ever_h6": [1.23]})
+        fake_masks = [[1, 0]]
+
+        import src.optimization_utils as optimization_utils_module
+
+        def fake_ga(grid, inv_vars, multiplier, indicators, n_points, **kwargs):
+            captured_ga.update(kwargs)
+            return fake_pareto_df, dummy_grid, fake_masks
+
+        monkeypatch.setattr(optimization_utils_module, "_ga_pareto_fallback", fake_ga)
+
+        def fake_add_bin_columns(df, pareto_masks, grid, inv_vars):
+            out = df.copy()
+            out["1"] = [2.0]
+            return out
+
+        monkeypatch.setattr(optimization_module, "add_bin_columns", fake_add_bin_columns)
+
+        result = optimization_module.run_optimization_phase(
+            data_booked=pd.DataFrame(),
+            data_demand=pd.DataFrame(),
+            risk_inference={},
+            reg_todu_amt_pile="reg",
+            stress_factor=1.0,
+            tasa_fin=1.0,
+            settings=settings,
+            annual_coef=1.0,
+            output=output,
+        )
+
+        _, _, _, _, grid, pareto_masks, _ = result
+        assert grid is dummy_grid
+        assert pareto_masks == fake_masks
+        # the GA fallback received the constraints the MILP path was given
+        assert captured_ga["max_swapin_production_pct"] == pytest.approx(30.0)
+        assert "fixed_cells" in captured_ga
+
+
 class TestPipelineReportingWrappers:
     def test_generate_segment_report_renders_when_sections_exist(self, monkeypatch, tmp_path):
         settings = make_settings()

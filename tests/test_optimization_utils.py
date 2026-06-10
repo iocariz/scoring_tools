@@ -722,6 +722,67 @@ class TestMILPSolver:
 # =============================================================================
 
 
+def _install_dummy_pymoo(monkeypatch):
+    """Install a minimal mock pymoo (optional dep) into sys.modules.
+
+    The dummy optimizer returns X=1 exactly where the upper variable bound
+    allows it (xu>0) — i.e. it respects variable bounds but knows nothing about
+    inequality constraints, leaving those to `_ga_pareto_fallback`'s post-hoc
+    feasibility checks."""
+    import types
+
+    class DummyGA:
+        def __init__(self, pop_size=100):
+            self.pop_size = pop_size
+
+    class DummyProblem:
+        def __init__(self, n_var, n_obj, n_ieq_constr, xl, xu):
+            self.n_var = n_var
+            self.n_obj = n_obj
+            self.n_ieq_constr = n_ieq_constr
+            self.xl = np.asarray(xl, dtype=float)
+            self.xu = np.asarray(xu, dtype=float)
+
+    def dummy_get_termination(*args, **kwargs):
+        return ("termination", args, kwargs)
+
+    def dummy_minimize(problem, algorithm, termination, seed=None, verbose=False):
+        X = (np.asarray(problem.xu) > 0).astype(float)
+
+        class Res:
+            pass
+
+        res = Res()
+        res.X = X
+        return res
+
+    monkeypatch.setitem(sys.modules, "pymoo", types.ModuleType("pymoo"))
+    monkeypatch.setitem(sys.modules, "pymoo.algorithms", types.ModuleType("pymoo.algorithms"))
+    monkeypatch.setitem(sys.modules, "pymoo.algorithms.soo", types.ModuleType("pymoo.algorithms.soo"))
+    monkeypatch.setitem(
+        sys.modules, "pymoo.algorithms.soo.nonconvex", types.ModuleType("pymoo.algorithms.soo.nonconvex")
+    )
+
+    ga_mod = types.ModuleType("pymoo.algorithms.soo.nonconvex.ga")
+    ga_mod.GA = DummyGA
+    monkeypatch.setitem(sys.modules, "pymoo.algorithms.soo.nonconvex.ga", ga_mod)
+
+    core_mod = types.ModuleType("pymoo.core")
+    monkeypatch.setitem(sys.modules, "pymoo.core", core_mod)
+
+    problem_mod = types.ModuleType("pymoo.core.problem")
+    problem_mod.Problem = DummyProblem
+    monkeypatch.setitem(sys.modules, "pymoo.core.problem", problem_mod)
+
+    optimize_mod = types.ModuleType("pymoo.optimize")
+    optimize_mod.minimize = dummy_minimize
+    monkeypatch.setitem(sys.modules, "pymoo.optimize", optimize_mod)
+
+    termination_mod = types.ModuleType("pymoo.termination")
+    termination_mod.get_termination = dummy_get_termination
+    monkeypatch.setitem(sys.modules, "pymoo.termination", termination_mod)
+
+
 class TestGAFallbackPhantomCells:
     def test_phantom_cells_not_accepted_in_ga_fallback(self, monkeypatch):
         """GA fallback must encode phantom/unobserved cells with xu=0.
@@ -730,62 +791,7 @@ class TestGAFallbackPhantomCells:
         surface so we can exercise `_ga_pareto_fallback` and ensure the returned
         masks never accept phantom cells.
         """
-        import types
-
-        # --- Dummy pymoo implementation (enough for _ga_pareto_fallback) ---
-        class DummyGA:
-            def __init__(self, pop_size=100):
-                self.pop_size = pop_size
-
-        class DummyProblem:
-            def __init__(self, n_var, n_obj, n_ieq_constr, xl, xu):
-                self.n_var = n_var
-                self.n_obj = n_obj
-                self.n_ieq_constr = n_ieq_constr
-                self.xl = xl
-                self.xu = np.asarray(xu, dtype=float)
-
-        def dummy_get_termination(*args, **kwargs):
-            return ("termination", args, kwargs)
-
-        def dummy_minimize(problem, algorithm, termination, seed=None, verbose=False):
-            # Respect xu bounds by generating X=1 exactly where xu>0.
-            # This simulates an optimizer that never violates variable bounds.
-            X = (np.asarray(problem.xu) > 0).astype(float)
-
-            class Res:
-                pass
-
-            res = Res()
-            res.X = X
-            return res
-
-        # Install dummy modules into sys.modules so the imports succeed.
-        monkeypatch.setitem(sys.modules, "pymoo", types.ModuleType("pymoo"))
-        monkeypatch.setitem(sys.modules, "pymoo.algorithms", types.ModuleType("pymoo.algorithms"))
-        monkeypatch.setitem(sys.modules, "pymoo.algorithms.soo", types.ModuleType("pymoo.algorithms.soo"))
-        monkeypatch.setitem(
-            sys.modules, "pymoo.algorithms.soo.nonconvex", types.ModuleType("pymoo.algorithms.soo.nonconvex")
-        )
-
-        ga_mod = types.ModuleType("pymoo.algorithms.soo.nonconvex.ga")
-        ga_mod.GA = DummyGA
-        monkeypatch.setitem(sys.modules, "pymoo.algorithms.soo.nonconvex.ga", ga_mod)
-
-        core_mod = types.ModuleType("pymoo.core")
-        monkeypatch.setitem(sys.modules, "pymoo.core", core_mod)
-
-        problem_mod = types.ModuleType("pymoo.core.problem")
-        problem_mod.Problem = DummyProblem
-        monkeypatch.setitem(sys.modules, "pymoo.core.problem", problem_mod)
-
-        optimize_mod = types.ModuleType("pymoo.optimize")
-        optimize_mod.minimize = dummy_minimize
-        monkeypatch.setitem(sys.modules, "pymoo.optimize", optimize_mod)
-
-        termination_mod = types.ModuleType("pymoo.termination")
-        termination_mod.get_termination = dummy_get_termination
-        monkeypatch.setitem(sys.modules, "pymoo.termination", termination_mod)
+        _install_dummy_pymoo(monkeypatch)
 
         # --- Build a grid with exactly one phantom/unobserved cell ---
         df = _make_summary_2d(2, 2)
@@ -811,6 +817,83 @@ class TestGAFallbackPhantomCells:
 
         for m in pareto_masks:
             assert m[phantom_idx_used] == 0
+
+
+class TestGAFallbackConstraints:
+    """Audit #36: the GA fallback must honor the same side constraints as the
+    MILP path — cell pins (fixed_cells) and swap-in caps — instead of silently
+    dropping them."""
+
+    def test_ga_fallback_respects_fixed_cell_pins(self, monkeypatch):
+        _install_dummy_pymoo(monkeypatch)
+        df = _make_summary_2d(2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        # Pin the RISKIEST cell (2,2) to rejected — monotonicity-compatible with
+        # accepting everything else, so feasible masks exist.
+        pinned = grid.cell_index[(2, 2)]
+
+        _, _, masks = _ga_pareto_fallback(
+            grid=grid,
+            inv_vars=[],
+            multiplier=7,
+            indicators=["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"],
+            n_points=3,
+            fixed_cells={pinned: 0},
+        )
+
+        assert masks
+        for m in masks:
+            assert m[pinned] == 0
+
+    def test_ga_fallback_enforces_swapin_production_cap(self, monkeypatch):
+        _install_dummy_pymoo(monkeypatch)
+        df = _make_summary_2d(2, 2)  # oa_amt_h0_rep = 20% of oa_amt_h0 per cell
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        common = dict(
+            grid=grid,
+            inv_vars=[],
+            multiplier=7,
+            indicators=["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"],
+            n_points=3,
+        )
+
+        # Cap below the 20% swap-in share → every candidate violates → no masks.
+        _, _, masks_tight = _ga_pareto_fallback(**common, max_swapin_production_pct=10.0)
+        assert masks_tight == []
+
+        # Cap above the share → masks survive.
+        _, _, masks_loose = _ga_pareto_fallback(**common, max_swapin_production_pct=50.0)
+        assert masks_loose
+
+
+class TestLastResortRespectsPins:
+    def test_last_resort_upper_bound_respects_ceiling_pins(self):
+        """Audit #36: when every MILP target is infeasible under ceiling
+        (must-reject) pins, the last-resort 'accept-all upper bound' used to
+        ignore the pins entirely — returning a mask that violates the ceiling."""
+        df = _make_summary_2d(2, 2)
+        grid_probe = CellGrid.from_summary(df, ["var0", "var1"])
+        # Ceiling: ONLY the riskiest cell (2,2) is allowed. Accepting it alone
+        # violates monotonicity, so every MILP target is infeasible → the sweep
+        # falls through to the last-resort solutions.
+        allowed = grid_probe.cell_index[(2, 2)]
+        pins = {idx: 0 for idx in range(grid_probe.n_cells) if idx != allowed}
+
+        pareto_df, grid, masks = trace_pareto_frontier(
+            data_summary_desagregado=df,
+            variables=["var0", "var1"],
+            inv_vars=[],
+            multiplier=7,
+            indicators=["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"],
+            n_points=4,
+            show_progress=False,
+            fixed_cells=pins,
+        )
+
+        assert masks, "last resort must still produce a pin-respecting solution"
+        for m in masks:
+            for idx, val in pins.items():
+                assert m[idx] == val, "returned mask violates a must-reject (ceiling) pin"
 
 
 # =============================================================================
