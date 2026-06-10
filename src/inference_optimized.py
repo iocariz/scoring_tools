@@ -45,19 +45,31 @@ from src.persistence import (
 )
 from src.utils import calculate_b2_ever_h6
 
+#: Loan-level default numerator — the binarized stratification target for CV.
+_STRATIFY_COL = "todu_30ever_h6"
+
 
 def _stratified_cv_splitter(raw_data: pd.DataFrame, cv_folds: int, random_state: int, indicators: list[str]):
-    """Create a StratifiedKFold splitter using a binarized risk indicator.
+    """Create a StratifiedKFold splitter binarized on the DEFAULT indicator.
 
-    Falls back to plain KFold when the indicator column is missing or has only
-    one class.
+    Stratifies on ``todu_30ever_h6 > 0`` (a loan defaulted) so the bad rate is
+    stable across folds. Audit #33: the old code stratified on ``indicators[0]``
+    — ``acct_booked_h0``, ~all 1s on the booked training population — so the
+    single-class check failed and it silently fell back to plain KFold on every
+    real run. Falls back to KFold (loudly) when the default indicator is
+    missing or single-class, trying the configured indicators next.
     """
-    strat_col = indicators[0] if indicators else None
-    if strat_col and strat_col in raw_data.columns:
+    candidates = [_STRATIFY_COL] + [c for c in (indicators or []) if c != _STRATIFY_COL]
+    for strat_col in candidates:
+        if strat_col not in raw_data.columns:
+            continue
         y_strat = (raw_data[strat_col] > 0).astype(int)
         if y_strat.nunique() >= 2 and y_strat.sum() >= cv_folds and (len(y_strat) - y_strat.sum()) >= cv_folds:
             skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
             return skf.split(raw_data, y_strat)
+    logger.warning(
+        f"Stratified CV unavailable (no usable two-class indicator among {candidates}) — falling back to plain KFold."
+    )
     kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
     return kfold.split(raw_data)
 
@@ -87,9 +99,10 @@ def _apply_one_se_rule(results_df: pd.DataFrame, complexity_col: str) -> int:
     """Apply the one-standard-error rule: among models within 1 SE of the best,
     pick the simplest.
 
-    The 'CV Std RMSE' column is expected to contain the standard error of the
-    mean (i.e., ``std(fold_scores, ddof=1) / sqrt(k)``), not the raw standard
-    deviation of fold scores.
+    The 'CV Std RMSE' column is expected to contain the Nadeau–Bengio
+    corrected standard error of the CV mean (audit #32d — the naive
+    ``std/sqrt(k)`` underestimates it ~2x because fold scores are positively
+    correlated, halving the eligibility band), not the raw fold std.
 
     Args:
         results_df: DataFrame with 'CV Mean RMSE', 'CV Std RMSE', and complexity_col.
@@ -703,9 +716,13 @@ def _select_feature_set_cv(
             continue
 
         cv_mean = np.mean(cv_scores)
-        cv_std = (np.std(cv_scores, ddof=1) / np.sqrt(len(cv_scores))) if len(cv_scores) > 1 else 0.0
+        # Nadeau–Bengio corrected SE (audit #32d): the naive std/sqrt(k) treats
+        # correlated fold scores as independent and roughly halves the 1SE band.
+        cv_std = _nadeau_bengio_cv_se(np.std(cv_scores, ddof=1), len(cv_scores)) if len(cv_scores) > 1 else 0.0
         cv_r2_mean = np.mean(cv_r2_scores) if cv_r2_scores else 0.0
-        cv_r2_std = (np.std(cv_r2_scores, ddof=1) / np.sqrt(len(cv_r2_scores))) if len(cv_r2_scores) > 1 else 0.0
+        cv_r2_std = (
+            _nadeau_bengio_cv_se(np.std(cv_r2_scores, ddof=1), len(cv_r2_scores)) if len(cv_r2_scores) > 1 else 0.0
+        )
 
         feature_results.append(
             {
@@ -1070,13 +1087,15 @@ def evaluate_holdout_rmse(
     random_state: int,
     test_size: float = 0.2,
 ) -> float | None:
-    """Unbiased held-out RMSE for the SELECTED model only (audit #7).
+    """POST-SELECTION held-out RMSE for the SELECTED model only (audit #7, honesty per #32b).
 
-    A single stratified train/test split is carved here — AFTER model selection — so the held-out
-    fraction was never used to choose the model (no winner's-curse bias). The model is refit on the
-    train portion and scored (exposure-weighted RMSE) on the independently-aggregated test portion
-    (train-derived outlier stats applied to test → no leakage). Returns ``None`` when the data is too
-    small. This split is independent of, and never reused by, the k-fold selection metric.
+    A single stratified train/test split is carved here — but from the SAME data every selection CV
+    fold ran on, so the held-out rows participated in choosing the model type/hyperparameters/feature
+    set. Refitting on the 80% reduces — but does not remove — selection optimism; do NOT read this as
+    an unbiased generalization estimate (the M4 out-of-time backtest is that). The model is refit on
+    the train portion and scored (exposure-weighted RMSE) on the independently-aggregated test portion
+    (train-derived outlier stats applied to test → no within-split leakage). Returns ``None`` when the
+    data is too small. The split is independent of, and never reused by, the k-fold selection metric.
     """
     from sklearn.base import clone
     from sklearn.metrics import mean_squared_error
@@ -1269,7 +1288,7 @@ def _save_model_to_disk(
         "cv_std_r2": best_model_info.get("cv_std_r2", 0.0),
         "train_r2": best_model_info["train_r2"],
         "full_r2": best_model_info["train_r2"],  # Full and train R2 are identical because final model uses all data
-        "holdout_rmse": best_model_info.get("holdout_rmse"),  # unbiased winner-only 20% report (audit #7)
+        "holdout_rmse": best_model_info.get("holdout_rmse"),  # POST-selection winner-only 20% report (#7/#32b)
         "cv_folds": cv_folds,
         "total_samples": len(all_data),
         "target_variable": target_var,
@@ -1500,7 +1519,10 @@ def inference_pipeline(
         DEFAULT_RANDOM_STATE,
     )
     if holdout_rmse is not None:
-        logger.info(f"  Winner held-out RMSE (20%, not used for selection): {holdout_rmse:.4f}")
+        logger.info(
+            f"  Winner held-out RMSE (20%, post-selection — selection saw these rows; "
+            f"reduced, not zero, optimism): {holdout_rmse:.4f}"
+        )
 
     best_model_info = {
         "model": final_model,

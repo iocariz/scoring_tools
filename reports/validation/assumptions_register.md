@@ -33,11 +33,17 @@ Snapshot of `config.toml` at time of writing (the per-run truth is captured in `
   window (a `UserWarning` fires on overlap, `config.py`). The M4 backtest auto-derives its mature held-out window from
   the data snapshot (`max(mis_date) − mr_maturity_months`).
 
-## Model selection (audit #7)
-The risk model is chosen by **fresh-seed k-fold CV with a working 1-SE rule** (simplest model within one standard error
-of the best), with a winner-only 0.2 holdout report (never used for selection). On the production pooled `total` model
-this selects **Linear Regression** (pre-#7 selected Lasso α≈0 — functionally identical). See the model validation report
-and the #7 entry in `todo-list.md`.
+## Model selection (audits #7, #32, #33)
+The risk model is chosen by **fresh-seed k-fold CV with a working 1-SE rule** (simplest model within one
+Nadeau–Bengio-corrected standard error of the best — #32d; the naive SE halved the band), on **genuinely stratified**
+folds (binarized `todu_30ever_h6` — #33; the old splitter silently no-op'd to plain KFold), with validation folds
+outlier-filtered by **train-fold** stats (#32a; the old leak dropped the riskiest val bins from scoring). The winner-only
+0.2 holdout report is **post-selection** (the split is carved from data the selection already saw — reduced, not zero,
+optimism; #32b) and is never used for selection; the M4 backtest is the unbiased check. Known residual (#32c): the
+tuned-vs-untuned comparison is non-nested CV — best-of-N-trials configs keep some winner's-curse optimism vs untuned
+models. On cd-only training the #32/#33 fixes flip the selection Linear Regression → Lasso (α≈0.7), production +4.5%
+at ~flat risk; validate the pooled `total` selection at the next M5 re-pin. See the #7/#32/#33 entries in
+`todo-list.md`.
 
 ## Reproducing the snapshot these values pin to
 Each run writes `output/<segment>/data/run_lineage.json` (M2) capturing the data file **SHA-256**, mtime, row count, git
