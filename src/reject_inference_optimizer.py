@@ -13,7 +13,16 @@ model; lower gamma produces less aggressive targets.
 
 The optimizer selects parameters whose blended (booked + RI-corrected repesca)
 risk estimates best match these targets (exposure-weighted mean squared relative
-error).  Ties within 5% of the minimum error are broken by maximizing production.
+error). The calibration blend is STRESS-FREE and NOT financing-rate weighted
+(audit #29) so it shares the raw-demand basis of the target; the production
+blend that feeds the MILP/KPIs keeps stress + tasa_fin. Ties within 5% of the
+minimum error are broken CONSERVATIVELY (lowest production at the risk target).
+
+Honesty note: the target is itself a modeling assumption (the 1/a^gamma
+selection model) — this procedure calibrates one assumption against another,
+never against realized rejected outcomes (none exist). It disciplines the
+uplift choice; it does not validate it. The M4 out-of-time backtest remains
+the only realized-outcome check of the resulting cutoffs.
 
 Steps before reject inference (aggregate booked, aggregate repesca, apply risk
 model) are invariant across parameter combinations and are computed once via
@@ -57,6 +66,13 @@ class OptimizerInputs:
     apply_h3_multiplier: bool = False
     no_demand_anchor_percentile: float = 0.10
     confidence_scale: float = 10.0
+    #: STRESS-FREE repesca frame for the calibration objective (audit #29).
+    #: The 1/a^gamma target is built from raw booked outcomes, so candidates
+    #: must be scored on the same basis — otherwise the chosen uplift silently
+    #: cancels the stress factor. ``None`` falls back to ``repesca_pre_ri``
+    #: (correct when stress is disabled; the financing-rate exclusion below
+    #: still applies).
+    repesca_pre_ri_calibration: pd.DataFrame | None = None
 
     def __post_init__(self) -> None:
         """Runtime validation of Literal-typed fields (todo #52).
@@ -155,36 +171,48 @@ def evaluate_ri_params(
         Dict with keys: uplift_factor, max_risk_multiplier, oa_amt_h0,
         b2_ever_h6, feasible, n_cells_accepted, calibration_error.
     """
-    # Apply parceling with the candidate parameters
-    repesca = apply_parceling_adjustment(
-        repesca_summary=inputs.repesca_pre_ri.copy(),
-        acceptance_rates=inputs.acceptance_rates,
-        variables=inputs.variables,
-        reject_uplift_factor=uplift_factor,
-        max_risk_multiplier=max_risk_multiplier,
-        method=inputs.parceling_method,
-        enforce_monotonicity=inputs.enforce_monotonicity,
-        inv_vars=inputs.inv_vars,
-        apply_h3_multiplier=inputs.apply_h3_multiplier,
-        no_demand_anchor_percentile=inputs.no_demand_anchor_percentile,
-        confidence_scale=inputs.confidence_scale,
-        quiet=True,
-    )
+    _AUX_COLS = [
+        "acceptance_rate",
+        "smoothed_acceptance_rate",
+        "reject_risk_multiplier",
+        "ri_effective_acceptance_rate",
+        "ri_confidence",
+        "ri_bin_count",
+    ]
 
-    # Drop auxiliary columns
-    repesca = repesca.drop(
-        columns=[
-            "acceptance_rate",
-            "smoothed_acceptance_rate",
-            "reject_risk_multiplier",
-            "ri_effective_acceptance_rate",
-            "ri_confidence",
-            "ri_bin_count",
-        ],
-        errors="ignore",
-    )
+    def _parcel(repesca_frame: pd.DataFrame) -> pd.DataFrame:
+        out = apply_parceling_adjustment(
+            repesca_summary=repesca_frame.copy(),
+            acceptance_rates=inputs.acceptance_rates,
+            variables=inputs.variables,
+            reject_uplift_factor=uplift_factor,
+            max_risk_multiplier=max_risk_multiplier,
+            method=inputs.parceling_method,
+            enforce_monotonicity=inputs.enforce_monotonicity,
+            inv_vars=inputs.inv_vars,
+            apply_h3_multiplier=inputs.apply_h3_multiplier,
+            no_demand_anchor_percentile=inputs.no_demand_anchor_percentile,
+            confidence_scale=inputs.confidence_scale,
+            quiet=True,
+        )
+        return out.drop(columns=_AUX_COLS, errors="ignore")
 
-    # Apply financing rate (per-bin or global)
+    def _blend(repesca_frame: pd.DataFrame) -> pd.DataFrame:
+        rep = repesca_frame.rename(columns={i: i + "_rep" for i in inputs.indicators})
+        # Merge with booked summary (preserve integer dtypes on merge-key columns
+        # that can be upcast to float by NaN introduction during outer merge).
+        var_dtypes = {v: inputs.booked_summary[v].dtype for v in inputs.variables}
+        out = inputs.booked_summary.merge(rep, on=inputs.variables, how="outer").fillna(0)
+        for v, dt in var_dtypes.items():
+            if out[v].dtype != dt:
+                out[v] = out[v].astype(dt)
+        # Compute base indicators (sum of _boo + _rep)
+        for ind in inputs.indicators:
+            out[ind] = out[ind + Suffixes.BOOKED] + out[ind + "_rep"]
+        return out
+
+    # --- Production blend: stressed + financing-rate scaled (feeds MILP/KPIs) ---
+    repesca = _parcel(inputs.repesca_pre_ri)
     if inputs.per_bin_tasa_fin is not None and not inputs.per_bin_tasa_fin.empty:
         repesca = repesca.merge(inputs.per_bin_tasa_fin, on=inputs.variables, how="left")
         repesca["tasa_fin"] = repesca["tasa_fin"].fillna(inputs.tasa_fin)
@@ -193,26 +221,24 @@ def evaluate_ri_params(
         repesca = repesca.drop(columns=["tasa_fin"])
     else:
         repesca[inputs.indicators] *= inputs.tasa_fin
+    merged = _blend(repesca)
 
-    # Rename with _rep suffix
-    repesca = repesca.rename(columns={i: i + "_rep" for i in inputs.indicators})
-
-    # Merge with booked summary (preserve integer dtypes on merge-key columns
-    # that can be upcast to float by NaN introduction during outer merge).
-    var_dtypes = {v: inputs.booked_summary[v].dtype for v in inputs.variables}
-    merged = inputs.booked_summary.merge(repesca, on=inputs.variables, how="outer").fillna(0)
-    for v, dt in var_dtypes.items():
-        if merged[v].dtype != dt:
-            merged[v] = merged[v].astype(dt)
-
-    # Compute base indicators (sum of _boo + _rep)
-    for ind in inputs.indicators:
-        merged[ind] = merged[ind + Suffixes.BOOKED] + merged[ind + "_rep"]
+    # --- Calibration blend (audit #29): the 1/a^gamma target describes the raw
+    # demand population (booked + score-rejected, one applicant = one unit), so
+    # candidates are scored on a blend that is STRESS-FREE (via
+    # repesca_pre_ri_calibration) and NOT financing-rate weighted. The old code
+    # calibrated the stressed, tasa_fin-scaled production blend against the raw
+    # target — the chosen uplift cancelled the stress factor and varied with the
+    # financing rate, neither of which has anything to do with selection bias. ---
+    rep_cal_src = (
+        inputs.repesca_pre_ri_calibration if inputs.repesca_pre_ri_calibration is not None else inputs.repesca_pre_ri
+    )
+    merged_cal = _blend(_parcel(rep_cal_src))
 
     # Calibration error (parameter-intrinsic, computed before MILP)
     calibration_gamma = inputs.calibration_gamma if hasattr(inputs, "calibration_gamma") else 1.0
     calibration_error = _compute_calibration_error(
-        merged,
+        merged_cal,
         inputs.acceptance_rates,
         inputs.variables,
         inputs.multiplier,
@@ -267,8 +293,14 @@ def evaluate_ri_params(
 def _select_best(results_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """Select the best parameter combination from optimizer results.
 
-    Best = min calibration_error among feasible; ties within 5% tolerance
-    broken by max production.
+    Best = min calibration_error among feasible; ties within the 5% tolerance
+    band are broken CONSERVATIVELY (audit #29): the parameters being chosen
+    are *assumptions* about unobserved rejected-population risk, so within a
+    statistically indistinguishable band we take the candidate with the LOWEST
+    production at the risk target — i.e. the most prudent assumption — instead
+    of the old max-production rule, which by construction picked the loosest
+    uplift the noise band allowed. Deterministic secondary keys: higher uplift,
+    lower cap.
 
     Returns:
         ``(results_df, best_params)`` — *results_df* gains an ``is_best`` column;
@@ -290,7 +322,19 @@ def _select_best(results_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     min_error = feasible["calibration_error"].min()
     tolerance = min_error * 1.05  # 5% tolerance band
     near_best = feasible[feasible["calibration_error"] <= tolerance]
-    best_idx = near_best["oa_amt_h0"].idxmax()
+    near_best = near_best.sort_values(
+        ["oa_amt_h0", "uplift_factor", "max_risk_multiplier"],
+        ascending=[True, False, True],
+        kind="mergesort",
+    )
+    best_idx = near_best.index[0]
+    if len(near_best) > 1:
+        prod_spread = float(near_best["oa_amt_h0"].max() - near_best["oa_amt_h0"].min())
+        logger.info(
+            f"RI optimizer tie-break: {len(near_best)} candidates within the 5% calibration band "
+            f"(production spread €{prod_spread:,.0f}); choosing the most conservative "
+            f"(the old rule took the band's production maximum)."
+        )
 
     results_df["is_best"] = False
     results_df.loc[best_idx, "is_best"] = True
@@ -364,7 +408,7 @@ def run_reject_inference_optimization_optuna(
 
     Uses Tree-structured Parzen Estimator (TPE) sampler for efficient search.
     Same best-selection logic as grid search (min calibration error, 5% tolerance,
-    tie-break by production).
+    conservative tie-break — see _select_best).
 
     Returns:
         Tuple of (results_df with all trials, best_params dict).
