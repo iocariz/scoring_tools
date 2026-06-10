@@ -537,6 +537,88 @@ class TestMonotonicityConstraints:
         assert A_relaxed.shape[0] < A_strict.shape[0]
 
 
+class TestMonotonicityPhantomBridging:
+    """Audit #22: phantom (unobserved) cells must not participate in monotonicity
+    constraints — a forced-zero phantom acting as the "safer" endpoint would
+    force-reject every observed cell coordinatewise-riskier than it. Chains must
+    bridge over phantom gaps instead."""
+
+    def test_phantom_cells_have_no_constraint_entries(self):
+        """No constraint row may touch a phantom cell's column."""
+        df = _make_summary_2d(3, 3)
+        df = df[~((df["var0"] == 2) & (df["var1"] == 2))]  # phantom in the middle
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        phantom_idx = int(np.where(~grid.observed)[0][0])
+
+        A = _build_monotonicity_constraints(grid, inv_vars=[])
+        assert A.shape[0] > 0
+        assert np.all(A.toarray()[:, phantom_idx] == 0)
+
+    def test_phantom_gap_is_bridged(self):
+        """A phantom inside a 1-D line links its observed neighbors directly."""
+        df = _make_summary_2d(1, 4)  # single line along var1: cells (1,1)..(1,4)
+        df = df[~((df["var0"] == 1) & (df["var1"] == 2))]  # phantom at (1,2)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+
+        A = _build_monotonicity_constraints(grid, inv_vars=[]).toarray()
+        # Consecutive observed pairs: (1,1)-(1,3) bridged, (1,3)-(1,4) adjacent
+        assert A.shape[0] == 2
+        idx = grid.cell_index
+        bridged = np.zeros(grid.n_cells)
+        bridged[idx[(1, 3)]] = 1.0  # riskier (higher bin, not inverted)
+        bridged[idx[(1, 1)]] = -1.0  # safer
+        assert any(np.array_equal(row, bridged) for row in A)
+
+    def test_phantom_gap_bridged_inverted(self):
+        """Bridging respects the inverted direction (higher bin = safer)."""
+        df = _make_summary_2d(1, 4)
+        df = df[~((df["var0"] == 1) & (df["var1"] == 2))]
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+
+        A = _build_monotonicity_constraints(grid, inv_vars=["var1"]).toarray()
+        assert A.shape[0] == 2
+        idx = grid.cell_index
+        bridged = np.zeros(grid.n_cells)
+        bridged[idx[(1, 1)]] = 1.0  # riskier (lower bin under inversion)
+        bridged[idx[(1, 3)]] = -1.0  # safer
+        assert any(np.array_equal(row, bridged) for row in A)
+
+    def test_full_grid_constraint_count_unchanged(self):
+        """On a fully-observed grid the constraints are the classic adjacency set."""
+        df = _make_summary_2d(2, 3)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        A = _build_monotonicity_constraints(grid, inv_vars=[]).toarray()
+        # var0: (2-1)*3 = 3 pairs; var1: 2*(3-1) = 4 pairs
+        assert A.shape[0] == 7
+        assert np.all(A.sum(axis=1) == 0)  # each row is one +1 and one -1
+
+    def test_phantom_safe_corner_does_not_force_reject_grid(self):
+        """Regression for audit #22: a phantom at the SAFEST corner previously
+        propagated x=0 through the constraint chain to every cell (everything is
+        coordinatewise-riskier than the safe corner), making every MILP target
+        infeasible. With bridging, the solver must find a normal solution."""
+        df = _make_summary_2d(3, 3)
+        df = df[~((df["var0"] == 1) & (df["var1"] == 1))]  # safest cell unobserved
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        phantom_idx = int(np.where(~grid.observed)[0][0])
+
+        mask = milp_solve_cutoffs(grid, target_risk=50.0, inv_vars=[], multiplier=7)
+        assert mask is not None, "phantom at safe corner must not make the MILP infeasible"
+        assert mask[phantom_idx] == 0  # still never accepted
+        assert mask.sum() == int(grid.observed.sum())  # generous target: all observed accepted
+
+    def test_milp_with_phantom_respects_monotonicity_over_observed(self):
+        """Solutions on a sparse grid stay monotone across the bridged pairs."""
+        df = _make_summary_2d(3, 4)
+        df = df[~((df["var0"] == 2) & (df["var1"] == 2))]
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+
+        mask = milp_solve_cutoffs(grid, target_risk=20.0, inv_vars=[], multiplier=7)
+        assert mask is not None
+        A = _build_monotonicity_constraints(grid, inv_vars=[])
+        assert np.all(A @ mask <= 1e-6)
+
+
 # =============================================================================
 # MILP Solver Tests
 # =============================================================================

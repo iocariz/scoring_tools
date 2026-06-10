@@ -318,11 +318,19 @@ def _build_monotonicity_constraints(
 ) -> sparse.csc_matrix:
     """Build sparse A matrix for monotonicity: A @ x <= 0.
 
-    For each dimension d and each pair of adjacent cells along d:
+    For each dimension d and each pair of consecutive OBSERVED cells along d:
       x[riskier_cell] - x[safer_cell] <= 0
 
     This ensures riskier cells are rejected before safer ones: if a safer
     cell is rejected (x=0), all riskier cells must also be rejected.
+
+    Phantom (unobserved) cells are excluded from the constraints and the
+    chains BRIDGE over them (audit #22): the solver pins phantoms to x=0 via
+    bounds, so letting one act as the "safer" endpoint of an adjacency pair
+    would force-reject every observed cell coordinatewise-riskier than it —
+    a phantom near the safe corner could force-reject the entire grid.
+    Bridging links each observed cell directly to the next observed cell
+    along the dimension, preserving monotonicity over the observed sub-grid.
 
     Direction convention:
       - Default (variable NOT in inv_vars): higher bin index = riskier.
@@ -364,54 +372,65 @@ def _build_monotonicity_constraints(
         q_se = np.sqrt(np.clip(q * (1.0 - q), 0.0, None) / n_eff)
         risk_se = multiplier * q_se
 
+    # Phantom cells are pinned to x=0 by the solver bounds, so they must not
+    # participate in adjacency pairs (see docstring). When the observed flag is
+    # absent/mismatched (manually built grids), treat all cells as observed.
+    observed = grid.observed if len(grid.observed) == grid.n_cells else np.ones(grid.n_cells, dtype=bool)
+
+    n_bridged = 0
     for d, var in enumerate(grid.variables):
-        n_vals = len(grid.values_per_var[var])
         inverted = var in inv_vars
+        pos_of_value = {v: i for i, v in enumerate(grid.values_per_var[var])}
 
-        # Iterate over all cells, build constraint with neighbor along dim d
+        # Group observed cells into 1-D lines along dimension d (all other
+        # coordinates fixed), then link consecutive observed cells per line —
+        # adjacent neighbors on a full grid, bridged pairs across phantom gaps.
+        lines: dict[tuple, list[tuple[int, int]]] = {}
         for combo, flat_idx in grid.cell_index.items():
-            pos_in_dim = grid.values_per_var[var].index(combo[d])
-            if pos_in_dim + 1 >= n_vals:
-                continue  # no neighbor
-
-            # Build neighbor combo
-            neighbor_list = list(combo)
-            neighbor_list[d] = grid.values_per_var[var][pos_in_dim + 1]
-            neighbor = tuple(neighbor_list)
-            neighbor_idx = grid.cell_index.get(neighbor)
-            if neighbor_idx is None:
+            if not observed[flat_idx]:
                 continue
+            line_key = combo[:d] + combo[d + 1 :]
+            lines.setdefault(line_key, []).append((pos_of_value[combo[d]], flat_idx))
 
-            # Convention: higher index along dimension = riskier (unless inverted)
-            # Constraint: x[riskier] <= x[safer]
-            # i.e. x[riskier] - x[safer] <= 0
-            if inverted:
-                # Higher bin = safer → riskier is lower bin (flat_idx)
-                riskier_idx = flat_idx
-                safer_idx = neighbor_idx
-            else:
-                # Higher bin = riskier → riskier is neighbor
-                riskier_idx = neighbor_idx
-                safer_idx = flat_idx
+        for cells in lines.values():
+            cells.sort()
+            for (pos_lo, idx_lo), (pos_hi, idx_hi) in zip(cells, cells[1:]):
+                if pos_hi - pos_lo > 1:
+                    n_bridged += 1
 
-            if relax_on_uncertainty and risk_metric is not None and risk_se is not None and exposure is not None:
-                sparse_pair = min(float(exposure[riskier_idx]), float(exposure[safer_idx])) < float(
-                    uncertainty_min_exposure
-                )
-                ambiguous_pair = False
-                if uncertainty_z_threshold > 0:
-                    diff = abs(float(risk_metric[riskier_idx]) - float(risk_metric[safer_idx]))
-                    pooled_se = float(np.sqrt(risk_se[riskier_idx] ** 2 + risk_se[safer_idx] ** 2))
-                    ambiguous_pair = (
-                        np.isfinite(pooled_se) and pooled_se > 0 and diff < float(uncertainty_z_threshold) * pooled_se
+                # Convention: higher index along dimension = riskier (unless inverted)
+                # Constraint: x[riskier] <= x[safer]
+                # i.e. x[riskier] - x[safer] <= 0
+                if inverted:
+                    # Higher bin = safer → riskier is the lower-position cell
+                    riskier_idx, safer_idx = idx_lo, idx_hi
+                else:
+                    # Higher bin = riskier → riskier is the higher-position cell
+                    riskier_idx, safer_idx = idx_hi, idx_lo
+
+                if relax_on_uncertainty and risk_metric is not None and risk_se is not None and exposure is not None:
+                    sparse_pair = min(float(exposure[riskier_idx]), float(exposure[safer_idx])) < float(
+                        uncertainty_min_exposure
                     )
-                if sparse_pair and ambiguous_pair:
-                    continue
+                    ambiguous_pair = False
+                    if uncertainty_z_threshold > 0:
+                        diff = abs(float(risk_metric[riskier_idx]) - float(risk_metric[safer_idx]))
+                        pooled_se = float(np.sqrt(risk_se[riskier_idx] ** 2 + risk_se[safer_idx] ** 2))
+                        ambiguous_pair = (
+                            np.isfinite(pooled_se)
+                            and pooled_se > 0
+                            and diff < float(uncertainty_z_threshold) * pooled_se
+                        )
+                    if sparse_pair and ambiguous_pair:
+                        continue
 
-            rows.extend([constraint_idx, constraint_idx])
-            cols.extend([riskier_idx, safer_idx])
-            vals.extend([1.0, -1.0])
-            constraint_idx += 1
+                rows.extend([constraint_idx, constraint_idx])
+                cols.extend([riskier_idx, safer_idx])
+                vals.extend([1.0, -1.0])
+                constraint_idx += 1
+
+    if n_bridged > 0:
+        logger.debug(f"Monotonicity constraints: {n_bridged} pairs bridged across phantom (unobserved) cells.")
 
     if constraint_idx == 0:
         return sparse.csc_matrix((0, grid.n_cells))
