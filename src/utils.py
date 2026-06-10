@@ -842,9 +842,11 @@ def generate_cutoff_summary(
     """
     Generate a readable summary of cutoff points by segment.
 
-    For 2-variable grids: produces the classic var0_bin → cutoff_value table.
-    For N>2 variable grids (when ``mask``/``grid`` are provided): produces a
-    cell-level table with one row per grid cell showing accepted/rejected.
+    When ``mask``/``grid`` are provided (any number of variables): produces a
+    cell-level table with one row per grid cell showing accepted/rejected —
+    the format the consolidated acceptance-grid renderers consume.
+    Without them: falls back to the classic 2-variable var0_bin → cutoff_value
+    table derived from the optimal solution's bin columns.
 
     Args:
         optimal_solution_df: DataFrame containing the optimal solution with bin columns
@@ -864,8 +866,10 @@ def generate_cutoff_summary(
         logger.warning("No optimal solution provided for cutoff summary")
         return pd.DataFrame()
 
-    # N>2: produce cell-level summary from mask
-    if len(variables) != 2 and mask is not None and grid is not None:
+    # Cell-level summary from mask (any N — required by the consolidated
+    # acceptance grids in the Excel/HTML reports, which need an `accepted`
+    # column; the classic 2-var wide pivot has none, see audit on 2-var grids)
+    if mask is not None and grid is not None:
         from src.optimization_utils import CellGrid
 
         if isinstance(grid, CellGrid):
@@ -881,7 +885,7 @@ def generate_cutoff_summary(
                 cell_df["risk_ci_lower"] = ci_data.get("risk_ci_lower", 0)
                 cell_df["risk_ci_upper"] = ci_data.get("risk_ci_upper", 0)
             logger.info(
-                f"Generated N-d cutoff summary for segment '{segment_name}', scenario '{scenario_name}' "
+                f"Generated cell-level cutoff summary for segment '{segment_name}', scenario '{scenario_name}' "
                 f"({len(cell_df)} cells, {int(mask.sum())} accepted)"
             )
             return cell_df

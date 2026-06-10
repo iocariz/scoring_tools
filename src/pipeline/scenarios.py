@@ -384,8 +384,11 @@ def run_scenario_analysis(
         risk_value=risk_pct,
         production_value=production,
         ci_data=ci_data,
-        mask=selected_mask if is_nd else None,
-        grid=grid if is_nd else None,
+        # Pass mask/grid for ANY N (not just N>2): the cell-level summary they
+        # produce carries the `accepted` column the consolidated Excel/HTML
+        # acceptance grids require — 2-var runs lost those grids otherwise.
+        mask=selected_mask,
+        grid=grid,
     )
 
     # Generate acceptance grid visualization for N>2
@@ -556,14 +559,17 @@ def save_cutoff_summaries(
     )
 
     if not consolidated_cutoffs.empty:
-        if len(settings.variables) != 2:
-            # N>2: cell-level summary, skip pivot (no cutoff_value column)
+        # Branch on FORMAT, not variable count: with mask/grid available the
+        # summaries are cell-level (any N) and carry the `accepted` column the
+        # consolidated Excel/HTML acceptance grids require — write them as-is.
+        # The classic wide pivot remains the fallback for mask-less paths.
+        if "accepted" in consolidated_cutoffs.columns:
             consolidated_cutoffs.to_csv(output.cutoff_summary_wide_csv, index=False)
             logger.debug(f"[{segment}] Cell-level cutoff summaries saved to {output.cutoff_summary_wide_csv}")
-            accepted_count = consolidated_cutoffs["accepted"].sum() if "accepted" in consolidated_cutoffs.columns else 0
+            accepted_count = consolidated_cutoffs["accepted"].sum()
             total_cells = len(consolidated_cutoffs)
             logger.debug(f"[{segment}] Cell-level cutoff summary: {int(accepted_count)}/{total_cells} cells accepted")
-        else:
+        elif len(settings.variables) == 2:
             wide_cutoffs = format_cutoff_summary_table(
                 cutoff_summary=consolidated_cutoffs,
                 variables=settings.variables,
@@ -571,3 +577,7 @@ def save_cutoff_summaries(
             wide_cutoffs.to_csv(output.cutoff_summary_wide_csv, index=False)
             logger.debug(f"[{segment}] Cutoff summaries saved to {output.cutoff_summary_by_segment_csv}")
             logger.debug(f"[{segment}] Cutoff summary:\n{wide_cutoffs.to_string()}")
+        else:
+            # N>2 without an accepted column (no mask available): keep raw
+            consolidated_cutoffs.to_csv(output.cutoff_summary_wide_csv, index=False)
+            logger.debug(f"[{segment}] Cutoff summaries saved to {output.cutoff_summary_wide_csv}")

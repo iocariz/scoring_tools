@@ -402,6 +402,32 @@ class TestGenerateCutoffSummary:
         assert result["risk_pct"].iloc[0] == 2.5
         assert result["production"].iloc[0] == 1000
 
+    def test_2var_with_mask_and_grid_produces_cell_level(self):
+        # With mask/grid the summary must be cell-level for ANY N (the
+        # consolidated acceptance grids need the `accepted` column) — the
+        # classic per-bin cutoff table is only the mask-less fallback.
+        from src.optimization_utils import CellGrid
+
+        summary_df = pd.DataFrame(
+            {
+                "var0": [1.0, 1.0, 2.0, 2.0],
+                "var1": [1.0, 2.0, 1.0, 2.0],
+                "oa_amt_h0": [100.0, 100.0, 100.0, 100.0],
+            }
+        )
+        grid = CellGrid.from_summary(summary_df, ["var0", "var1"])
+        mask = np.array([1, 0, 1, 1])
+        opt_df = pd.DataFrame({"sol_fac": [0], 1: [2], 2: [1]})
+
+        result = generate_cutoff_summary(
+            opt_df, ["var0", "var1"], "seg", risk_value=1.5, production_value=300, mask=mask, grid=grid
+        )
+
+        assert "accepted" in result.columns
+        assert len(result) == 4
+        assert int(result["accepted"].sum()) == 3
+        assert set(result.columns) >= {"var0", "var1", "segment", "scenario", "risk_pct", "production"}
+
 
 # =============================================================================
 # format_cutoff_summary_table Tests

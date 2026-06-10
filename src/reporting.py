@@ -124,7 +124,7 @@ def csv_to_html_table(
 # Columns that hold KPI / metadata (not bin cutoff values)
 _CUTOFF_META_COLS = {"segment", "scenario", "risk_pct", "production"}
 _CUTOFF_CI_COLS = {"production_ci_lower", "production_ci_upper", "risk_ci_lower", "risk_ci_upper"}
-_CUTOFF_CELL_META = {"accepted"}  # N>2 cell-level summary column
+_CUTOFF_CELL_META = {"accepted"}  # cell-level summary column (any N)
 
 _SCENARIO_BADGE = {
     "pessimistic": "badge-pessimistic",
@@ -151,8 +151,6 @@ def _build_cutoff_reference_table(csv_path: str | Path, max_rows: int = 200) -> 
         return None
     if df.empty:
         return None
-    if len(df) > max_rows:
-        df = df.head(max_rows)
 
     has_scenario = "scenario" in df.columns
     has_accepted = "accepted" in df.columns
@@ -167,6 +165,16 @@ def _build_cutoff_reference_table(csv_path: str | Path, max_rows: int = 200) -> 
         ci_pairs.append(("production_ci_lower", "production_ci_upper", "Production CI"))
     if "risk_ci_lower" in df.columns and "risk_ci_upper" in df.columns:
         ci_pairs.append(("risk_ci_lower", "risk_ci_upper", "Risk CI"))
+
+    # 2-variable cell-level format (one row per grid cell with an `accepted`
+    # flag): render a compact colored acceptance grid per scenario instead of
+    # a one-row-per-cell listing. Must run BEFORE the max_rows truncation —
+    # a 20x10 grid x 3 scenarios is 600 rows but pivots to 3 small grids.
+    if has_accepted and has_scenario and len(bin_cols) == 2:
+        return _build_cutoff_reference_grids(df, bin_cols, ci_pairs)
+
+    if len(df) > max_rows:
+        df = df.head(max_rows)
 
     # Build display column order: bin cols, then KPIs
     kpi_display = []
@@ -283,6 +291,52 @@ def _cutoff_ref_row(
                 cells.append('<td class="num">\u2014</td>')
 
     return f"<tr>{''.join(cells)}</tr>"
+
+
+def _build_cutoff_reference_grids(df: pd.DataFrame, bin_cols: list[str], ci_pairs: list[tuple[str, str, str]]) -> str:
+    """Render 2-var cell-level cutoff data as one colored acceptance grid per scenario.
+
+    Each scenario gets a KPI caption (risk/production/CIs + accepted-cell count)
+    above a compact accept/reject pivot (same renderer as the consolidated report).
+    """
+    col_var, row_var = bin_cols[0], bin_cols[1]
+    parts: list[str] = ['<div class="matrix-grid">']
+    for scenario in df["scenario"].unique():
+        sub = df[df["scenario"] == scenario]
+        if sub.empty:
+            continue
+        first = sub.iloc[0]
+
+        kpi_bits: list[str] = []
+        risk = first.get("risk_pct", float("nan"))
+        if pd.notna(risk):
+            kpi_bits.append(f"Risk: {float(risk):.2f}%")
+        production = first.get("production", float("nan"))
+        if pd.notna(production):
+            kpi_bits.append(f"Production: {float(production):,.0f}")
+        for lo_col, hi_col, label in ci_pairs:
+            lo, hi = first.get(lo_col, float("nan")), first.get(hi_col, float("nan"))
+            if pd.notna(lo) and pd.notna(hi) and not (lo == 0 and hi == 0):
+                fmt = ",.0f" if "production" in label.lower() else ",.2f"
+                kpi_bits.append(f"{label}: [{format(float(lo), fmt)}, {format(float(hi), fmt)}]")
+        kpi_bits.append(f"Accepted cells: {int(sub['accepted'].sum())}/{len(sub)}")
+
+        badge_cls = _SCENARIO_BADGE.get(scenario, "")
+        parts.append(
+            f'<div class="matrix-cell"><div class="matrix-label">'
+            f'<span class="badge {badge_cls}">{str(scenario).title()}</span>  {" | ".join(kpi_bits)}</div>'
+        )
+
+        pivot = sub.pivot_table(index=row_var, columns=col_var, values="accepted", aggfunc="first")
+        try:
+            pivot = pivot.sort_index(key=lambda x: pd.to_numeric(x, errors="coerce"))
+            pivot = pivot[sorted(pivot.columns, key=lambda x: pd.to_numeric(x, errors="coerce"))]
+        except (TypeError, ValueError):
+            pass
+        parts.append(_render_acceptance_pivot(pivot, col_var, row_var))
+        parts.append("</div>")
+    parts.append("</div>")
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

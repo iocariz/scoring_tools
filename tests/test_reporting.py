@@ -204,6 +204,62 @@ class TestCutoffReferenceEscaping:
         assert "&lt;script&gt;alert" in html
 
 
+class TestCutoffReference2VarCellLevel:
+    def test_renders_compact_grid_per_scenario(self, tmp_path):
+        # 2-var cell-level format (accepted column) must render as colored
+        # acceptance pivots per scenario, not a one-row-per-cell listing.
+        path = tmp_path / "cutoff_summary_wide.csv"
+        rows = []
+        for scen in ("base", "optimistic"):
+            for v0 in (1.0, 2.0):
+                for v1 in (1.0, 2.0, 3.0):
+                    rows.append(
+                        {
+                            "var0": v0,
+                            "var1": v1,
+                            "accepted": int(v1 >= v0),
+                            "segment": "seg_a",
+                            "scenario": scen,
+                            "risk_pct": 2.0,
+                            "production": 1000.0,
+                        }
+                    )
+        pd.DataFrame(rows).to_csv(path, index=False)
+
+        html = _build_cutoff_reference_table(path)
+        assert html is not None
+        assert "matrix-table" in html  # compact pivot, not the row listing
+        assert "cutoff-ref-table" not in html
+        assert "badge-base" in html and "badge-optimistic" in html
+        assert "Accepted cells: 5/6" in html
+
+    def test_multi_scenario_not_truncated(self, tmp_path):
+        # 3 scenarios x 200 cells = 600 rows — the old max_rows=200 head()
+        # would have dropped 2 scenarios before pivoting.
+        path = tmp_path / "cutoff_summary_wide.csv"
+        rows = []
+        for scen in ("pessimistic", "base", "optimistic"):
+            for v0 in range(1, 21):
+                for v1 in range(1, 11):
+                    rows.append(
+                        {
+                            "var0": float(v0),
+                            "var1": float(v1),
+                            "accepted": 1,
+                            "segment": "seg_a",
+                            "scenario": scen,
+                            "risk_pct": 2.0,
+                            "production": 1000.0,
+                        }
+                    )
+        pd.DataFrame(rows).to_csv(path, index=False)
+
+        html = _build_cutoff_reference_table(path)
+        assert html is not None
+        for badge in ("badge-pessimistic", "badge-base", "badge-optimistic"):
+            assert badge in html
+
+
 # =============================================================================
 # Tests: build_segment_report
 # =============================================================================
