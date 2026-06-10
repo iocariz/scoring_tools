@@ -9,30 +9,29 @@ indicators = [
     "todu_30ever_h3", "todu_amt_pile_h3"
 ]
 
-octroi_bins = [-inf, 364.0, 370.0, 379.0, 382.0, 389.0, 397.0, 404.0, 416.0, 431.0, inf]
+#octroi_bins = [
+#    -inf, 0.8894938, 0.9136649, 0.9470597, 0.9654058, 0.9703869,
+#    0.9744170, 0.9777791, 0.9806289, 0.9830639, 0.9851669,
+#    0.9870236, 0.9886948, 0.9902284, 0.9916906, 0.9930733,
+#    0.9943728, 0.9956056, 0.9967630, 0.9977915, inf
+#]
 efx_bins = [-inf, 2.0, 7.0, 11.0, 16.0, 22.0, 27.0, 33.0, 38.0, 43.0, 47.0, 51.0, 56.0, 62.0, 68.0, 73.0, 78.0, 83.0, 89.0, 94.0, inf]
 
 date_ini_book_obs = "2024-06-01"
 date_fin_book_obs = "2025-05-01"
 date_ini_book_obs_mr = "2025-06-01"
-date_fin_book_obs_mr = "2026-02-01"
+date_fin_book_obs_mr = "2026-04-01"
 
-cutoff_ordering_mode = "bottom_up"
+#cutoff_ordering_mode = "bottom_up"
 
 score_measures = [
-    "m_ct_direct_sc_nov23",
-    "m_ct_direct_sc_jan23",
-    "m_ct_direct_sc_conso25",
-    "m_ct_direct_sc_precon25",
-    "m_ct_direct_sc_fintonic25",
-    "m_ct_direct_sc_direct25",
-    "m_ct_direct_sc_openb"
+    "m_ct_direct_sc_gen"
     ]
 
 log_level = "INFO"
-data_path = "data/demanda_direct_out.sas7bdat"
+data_path = "data/demanda_ecom_inftel_out.sas7bdat"
 n_months = 12
-variables = ['new_efx_clus','sc_octroi_new_clus','income_bin']
+variables = ['new_efx_clus','sc_octroi_new_clus']
 inference_variables = ['new_efx_clus','sc_octroi_new_clus']
 multiplier = 7  
 multiplier_h3 = 4
@@ -121,10 +120,10 @@ mr_extrapolation_hard_cap = 15.0        # Absolute ceiling: ensure risk never go
 
 # 3rd dimension: Income bin — adds income_t1t2_m as 3rd optimization variable.
 # The MILP solver jointly optimizes acceptance across all 3 dimensions with monotonicity constraints.
-[preprocessing.bins.income_bin]
-source_col = "income_t1t2_m"
-output_col = "income_bin"
-max_bins = 2
+[preprocessing.bins.sc_octroi_new_clus]
+source_col = "score_rf"
+output_col = "sc_octroi_new_clus"
+max_bins = 10
 method = "quantile"     # "quantile" (default, unsupervised). "optimization" is DEPRECATED (target leakage) and falls back to quantile.
 
 # # bin_edges = [-inf, 3000.0, inf]  # Optional: override with fixed edges (skips edge learning)
@@ -135,10 +134,10 @@ method = "quantile"     # "quantile" (default, unsupervised). "optimization" is 
 # If not specified, the pipeline will auto-infer this based on empirical data correlation
 sc_octroi_new_clus = -1  # Higher internal score = safer (descending risk)
 new_efx_clus = -1         # Higher EFX bureau score = safer (descending risk)
-income_bin = -1  # Higher income = safer (descending risk)
+
 
 [preprocessing.cz_config]
-2022 = 1.1
-2023 = 1.1
-2024 = 1.1
-2025 = 1.1  # You can now easily add future years
+2022 = 3.5
+2023 = 3.5
+2024 = 3.5
+2025 = 3.5  # You can now easily add future years
