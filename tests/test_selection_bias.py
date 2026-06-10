@@ -135,6 +135,30 @@ class TestSimulatedRestriction:
         if len(gini_100) > 0 and len(gini_50) > 0:
             assert gini_100[0] >= gini_50[0], "Gini should decrease with more truncation"
 
+    def test_truncation_removes_the_riskiest_tail(self):
+        """Audit #23: a tighter cutoff removes the RISKIEST tail. The old code
+        sorted descending in riskiness and kept ``[:n_keep]`` — retaining the
+        riskiest pct and removing the safest (the inverted restriction). Bads
+        concentrate in the risky tail, so under the bug they survived
+        truncation almost untouched; monotone Gini decay alone (the test
+        above) holds for either tail and cannot catch this."""
+        df = _make_demand_df(n=4000, acceptance_rate=0.8)
+        booked = df[df["status_name"] == "booked"].copy()
+
+        score_cols = {"Score RF": {"column": "score_rf", "negate": True}}
+        result = simulate_range_restriction(booked, score_cols, "early_bad")
+
+        full = result[result["pct_retained"] == 1.0].iloc[0]
+        half = result[result["pct_retained"] == 0.5].iloc[0]
+
+        # Most bads live in the removed risky tail.
+        assert half["n_bads"] < 0.5 * full["n_bads"], (
+            f"truncating the riskiest half must remove most bads "
+            f"(kept {half['n_bads']}/{full['n_bads']}) — wrong tail truncated?"
+        )
+        # The retained book must be SAFER than the full book (tighter cutoff).
+        assert half["n_bads"] / half["n_records"] < full["n_bads"] / full["n_records"]
+
     def test_empty_input(self):
         df = pd.DataFrame({"score_rf": [], "early_bad": []})
         result = simulate_range_restriction(df, {"S": {"column": "score_rf"}}, "early_bad")
