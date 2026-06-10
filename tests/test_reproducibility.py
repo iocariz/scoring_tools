@@ -99,11 +99,32 @@ def test_snapshot_drift_fails_even_when_numbers_match():
     assert any("SNAPSHOT" in r.upper() for r in res["reasons"])
 
 
-def test_missing_sha_does_not_block():
-    # No SHA recorded on either side → snapshot pin not enforced.
-    res = compare_headline(_headline(data_sha256=None), _ref(data_sha256=None))
-    assert res["snapshot_match"] is True
-    assert res["passed"] is True
+def test_missing_sha_fails_closed():
+    """Audit #26: a missing SHA on either side must FAIL — lineage is best-effort,
+    so the old vacuous pass silently removed the snapshot pin whenever capture
+    hiccuped at reference or check time."""
+    for actual_sha, ref_sha in [(None, None), (None, "REF"), ("ACT", None)]:
+        res = compare_headline(_headline(data_sha256=actual_sha), _ref(data_sha256=ref_sha))
+        assert res["snapshot_match"] is False
+        assert res["passed"] is False
+        assert any("PIN UNAVAILABLE" in r for r in res["reasons"])
+
+
+def test_missing_risk_or_production_fails_closed():
+    """Audit #26: a headline missing risk/production must not pass vacuously on
+    the remaining checks (e.g. column absent from optimal_solution*.csv)."""
+    res = compare_headline(_headline(risk_pct=None), _ref())
+    assert res["passed"] is False
+    assert any("risk_pct missing" in r for r in res["reasons"])
+
+    res = compare_headline(_headline(production_eur=None), _ref())
+    assert res["passed"] is False
+    assert any("production_eur missing" in r for r in res["reasons"])
+
+    ref = _ref()
+    ref["risk_pct"] = None
+    res = compare_headline(_headline(), ref)
+    assert res["passed"] is False
 
 
 # --------------------------------- reference IO --------------------------------
