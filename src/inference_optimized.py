@@ -379,6 +379,34 @@ def _get_regression_weights(processed_data: pd.DataFrame) -> pd.Series | None:
     return None
 
 
+def _weight_sizeref(*datasets: pd.DataFrame, max_marker_size: float = 22.0) -> float | None:
+    """Plotly area-mode sizeref so the largest oa_amt_h0 maps to max_marker_size px.
+
+    Returns None when any dataset lacks the weight column or all weights are
+    non-positive, signalling callers to fall back to fixed-size markers.
+    """
+    weight_cols = [d[Columns.OA_AMT_H0].astype(float).clip(lower=0) for d in datasets if Columns.OA_AMT_H0 in d.columns]
+    if len(weight_cols) != len(datasets):
+        return None
+    w_max = max(c.max() for c in weight_cols)
+    if not np.isfinite(w_max) or w_max <= 0:
+        return None
+    return 2.0 * w_max / (max_marker_size**2)
+
+
+def _weighted_marker(data: pd.DataFrame, color: str, sizeref: float | None) -> tuple[dict, list[str] | None]:
+    """Marker dict with size proportional to oa_amt_h0, plus hover text with the value.
+
+    Falls back to a fixed-size marker (no hover text) when sizeref is None.
+    """
+    if sizeref is None:
+        return dict(size=5, color=color, opacity=0.7), None
+    weights = data[Columns.OA_AMT_H0].astype(float).clip(lower=0)
+    marker = dict(size=weights, sizemode="area", sizeref=sizeref, sizemin=3, color=color, opacity=0.7)
+    hover = [f"{Columns.OA_AMT_H0}: {w:,.0f}" for w in weights]
+    return marker, hover
+
+
 def _create_feature_dataframe(mesh_df: pd.DataFrame, features: list[str], var0: str, var1: str | None) -> pd.DataFrame:
     """
     Create feature DataFrame for model predictions on a mesh grid.
@@ -444,14 +472,20 @@ def plot_3d_surface(
             feature_df = _create_feature_dataframe(mesh_df, features, var0, None)
             y_pred = model.predict(feature_df)
 
+            sizeref = _weight_sizeref(train_data, test_data)
+            train_marker, train_hover = _weighted_marker(train_data, styles.COLOR_ACCENT, sizeref)
+            test_marker, test_hover = _weighted_marker(test_data, styles.COLOR_RISK, sizeref)
+            name_suffix = f" (size ∝ {Columns.OA_AMT_H0})" if sizeref is not None else ""
+
             fig = go.Figure()
             fig.add_trace(
                 go.Scatter(
                     x=train_data[var0],
                     y=train_data[target_var],
                     mode="markers",
-                    marker=dict(size=5, color=styles.COLOR_ACCENT, opacity=0.7),
-                    name="Training Data",
+                    marker=train_marker,
+                    text=train_hover,
+                    name=f"Training Data{name_suffix}",
                 )
             )
             fig.add_trace(
@@ -459,8 +493,9 @@ def plot_3d_surface(
                     x=test_data[var0],
                     y=test_data[target_var],
                     mode="markers",
-                    marker=dict(size=5, color=styles.COLOR_RISK, opacity=0.7),
-                    name="Test Data",
+                    marker=test_marker,
+                    text=test_hover,
+                    name=f"Test Data{name_suffix}",
                 )
             )
             fig.add_trace(
@@ -503,6 +538,11 @@ def plot_3d_surface(
         z_pred = model.predict(feature_df)
         z_mesh = z_pred.reshape(n_points, n_points)
 
+        sizeref = _weight_sizeref(train_data, test_data, max_marker_size=18.0)
+        train_marker, train_hover = _weighted_marker(train_data, styles.COLOR_ACCENT, sizeref)
+        test_marker, test_hover = _weighted_marker(test_data, styles.COLOR_RISK, sizeref)
+        name_suffix = f" (size ∝ {Columns.OA_AMT_H0})" if sizeref is not None else ""
+
         # Create the 3D plot
         fig = go.Figure(
             data=[
@@ -512,8 +552,9 @@ def plot_3d_surface(
                     y=train_data[var1],
                     z=train_data[target_var],
                     mode="markers",
-                    marker=dict(size=5, color=styles.COLOR_ACCENT, opacity=0.7),
-                    name="Training Data",
+                    marker=train_marker,
+                    text=train_hover,
+                    name=f"Training Data{name_suffix}",
                 ),
                 # Test data
                 go.Scatter3d(
@@ -521,8 +562,9 @@ def plot_3d_surface(
                     y=test_data[var1],
                     z=test_data[target_var],
                     mode="markers",
-                    marker=dict(size=5, color=styles.COLOR_RISK, opacity=0.7),
-                    name="Test Data",
+                    marker=test_marker,
+                    text=test_hover,
+                    name=f"Test Data{name_suffix}",
                 ),
                 # Prediction surface
                 go.Surface(z=z_mesh, x=x_mesh, y=y_mesh, colorscale="Viridis", opacity=0.8, name="Model Predictions"),
