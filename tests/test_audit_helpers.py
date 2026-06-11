@@ -37,7 +37,15 @@ class TestPrimaryAmountColumn:
 class TestAuditProductionKpis:
     def test_returns_zero_dict_for_none(self):
         kpis = audit.audit_production_kpis(None)
-        assert kpis == {"actual": 0.0, "swap_in": 0.0, "swap_out": 0.0, "optimum": 0.0, "total_demand": 0.0}
+        assert kpis == {
+            "actual": 0.0,
+            "swap_in": 0.0,
+            "swap_out": 0.0,
+            "optimum": 0.0,
+            "total_demand": 0.0,
+            "actual_rejections": 0.0,
+            "optimum_rejections": None,
+        }
 
     def test_returns_zero_dict_for_empty(self):
         kpis = audit.audit_production_kpis(pd.DataFrame())
@@ -58,27 +66,29 @@ class TestAuditProductionKpis:
         assert kpis["actual"] == 0.0
 
 
-class TestTotalDemandFromAuditSubset:
-    def test_excludes_canceled_status(self):
-        td = audit._total_demand_from_audit_subset(_audit_df(), "oa_amt")
-        # All rows except canceled (50.0) → 1000 + 200 + 300 + 0 = 1500
-        assert td == 1500.0
+class TestRejectionAmountsFromAudit:
+    def test_demand_includes_canceled_numerator_does_not(self):
+        # _audit_df: booked 1000+300, rejected 200+0, canceled 50 (oa_amt basis)
+        td, actual_rej, _ = audit._rejection_amounts_from_audit(_audit_df(), "oa_amt")
+        assert td == 1550.0  # through the door, canceled included
+        assert actual_rej == 200.0  # status==rejected only, canceled excluded
 
     def test_returns_zero_when_status_missing(self):
         df = pd.DataFrame({"oa_amt": [100.0]})
-        assert audit._total_demand_from_audit_subset(df, "oa_amt") == 0.0
+        assert audit._rejection_amounts_from_audit(df, "oa_amt") == (0.0, 0.0, None)
 
     def test_prefers_undiscounted_demand_column(self):
         df = _audit_df()
         df["oa_amt_demand"] = [950.0, 190.0, 285.0, 0.0, 0.0]
-        td = audit._total_demand_from_audit_subset(df, "oa_amt_adjusted")
-        # Uses oa_amt_demand (non-canceled rows): 950 + 190 + 285 + 0 = 1425
+        td, actual_rej, _ = audit._rejection_amounts_from_audit(df, "oa_amt_adjusted")
+        # Uses oa_amt_demand over the adjusted basis: 950 + 190 + 285 = 1425
         assert td == 1425.0
+        assert actual_rej == 190.0
 
     def test_demand_invariant_to_swap_in_classification(self):
         # The same applications classified differently (rejected vs swap_in)
-        # must yield the same demand — the denominator of the "Actual"
-        # rejection rate cannot depend on the scenario's accepted set.
+        # must yield the same demand AND rejections — neither side of the
+        # "Actual" rejection rate can depend on the scenario's accepted set.
         def make(classification: str) -> pd.DataFrame:
             df = pd.DataFrame(
                 {
@@ -92,9 +102,31 @@ class TestTotalDemandFromAuditSubset:
             df.loc[df["classification"] == "swap_in", "oa_amt_adjusted"] *= 0.34
             return df
 
-        td_rejected = audit._total_demand_from_audit_subset(make("rejected"), "oa_amt_adjusted")
-        td_swap_in = audit._total_demand_from_audit_subset(make("swap_in"), "oa_amt_adjusted")
-        assert td_rejected == td_swap_in == 1500.0
+        for cls in ("rejected", "swap_in"):
+            td, actual_rej, _ = audit._rejection_amounts_from_audit(make(cls), "oa_amt_adjusted")
+            assert td == 1500.0
+            assert actual_rej == 500.0
+
+    def test_optimum_rejections_from_passes_cut(self):
+        df = pd.DataFrame(
+            {
+                "classification": ["keep", "swap_out", "swap_in", "rejected", "rejected_other", "rejected_other"],
+                "status_name": ["booked", "booked", "rejected", "rejected", "rejected", "canceled"],
+                "passes_cut": [True, False, True, False, True, True],
+                "oa_amt_h0": [1000.0, 100.0, 200.0, 50.0, 80.0, 500.0],
+            }
+        )
+        td, actual_rej, optimum_rej = audit._rejection_amounts_from_audit(df, "oa_amt_h0")
+        assert td == 1930.0  # everything through the door
+        assert actual_rej == 330.0  # swap_in 200 + rejected 50 + non-score 80
+        # Optimum declines: fails-cut (swap_out 100 + rejected 50) + non-score
+        # rejections that pass the cut (80). Canceled passing the cut (500) and
+        # swap_in (200) are approved — not rejections.
+        assert optimum_rej == 230.0
+
+    def test_optimum_rejections_none_without_passes_cut(self):
+        _, _, optimum_rej = audit._rejection_amounts_from_audit(_audit_df(), "oa_amt")
+        assert optimum_rej is None
 
 
 class TestReconcile:

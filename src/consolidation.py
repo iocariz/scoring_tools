@@ -86,8 +86,13 @@ class ConsolidatedMetrics:
     swap_out_todu_30ever_h3: float = 0.0
     swap_out_todu_amt_pile_h3: float = 0.0
 
-    # Total demand (booked + rejected, excluding canceled)
+    # Total demand (through the door: booked + rejected + canceled)
     total_demand: float = 0.0
+
+    # Rejection numerators (€) — canceled is never a rejection. None → legacy
+    # production-complement fallback (artifacts predating the explicit basis).
+    actual_rejections: float | None = None
+    optimum_rejections: float | None = None
 
     # Confidence Intervals (for optimum solution)
     optimum_production_ci_lower: float = 0.0
@@ -214,6 +219,8 @@ class ConsolidatedMetrics:
         """Rejection rate under the actual (current) policy: rejected / total_demand."""
         if self.total_demand <= 0:
             return 0.0
+        if self.actual_rejections is not None:
+            return self.actual_rejections / self.total_demand * 100
         return (1 - self.actual_production / self.total_demand) * 100
 
     @property
@@ -221,6 +228,8 @@ class ConsolidatedMetrics:
         """Rejection rate under the optimum policy: rejected / total_demand."""
         if self.total_demand <= 0:
             return 0.0
+        if self.optimum_rejections is not None:
+            return self.optimum_rejections / self.total_demand * 100
         return (1 - self.optimum_production / self.total_demand) * 100
 
     @property
@@ -572,6 +581,14 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
             except (ValueError, TypeError):
                 pass
 
+        # Extract rejection rate (Actual / Optimum rows carry it; swaps are NaN)
+        if key in ("actual", "optimum") and rejection_rate_col and rejection_rate_col in row.index:
+            try:
+                if pd.notna(row[rejection_rate_col]):
+                    metrics[key]["rejection_rate_pct"] = float(row[rejection_rate_col])
+            except (ValueError, TypeError):
+                pass
+
         # Extract CI values (only for optimum)
         if key == "optimum":
             for col in df.columns:
@@ -611,6 +628,14 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
             metrics["_total_demand"] = actual_prod / (1 - actual_rej / 100)
         else:
             metrics["_total_demand"] = actual_prod
+
+    # Rejection numerators (€) on the summary table's own basis (rate × demand),
+    # so aggregation sums amounts instead of averaging rates across segments
+    td = metrics.get("_total_demand", 0.0)
+    for key, dest in (("actual", "_actual_rejections"), ("optimum", "_optimum_rejections")):
+        rate = metrics[key].pop("rejection_rate_pct", None)
+        if rate is not None and td > 0:
+            metrics[dest] = rate / 100.0 * td
 
     return metrics
 
@@ -652,10 +677,18 @@ def patch_consolidated_production_from_segment_audits(
         if "total_demand" in work.columns:
             work.loc[idx, "total_demand"] = td
         if td > 0:
-            if "actual_rejection_rate_pct" in work.columns:
-                work.loc[idx, "actual_rejection_rate_pct"] = (1.0 - a / td) * 100.0
-            if "optimum_rejection_rate_pct" in work.columns:
-                work.loc[idx, "optimum_rejection_rate_pct"] = (1.0 - o / td) * 100.0
+            ar = kpis.get("actual_rejections")
+            orj = kpis.get("optimum_rejections")
+            if "actual_rejection_rate_pct" in work.columns and ar is not None:
+                work.loc[idx, "actual_rejection_rate_pct"] = ar / td * 100.0
+            if "optimum_rejection_rate_pct" in work.columns and orj is not None:
+                work.loc[idx, "optimum_rejection_rate_pct"] = orj / td * 100.0
+
+    def _rejections_from_rows(sub: pd.DataFrame, rate_col: str) -> float | None:
+        """Re-derive € rejections from already-patched member rows (rate × demand)."""
+        if rate_col not in sub.columns or "total_demand" not in sub.columns:
+            return None
+        return float((sub[rate_col].fillna(0.0) / 100.0 * sub["total_demand"].fillna(0.0)).sum())
 
     # Detect which segments ran in baseline mode (accept-all mask makes audit
     # swap-in classifications meaningless — skip audit patching for those).
@@ -730,6 +763,8 @@ def patch_consolidated_production_from_segment_audits(
             "swap_in": float(sub["swap_in_production"].sum()),
             "swap_out": float(sub["swap_out_production"].sum()),
             "total_demand": td,
+            "actual_rejections": _rejections_from_rows(sub, "actual_rejection_rate_pct"),
+            "optimum_rejections": _rejections_from_rows(sub, "optimum_rejection_rate_pct"),
         }
         _apply_kpis(int(idx), kpis)
 
@@ -749,6 +784,8 @@ def patch_consolidated_production_from_segment_audits(
             "swap_in": float(sub["swap_in_production"].sum()),
             "swap_out": float(sub["swap_out_production"].sum()),
             "total_demand": td,
+            "actual_rejections": _rejections_from_rows(sub, "actual_rejection_rate_pct"),
+            "optimum_rejections": _rejections_from_rows(sub, "optimum_rejection_rate_pct"),
         }
         _apply_kpis(int(idx), kpis)
 
@@ -798,8 +835,18 @@ def aggregate_metrics(
     }
 
     total_demand_sum = 0.0
+    actual_rejections_sum: float | None = 0.0
+    optimum_rejections_sum: float | None = 0.0
     for metrics in metrics_list:
         total_demand_sum += metrics.get("_total_demand", metrics["actual"]["production"])
+        # Explicit rejection numerators only aggregate when every segment has them;
+        # a single legacy segment would poison the sum → None (legacy rate fallback)
+        ar = metrics.get("_actual_rejections")
+        orj = metrics.get("_optimum_rejections")
+        actual_rejections_sum = None if (ar is None or actual_rejections_sum is None) else actual_rejections_sum + ar
+        optimum_rejections_sum = (
+            None if (orj is None or optimum_rejections_sum is None) else optimum_rejections_sum + orj
+        )
         for key in aggregated:
             aggregated[key]["production"] += metrics[key]["production"]
             aggregated[key]["todu_30ever_h6"] += metrics[key]["todu_30ever_h6"]
@@ -887,6 +934,10 @@ def aggregate_metrics(
             aggregated[key]["risk_ci_upper"] = 0.0
 
     aggregated["_total_demand"] = total_demand_sum
+    if actual_rejections_sum is not None:
+        aggregated["_actual_rejections"] = actual_rejections_sum
+    if optimum_rejections_sum is not None:
+        aggregated["_optimum_rejections"] = optimum_rejections_sum
 
     return aggregated
 
@@ -1019,6 +1070,8 @@ def consolidate_segments(
                         swap_out_todu_amt_pile_h3=agg["swap_out"].get("todu_amt_pile_h3", 0),
                         # Total demand for rejection rate
                         total_demand=agg.get("_total_demand", 0),
+                        actual_rejections=agg.get("_actual_rejections"),
+                        optimum_rejections=agg.get("_optimum_rejections"),
                         # Pass aggregated CIs
                         optimum_production_ci_lower=agg["optimum"].get("production_ci_lower", 0),
                         optimum_production_ci_upper=agg["optimum"].get("production_ci_upper", 0),
@@ -1068,6 +1121,8 @@ def consolidate_segments(
                     swap_out_todu_amt_pile_h3=agg["swap_out"].get("todu_amt_pile_h3", 0),
                     # Total demand for rejection rate
                     total_demand=agg.get("_total_demand", 0),
+                    actual_rejections=agg.get("_actual_rejections"),
+                    optimum_rejections=agg.get("_optimum_rejections"),
                     # Pass segment-level CIs (fully available)
                     optimum_production_ci_lower=metrics["optimum"].get("production_ci_lower", 0),
                     optimum_production_ci_upper=metrics["optimum"].get("production_ci_upper", 0),
@@ -1110,6 +1165,8 @@ def consolidate_segments(
                     swap_out_todu_amt_pile_h3=total_agg["swap_out"].get("todu_amt_pile_h3", 0),
                     # Total demand for rejection rate
                     total_demand=total_agg.get("_total_demand", 0),
+                    actual_rejections=total_agg.get("_actual_rejections"),
+                    optimum_rejections=total_agg.get("_optimum_rejections"),
                     # Pass aggregated CIs
                     optimum_production_ci_lower=total_agg["optimum"].get("production_ci_lower", 0),
                     optimum_production_ci_upper=total_agg["optimum"].get("production_ci_upper", 0),
