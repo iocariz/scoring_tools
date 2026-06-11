@@ -213,6 +213,9 @@ def generate_audit_table(
     base_amt = primary_amount_column(audit_df)
     if base_amt in audit_df.columns:
         is_swap_in = audit_df["classification"] == "swap_in"
+        # Demand basis: annualized but WITHOUT the swap-in financing discount, so
+        # rejection-rate denominators don't depend on the scenario's accepted set
+        audit_df["oa_amt_demand"] = audit_df[base_amt] * annual_coef
         audit_df["oa_amt_adjusted"] = audit_df[base_amt] * annual_coef
         audit_df.loc[is_swap_in, "oa_amt_adjusted"] *= financing_rate
 
@@ -261,12 +264,20 @@ def generate_audit_summary(audit_df: pd.DataFrame, use_adjusted: bool = True) ->
 
 
 def _total_demand_from_audit_subset(audit_df: pd.DataFrame, amount_col: str) -> float:
-    """Demand (€) for rejection-rate math: all non-canceled applications in *audit_df*."""
+    """Demand (€) for rejection-rate math: all non-canceled applications in *audit_df*.
+
+    Prefers ``oa_amt_demand`` (annualized, undiscounted) over *amount_col*: the
+    ``oa_amt_adjusted`` basis discounts swap-in rows by the financing rate, so the
+    same score-rejected application weighs less when the scenario accepts it —
+    making the "Actual" rejection rate vary across scenarios. Falls back to
+    *amount_col* for audit extracts that predate the column.
+    """
     if "status_name" not in audit_df.columns:
         return 0.0
+    col = "oa_amt_demand" if "oa_amt_demand" in audit_df.columns else amount_col
     sn = audit_df["status_name"].astype(str).str.strip().str.lower()
     non_cancel = sn != StatusName.CANCELED.value.lower()
-    return float(audit_df.loc[non_cancel, amount_col].sum())
+    return float(audit_df.loc[non_cancel, col].sum())
 
 
 def reconcile_risk_production_summary_with_audit(

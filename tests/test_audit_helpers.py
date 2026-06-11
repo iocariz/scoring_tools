@@ -68,6 +68,34 @@ class TestTotalDemandFromAuditSubset:
         df = pd.DataFrame({"oa_amt": [100.0]})
         assert audit._total_demand_from_audit_subset(df, "oa_amt") == 0.0
 
+    def test_prefers_undiscounted_demand_column(self):
+        df = _audit_df()
+        df["oa_amt_demand"] = [950.0, 190.0, 285.0, 0.0, 0.0]
+        td = audit._total_demand_from_audit_subset(df, "oa_amt_adjusted")
+        # Uses oa_amt_demand (non-canceled rows): 950 + 190 + 285 + 0 = 1425
+        assert td == 1425.0
+
+    def test_demand_invariant_to_swap_in_classification(self):
+        # The same applications classified differently (rejected vs swap_in)
+        # must yield the same demand — the denominator of the "Actual"
+        # rejection rate cannot depend on the scenario's accepted set.
+        def make(classification: str) -> pd.DataFrame:
+            df = pd.DataFrame(
+                {
+                    "classification": ["keep", classification],
+                    "status_name": ["booked", "rejected"],
+                    "oa_amt_h0": [1000.0, 500.0],
+                }
+            )
+            df["oa_amt_demand"] = df["oa_amt_h0"] * 1.0
+            df["oa_amt_adjusted"] = df["oa_amt_h0"] * 1.0
+            df.loc[df["classification"] == "swap_in", "oa_amt_adjusted"] *= 0.34
+            return df
+
+        td_rejected = audit._total_demand_from_audit_subset(make("rejected"), "oa_amt_adjusted")
+        td_swap_in = audit._total_demand_from_audit_subset(make("swap_in"), "oa_amt_adjusted")
+        assert td_rejected == td_swap_in == 1500.0
+
 
 class TestReconcile:
     def test_returns_summary_unchanged_when_audit_none(self):
