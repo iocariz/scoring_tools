@@ -111,7 +111,10 @@ def calculate_metrics_from_cuts(
                     f"passes_cut={row.get('passes_cut', 'MISSING')}"
                 )
 
-        # Total demand (through the door) = booked + all rejected + canceled
+        # Pre-reconcile demand basis (booked + rejected, no canceled). The audit
+        # reconcile recomputes demand + rejection rates on the through-the-door
+        # basis with explicit rejected-only numerators; these survive only when
+        # no MR audit table is available.
         if total_demand > 0:
             _total_demand = total_demand
         else:

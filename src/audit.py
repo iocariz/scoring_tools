@@ -32,13 +32,24 @@ def primary_amount_column(df: pd.DataFrame) -> str:
     return "oa_amt"
 
 
-def audit_production_kpis(audit_df: pd.DataFrame | None) -> dict[str, float]:
+def audit_production_kpis(audit_df: pd.DataFrame | None) -> dict[str, float | None]:
     """
     Production (€) totals from an audit extract — same basis as ``reconcile_risk_production_summary_with_audit``.
 
     Uses ``oa_amt_adjusted`` when present, else ``primary_amount_column`` (``oa_amt_h0`` or ``oa_amt``).
+    ``total_demand`` / ``actual_rejections`` / ``optimum_rejections`` follow the
+    rejection-rate basis of ``_rejection_amounts_from_audit`` (through-the-door
+    demand, canceled never counted as a rejection).
     """
-    empty = {"actual": 0.0, "swap_in": 0.0, "swap_out": 0.0, "optimum": 0.0, "total_demand": 0.0}
+    empty = {
+        "actual": 0.0,
+        "swap_in": 0.0,
+        "swap_out": 0.0,
+        "optimum": 0.0,
+        "total_demand": 0.0,
+        "actual_rejections": 0.0,
+        "optimum_rejections": None,
+    }
     if audit_df is None or audit_df.empty or "classification" not in audit_df.columns:
         return empty.copy()
     if "oa_amt_adjusted" in audit_df.columns:
@@ -57,13 +68,15 @@ def audit_production_kpis(audit_df: pd.DataFrame | None) -> dict[str, float]:
     else:
         actual = 0.0
     optimum = actual - swap_out + swap_in
-    total_demand = _total_demand_from_audit_subset(audit_df, amt)
+    total_demand, actual_rejections, optimum_rejections = _rejection_amounts_from_audit(audit_df, amt)
     return {
         "actual": actual,
         "swap_in": swap_in,
         "swap_out": swap_out,
         "optimum": optimum,
         "total_demand": total_demand,
+        "actual_rejections": actual_rejections,
+        "optimum_rejections": optimum_rejections,
     }
 
 
@@ -263,21 +276,40 @@ def generate_audit_summary(audit_df: pd.DataFrame, use_adjusted: bool = True) ->
     return summary
 
 
-def _total_demand_from_audit_subset(audit_df: pd.DataFrame, amount_col: str) -> float:
-    """Demand (€) for rejection-rate math: all non-canceled applications in *audit_df*.
+def _rejection_amounts_from_audit(audit_df: pd.DataFrame, amount_col: str) -> tuple[float, float, float | None]:
+    """``(total_demand, actual_rejections, optimum_rejections)`` in € for rejection-rate math.
+
+    Rejection rate = rejections / total demand, where total demand is the full
+    through-the-door population (booked + rejected + canceled) and the numerator
+    NEVER includes canceled applications — an approved-but-not-taken loan is not
+    a rejection. ``actual_rejections`` is everything with rejected status;
+    ``optimum_rejections`` is what the optimum policy declines: applications
+    failing the new cutoff plus non-score rejections, which stay rejected
+    regardless of score (a canceled application passing the cutoff counts as
+    approved). ``optimum_rejections`` is None when ``passes_cut`` /
+    ``classification`` are unavailable.
 
     Prefers ``oa_amt_demand`` (annualized, undiscounted) over *amount_col*: the
     ``oa_amt_adjusted`` basis discounts swap-in rows by the financing rate, so the
-    same score-rejected application weighs less when the scenario accepts it —
-    making the "Actual" rejection rate vary across scenarios. Falls back to
-    *amount_col* for audit extracts that predate the column.
+    same score-rejected application would weigh less when the scenario accepts it,
+    making the rates vary across scenarios. Falls back to *amount_col* for audit
+    extracts that predate the column.
     """
     if "status_name" not in audit_df.columns:
-        return 0.0
+        return 0.0, 0.0, None
     col = "oa_amt_demand" if "oa_amt_demand" in audit_df.columns else amount_col
+    amounts = audit_df[col]
     sn = audit_df["status_name"].astype(str).str.strip().str.lower()
-    non_cancel = sn != StatusName.CANCELED.value.lower()
-    return float(audit_df.loc[non_cancel, col].sum())
+    total_demand = float(amounts.sum())
+    rejected = sn == StatusName.REJECTED.value.lower()
+    actual_rejections = float(amounts[rejected].sum())
+    optimum_rejections = None
+    if "passes_cut" in audit_df.columns and "classification" in audit_df.columns:
+        fails_cut = ~audit_df["passes_cut"].astype(bool)
+        cls = audit_df["classification"].astype(str).str.strip()
+        non_score_reject = rejected & (cls == "rejected_other")
+        optimum_rejections = float(amounts[fails_cut | non_score_reject].sum())
+    return total_demand, actual_rejections, optimum_rejections
 
 
 def reconcile_risk_production_summary_with_audit(
@@ -348,7 +380,7 @@ def reconcile_risk_production_summary_with_audit(
 
     # Total demand and rejection rates from the same audit subset (required for per-income-bin tables)
     td_col = next((c for c in st.columns if "total demand" in c.lower()), None)
-    total_demand = _total_demand_from_audit_subset(audit_df, amount_col)
+    total_demand, actual_rejections, optimum_rejections = _rejection_amounts_from_audit(audit_df, amount_col)
     if td_col and td_col in st.columns and total_demand > 0:
         act_row = m.str.lower() == "actual"
         if act_row.any():
@@ -358,19 +390,9 @@ def reconcile_risk_production_summary_with_audit(
         act_mask = m.str.lower() == "actual"
         opt_mask = m.str.lower() == "optimum selected"
         if act_mask.any():
-            st.loc[act_mask, "Rejection Rate (%)"] = (1.0 - actual_prod / total_demand) * 100.0
-        if opt_mask.any():
-            st.loc[opt_mask, "Rejection Rate (%)"] = (1.0 - optimum_prod / total_demand) * 100.0
-    elif td_col and td_col in st.columns:
-        td_vals = st.loc[m.str.lower() == "actual", td_col]
-        total_demand_fb = float(td_vals.values[0]) if len(td_vals) and pd.notna(td_vals.values[0]) else 0.0
-        if total_demand_fb > 0 and "Rejection Rate (%)" in st.columns:
-            act_mask = m.str.lower() == "actual"
-            opt_mask = m.str.lower() == "optimum selected"
-            if act_mask.any():
-                st.loc[act_mask, "Rejection Rate (%)"] = (1.0 - actual_prod / total_demand_fb) * 100.0
-            if opt_mask.any():
-                st.loc[opt_mask, "Rejection Rate (%)"] = (1.0 - optimum_prod / total_demand_fb) * 100.0
+            st.loc[act_mask, "Rejection Rate (%)"] = actual_rejections / total_demand * 100.0
+        if opt_mask.any() and optimum_rejections is not None:
+            st.loc[opt_mask, "Rejection Rate (%)"] = optimum_rejections / total_demand * 100.0
 
     log_fn = logger.debug if silent else logger.info
     log_fn(
