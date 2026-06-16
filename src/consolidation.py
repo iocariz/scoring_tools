@@ -4316,37 +4316,38 @@ def export_consolidated_excel(
                 f"€{tr_main.get('optimum_production', 0):,.0f}",
                 ci_str=_ci_eur(tr_main, "production_ci_lower", "production_ci_upper"),
             )
-            pd_val = tr_main.get("production_delta", 0)
-            _write_kpi_card(
-                ws_exec,
-                kpi_row,
-                3,
-                "Production Delta",
-                f"€{pd_val:+,.0f}",
-                delta_str=f"{tr_main.get('production_delta_pct', 0):+.1f}%",
-                delta_positive=pd_val >= 0,
-            )
             rd = tr_main.get("risk_delta_pct", 0)
             _write_kpi_card(
                 ws_exec,
                 kpi_row,
-                5,
+                3,
                 "Optimum Risk",
                 f"{tr_main.get('optimum_risk_pct', 0):.2f}%",
                 delta_str=f"{rd:+.2f} pp",
                 delta_positive=rd <= 0,
                 ci_str=_ci_pct(tr_main, "risk_ci_lower", "risk_ci_upper"),
             )
+            # Rejection rate + system rejection rate sit side by side for visibility
             _write_kpi_card(
-                ws_exec, kpi_row, 7, "Rejection Rate", f"{tr_main.get('optimum_rejection_rate_pct', 0):.1f}%"
+                ws_exec, kpi_row, 5, "Rejection Rate", f"{tr_main.get('optimum_rejection_rate_pct', 0):.1f}%"
             )
             _sys_main = tr_main.get("optimum_system_rejection_rate_pct")
             _write_kpi_card(
                 ws_exec,
                 kpi_row,
-                9,
+                7,
                 "System Rejection Rate",
                 f"{_sys_main:.1f}%" if _sys_main is not None else "n/a",
+            )
+            pd_val = tr_main.get("production_delta", 0)
+            _write_kpi_card(
+                ws_exec,
+                kpi_row,
+                9,
+                "Production Delta",
+                f"€{pd_val:+,.0f}",
+                delta_str=f"{tr_main.get('production_delta_pct', 0):+.1f}%",
+                delta_positive=pd_val >= 0,
             )
             # Label
             ws_exec.cell(row=kpi_row, column=11).value = "MAIN PERIOD"
@@ -4371,21 +4372,11 @@ def export_consolidated_excel(
                 f"€{tr_mr.get('optimum_production', 0):,.0f}",
                 ci_str=_ci_eur(tr_mr, "production_ci_lower", "production_ci_upper"),
             )
-            mr_pd = tr_mr.get("production_delta", 0)
-            _write_kpi_card(
-                ws_exec,
-                mr_row,
-                3,
-                "MR Prod. Delta",
-                f"€{mr_pd:+,.0f}",
-                delta_str=f"{tr_mr.get('production_delta_pct', 0):+.1f}%",
-                delta_positive=mr_pd >= 0,
-            )
             mr_rd = tr_mr.get("risk_delta_pct", 0)
             _write_kpi_card(
                 ws_exec,
                 mr_row,
-                5,
+                3,
                 "MR Optimum Risk",
                 f"{tr_mr.get('optimum_risk_pct', 0):.2f}%",
                 delta_str=f"{mr_rd:+.2f} pp",
@@ -4393,15 +4384,25 @@ def export_consolidated_excel(
                 ci_str=_ci_pct(tr_mr, "risk_ci_lower", "risk_ci_upper"),
             )
             _write_kpi_card(
-                ws_exec, mr_row, 7, "MR Rejection Rate", f"{tr_mr.get('optimum_rejection_rate_pct', 0):.1f}%"
+                ws_exec, mr_row, 5, "MR Rejection Rate", f"{tr_mr.get('optimum_rejection_rate_pct', 0):.1f}%"
             )
             _sys_mr = tr_mr.get("optimum_system_rejection_rate_pct")
             _write_kpi_card(
                 ws_exec,
                 mr_row,
-                9,
+                7,
                 "MR System Rejection Rate",
                 f"{_sys_mr:.1f}%" if _sys_mr is not None else "n/a",
+            )
+            mr_pd = tr_mr.get("production_delta", 0)
+            _write_kpi_card(
+                ws_exec,
+                mr_row,
+                9,
+                "MR Prod. Delta",
+                f"€{mr_pd:+,.0f}",
+                delta_str=f"{tr_mr.get('production_delta_pct', 0):+.1f}%",
+                delta_positive=mr_pd >= 0,
             )
             ws_exec.cell(row=mr_row, column=11).value = "MR PERIOD"
             ws_exec.cell(row=mr_row, column=11).font = Font(bold=True, color=_CLR_MR_FG, size=9, name=_FN)
@@ -4466,6 +4467,8 @@ def export_consolidated_excel(
             "risk_delta_pct",
             "actual_rejection_rate_pct",
             "optimum_rejection_rate_pct",
+            "actual_system_rejection_rate_pct",
+            "optimum_system_rejection_rate_pct",
         ]
         total_overview_df = _prepare_export_df(
             consolidated_df[consolidated_df["group"] == "TOTAL"],
@@ -4473,7 +4476,7 @@ def export_consolidated_excel(
         )
         if not total_overview_df.empty:
             next_row = _write_exec_table(
-                ws_exec, total_overview_df, next_row, "Scenario Overview — Total Portfolio", n_table_cols=12
+                ws_exec, total_overview_df, next_row, "Scenario Overview — Total Portfolio", n_table_cols=14
             )
 
         main_top_movers = _build_top_movers_df(consolidated_df, period="main")
