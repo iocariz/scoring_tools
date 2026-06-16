@@ -32,18 +32,24 @@ After a run, under `output/<segment>/data/`:
 ## 4. Reproduce + check (the repeatable artifact)
 ```bash
 # Re-derive the headline for a segment and compare to the committed golden reference (within tolerance):
-uv run python run_reproducibility.py -s no_premium_cd
+uv run python run_reproducibility.py -s no_premium_cd \
+  --config reports/validation/reference/no_premium_cd_config.toml
 
 #  → PASS: headline reproduces within tolerance AND data SHA-256 matches the reference.
 #  → FAIL: prints the reasons (risk/production drift, cell-count/accepted-set change, or DATA SNAPSHOT CHANGED).
 ```
+> **Config for `no_premium_cd`.** The repo's root `config.toml` now targets the ecom portfolio (segments `new`/`known`),
+> so it no longer contains `no_premium_cd`. The golden reference is pinned to the committed standalone config
+> `reports/validation/reference/no_premium_cd_config.toml` (direct-channel data, `reject_inference_method="parceling"`,
+> `use_mr_outcomes=true`) — pass it via `--config` for both the check and any re-establishment.
 Tolerances default to risk ±0.01pp and production ±0.1%; override with `--risk-tol-pp` / `--prod-tol-pct`. A full
 end-to-end re-run retrains the model (deterministic, seeded); pass `--model-path <dir>` to reuse a trained model and
 reproduce only preprocessing→optimization (faster).
 
 To (re)establish the reference from a trusted run (e.g. after an intentional, signed-off change):
 ```bash
-uv run python run_reproducibility.py -s no_premium_cd --update-reference
+uv run python run_reproducibility.py -s no_premium_cd \
+  --config reports/validation/reference/no_premium_cd_config.toml --update-reference
 ```
 
 > **Note — standalone vs production.** `run_reproducibility.py` reproduces a **standalone** run (`config.toml` +

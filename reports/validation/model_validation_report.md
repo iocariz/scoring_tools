@@ -1,8 +1,17 @@
 # Model validation report (M5)
 
 Independent reproduction & adversarial review of the headline numbers. The reviewer treated the pipeline as a black box,
-reproduced the headline from the pinned inputs, then tried to break it. Reproduced on commit `e4de697`, data snapshot
-SHA-256 `7cce2ceba083…` (mtime 2026-03-11), 1,444,802 rows.
+reproduced the headline from the pinned inputs, then tried to break it. Reproduced on commit `03d29df` (re-baselined from
+`e4de697` — see note), data snapshot SHA-256 `7cce2ceba083…` (mtime 2026-03-11, unchanged), 1,444,802 rows.
+
+> **Re-baseline (2026-06-16, commit `03d29df`).** The golden reference was re-established on the current pipeline. The
+> headline moved to **risk 1.0945% / production €41,722,606 / 98 cells** (from 1.0858% / €40,685,570 / 96 cells) because of
+> pipeline-code evolution since `e4de697` (audit, reject-inference and MR changes) — **not** the dependency bump:
+> scikit-learn 1.9.0 was shown behaviour-neutral vs 1.8.0 by a controlled A/B (bit-identical accepted-cell set), and the
+> data snapshot SHA-256 is unchanged. The reference now pins the committed standalone config
+> `reports/validation/reference/no_premium_cd_config.toml` (`reject_inference_method="parceling"`, `use_mr_outcomes=true`).
+> **§1's table reflects this new baseline; the adversarial review in §2 was performed on the `e4de697` vintage and should
+> be re-run against this baseline for a full re-validation.**
 
 ## 1. Reproduction — PASS (deterministic)
 Re-running `no_premium_cd` end-to-end (standalone config, full retrain) reproduced the committed golden reference
@@ -10,10 +19,10 @@ Re-running `no_premium_cd` end-to-end (standalone config, full retrain) reproduc
 
 | metric | reference | reproduced | Δ |
 |---|---|---|---|
-| risk (%) | 1.085788 | 1.085788 | **0.0 pp** |
-| production (€, `oa_amt_h0`) | 40,685,570 | 40,685,570 | **0.0 %** |
-| accepted cells | 96 | 96 | exact |
-| accepted-set hash | 0586adcc63302ffe | 0586adcc63302ffe | match |
+| risk (%) | 1.094531 | 1.094531 | **0.0 pp** |
+| production (€, `oa_amt_h0`) | 41,722,606 | 41,722,606 | **0.0 %** |
+| accepted cells | 98 | 98 | exact |
+| accepted-set hash | 8ca147d9ed3dfb6e | 8ca147d9ed3dfb6e | match |
 | data SHA-256 | 7cce2ceba083… | 7cce2ceba083… | match |
 
 `run_reproducibility.py -s no_premium_cd` → **PASS**, `snapshot_match=True`. The pipeline is deterministic given the
