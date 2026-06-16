@@ -954,6 +954,17 @@ Record-level classification for each application:
 | `rejected` | Score-rejected and still fails |
 | `rejected_other` | Non-score rejections (`08-other`) -- not candidates for cutoff changes |
 
+### Rejection Metrics
+
+Two complementary rejection rates are reported side by side, both €-weighted on the same through-the-door demand denominator (`oa_amt_demand`, booked + rejected + canceled; canceled is never counted as a rejection):
+
+| Metric | Numerator | Notes |
+|:-------|:----------|:------|
+| **Rejection Rate (%)** | final **rejected** status (booked-status basis) | Actual = everything rejected; Optimum = fails the new cutoff **or** is a non-score rejection that stays out regardless of score |
+| **System Rejection Rate (%)** | upstream scoring-system decision `se_decision_id == ko` | Actual = system KOs; Optimum simulates the new cutoff: below-cutoff `ok`/`rv` → `KO`, above-cutoff `ko` with reason `09-score` → `OK`, above-cutoff non-score `ko` stays `KO` |
+
+System Rejection Rate tracks what the **scoring system** declines rather than what was finally booked, so it isolates the score policy from downstream booking effects. It appears wherever Rejection Rate does: the Executive Summary KPI cards (next to Rejection Rate), the Scenario Overview and Top Segment Opportunities tables, every per-segment RP sheet, and both HTML reports (Main + MR, Actual + simulated). Computed from the loan-level audit table in `src/audit.py`; falls back gracefully (no value) when `se_decision_id` is unavailable.
+
 ### Bootstrap Confidence Intervals
 
 For the selected optimal solution, the pipeline runs 1,000 bootstrap resamples of the booked population, recalculating production and risk for each sample. The 2.5th and 97.5th percentiles (via `np.nanpercentile`) provide 95% confidence intervals. NaN-valued replicates (from empty-denominator bins) are excluded from percentile computation rather than corrupting the CI.
@@ -1584,11 +1595,11 @@ Sheet order: **Executive Summary → Validation & Governance → Out-of-time Val
 
 | Sheet | Content |
 |:------|:--------|
-| **Executive Summary** | KPI cards (main + MR) now carrying bootstrap **CI bands** on risk and production (degenerate zero-width CIs suppressed), a plain-language **"Recommendation & key risks"** narrative (portfolio Δ + risk[CI], out-of-time verdict counts, per-segment status, residual-risk note), base-scenario summary tables, top segment opportunities, and inlined per-segment acceptance grids |
+| **Executive Summary** | KPI cards (main + MR) carrying bootstrap **CI bands** on risk and production (degenerate zero-width CIs suppressed) and adjacent **Rejection Rate** + **System Rejection Rate** cards, a plain-language **"Recommendation & key risks"** narrative (portfolio Δ + risk[CI], out-of-time verdict counts, per-segment status, residual-risk note), base-scenario summary tables, a Scenario Overview table (both rejection rates), top segment opportunities, and inlined per-segment acceptance grids |
 | **Validation & Governance** | Data snapshot (SHA-256 / mtime / rows / git / config from M2 lineage), key assumptions + governance tier (`multiplier` / `multiplier_h3` flagged **FIXED**; Core / Tuning / Expert), per-segment reproducibility (M5 reference + snapshot match) and PSI/stability traffic-light status, and the MRM sign-off pointer (`reports/validation/`) |
 | **Out-of-time Validation** | M4 backtest per segment: predicted vs in-sample-realized vs OOT-realized risk with CIs, OOT default counts, a colour-coded **noise-aware flag** (OK / INCONCLUSIVE / DRIFT), acceptance drift (in-sample vs OOT), held-out window, and % mature |
-| **RP {segment}** | Main-period risk production summary (Actual / Swap-in / Swap-out / Optimum / Summary) |
-| **RP MR {segment}** | MR-period risk production summary with observed H6 and H3 risk |
+| **RP {segment}** | Main-period risk production summary (Actual / Swap-in / Swap-out / Optimum / Summary), including Rejection Rate and System Rejection Rate columns |
+| **RP MR {segment}** | MR-period risk production summary with observed H6 and H3 risk, including Rejection Rate and System Rejection Rate columns |
 
 ### Supersegment Outputs (`output/_supersegment_{name}/`)
 
@@ -1726,6 +1737,15 @@ uv run pytest tests/test_estimators.py tests/test_optuna_tuning.py tests/test_mr
 
 # Focused validation for H3→H6 extrapolation and MR fallback logic
 uv run pytest tests/test_utils.py tests/test_mr_pipeline.py -q
+```
+
+### Visual QA
+
+```bash
+# Render the consolidated workbook's Executive Summary KPI strip (Main + MR)
+# to a PNG from the actual cell values — eyeball the layout without Excel/LibreOffice
+uv run python scripts/preview_exec_summary_kpis.py            # -> output/exec_kpi_preview.png
+uv run python scripts/preview_exec_summary_kpis.py -i path/to.xlsx -o preview.png
 ```
 
 ### Test Files
