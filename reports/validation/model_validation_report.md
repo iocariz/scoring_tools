@@ -10,8 +10,9 @@ reproduced the headline from the pinned inputs, then tried to break it. Reproduc
 > scikit-learn 1.9.0 was shown behaviour-neutral vs 1.8.0 by a controlled A/B (bit-identical accepted-cell set), and the
 > data snapshot SHA-256 is unchanged. The reference now pins the committed standalone config
 > `reports/validation/reference/no_premium_cd_config.toml` (`reject_inference_method="parceling"`, `use_mr_outcomes=true`).
-> **§1's table reflects this new baseline; the adversarial review in §2 was performed on the `e4de697` vintage and should
-> be re-run against this baseline for a full re-validation.**
+> **§1's table reflects this new baseline. The §2 adversarial review has been re-run on this baseline (2026-06-16) — see
+> the note under §2 — except the `no_premium_ef`/`ab`/`premium` family backtest rows in §2.2, which still require the
+> full direct-portfolio batch and remain `e4de697`-vintage.**
 
 ## 1. Reproduction — PASS (deterministic)
 Re-running `no_premium_cd` end-to-end (standalone config, full retrain) reproduced the committed golden reference
@@ -34,31 +35,44 @@ pinned (data snapshot, code, config); the golden reference + SHA-256 pin makes a
 
 ## 2. Challenge — "try to break the numbers"
 
+> **Re-validated 2026-06-16 on the re-baselined reference (commit `03d29df`).** §2.1/2.4/2.5 were re-run from a fresh
+> standalone run; §2.2's backtest was re-run for `no_premium_cd` (the re-baselined segment). Every original finding holds:
+> wide risk CI, PSI stable, audit reconciles, and the out-of-time "jump" stays within sampling noise (inconclusive, thin
+> window). The `no_premium_ef`/`ab`/`premium` rows in §2.2 were **not** re-run — they need the full direct-portfolio
+> batch — and remain `e4de697`-vintage (marked below).
+
 ### 2.1 Bootstrap confidence interval — the headline risk is uncertain (note)
 The chosen optimum's bootstrap CIs (from `risk_production_summary_table_base.csv`, "Optimum selected"):
-- **Risk 1.086%**, 95% CI **[0.42%, 1.24%]** — a **wide** band; the point estimate sits in the upper half.
-- **Production €40.45M**, 95% CI **[€39.4M, €42.0M]** (~±3%).
+- **Risk 1.095%**, 95% CI **[0.45%, 1.27%]** (booked-realized basis) — a **wide** band; the point estimate sits in the
+  upper half. (On the blended booked+RI basis the CI is [0.76%, 1.51%].)
+- **Production €41.5M**, 95% CI **[€40.4M, €43.1M]** (~±3%).
 
 The wide risk CI says the single-snapshot risk estimate carries material sampling uncertainty — appropriate to treat the
 headline risk as a band, not a point.
 
 ### 2.2 Out-of-time backtest — apparent risk drift is WITHIN SAMPLING NOISE (investigated 2026-06)
-The M4 backtest *point estimates* look like upward drift for the no_premium family (cd 0.97%→2.11%, ef 1.08%→2.62%
-same-basis). A dedicated investigation with confidence intervals and significance tests shows this **does not survive
-scrutiny** — the headline overstated it by reporting points without CIs:
+The M4 backtest *point estimates* look like upward drift for the no_premium family (on the original `e4de697` family run:
+cd 0.97%→2.11%, ef 1.08%→2.62% same-basis). A dedicated investigation with confidence intervals and significance tests
+shows this **does not survive scrutiny** — the headline overstated it by reporting points without CIs:
 
 | segment | in-sample b2 (95% CI) | OOT b2 (95% CI) | OOT defaults | CI-aware flag | Poisson p |
 |---|---|---|---|---|---|
-| no_premium_cd | 0.97% [0.62, 1.37] | 2.11% [0.73, 3.93] | 12 | **OK** (CIs overlap) | 0.057 (borderline) |
-| no_premium_ef | 1.08% [0.31, 2.16] | 2.62% [0.00, 7.39] | **2** | **INCONCLUSIVE** | 0.43 (noise) |
-| no_premium_ab | 1.07% [0.70, 1.51] | 1.20% [0.31, 2.43] | 9 | INCONCLUSIVE | — |
-| premium | 1.19% [0.59, 1.97] | 1.41% [0.32, 3.26] | 6 | INCONCLUSIVE | — |
+| no_premium_cd *(re-run `03d29df`)* | 0.82% [0.46, 1.24] | 2.21% [0.67, 4.66] | 9 | **INCONCLUSIVE** (<10 defaults; CIs overlap) | — |
+| no_premium_ef *(e4de697)* | 1.08% [0.31, 2.16] | 2.62% [0.00, 7.39] | **2** | **INCONCLUSIVE** | 0.43 (noise) |
+| no_premium_ab *(e4de697)* | 1.07% [0.70, 1.51] | 1.20% [0.31, 2.43] | 9 | INCONCLUSIVE | — |
+| premium *(e4de697)* | 1.19% [0.59, 1.97] | 1.41% [0.32, 3.26] | 6 | INCONCLUSIVE | — |
+
+*`no_premium_cd` re-run on the new baseline (standalone, 2-cohort window 2025-05→2025-07, 940 booked OOT, 26% mature):
+the OOT point still jumps (~2.2%) but with only **9 OOT defaults** the noise-aware rule returns **INCONCLUSIVE** (not DRIFT;
+the OOT CI [0.67, 4.66] overlaps the in-sample CI [0.46, 1.24]) — the same within-noise conclusion as the original review.
+The other three rows are the `e4de697` family-wide investigation, not re-executed here.*
 
 - **Not a maturity artifact.** The `pile_h6/pile_h3` ratio is ~**1.68 identically** across in-sample (13–14 mo seasoned)
   and the OOT cohort (6–7 mo) and across all segments → the H6 pile is fully observed; `multiplier=7` correctly applied.
 - **Not statistically significant.** Every OOT CI overlaps its in-sample CI; **no segment flags DRIFT** under the
-  noise-aware rule (≥10 defaults AND non-overlapping CIs). cd is the only borderline case (12 defaults, Poisson p=0.057),
-  concentrated in the Jul-2025 cohort; **ef is 2 defaults — pure noise.**
+  noise-aware rule (≥10 defaults AND non-overlapping CIs). On the re-baselined run `cd` has **9 OOT defaults → INCONCLUSIVE**
+  (below the 10-default threshold; the earlier `e4de697` pass saw 12 defaults / borderline Poisson p=0.057); **ef was
+  2 defaults — pure noise.**
 - **Driven by a thin window.** The auto-derived mature window is only 2 cohorts (Jun+Jul 2025) because
   `reference = max(mis_date) ≈ 2026-01` and maturity ≥ 6 mo. Controls (ab/premium) are stable → not a pipeline artifact.
 
