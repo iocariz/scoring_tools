@@ -1,0 +1,144 @@
+[preprocessing]
+keep_vars = [
+    "authorization_id", "mis_date", "status_name", "risk_score_rf", "se_decision_id",
+    "reject_reason", "score_rf", "segment_cut_off", "early_bad",
+    "todu_30ever_h3", "todu_amt_pile_h3", "income_t1t2_m"
+]
+indicators = [
+    "acct_booked_h0", "oa_amt", "todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0",
+    "todu_30ever_h3", "todu_amt_pile_h3"
+]
+
+octroi_bins = [-inf, 364.0, 370.0, 379.0, 382.0, 389.0, 397.0, 404.0, 416.0, 431.0, inf]
+efx_bins = [-inf, 2.0, 7.0, 11.0, 16.0, 22.0, 27.0, 33.0, 38.0, 43.0, 47.0, 51.0, 56.0, 62.0, 68.0, 73.0, 78.0, 83.0, 89.0, 94.0, inf]
+
+date_ini_book_obs = "2024-06-01"
+date_fin_book_obs = "2025-05-01"
+date_ini_book_obs_mr = "2025-06-01"
+date_fin_book_obs_mr = "2026-02-01"
+
+cutoff_ordering_mode = "bottom_up"
+
+score_measures = [
+    "m_ct_direct_sc_nov23",
+    "m_ct_direct_sc_jan23",
+    "m_ct_direct_sc_conso25",
+    "m_ct_direct_sc_precon25",
+    "m_ct_direct_sc_fintonic25",
+    "m_ct_direct_sc_direct25",
+    "m_ct_direct_sc_openb"
+    ]
+
+log_level = "INFO"
+data_path = "data/demanda_direct_out.sas7bdat"
+n_months = 12
+variables = ['new_efx_clus','sc_octroi_new_clus','income_bin']
+inference_variables = ['new_efx_clus','sc_octroi_new_clus']
+multiplier = 7  
+multiplier_h3 = 4
+z_threshold = 3.0
+cv_folds = 4
+run_sensitivity = true
+sensitivity_levels = [-30, -20, -10, -5, 5, 10, 20, 30]
+base_scenario_only = true
+
+pareto_n_points  = 100
+
+# Swap-in (repesca) constraints (optional) - limit swap-in exposure inside the MILP solver.
+# Without these, the optimizer can accept high-risk repesca cells freely as long as overall risk is under budget.
+#max_swapin_production_pct = 15.0  # Max % of total accepted production from swap-in (0-100). None = no limit.
+#max_swapin_risk = 3.0            # Max b2_ever_h6 (%) for the swap-in population only (0-100). None = no limit.
+
+# Optional uncertainty-aware monotonicity relaxation.
+# Keeps strict monotonicity by default. Enable to relax local adjacency constraints
+# when neighboring cells are both sparse and statistically ambiguous.
+monotonicity_relaxation_enabled = true
+monotonicity_uncertainty_min_exposure = 500.0
+monotonicity_uncertainty_z_threshold = 1.0
+
+# Reject inference (optional) - adjusts predicted risk for score-rejected bins
+# based on per-bin acceptance rates to correct for selection bias.
+reject_inference_method = "parceling"  # "none" (default) or "parceling"
+reject_parceling_method = "linear"     # "linear" (default), "power", or "sigmoid"
+reject_uplift_factor = 1.5            # scaling coefficient for reject ratio (0.0-10.0)
+reject_max_risk_multiplier = 3.0      # upper cap for per-bin multiplier (1.0-10.0)
+
+#Bayesian smoothing for small bins
+reject_bayesian_smoothing = true
+reject_bayesian_prior_strength = 20.0
+reject_acceptance_decay_half_life_months = 6.0
+
+#Enforce monotone multipliers
+reject_enforce_monotonicity = true
+
+#Auto-tune reject inference parameters
+run_ri_optimizer = true
+ri_validation_split = 0.7
+ri_optimizer_methods = "optuna"
+ri_optuna_n_trials = 200
+ri_calibration_gamma = 0.8
+ri_uplift_range = [0.8, 5.0]
+ri_max_mult_range = [1.0, 5.0]
+
+# DEPRECATED and ignored — reject inference always uses score-only acceptance rates
+# (the swap-in/repesca population is solely score-rejected). Kept for back-compat.
+reject_include_all_rejections = false
+
+# Stress factor mode: "global" (default), "per_bin", or "disabled"
+# With parceling active, "disabled" avoids double-counting selection bias.
+stress_mode = "disabled"
+
+# Per-bin transformation rate: compute tasa_fin per grid cell instead of global scalar
+per_bin_tasa_fin = true
+
+# Hybrid MR risk inference (optional)
+# When enabled, uses MR-period observed risk per bin where sample size is sufficient,
+# falling back to main-period imputation for sparse bins. Helps detect model degradation.
+use_mr_outcomes = true
+mr_extrapolation_method = "auto"  # "linear", "power", "logistic", or "auto" (fits curvature from data)
+mr_min_obs_per_bin = 15
+mr_maturity_months = 6                  # Min months since booking for H6 maturity (0 to disable)
+mr_extrapolation_risk_multiplier = 3.0  # Relative ceiling: cap risk at this multiple of the segment's maximum observed risk
+mr_extrapolation_hard_cap = 15.0        # Absolute ceiling: ensure risk never goes above this percentage
+# Fixed cutoffs (optional) - uncomment to skip optimization and use predefined cutoffs
+# When set, the optimization step is skipped and these cutoffs are applied directly.
+# Supports both 2-variable (paired bins/cutoffs) and N>2 (per-variable accepted bin lists).
+#
+# 2-variable example:
+# [preprocessing.fixed_cutoffs]
+# sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]  # var0 bins
+# new_efx_clus = [3, 4, 5, 6, 7, 8, 9, 10, 12, 15]                          # var1 cutoffs
+# strict_validation = false  # If true, raise errors instead of warnings for validation issues
+# run_all_scenarios = false  # If true, generate all scenarios (pessimistic/base/optimistic)
+#
+# 3-variable (N>2) example — each variable lists its accepted bin values:
+# [preprocessing.fixed_cutoffs]
+# sc_octroi_new_clus = [1.0, 2.0, 3.0]   # accepted bins for var0
+# new_efx_clus = [1.0, 2.0, 3.0, 4.0]    # accepted bins for var1
+# income_bin = [1.0, 2.0]                 # accepted bins for var2
+# strict_validation = false
+# run_all_scenarios = false
+
+# 3rd dimension: Income bin — adds income_t1t2_m as 3rd optimization variable.
+# The MILP solver jointly optimizes acceptance across all 3 dimensions with monotonicity constraints.
+[preprocessing.bins.income_bin]
+source_col = "income_t1t2_m"
+output_col = "income_bin"
+max_bins = 2
+method = "quantile"     # "quantile" (default, unsupervised). "optimization" is DEPRECATED (target leakage) and falls back to quantile.
+
+# # bin_edges = [-inf, 3000.0, inf]  # Optional: override with fixed edges (skips edge learning)
+
+
+[preprocessing.directions]
+# Explicitly define monotonicity for specific variables (1 = ascending risk, -1 = descending risk)
+# If not specified, the pipeline will auto-infer this based on empirical data correlation
+sc_octroi_new_clus = -1  # Higher internal score = safer (descending risk)
+new_efx_clus = -1         # Higher EFX bureau score = safer (descending risk)
+income_bin = -1  # Higher income = safer (descending risk)
+
+[preprocessing.cz_config]
+2022 = 1.1
+2023 = 1.1
+2024 = 1.1
+2025 = 1.1  # You can now easily add future years

@@ -1,11 +1,11 @@
 {
   "segment": "no_premium_cd",
   "scenario": "base",
-  "risk_pct": 1.085788,
-  "production_eur": 40685569.71965753,
-  "n_accepted_cells": 96,
-  "accepted_set_hash": "0586adcc63302ffe",
+  "risk_pct": 1.094531,
+  "production_eur": 41722606.284217626,
+  "n_accepted_cells": 98,
+  "accepted_set_hash": "8ca147d9ed3dfb6e",
   "data_sha256": "7cce2ceba083bb84df1659ddebcecc17fdc7ef04dcdcb1e4d773557e820a96fd",
-  "git_commit": "e4de697fac63bbb9f8988f14620b0c141fd24c8d",
-  "config_hash": "60f257a9e659"
+  "git_commit": "03d29df89fb2395e50f5315313c9e8d65feba5ee",
+  "config_hash": "a7243ce563b1"
 }
