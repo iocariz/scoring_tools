@@ -35,6 +35,14 @@ class RejectReason(StrEnum):
     SCORE = "09-score"
 
 
+class SystemDecision(StrEnum):
+    """Upstream scoring-system decision (``se_decision_id``): accept / review / reject."""
+
+    OK = "ok"
+    RV = "rv"
+    KO = "ko"
+
+
 # =============================================================================
 # COLUMN NAMES - Core Identifiers
 # =============================================================================
