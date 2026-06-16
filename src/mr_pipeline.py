@@ -130,6 +130,7 @@ def calculate_metrics_from_cuts(
             "todu_30ever_h6": actual_rn,
             "todu_amt_pile_h6": actual_rd,
             "Rejection Rate (%)": (1 - actual_prod / _total_demand) * 100 if _total_demand > 0 else 0.0,
+            "System Rejection Rate (%)": None,  # filled by reconcile from the MR audit (se_decision_id)
             "Total Demand (€)": _total_demand,
         }
         if has_h3:
@@ -149,6 +150,7 @@ def calculate_metrics_from_cuts(
             "todu_30ever_h6": si_rn,
             "todu_amt_pile_h6": si_rd,
             "Rejection Rate (%)": None,
+            "System Rejection Rate (%)": None,
         }
         if has_h3:
             row_si["Risk H3 (%)"] = si_h3
@@ -167,6 +169,7 @@ def calculate_metrics_from_cuts(
             "todu_30ever_h6": so_rn,
             "todu_amt_pile_h6": so_rd,
             "Rejection Rate (%)": None,
+            "System Rejection Rate (%)": None,
         }
         if has_h3:
             row_so["Risk H3 (%)"] = so_h3
@@ -219,6 +222,7 @@ def calculate_metrics_from_cuts(
             "todu_30ever_h6": opt_rn,
             "todu_amt_pile_h6": opt_rd,
             "Rejection Rate (%)": (1 - opt_prod / _total_demand) * 100 if _total_demand > 0 else 0.0,
+            "System Rejection Rate (%)": None,  # filled by reconcile from the MR audit (se_decision_id)
         }
         if has_h3:
             opt_h3_rn = (actual_h3_rn - so_h3_rn) + si_h3_rn

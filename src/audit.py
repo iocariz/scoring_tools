@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from src.constants import RejectReason, StatusName
+from src.constants import RejectReason, StatusName, SystemDecision
 
 
 def _is_numeric_like(value: object) -> bool:
@@ -49,6 +49,8 @@ def audit_production_kpis(audit_df: pd.DataFrame | None) -> dict[str, float | No
         "total_demand": 0.0,
         "actual_rejections": 0.0,
         "optimum_rejections": None,
+        "actual_system_rejections": 0.0,
+        "optimum_system_rejections": None,
     }
     if audit_df is None or audit_df.empty or "classification" not in audit_df.columns:
         return empty.copy()
@@ -69,6 +71,7 @@ def audit_production_kpis(audit_df: pd.DataFrame | None) -> dict[str, float | No
         actual = 0.0
     optimum = actual - swap_out + swap_in
     total_demand, actual_rejections, optimum_rejections = _rejection_amounts_from_audit(audit_df, amt)
+    _, actual_system_rejections, optimum_system_rejections = _system_rejection_amounts_from_audit(audit_df, amt)
     return {
         "actual": actual,
         "swap_in": swap_in,
@@ -77,6 +80,8 @@ def audit_production_kpis(audit_df: pd.DataFrame | None) -> dict[str, float | No
         "total_demand": total_demand,
         "actual_rejections": actual_rejections,
         "optimum_rejections": optimum_rejections,
+        "actual_system_rejections": actual_system_rejections,
+        "optimum_system_rejections": optimum_system_rejections,
     }
 
 
@@ -122,6 +127,7 @@ def generate_audit_table(
         audit_columns = [
             "authorization_id",
             "status_name",
+            "se_decision_id",
             "reject_reason",
             "risk_score_rf",
             "score_rf",
@@ -312,6 +318,40 @@ def _rejection_amounts_from_audit(audit_df: pd.DataFrame, amount_col: str) -> tu
     return total_demand, actual_rejections, optimum_rejections
 
 
+def _system_rejection_amounts_from_audit(audit_df: pd.DataFrame, amount_col: str) -> tuple[float, float, float | None]:
+    """``(total_demand, actual_system_ko, optimum_system_ko)`` in € for system-rejection-rate math.
+
+    The "system rejection rate" tracks the **upstream scoring-system** decision
+    (``se_decision_id``), not the final booked status. Actual numerator is the
+    through-the-door demand the system rejected (``se_decision_id == 'ko'``); the
+    optimum/simulated numerator is what the **new cutoff** would reject: every
+    application failing the cutoff PLUS the currently-``ko`` applications whose
+    rejection was for a non-score reason (a score-only ``ko`` whose cell the new
+    policy accepts flips to ``ok``). This is the ``se_decision_id`` analogue of
+    ``_rejection_amounts_from_audit`` and shares its ``oa_amt_demand`` denominator,
+    so the two rates sit on the same €-weighted, scenario-invariant basis.
+    ``optimum_system_ko`` is None when ``passes_cut`` is unavailable.
+    """
+    if "se_decision_id" not in audit_df.columns:
+        return 0.0, 0.0, None
+    col = "oa_amt_demand" if "oa_amt_demand" in audit_df.columns else amount_col
+    amounts = audit_df[col]
+    sd = audit_df["se_decision_id"].astype(str).str.strip().str.lower()
+    total_demand = float(amounts.sum())
+    is_ko = sd == SystemDecision.KO.value
+    actual_system = float(amounts[is_ko].sum())
+    optimum_system = None
+    if "passes_cut" in audit_df.columns:
+        fails_cut = ~audit_df["passes_cut"].astype(bool)
+        if "reject_reason" in audit_df.columns:
+            rr = audit_df["reject_reason"].astype(object).fillna("").astype(str).str.strip().str.lower()
+        else:
+            rr = pd.Series("", index=audit_df.index)
+        ko_non_score = is_ko & (rr != RejectReason.SCORE.value)
+        optimum_system = float(amounts[fails_cut | ko_non_score].sum())
+    return total_demand, actual_system, optimum_system
+
+
 def reconcile_risk_production_summary_with_audit(
     summary_table: pd.DataFrame,
     audit_df: pd.DataFrame | None,
@@ -393,6 +433,16 @@ def reconcile_risk_production_summary_with_audit(
             st.loc[act_mask, "Rejection Rate (%)"] = actual_rejections / total_demand * 100.0
         if opt_mask.any() and optimum_rejections is not None:
             st.loc[opt_mask, "Rejection Rate (%)"] = optimum_rejections / total_demand * 100.0
+
+    # System rejection rate (upstream se_decision_id == ko), same €-weighted demand basis
+    if total_demand > 0 and "System Rejection Rate (%)" in st.columns:
+        _, actual_system, optimum_system = _system_rejection_amounts_from_audit(audit_df, amount_col)
+        act_mask = m.str.lower() == "actual"
+        opt_mask = m.str.lower() == "optimum selected"
+        if act_mask.any():
+            st.loc[act_mask, "System Rejection Rate (%)"] = actual_system / total_demand * 100.0
+        if opt_mask.any() and optimum_system is not None:
+            st.loc[opt_mask, "System Rejection Rate (%)"] = optimum_system / total_demand * 100.0
 
     log_fn = logger.debug if silent else logger.info
     log_fn(

@@ -94,6 +94,11 @@ class ConsolidatedMetrics:
     actual_rejections: float | None = None
     optimum_rejections: float | None = None
 
+    # System-rejection numerators (€) — upstream se_decision_id == ko. None when
+    # se_decision_id is unavailable (no system rejection rate for that segment).
+    actual_system_rejections: float | None = None
+    optimum_system_rejections: float | None = None
+
     # Confidence Intervals (for optimum solution)
     optimum_production_ci_lower: float = 0.0
     optimum_production_ci_upper: float = 0.0
@@ -233,6 +238,23 @@ class ConsolidatedMetrics:
         return (1 - self.optimum_production / self.total_demand) * 100
 
     @property
+    def actual_system_rejection_rate(self) -> float | None:
+        """System rejection rate now: system-rejected (se_decision_id==ko) / total_demand.
+
+        None when se_decision_id is unavailable (no production-complement fallback —
+        the system decision is independent of booked production)."""
+        if self.total_demand <= 0 or self.actual_system_rejections is None:
+            return None
+        return self.actual_system_rejections / self.total_demand * 100
+
+    @property
+    def optimum_system_rejection_rate(self) -> float | None:
+        """System rejection rate under the optimum policy: simulated KO / total_demand."""
+        if self.total_demand <= 0 or self.optimum_system_rejections is None:
+            return None
+        return self.optimum_system_rejections / self.total_demand * 100
+
+    @property
     def production_delta(self) -> float:
         return self.optimum_production - self.actual_production
 
@@ -280,6 +302,8 @@ class ConsolidatedMetrics:
             "total_demand": self.total_demand,
             "actual_rejection_rate_pct": self.actual_rejection_rate,
             "optimum_rejection_rate_pct": self.optimum_rejection_rate,
+            "actual_system_rejection_rate_pct": self.actual_system_rejection_rate,
+            "optimum_system_rejection_rate_pct": self.optimum_system_rejection_rate,
         }
         # H3 complementary risk metrics
         has_h3 = (
@@ -507,6 +531,7 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
     todu_30_h3_col = None
     todu_amt_h3_col = None
     rejection_rate_col = None
+    system_rejection_rate_col = None
 
     for col in df.columns:
         col_lower = col.lower()
@@ -520,6 +545,8 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
             todu_30_h3_col = col
         elif col_lower == "todu_amt_pile_h3":
             todu_amt_h3_col = col
+        elif "system" in col_lower and "rejection" in col_lower and "rate" in col_lower:
+            system_rejection_rate_col = col
         elif "rejection" in col_lower and "rate" in col_lower:
             rejection_rate_col = col
 
@@ -589,6 +616,14 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
             except (ValueError, TypeError):
                 pass
 
+        # Extract system rejection rate (se_decision_id basis; Actual / Optimum only)
+        if key in ("actual", "optimum") and system_rejection_rate_col and system_rejection_rate_col in row.index:
+            try:
+                if pd.notna(row[system_rejection_rate_col]):
+                    metrics[key]["system_rejection_rate_pct"] = float(row[system_rejection_rate_col])
+            except (ValueError, TypeError):
+                pass
+
         # Extract CI values (only for optimum)
         if key == "optimum":
             for col in df.columns:
@@ -634,6 +669,10 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
     td = metrics.get("_total_demand", 0.0)
     for key, dest in (("actual", "_actual_rejections"), ("optimum", "_optimum_rejections")):
         rate = metrics[key].pop("rejection_rate_pct", None)
+        if rate is not None and td > 0:
+            metrics[dest] = rate / 100.0 * td
+    for key, dest in (("actual", "_actual_system_rejections"), ("optimum", "_optimum_system_rejections")):
+        rate = metrics[key].pop("system_rejection_rate_pct", None)
         if rate is not None and td > 0:
             metrics[dest] = rate / 100.0 * td
 
@@ -683,6 +722,12 @@ def patch_consolidated_production_from_segment_audits(
                 work.loc[idx, "actual_rejection_rate_pct"] = ar / td * 100.0
             if "optimum_rejection_rate_pct" in work.columns and orj is not None:
                 work.loc[idx, "optimum_rejection_rate_pct"] = orj / td * 100.0
+            asr = kpis.get("actual_system_rejections")
+            osr = kpis.get("optimum_system_rejections")
+            if "actual_system_rejection_rate_pct" in work.columns and asr is not None:
+                work.loc[idx, "actual_system_rejection_rate_pct"] = asr / td * 100.0
+            if "optimum_system_rejection_rate_pct" in work.columns and osr is not None:
+                work.loc[idx, "optimum_system_rejection_rate_pct"] = osr / td * 100.0
 
     def _rejections_from_rows(sub: pd.DataFrame, rate_col: str) -> float | None:
         """Re-derive € rejections from already-patched member rows (rate × demand)."""
@@ -765,6 +810,8 @@ def patch_consolidated_production_from_segment_audits(
             "total_demand": td,
             "actual_rejections": _rejections_from_rows(sub, "actual_rejection_rate_pct"),
             "optimum_rejections": _rejections_from_rows(sub, "optimum_rejection_rate_pct"),
+            "actual_system_rejections": _rejections_from_rows(sub, "actual_system_rejection_rate_pct"),
+            "optimum_system_rejections": _rejections_from_rows(sub, "optimum_system_rejection_rate_pct"),
         }
         _apply_kpis(int(idx), kpis)
 
@@ -786,6 +833,8 @@ def patch_consolidated_production_from_segment_audits(
             "total_demand": td,
             "actual_rejections": _rejections_from_rows(sub, "actual_rejection_rate_pct"),
             "optimum_rejections": _rejections_from_rows(sub, "optimum_rejection_rate_pct"),
+            "actual_system_rejections": _rejections_from_rows(sub, "actual_system_rejection_rate_pct"),
+            "optimum_system_rejections": _rejections_from_rows(sub, "optimum_system_rejection_rate_pct"),
         }
         _apply_kpis(int(idx), kpis)
 
@@ -837,6 +886,8 @@ def aggregate_metrics(
     total_demand_sum = 0.0
     actual_rejections_sum: float | None = 0.0
     optimum_rejections_sum: float | None = 0.0
+    actual_system_rejections_sum: float | None = 0.0
+    optimum_system_rejections_sum: float | None = 0.0
     for metrics in metrics_list:
         total_demand_sum += metrics.get("_total_demand", metrics["actual"]["production"])
         # Explicit rejection numerators only aggregate when every segment has them;
@@ -846,6 +897,15 @@ def aggregate_metrics(
         actual_rejections_sum = None if (ar is None or actual_rejections_sum is None) else actual_rejections_sum + ar
         optimum_rejections_sum = (
             None if (orj is None or optimum_rejections_sum is None) else optimum_rejections_sum + orj
+        )
+        # System-rejection numerators aggregate only when every segment has them
+        asr = metrics.get("_actual_system_rejections")
+        osr = metrics.get("_optimum_system_rejections")
+        actual_system_rejections_sum = (
+            None if (asr is None or actual_system_rejections_sum is None) else actual_system_rejections_sum + asr
+        )
+        optimum_system_rejections_sum = (
+            None if (osr is None or optimum_system_rejections_sum is None) else optimum_system_rejections_sum + osr
         )
         for key in aggregated:
             aggregated[key]["production"] += metrics[key]["production"]
@@ -938,6 +998,10 @@ def aggregate_metrics(
         aggregated["_actual_rejections"] = actual_rejections_sum
     if optimum_rejections_sum is not None:
         aggregated["_optimum_rejections"] = optimum_rejections_sum
+    if actual_system_rejections_sum is not None:
+        aggregated["_actual_system_rejections"] = actual_system_rejections_sum
+    if optimum_system_rejections_sum is not None:
+        aggregated["_optimum_system_rejections"] = optimum_system_rejections_sum
 
     return aggregated
 
@@ -1072,6 +1136,8 @@ def consolidate_segments(
                         total_demand=agg.get("_total_demand", 0),
                         actual_rejections=agg.get("_actual_rejections"),
                         optimum_rejections=agg.get("_optimum_rejections"),
+                        actual_system_rejections=agg.get("_actual_system_rejections"),
+                        optimum_system_rejections=agg.get("_optimum_system_rejections"),
                         # Pass aggregated CIs
                         optimum_production_ci_lower=agg["optimum"].get("production_ci_lower", 0),
                         optimum_production_ci_upper=agg["optimum"].get("production_ci_upper", 0),
@@ -1123,6 +1189,8 @@ def consolidate_segments(
                     total_demand=agg.get("_total_demand", 0),
                     actual_rejections=agg.get("_actual_rejections"),
                     optimum_rejections=agg.get("_optimum_rejections"),
+                    actual_system_rejections=agg.get("_actual_system_rejections"),
+                    optimum_system_rejections=agg.get("_optimum_system_rejections"),
                     # Pass segment-level CIs (fully available)
                     optimum_production_ci_lower=metrics["optimum"].get("production_ci_lower", 0),
                     optimum_production_ci_upper=metrics["optimum"].get("production_ci_upper", 0),
@@ -1167,6 +1235,8 @@ def consolidate_segments(
                     total_demand=total_agg.get("_total_demand", 0),
                     actual_rejections=total_agg.get("_actual_rejections"),
                     optimum_rejections=total_agg.get("_optimum_rejections"),
+                    actual_system_rejections=total_agg.get("_actual_system_rejections"),
+                    optimum_system_rejections=total_agg.get("_optimum_system_rejections"),
                     # Pass aggregated CIs
                     optimum_production_ci_lower=total_agg["optimum"].get("production_ci_lower", 0),
                     optimum_production_ci_upper=total_agg["optimum"].get("production_ci_upper", 0),
@@ -1207,6 +1277,8 @@ def consolidate_segments(
         "total_demand",
         "actual_rejection_rate_pct",
         "optimum_rejection_rate_pct",
+        "actual_system_rejection_rate_pct",
+        "optimum_system_rejection_rate_pct",
         "production_ci_lower",
         "production_ci_upper",
         "risk_ci_lower",
@@ -1483,12 +1555,23 @@ def create_consolidation_dashboard(df: pd.DataFrame, title: str = "Consolidated 
                     "line": {"width": 1.5, "color": "#ffffff"},
                 },
                 showlegend=False,
-                customdata=np.column_stack([period_data["optimum_rejection_rate_pct"].to_numpy()]),
+                customdata=np.column_stack(
+                    [
+                        period_data["optimum_rejection_rate_pct"].to_numpy(),
+                        (
+                            period_data["optimum_system_rejection_rate_pct"].to_numpy()
+                            if "optimum_system_rejection_rate_pct" in period_data.columns
+                            else np.full(len(period_data), np.nan)
+                        ),
+                    ]
+                ),
                 hovertemplate=(
                     "<b>%{text}</b><br>Period: "
                     + period.upper()
                     + "<br>Optimum risk: %{x:.2f}%"
-                    + "<br>Optimum production: €%{y:,.0f}<br>Optimum rejection rate: %{customdata[0]:.1f}%<extra></extra>"
+                    + "<br>Optimum production: €%{y:,.0f}"
+                    + "<br>Optimum rejection rate: %{customdata[0]:.1f}%"
+                    + "<br>Optimum system rejection rate: %{customdata[1]:.1f}%<extra></extra>"
                 ),
             ),
             row=3,
@@ -1902,6 +1985,8 @@ _PCT_COLS = {
     "risk_ci_upper",
     "actual_rejection_rate_pct",
     "optimum_rejection_rate_pct",
+    "actual_system_rejection_rate_pct",
+    "optimum_system_rejection_rate_pct",
     "actual_risk_h3_pct",
     "optimum_risk_h3_pct",
     "swap_in_risk_h3_pct",
@@ -1910,6 +1995,7 @@ _PCT_COLS = {
     "Risk H3 (%)",
     "Production (%)",
     "Rejection Rate (%)",
+    "System Rejection Rate (%)",
 }
 _INTEGER_COLS = {
     "n_segments",
@@ -1966,6 +2052,8 @@ _COLUMN_LABELS = {
     "total_demand": "Total Demand (€)",
     "actual_rejection_rate_pct": "Actual Rejection Rate (%)",
     "optimum_rejection_rate_pct": "Optimum Rejection Rate (%)",
+    "actual_system_rejection_rate_pct": "Actual System Rejection Rate (%)",
+    "optimum_system_rejection_rate_pct": "Optimum System Rejection Rate (%)",
     "actual_risk_h3_pct": "Actual Risk H3 (%)",
     "optimum_risk_h3_pct": "Optimum Risk H3 (%)",
     "swap_in_risk_h3_pct": "Swap-In Risk H3 (%)",
@@ -2672,6 +2760,7 @@ def _build_top_movers_df(source_df, *, period: str) -> pd.DataFrame:
                 "optimum_risk_pct",
                 "risk_delta_pct",
                 "optimum_rejection_rate_pct",
+                "optimum_system_rejection_rate_pct",
             ]
             if c in movers.columns
         ]
@@ -4251,10 +4340,18 @@ def export_consolidated_excel(
             _write_kpi_card(
                 ws_exec, kpi_row, 7, "Rejection Rate", f"{tr_main.get('optimum_rejection_rate_pct', 0):.1f}%"
             )
+            _sys_main = tr_main.get("optimum_system_rejection_rate_pct")
+            _write_kpi_card(
+                ws_exec,
+                kpi_row,
+                9,
+                "System Rejection Rate",
+                f"{_sys_main:.1f}%" if _sys_main is not None else "n/a",
+            )
             # Label
-            ws_exec.cell(row=kpi_row, column=9).value = "MAIN PERIOD"
-            ws_exec.cell(row=kpi_row, column=9).font = Font(bold=True, color=_CLR_ACCENT, size=9, name=_FN)
-            ws_exec.cell(row=kpi_row, column=9).alignment = _ALIGN_LEFT
+            ws_exec.cell(row=kpi_row, column=11).value = "MAIN PERIOD"
+            ws_exec.cell(row=kpi_row, column=11).font = Font(bold=True, color=_CLR_ACCENT, size=9, name=_FN)
+            ws_exec.cell(row=kpi_row, column=11).alignment = _ALIGN_LEFT
         else:
             ws_exec.cell(row=kpi_row, column=1).value = "No TOTAL/base/main data"
             ws_exec.cell(row=kpi_row, column=1).font = _FONT_SUBTITLE
@@ -4298,11 +4395,19 @@ def export_consolidated_excel(
             _write_kpi_card(
                 ws_exec, mr_row, 7, "MR Rejection Rate", f"{tr_mr.get('optimum_rejection_rate_pct', 0):.1f}%"
             )
-            ws_exec.cell(row=mr_row, column=9).value = "MR PERIOD"
-            ws_exec.cell(row=mr_row, column=9).font = Font(bold=True, color=_CLR_MR_FG, size=9, name=_FN)
-            ws_exec.cell(row=mr_row, column=9).alignment = _ALIGN_LEFT
+            _sys_mr = tr_mr.get("optimum_system_rejection_rate_pct")
+            _write_kpi_card(
+                ws_exec,
+                mr_row,
+                9,
+                "MR System Rejection Rate",
+                f"{_sys_mr:.1f}%" if _sys_mr is not None else "n/a",
+            )
+            ws_exec.cell(row=mr_row, column=11).value = "MR PERIOD"
+            ws_exec.cell(row=mr_row, column=11).font = Font(bold=True, color=_CLR_MR_FG, size=9, name=_FN)
+            ws_exec.cell(row=mr_row, column=11).alignment = _ALIGN_LEFT
             # Tint MR KPI row backgrounds
-            for c in range(1, 9):
+            for c in range(1, 11):
                 for r in (mr_row, mr_row + 1):
                     cell = ws_exec.cell(row=r, column=c)
                     cell.fill = _FILL_MR
@@ -4404,7 +4509,7 @@ def export_consolidated_excel(
                 next_row = _write_acceptance_grid(ws_exec, df_cut, seg_name, next_row)
 
         # Ensure KPI columns are wide enough
-        for c in range(1, 11):
+        for c in range(1, 13):
             cur = ws_exec.column_dimensions[get_column_letter(c)].width or 12
             ws_exec.column_dimensions[get_column_letter(c)].width = max(cur, 18)
         _apply_page_setup(ws_exec)

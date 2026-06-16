@@ -704,6 +704,7 @@ def _build_portfolio_metric_table(row: pd.Series, *, show_ci: bool = True) -> st
         ("Production (\u20ac)", True),
         ("Production (%)", True),
         ("Rejection Rate (%)", True),
+        ("System Rejection Rate (%)", True),
     ]
     if show_ci:
         columns += [
@@ -735,13 +736,16 @@ def _build_portfolio_metric_table(row: pd.Series, *, show_ci: bool = True) -> st
         else:
             prod_pct = prod_ci_lo = prod_ci_hi = risk_ci_lo = risk_ci_hi = float("nan")
 
-        # Rejection rate: only for Actual and Optimum
+        # Rejection rate + system rejection rate: only for Actual and Optimum
         if prefix == "actual":
             rej_rate = row.get("actual_rejection_rate_pct", float("nan"))
+            sys_rej_rate = row.get("actual_system_rejection_rate_pct", float("nan"))
         elif prefix == "optimum":
             rej_rate = row.get("optimum_rejection_rate_pct", float("nan"))
+            sys_rej_rate = row.get("optimum_system_rejection_rate_pct", float("nan"))
         else:
             rej_rate = float("nan")
+            sys_rej_rate = float("nan")
 
         # Format production delta with sign
         if pd.notna(prod_pct):
@@ -775,6 +779,7 @@ def _build_portfolio_metric_table(row: pd.Series, *, show_ci: bool = True) -> st
         lines.append(f'<td class="num{kpi}">{_fmt_num(prod, ",.0f")}</td>')
         lines.append(f'<td class="num">{prod_pct_str}</td>')
         lines.append(f'<td class="num">{_fmt_num(rej_rate)}</td>')
+        lines.append(f'<td class="num">{_fmt_num(sys_rej_rate)}</td>')
         if show_ci:
             lines.append(f'<td class="num ci">{prod_ci_lo_str}</td>')
             lines.append(f'<td class="num ci">{prod_ci_hi_str}</td>')

@@ -1001,6 +1001,8 @@ class RiskProductionVisualizer:
                 TODU_AMT - self.actual_todu_amt,
             ],
             "Rejection Rate (%)": [actual_rej, None, None, optimum_rej, None],
+            # Filled by reconcile_risk_production_summary_with_audit (needs se_decision_id)
+            "System Rejection Rate (%)": [None, None, None, None, None],
             "Total Demand (€)": [total_demand, None, None, None, None],
         }
 

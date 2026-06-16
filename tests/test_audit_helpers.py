@@ -45,6 +45,8 @@ class TestAuditProductionKpis:
             "total_demand": 0.0,
             "actual_rejections": 0.0,
             "optimum_rejections": None,
+            "actual_system_rejections": 0.0,
+            "optimum_system_rejections": None,
         }
 
     def test_returns_zero_dict_for_empty(self):
@@ -127,6 +129,62 @@ class TestRejectionAmountsFromAudit:
     def test_optimum_rejections_none_without_passes_cut(self):
         _, _, optimum_rej = audit._rejection_amounts_from_audit(_audit_df(), "oa_amt")
         assert optimum_rej is None
+
+
+class TestSystemRejectionAmounts:
+    """System rejection rate (se_decision_id == ko) on the same €-weighted demand basis."""
+
+    def _df(self) -> pd.DataFrame:
+        # One €100 application per (se_decision_id, reject_reason, passes_cut) case.
+        rows = [
+            ("ok", "", True),  # above cut, ok -> ok
+            ("rv", "", True),  # above cut, rv -> rv
+            ("ok", "", False),  # below cut, ok -> KO (simulated)
+            ("rv", "", False),  # below cut, rv -> KO (simulated)
+            ("ko", "09-score", True),  # above cut, score-ko -> OK (reversal)
+            ("ko", "09-score", False),  # below cut, score-ko -> stays KO
+            ("ko", "02-bureaux", True),  # above cut, non-score ko -> stays KO
+            ("ko", "02-bureaux", False),  # below cut, non-score ko -> KO
+        ]
+        return pd.DataFrame(
+            {
+                "se_decision_id": [r[0] for r in rows],
+                "reject_reason": [r[1] for r in rows],
+                "passes_cut": [r[2] for r in rows],
+                "oa_amt_demand": [100.0] * len(rows),
+            }
+        )
+
+    def test_actual_is_ko_count_eur(self):
+        td, actual, _ = audit._system_rejection_amounts_from_audit(self._df(), "oa_amt_demand")
+        assert td == 800.0  # everything through the door
+        assert actual == 400.0  # the 4 'ko' rows
+
+    def test_optimum_simulates_cutoff_and_score_reversal(self):
+        _, _, optimum = audit._system_rejection_amounts_from_audit(self._df(), "oa_amt_demand")
+        # KO = fails-cut (4 rows: the 2 below-cut non-ko + the 2 below-cut ko) OR
+        # above-cut non-score ko (1). Above-cut score-ko reverses to OK.
+        assert optimum == 500.0
+
+    def test_none_when_se_decision_id_missing(self):
+        df = self._df().drop(columns=["se_decision_id"])
+        assert audit._system_rejection_amounts_from_audit(df, "oa_amt_demand") == (0.0, 0.0, None)
+
+    def test_optimum_none_without_passes_cut(self):
+        df = self._df().drop(columns=["passes_cut"])
+        td, actual, optimum = audit._system_rejection_amounts_from_audit(df, "oa_amt_demand")
+        assert td == 800.0
+        assert actual == 400.0
+        assert optimum is None
+
+    def test_audit_production_kpis_includes_system_rejections(self):
+        df = self._df()
+        df["classification"] = "keep"
+        df["status_name"] = "booked"
+        df["oa_amt_h0"] = 100.0
+        kpis = audit.audit_production_kpis(df)
+        assert kpis["actual_system_rejections"] == 400.0
+        assert kpis["optimum_system_rejections"] == 500.0
 
 
 class TestReconcile:
