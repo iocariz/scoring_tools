@@ -1638,6 +1638,23 @@ def _reoptimize_mr_mask_after_recalibration(
     """
 
     # ------------------------------------------------------------------
+    # Freeze path: keep the main (frozen) acceptance mask in MR.
+    # FIXED-CUTOFF segments ALWAYS freeze (a deliberately-fixed policy must
+    # stay fixed); optimized segments freeze when mr_reoptimize_cutoffs=False.
+    # classify_by_mask is coordinate-based, so the main mask/grid evaluate
+    # correctly on the recalibrated MR surface without a re-solve or remap.
+    # ------------------------------------------------------------------
+    use_fixed = bool(settings.fixed_cutoffs)
+    reoptimize = settings.mr_reoptimize_cutoffs and not use_fixed
+    if recalibration_applied and not settings.baseline_mode and not reoptimize:
+        reason = "fixed_cutoffs" if use_fixed else "mr_reoptimize_cutoffs=False"
+        logger.info(
+            f"MR cutoffs frozen ({reason}): keeping the main acceptance mask "
+            "(no MR re-optimization); risk/production recomputed on the frozen cells."
+        )
+        return mask, grid, optimal_solution_df
+
+    # ------------------------------------------------------------------
     # Consistency fix (High severity):
     # decisions/mask were optimized on the pre-recalibrated MR risk surface
     # but we report metrics after scaling repesca risk to MR hybrid rates.
@@ -2069,6 +2086,140 @@ def _compute_b2_ever_h6_tmp(
     return data_demand_mr, comparison_df
 
 
+def _write_mr_cutoff_drift_overlay(
+    main_mask: np.ndarray | None,
+    main_grid: object | None,
+    mr_mask: np.ndarray | None,
+    mr_grid: object | None,
+    settings: "PreprocessingSettings",
+    file_suffix: str,
+    output: OutputPaths,
+) -> None:
+    """Plot how the MR-reoptimized cutoff drifted from the main (frozen) cutoff.
+
+    Renders one 2-D acceptance grid coloured by audit category per cell:
+      - **Kept**: accepted by both main and MR
+      - **Tightened** (dropped by MR): accepted by main only
+      - **Loosened** (added by MR): accepted by MR only
+      - **Rejected**: rejected by both
+
+    Only meaningful in re-optimize mode (in freeze mode the two masks are
+    identical by construction, so the caller skips it). 2-variable only — for
+    N≠2 it logs a note and returns. Non-blocking: any failure is swallowed so
+    it never aborts the MR pipeline.
+    """
+    try:
+        if main_mask is None or main_grid is None or mr_mask is None or mr_grid is None:
+            return
+        if len(settings.variables) != 2:
+            logger.info(
+                f"MR cutoff-drift overlay skipped: only 2-variable grids are supported "
+                f"(got {len(settings.variables)} variables)."
+            )
+            return
+
+        var0, var1 = settings.variables[0], settings.variables[1]
+
+        def _norm(coord: tuple) -> tuple:
+            return tuple(float(v) for v in coord)
+
+        main_accepted = {_norm(c) for c, idx in main_grid.cell_index.items() if main_mask[idx] == 1}
+        mr_accepted = {_norm(c) for c, idx in mr_grid.cell_index.items() if mr_mask[idx] == 1}
+
+        # Union of axis values across both cohorts so cells present in only one
+        # period still appear on the grid.
+        v0_vals = sorted({c[0] for c in main_grid.cell_index} | {c[0] for c in mr_grid.cell_index}, key=float)
+        v1_vals = sorted({c[1] for c in main_grid.cell_index} | {c[1] for c in mr_grid.cell_index}, key=float)
+
+        # Category codes: 0 rejected-both, 1 tightened (main-only),
+        # 2 loosened (MR-only), 3 kept (both). Rows = var1, cols = var0.
+        labels = {0: "·", 1: "−", 2: "+", 3: "K"}
+        n_kept = n_tight = n_loose = 0
+        z, text = [], []
+        for v1 in v1_vals:
+            zrow, trow = [], []
+            for v0 in v0_vals:
+                coord = (float(v0), float(v1))
+                in_main, in_mr = coord in main_accepted, coord in mr_accepted
+                cat = 3 if (in_main and in_mr) else 1 if in_main else 2 if in_mr else 0
+                if cat == 3:
+                    n_kept += 1
+                elif cat == 1:
+                    n_tight += 1
+                elif cat == 2:
+                    n_loose += 1
+                zrow.append(cat)
+                trow.append(labels[cat])
+            z.append(zrow)
+            text.append(trow)
+
+        # Discrete 4-band colorscale (zmin=-0.5, zmax=3.5 → value v maps to (v+0.5)/4).
+        c0, c1, c2, c3 = "#e8e8e8", "#d9534f", "#5bc0de", "#5cb85c"
+        colorscale = [
+            [0.0, c0],
+            [0.25, c0],
+            [0.25, c1],
+            [0.5, c1],
+            [0.5, c2],
+            [0.75, c2],
+            [0.75, c3],
+            [1.0, c3],
+        ]
+
+        fig = go.Figure(
+            go.Heatmap(
+                z=z,
+                x=[str(v) for v in v0_vals],
+                y=[str(v) for v in v1_vals],
+                text=text,
+                texttemplate="%{text}",
+                colorscale=colorscale,
+                zmin=-0.5,
+                zmax=3.5,
+                showscale=False,
+                xgap=1,
+                ygap=1,
+            )
+        )
+        styles.apply_plotly_style(
+            fig,
+            title=(
+                f"MR Cutoff Drift vs Main{file_suffix}  —  K kept={n_kept}, − tightened={n_tight}, + loosened={n_loose}"
+            ),
+            width=900,
+            height=600,
+        )
+        fig.update_layout(
+            xaxis_title=var0,
+            yaxis_title=var1,
+            annotations=[
+                dict(
+                    x=0.0,
+                    y=1.07,
+                    xref="paper",
+                    yref="paper",
+                    showarrow=False,
+                    align="left",
+                    text=(
+                        "<span style='color:#5cb85c'>■</span> kept (both)   "
+                        "<span style='color:#d9534f'>■</span> tightened (main only)   "
+                        "<span style='color:#5bc0de'>■</span> loosened (MR only)   "
+                        "<span style='color:#bbbbbb'>■</span> rejected (both)"
+                    ),
+                )
+            ],
+        )
+        # Full-bundle write (matches the other MR plots) so the report's
+        # extract_plotly_div can strip the bundled plotly.js and embed the div.
+        fig.write_html(output.mr_cutoff_drift_html(file_suffix))
+        logger.info(
+            f"MR cutoff-drift overlay written ({n_tight} tightened, {n_loose} loosened vs main) "
+            f"to {output.mr_cutoff_drift_html(file_suffix)}"
+        )
+    except Exception as e:  # noqa: BLE001 — visualization must never abort MR
+        logger.warning(f"MR cutoff-drift overlay failed (non-blocking): {e}")
+
+
 def process_mr_period(
     data_clean: pd.DataFrame,
     data_booked: pd.DataFrame,
@@ -2262,6 +2413,7 @@ def process_mr_period(
             comparison_df,
             settings,
         )
+        main_mask_pre_reopt, main_grid_pre_reopt = mask, grid
         mask, grid, optimal_solution_df = _reoptimize_mr_mask_after_recalibration(
             data_summary_desagregado_mr,
             settings,
@@ -2270,6 +2422,12 @@ def process_mr_period(
             grid,
             recalibration_applied,
         )
+        # Cutoff-drift overlay: only when the MR mask actually re-optimized
+        # (in freeze mode the same mask object is returned → masks identical).
+        if mask is not main_mask_pre_reopt:
+            _write_mr_cutoff_drift_overlay(
+                main_mask_pre_reopt, main_grid_pre_reopt, mask, grid, settings, file_suffix, output
+            )
         _log_mr_risk_diagnostic(data_summary_desagregado_mr, settings)
 
         # Save MR summary

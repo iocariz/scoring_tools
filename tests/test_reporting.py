@@ -140,6 +140,26 @@ class TestExtractPlotlyDiv:
         result = extract_plotly_div(plain)
         assert result is None
 
+    def test_bare_script_tag_plotly3(self, tmp_path):
+        """Regression: Plotly >= 3.x emits a bare ``<script>`` (no type attr).
+
+        The div-extraction regex must accept it, else every chart silently
+        drops out of the report after a Plotly upgrade.
+        """
+        path = tmp_path / "chart3.html"
+        path.write_text(
+            "<html><body>"
+            '<div id="abc12345" class="plotly-graph-div" style="height:100%;"></div>'
+            "            <script>                window.PLOTLYENV=window.PLOTLYENV || {};"
+            '                Plotly.newPlot("abc12345", [{"x":[1,2],"y":[3,4]}], {});</script>'
+            "</body></html>",
+            encoding="utf-8",
+        )
+        result = extract_plotly_div(path)
+        assert result is not None
+        assert '<div id="abc12345"' in result
+        assert "Plotly.newPlot" in result
+
 
 # =============================================================================
 # Tests: csv_to_html_table
