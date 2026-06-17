@@ -98,6 +98,9 @@ class OutputPaths:
     def mr_b2_visualization_html(self, suffix: str = "") -> str:
         return str(self.images_dir / f"b2_ever_h6_vs_octroi_and_risk_score_mr{suffix}.html")
 
+    def mr_cutoff_drift_html(self, suffix: str = "") -> str:
+        return str(self.images_dir / f"mr_cutoff_drift{suffix}.html")
+
     def mr_optimal_solution_csv(self, suffix: str = "") -> str:
         return str(self.data_dir / f"optimal_solution_mr{suffix}.csv")
 
@@ -395,6 +398,20 @@ class PreprocessingSettings(BaseModel):
             "risk with immature zeros. Set to 0 to disable maturity filtering."
         ),
     )
+    # MR cutoff re-optimization (Expert, default True = legacy behavior):
+    # True  — the inline MR check RE-OPTIMIZES the acceptance mask via MILP on the
+    #         recalibrated MR risk surface (targeting the main b2). The MR cutoffs
+    #         can therefore drift from the main period; MR risk lands ≈ the target
+    #         by construction (it is optimized to it).
+    # False — the MR period KEEPS the main (frozen) mask and only recomputes
+    #         risk/production on those cells — the honest "how does my chosen
+    #         policy do on the more recent cohort" view (same basis as the M4
+    #         backtest, but with H3→H6 extrapolation instead of full maturity).
+    # FIXED-CUTOFF segments are ALWAYS frozen in MR regardless of this flag — a
+    # deliberately-fixed policy must stay fixed; the flag only governs the
+    # MILP-optimized segments. Flipping it changes MR headline numbers, so it is
+    # governance-relevant (validate before relying on it for sign-off).
+    mr_reoptimize_cutoffs: bool = Field(default=True)
 
     # Swap-in (repesca) constraints for MILP optimization
     max_swapin_production_pct: float | None = Field(default=None, ge=0, le=100)

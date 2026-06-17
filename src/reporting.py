@@ -56,8 +56,11 @@ class ReportContext:
 # Utility helpers
 # ---------------------------------------------------------------------------
 
+# The data <script> is bare (`<script>`) in Plotly >= 3.x and
+# `<script type="text/javascript">` in older versions — accept either, else the
+# regex silently matches nothing and every chart drops out of the report.
 _PLOTLY_DIV_RE = re.compile(
-    r'(<div\s+id="[^"]*"[^>]*>.*?</div>\s*<script\s+type="text/javascript">.*?</script>)',
+    r'(<div\s+id="[^"]*"[^>]*>.*?</div>\s*<script(?:\s+type="text/javascript")?>.*?</script>)',
     re.DOTALL,
 )
 
@@ -1005,7 +1008,12 @@ def build_segment_report(
         mr_tbl = csv_to_html_table(output_paths.mr_risk_production_summary_csv(suffix), exclude_cols=_exclude_todu)
         if mr_tbl:
             mr_section.tables.append(mr_tbl)
-        if mr_section.tables:
+        # Cutoff-drift overlay (only present when the MR mask re-optimized away
+        # from the main/frozen cutoffs — i.e. mr_reoptimize_cutoffs and not fixed)
+        drift_div = extract_plotly_div(output_paths.mr_cutoff_drift_html(suffix))
+        if drift_div:
+            mr_section.charts.append(drift_div)
+        if mr_section.tables or mr_section.charts:
             sections.append(mr_section)
 
         # Stability

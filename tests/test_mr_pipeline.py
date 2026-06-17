@@ -14,6 +14,8 @@ from src.mr_pipeline import (
     _compute_account_maturity,
     _compute_hybrid_mr_risk,
     _mr_outcomes_available,
+    _reoptimize_mr_mask_after_recalibration,
+    _write_mr_cutoff_drift_overlay,
     calculate_metrics_from_cuts,
     process_mr_period,
 )
@@ -2562,3 +2564,139 @@ class TestRestoreTier1Actuals:
         df2 = self._frame().drop(columns=["_actual_todu_30ever_h6"])
         df2["_actual_todu_30ever_h6"] = np.nan
         assert _restore_tier1_actuals(df2) == 0
+
+
+# =============================================================================
+# MR cutoff re-optimization gate (mr_reoptimize_cutoffs + fixed-cutoff freeze)
+# =============================================================================
+
+
+def _mr_gate_settings(**overrides):
+    base = dict(
+        keep_vars=["mis_date"],
+        indicators=["oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"],
+        segment_filter="seg_a",
+        date_ini_book_obs="2024-01-01",
+        date_fin_book_obs="2024-06-30",
+        variables=["sc_octroi_new_clus", "new_efx_clus"],
+        octroi_bins=[-float("inf"), 1.5, float("inf")],
+        efx_bins=[-float("inf"), 1.5, float("inf")],
+    )
+    base.update(overrides)
+    return PreprocessingSettings(**base)
+
+
+@pytest.fixture
+def _mr_gate_inputs():
+    """A 2x2 MR grid + accept-all main mask + an optimal-solution row."""
+    from src.optimization_utils import CellGrid
+
+    df = pd.DataFrame(
+        {
+            "sc_octroi_new_clus": [1, 2, 1, 2],
+            "new_efx_clus": [1, 1, 2, 2],
+            "oa_amt_h0": [1000.0, 2000.0, 3000.0, 4000.0],
+            "todu_30ever_h6": [10.0, 20.0, 30.0, 40.0],
+            "todu_amt_pile_h6": [100.0, 200.0, 300.0, 400.0],
+        }
+    )
+    grid = CellGrid.from_summary(df, ["sc_octroi_new_clus", "new_efx_clus"])
+    mask = np.ones(len(grid.cell_data), dtype=int)
+    opt = pd.DataFrame({"sol_fac": [0], "b2_ever_h6": [2.0]})
+    return df, grid, mask, opt
+
+
+class TestMRReoptimizeGate:
+    """Fixed cutoffs always freeze in MR; the flag governs optimized segments."""
+
+    def test_fixed_cutoffs_always_freeze_even_when_flag_true(self, monkeypatch, _mr_gate_inputs):
+        df, grid, mask, opt = _mr_gate_inputs
+        settings = _mr_gate_settings(
+            fixed_cutoffs={"sc_octroi_new_clus": [1.0, 2.0], "new_efx_clus": [2, 2]},
+            mr_reoptimize_cutoffs=True,  # a fixed policy must stay fixed regardless
+        )
+        called = []
+        monkeypatch.setattr(
+            "src.optimization_utils.milp_solve_cutoffs",
+            lambda *a, **k: called.append(1) or np.zeros(len(grid.cell_data), dtype=int),
+        )
+        out_mask, out_grid, _ = _reoptimize_mr_mask_after_recalibration(df, settings, opt, mask, grid, True)
+        assert called == []  # no MR re-optimization
+        assert out_mask is mask  # the frozen main mask object is returned unchanged
+        assert out_grid is grid
+
+    def test_flag_false_freezes_optimized_segment(self, monkeypatch, _mr_gate_inputs):
+        df, grid, mask, opt = _mr_gate_inputs
+        settings = _mr_gate_settings(mr_reoptimize_cutoffs=False)  # no fixed cutoffs
+        called = []
+        monkeypatch.setattr("src.optimization_utils.milp_solve_cutoffs", lambda *a, **k: called.append(1))
+        out_mask, out_grid, _ = _reoptimize_mr_mask_after_recalibration(df, settings, opt, mask, grid, True)
+        assert called == []
+        assert out_mask is mask
+        assert out_grid is grid
+
+    def test_default_reoptimizes_optimized_segment(self, monkeypatch, _mr_gate_inputs):
+        df, grid, mask, opt = _mr_gate_inputs
+        settings = _mr_gate_settings()  # default mr_reoptimize_cutoffs=True, no fixed cutoffs
+        new_mask = np.zeros(len(grid.cell_data), dtype=int)
+        called = []
+        monkeypatch.setattr(
+            "src.optimization_utils.milp_solve_cutoffs",
+            lambda *a, **k: (called.append(1), new_mask)[1],
+        )
+        out_mask, out_grid, _ = _reoptimize_mr_mask_after_recalibration(df, settings, opt, mask, grid, True)
+        assert called == [1]  # re-optimization ran
+        assert out_mask is new_mask  # replaced with the MR-optimized mask
+        assert out_mask is not mask
+
+
+class TestMRCutoffDriftOverlay:
+    """The main-vs-MR accepted-cell drift overlay."""
+
+    def test_overlay_categorizes_cells_and_writes_html(self, tmp_path):
+        from src.optimization_utils import CellGrid
+
+        df = pd.DataFrame(
+            {
+                "sc_octroi_new_clus": [1, 2, 1, 2],
+                "new_efx_clus": [1, 1, 2, 2],
+                "oa_amt_h0": [1.0, 1.0, 1.0, 1.0],
+                "todu_30ever_h6": [0.0, 0.0, 0.0, 0.0],
+                "todu_amt_pile_h6": [0.0, 0.0, 0.0, 0.0],
+            }
+        )
+        grid = CellGrid.from_summary(df, ["sc_octroi_new_clus", "new_efx_clus"])
+        # cell order = (1,1),(1,2),(2,1),(2,2)
+        main_mask = np.array([1, 1, 1, 0])  # accepts (1,1),(1,2),(2,1)
+        mr_mask = np.array([0, 1, 1, 1])  # accepts (1,2),(2,1),(2,2)
+        settings = _mr_gate_settings()
+        output = OutputPaths(base_dir=tmp_path)
+        output.ensure_dirs()
+
+        _write_mr_cutoff_drift_overlay(main_mask, grid, mr_mask, grid, settings, "_base", output)
+
+        p = Path(output.mr_cutoff_drift_html("_base"))
+        assert p.exists()
+        html = p.read_text()
+        # kept (both): (1,2),(2,1)=2 ; tightened (main only): (1,1)=1 ; loosened (MR only): (2,2)=1
+        assert "kept=2" in html
+        assert "tightened=1" in html
+        assert "loosened=1" in html
+
+    def test_overlay_skips_non_2var_grids(self, tmp_path):
+        settings = _mr_gate_settings(
+            variables=["sc_octroi_new_clus", "new_efx_clus", "income_bin"],
+            inference_variables=["sc_octroi_new_clus", "new_efx_clus"],
+            bins={
+                "income_bin": BinConfig(
+                    source_col="income_t1t2_m",
+                    output_col="income_bin",
+                    bin_edges=[-float("inf"), 1.5, float("inf")],
+                )
+            },
+        )
+        output = OutputPaths(base_dir=tmp_path)
+        output.ensure_dirs()
+        # Should log-and-return without writing, never raise.
+        _write_mr_cutoff_drift_overlay(np.array([1]), object(), np.array([1]), object(), settings, "_base", output)
+        assert not Path(output.mr_cutoff_drift_html("_base")).exists()
