@@ -36,11 +36,21 @@ modelling_supersegment = "total"
 
 [segments.new]
 segment_filter = "new"
-optimum_risk = 4  
+optimum_risk = 4
 risk_step = 0.5
 run_ri_optimizer = false
 reporting_supersegment = "ecommerce_inf_tel"
 modelling_supersegment = "total"
+# Octroi as the grid anchor (var0) so the fixed_cutoffs table below reads as
+# "for each octroi bin, the efx cutoff". inference_variables stays global, so
+# the shared `total` model is unaffected — only the optimization-grid
+# orientation changes for this segment.
+variables = ['sc_octroi_new_clus', 'new_efx_clus']
+
+[segments.new.fixed_cutoffs]
+sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+new_efx_clus = [7,5,5,5,4,4,2,2,2,1]
+run_all_scenarios = false
 
 
 # Add more segments as needed:
