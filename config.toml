@@ -123,10 +123,12 @@ mr_extrapolation_hard_cap = 15.0        # Absolute ceiling: ensure risk never go
 [preprocessing.bins.sc_octroi_new_clus]
 source_col = "score_rf"
 output_col = "sc_octroi_new_clus"
-max_bins = 10
+# K=12 €-balanced fixed edges from the score re-binning analysis
+# (see reports/octroi_score_rebinning.md). bin_edges overrides edge learning,
+# so max_bins/method are inert while it is set.
+bin_edges = [-inf, 0.9470597, 0.9591544, 0.9654058, 0.9703869, 0.9744170, 0.9777791, 0.9806289, 0.9830639, 0.9851669, 0.9902284, 0.9943728, inf]
+# max_bins = 10
 method = "quantile"     # "quantile" (default, unsupervised). "optimization" is DEPRECATED (target leakage) and falls back to quantile.
-
-# # bin_edges = [-inf, 3000.0, inf]  # Optional: override with fixed edges (skips edge learning)
 
 
 [preprocessing.directions]
