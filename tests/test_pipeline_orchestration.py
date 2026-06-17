@@ -429,14 +429,93 @@ class TestRunOptimizationPhase:
             result
         )
         assert list(values_per_var["sc_octroi_new_clus"]) == [1, 2]
-        assert grid is None
-        assert pareto_masks == []
+        # Regression (2-var fixed-cutoff grid): the legacy kpi_of_fact_sol path
+        # must still build a CellGrid + per-cell mask, else downstream loses the
+        # acceptance/score grid, accepted_cells, and the cutoff_summary
+        # `accepted` column (all gated on grid/mask being non-None in
+        # scenarios.py). This previously asserted grid is None / pareto_masks [].
+        assert grid is not None
+        assert len(pareto_masks) == 1
+        assert len(pareto_masks[0]) == len(grid.cell_data)
         assert data_summary_sample_no_opt.equals(data_summary)
         assert "b2_ever_h6" in data_summary_desagregado.columns
         assert "text" in data_summary_desagregado.columns
         assert data_summary["sol_fac"].tolist() == [0]
         assert captured["create_fixed_cutoff_solution"]["inv_var1"] is False
         assert Path(output.pareto_solutions_csv).exists()
+
+    def test_fixed_cutoff_2var_builds_grid_and_mask(self, monkeypatch, tmp_path):
+        """Regression: a 2-var fixed-cutoff run returns a real CellGrid + per-cell mask.
+
+        The acceptance/score grid, accepted_cells_base.csv, and the
+        cutoff_summary_wide.csv ``accepted`` column are all gated downstream on
+        ``grid is not None and selected_mask is not None`` (scenarios.py). The
+        legacy 2-var ``kpi_of_fact_sol`` branch used to leave grid=None, which
+        silently dropped every one of those artifacts for fixed-cutoff segments.
+        The per-octroi-bin cutoffs must actually be applied to the mask.
+        """
+        # octroi 1 -> accept efx <= 1 ; octroi 2 -> accept efx <= 2 (inv_vars empty)
+        settings = make_settings(
+            fixed_cutoffs={
+                "sc_octroi_new_clus": [1.0, 2.0],
+                "new_efx_clus": [1.0, 2.0],
+            }
+        )
+        output = OutputPaths(base_dir=tmp_path)
+        output.ensure_dirs()
+        summary_desagregado = pd.DataFrame(
+            {
+                "sc_octroi_new_clus": [1, 1, 2, 2],
+                "new_efx_clus": [1, 2, 1, 2],
+                "oa_amt_h0": [1000.0, 2000.0, 3000.0, 4000.0],
+                "todu_30ever_h6": [10.0, 20.0, 30.0, 40.0],
+                "todu_amt_pile_h6": [100.0, 200.0, 300.0, 400.0],
+            }
+        )
+        monkeypatch.setattr(
+            optimization_module,
+            "run_optimization_pipeline",
+            lambda **kwargs: summary_desagregado.copy(),
+        )
+        # The KPIs come from the (validated) legacy path — mock them out so the
+        # test pins only the grid/mask construction, the actual regression.
+        monkeypatch.setattr(
+            optimization_module,
+            "create_fixed_cutoff_solution",
+            lambda **kwargs: pd.DataFrame({"sol_fac": [0], "1": [1.0], "2": [2.0]}),
+        )
+        monkeypatch.setattr(
+            optimization_module,
+            "kpi_of_fact_sol",
+            lambda **kwargs: pd.DataFrame(
+                {
+                    "sol_fac": [0],
+                    "oa_amt_h0": [6000.0],
+                    "todu_30ever_h6": [60.0],
+                    "todu_amt_pile_h6": [600.0],
+                    "b2_ever_h6": [70.0],
+                }
+            ),
+        )
+
+        result = optimization_module.run_optimization_phase(
+            data_booked=pd.DataFrame(),
+            data_demand=pd.DataFrame(),
+            risk_inference={},
+            reg_todu_amt_pile="reg",
+            stress_factor=1.0,
+            tasa_fin=1.0,
+            settings=settings,
+            annual_coef=1.0,
+            output=output,
+        )
+
+        assert result.grid is not None
+        assert len(result.pareto_masks) == 1
+        mask = result.pareto_masks[0]
+        assert len(mask) == len(result.grid.cell_data)
+        # (1,1) accept, (1,2) reject, (2,1) accept, (2,2) accept -> 3 of 4 cells.
+        assert int(mask.sum()) == 3
 
     def test_uses_trace_pareto_frontier_for_non_fixed_path(self, monkeypatch, tmp_path):
         settings = make_settings(

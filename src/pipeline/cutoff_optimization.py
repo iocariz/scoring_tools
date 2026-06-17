@@ -255,6 +255,22 @@ def run_optimization_phase(
             # For fixed cutoffs, there's only one solution (no sampling needed)
             data_summary_sample_no_opt = data_summary.copy()
 
+            # Build a CellGrid + mask for the same fixed cutoffs so downstream
+            # consumers get a real grid/mask (2-var fixed runs previously left
+            # grid=None, which silently dropped the acceptance/score grid,
+            # accepted_cells_base.csv, and the cutoff-summary `accepted` column —
+            # all gated on `grid is not None and selected_mask is not None`).
+            # KPIs still come from kpi_of_fact_sol above (validated, unchanged);
+            # the mask is consistent with it via the same fixed_cutoffs + inv_vars.
+            grid, fixed_mask = create_fixed_cutoff_mask(
+                fixed_cutoffs=fixed_cutoffs,
+                variables=settings.variables,
+                data_summary_desagregado=data_summary_desagregado,
+                inv_vars=settings.inv_vars,
+                strict_validation=strict_validation,
+            )
+            pareto_masks = [fixed_mask]
+
         # Log acceptance rate preview for fixed cutoffs
         if len(data_summary) > 0:
             row = data_summary.iloc[0]
