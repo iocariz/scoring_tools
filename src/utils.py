@@ -875,6 +875,17 @@ def generate_cutoff_summary(
         if isinstance(grid, CellGrid):
             cell_df = grid.cell_data[grid.variables].copy()
             cell_df["accepted"] = mask
+            # Per-cell observed flag: False = phantom cell (no records in this
+            # population). Mark its `accepted` as NA so the acceptance-grid
+            # renderers show it as neutral "no data" rather than a risk-based
+            # rejection (esp. on the smaller MR cohort / finer grids).
+            observed = getattr(grid, "observed", None)
+            if observed is not None and len(np.asarray(observed)) == len(cell_df):
+                obs = np.asarray(observed, dtype=bool)
+                cell_df["observed"] = obs.astype(int)
+                cell_df.loc[~obs, "accepted"] = np.nan
+            else:
+                cell_df["observed"] = 1
             cell_df["segment"] = segment_name
             cell_df["scenario"] = scenario_name
             cell_df["risk_pct"] = risk_value

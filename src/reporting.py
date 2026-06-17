@@ -127,7 +127,7 @@ def csv_to_html_table(
 # Columns that hold KPI / metadata (not bin cutoff values)
 _CUTOFF_META_COLS = {"segment", "scenario", "risk_pct", "production"}
 _CUTOFF_CI_COLS = {"production_ci_lower", "production_ci_upper", "risk_ci_lower", "risk_ci_upper"}
-_CUTOFF_CELL_META = {"accepted"}  # cell-level summary column (any N)
+_CUTOFF_CELL_META = {"accepted", "observed"}  # cell-level summary columns (any N)
 
 _SCENARIO_BADGE = {
     "pessimistic": "badge-pessimistic",
@@ -349,6 +349,7 @@ def _build_cutoff_reference_grids(df: pd.DataFrame, bin_cols: list[str], ci_pair
 _FIXED_COLS = frozenset(
     {
         "accepted",
+        "observed",
         "segment",
         "scenario",
         "risk_pct",
@@ -1008,6 +1009,11 @@ def build_segment_report(
         mr_tbl = csv_to_html_table(output_paths.mr_risk_production_summary_csv(suffix), exclude_cols=_exclude_todu)
         if mr_tbl:
             mr_section.tables.append(mr_tbl)
+        # MR-period acceptance grid (the re-optimized / frozen MR mask) — shown
+        # next to the main-period grid in the Cutoff Reference section.
+        mr_grid = _build_cutoff_reference_table(output_paths.mr_cutoff_summary_wide_csv(suffix))
+        if mr_grid:
+            mr_section.tables.append(f"<h4>MR-period acceptance grid</h4>{mr_grid}")
         # Cutoff-drift overlay (only present when the MR mask re-optimized away
         # from the main/frozen cutoffs — i.e. mr_reoptimize_cutoffs and not fixed)
         drift_div = extract_plotly_div(output_paths.mr_cutoff_drift_html(suffix))

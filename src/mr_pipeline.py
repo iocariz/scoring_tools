@@ -2428,6 +2428,27 @@ def process_mr_period(
             _write_mr_cutoff_drift_overlay(
                 main_mask_pre_reopt, main_grid_pre_reopt, mask, grid, settings, file_suffix, output
             )
+        # MR acceptance grid: cell-level summary of the MR mask (re-optimized or
+        # frozen) so the report can show the MR-period grid alongside the main one.
+        if grid is not None and mask is not None:
+            try:
+                from src.utils import generate_cutoff_summary
+
+                mr_cut = generate_cutoff_summary(
+                    optimal_solution_df=(
+                        optimal_solution_df
+                        if optimal_solution_df is not None and not optimal_solution_df.empty
+                        else pd.DataFrame({"sol_fac": [0]})
+                    ),
+                    variables=settings.variables,
+                    segment_name=str(settings.segment_filter),
+                    scenario_name=(file_suffix.lstrip("_") or "base"),
+                    mask=mask,
+                    grid=grid,
+                )
+                mr_cut.to_csv(output.mr_cutoff_summary_wide_csv(file_suffix), index=False)
+            except Exception as e:  # noqa: BLE001 — reporting aid must never abort MR
+                logger.warning(f"MR cutoff summary failed (non-blocking): {e}")
         _log_mr_risk_diagnostic(data_summary_desagregado_mr, settings)
 
         # Save MR summary
