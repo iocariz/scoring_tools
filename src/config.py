@@ -101,6 +101,9 @@ class OutputPaths:
     def mr_cutoff_drift_html(self, suffix: str = "") -> str:
         return str(self.images_dir / f"mr_cutoff_drift{suffix}.html")
 
+    def mr_cutoff_summary_wide_csv(self, suffix: str = "") -> str:
+        return str(self.data_dir / f"cutoff_summary_wide_mr{suffix}.csv")
+
     def mr_optimal_solution_csv(self, suffix: str = "") -> str:
         return str(self.data_dir / f"optimal_solution_mr{suffix}.csv")
 

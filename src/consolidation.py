@@ -2021,6 +2021,7 @@ _DELTA_COLS = {"production_delta", "production_delta_pct", "risk_delta_pct"}
 _CUTOFF_FIXED_COLS = frozenset(
     {
         "accepted",
+        "observed",
         "segment",
         "scenario",
         "risk_pct",
@@ -3018,7 +3019,7 @@ def _write_acceptance_strip_1d(ws, cutoff_df, seg_name, start_row, scenario="bas
     scen_sorted = scen_df.sort_values(var_col)
     bins = scen_sorted[var_col].values
     accepted = scen_sorted["accepted"].values
-    n_accepted = int(accepted.sum())
+    n_accepted = int(np.nansum(accepted))  # NaN = unobserved cell, not accepted
     n_total = len(accepted)
 
     # Section header
@@ -4510,6 +4511,18 @@ def export_consolidated_excel(
         if cutoff_data:
             for seg_name, df_cut in cutoff_data.items():
                 next_row = _write_acceptance_grid(ws_exec, df_cut, seg_name, next_row)
+                # MR-period acceptance grid (re-optimized/frozen MR mask), if present,
+                # so the Exec sheet shows the main grid and the MR grid per segment.
+                mr_csv = output_base / seg_name / "data" / "cutoff_summary_wide_mr.csv"
+                if mr_csv.exists():
+                    try:
+                        df_mr = pd.read_csv(mr_csv)
+                    except (pd.errors.ParserError, OSError, ValueError):
+                        df_mr = pd.DataFrame()
+                    if not df_mr.empty and "accepted" in df_mr.columns:
+                        if "segment" not in df_mr.columns:
+                            df_mr["segment"] = seg_name
+                        next_row = _write_acceptance_grid(ws_exec, df_mr, f"{seg_name}  —  MR period", next_row)
 
         # Ensure KPI columns are wide enough
         for c in range(1, 13):

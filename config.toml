@@ -99,6 +99,11 @@ mr_min_obs_per_bin = 15
 mr_maturity_months = 6                  # Min months since booking for H6 maturity (0 to disable)
 mr_extrapolation_risk_multiplier = 3.0  # Relative ceiling: cap risk at this multiple of the segment's maximum observed risk
 mr_extrapolation_hard_cap = 15.0        # Absolute ceiling: ensure risk never goes above this percentage
+# MR cutoff handling. true (default): the MR period RE-OPTIMIZES the mask on the
+# recalibrated MR surface (targeting the main b2), producing a separate MR grid
+# that can drift from the main grid (the report shows both grids + a drift
+# overlay). false: freeze the main cutoffs in MR (one grid, honest forward read).
+mr_reoptimize_cutoffs = true
 # Fixed cutoffs (optional) - uncomment to skip optimization and use predefined cutoffs
 # When set, the optimization step is skipped and these cutoffs are applied directly.
 # Supports both 2-variable (paired bins/cutoffs) and N>2 (per-variable accepted bin lists).

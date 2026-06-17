@@ -45,16 +45,16 @@ modelling_supersegment = "total"
 # "for each octroi bin, the efx cutoff". inference_variables stays global, so
 # the shared `total` model is unaffected — only the optimization-grid
 # orientation changes for this segment.
-variables = ['sc_octroi_new_clus', 'new_efx_clus']
+#variables = ['sc_octroi_new_clus', 'new_efx_clus']
 
 # Re-derived for the 12-bin octroi grid (config.toml bin_edges, K=12 €-balanced):
 # the old 10-quantile-bin staircase [7,5,5,5,4,4,2,2,2,1] mapped onto the 12 new
 # fixed octroi bins by the €-dominant old policy level per bin (preserves the
 # same acceptance region; already monotone non-increasing).
-[segments.new.fixed_cutoffs]
-sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
-new_efx_clus = [7, 5, 5, 5, 4, 4, 4, 2, 2, 2, 1, 1]
-run_all_scenarios = false
+#[segments.new.fixed_cutoffs]
+#sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+#new_efx_clus = [7, 5, 5, 5, 4, 4, 4, 2, 2, 2, 1, 1]
+#run_all_scenarios = false
 
 
 # Add more segments as needed:
