@@ -298,6 +298,30 @@ def run_scenario_analysis(
     else:
         audit_mr = pd.DataFrame()
 
+    # Save audit tables BEFORE MR processing: process_mr_period re-saves the MR
+    # audit on the (possibly re-optimized) MR mask, so it must be the final write
+    # to audit_*_mr.csv. Saving here (main-mask) and again afterwards would clobber
+    # the re-optimized MR audit and desync it from the MR grid/summary.
+    try:
+        save_audit_tables(
+            data_main=data_main_period,
+            data_mr=data_mr_period,
+            optimal_solution_df=opt_sol,
+            variables=settings.variables,
+            scenario_name=scenario_name,
+            output_dir=str(output.data_dir),
+            inv_var1=inv_var1,
+            financing_rate=tasa_fin,
+            n_months_main=n_months_main,
+            n_months_mr=n_months_mr,
+            mask=selected_mask,
+            grid=grid,
+            audit_main=audit_main,
+            audit_mr=audit_mr if len(audit_mr) else None,
+        )
+    except Exception as e:
+        logger.error(f"[{segment}] Audit table generation failed for {scenario_name} (non-blocking): {e}")
+
     # In baseline mode the accept-all mask makes every rejected applicant look like
     # swap-in, producing misleading audit classifications.  Skip reconciliation so
     # the summary table keeps the correct Optimum = Actual / zero-swap values.
@@ -463,26 +487,6 @@ def run_scenario_analysis(
         per_bin_tasa_fin=per_bin_tasa_fin,
         audit_mr_df=audit_mr if len(audit_mr) else None,
     )
-
-    try:
-        save_audit_tables(
-            data_main=data_main_period,
-            data_mr=data_mr_period,
-            optimal_solution_df=opt_sol,
-            variables=settings.variables,
-            scenario_name=scenario_name,
-            output_dir=str(output.data_dir),
-            inv_var1=inv_var1,
-            financing_rate=tasa_fin,
-            n_months_main=n_months_main,
-            n_months_mr=n_months_mr,
-            mask=selected_mask,
-            grid=grid,
-            audit_main=audit_main,
-            audit_mr=audit_mr if len(audit_mr) else None,
-        )
-    except Exception as e:
-        logger.error(f"[{segment}] Audit table generation failed for {scenario_name} (non-blocking): {e}")
 
     elapsed = time.perf_counter() - t0
     logger.info(

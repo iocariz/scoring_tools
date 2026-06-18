@@ -2457,7 +2457,15 @@ def process_mr_period(
                         mask=mask,
                         grid=grid,
                     )
-                    logger.info("MR audit regenerated on the re-optimized mask (production reconciles to it).")
+                    # Re-save over the stale main-mask audit on disk (written by
+                    # save_audit_tables before re-optimization) so the persisted MR
+                    # audit — and everything that consumes it (risk surfaces,
+                    # per-income tables) — is mask-consistent with the grid + summary.
+                    scen = file_suffix.lstrip("_") or "base"
+                    audit_mr_df.to_csv(output.data_dir / f"audit_{scen}_mr.csv", index=False)
+                    logger.info(
+                        "MR audit regenerated + re-saved on the re-optimized mask (production reconciles to it)."
+                    )
                 except Exception as e:  # noqa: BLE001 — keep the passed (main-mask) audit on failure
                     logger.warning(f"MR audit regen on re-optimized mask failed (non-blocking): {e}")
         # MR acceptance grid: cell-level summary of the MR mask (re-optimized or
