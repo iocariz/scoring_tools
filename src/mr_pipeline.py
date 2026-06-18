@@ -2428,6 +2428,38 @@ def process_mr_period(
             _write_mr_cutoff_drift_overlay(
                 main_mask_pre_reopt, main_grid_pre_reopt, mask, grid, settings, file_suffix, output
             )
+            # Regenerate the MR audit on the RE-OPTIMIZED mask. The audit passed in
+            # was built on the MAIN mask; `_write_mr_summary_table`'s production
+            # reconcile overwrites Production (€/%) from it, so without this the MR
+            # summary would report risk on the re-optimized mask but production on
+            # the main mask (mismatched cutoffs). Non-blocking: keep the passed
+            # audit on failure.
+            if audit_mr_df is not None and not audit_mr_df.empty:
+                try:
+                    from src.audit import generate_audit_table
+
+                    n_months_mr = None
+                    if settings.date_ini_book_obs_mr and settings.date_fin_book_obs_mr:
+                        _di = pd.to_datetime(settings.date_ini_book_obs_mr)
+                        _dfin = pd.to_datetime(settings.date_fin_book_obs_mr)
+                        n_months_mr = (_dfin.year - _di.year) * 12 + (_dfin.month - _di.month) + 1
+                    audit_mr_df = generate_audit_table(
+                        data=data_mr_period,
+                        optimal_solution_df=(
+                            optimal_solution_df
+                            if optimal_solution_df is not None and not optimal_solution_df.empty
+                            else pd.DataFrame({"sol_fac": [0]})
+                        ),
+                        variables=settings.variables,
+                        financing_rate=tasa_fin,
+                        inv_var1=(settings.variables[1] in settings.inv_vars if len(settings.variables) > 1 else False),
+                        n_months=n_months_mr,
+                        mask=mask,
+                        grid=grid,
+                    )
+                    logger.info("MR audit regenerated on the re-optimized mask (production reconciles to it).")
+                except Exception as e:  # noqa: BLE001 — keep the passed (main-mask) audit on failure
+                    logger.warning(f"MR audit regen on re-optimized mask failed (non-blocking): {e}")
         # MR acceptance grid: cell-level summary of the MR mask (re-optimized or
         # frozen) so the report can show the MR-period grid alongside the main one.
         if grid is not None and mask is not None:
