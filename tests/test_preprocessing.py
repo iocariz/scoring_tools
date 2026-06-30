@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.config import BinConfig, PreprocessingSettings
-from src.constants import RejectReason, StatusName
+from src.constants import RejectReason, StatusName, SystemDecision
 from src.preprocess_improved import (
     _infer_direction_from_bins,
     _run_data_transformations,
@@ -386,6 +386,43 @@ def test_update_status_no_measures():
     # Should return unchanged since no m_ct_direct columns
     assert result.loc[0, "status_name"] == "booked"
     assert result.loc[1, "status_name"] == "booked"
+
+
+def test_update_status_sets_se_decision_ko_on_measure():
+    """A direct-measure rejection sets se_decision_id to KO (System Rejection Rate)."""
+    data = pd.DataFrame(
+        {
+            "status_name": ["booked", "booked", "booked"],
+            "reject_reason": [None, None, None],
+            "se_decision_id": ["ok", "ok", "rv"],
+            "m_ct_direct_test": ["y", "n", "y"],
+        }
+    )
+
+    result = update_status_and_reject_reason(data)
+
+    # Rows 0 & 2 hit a direct measure → se_decision_id becomes KO
+    assert result.loc[0, "se_decision_id"] == SystemDecision.KO.value
+    assert result.loc[2, "se_decision_id"] == SystemDecision.KO.value
+    # Row 1 has no measure → unchanged
+    assert result.loc[1, "se_decision_id"] == "ok"
+
+
+def test_update_status_no_se_decision_id_column():
+    """se_decision_id is optional: an absent column must not be created or error."""
+    data = pd.DataFrame(
+        {
+            "status_name": ["booked", "booked"],
+            "reject_reason": [None, None],
+            "m_ct_direct_test": ["y", "n"],
+        }
+    )
+
+    result = update_status_and_reject_reason(data)
+
+    # Column must NOT be conjured (a half-NaN column would mislead the rejection-rate logic)
+    assert "se_decision_id" not in result.columns
+    assert result.loc[0, "status_name"] == StatusName.REJECTED.value
 
 
 # =============================================================================
