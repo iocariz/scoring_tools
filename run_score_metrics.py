@@ -111,14 +111,30 @@ def _validate_target(df: pd.DataFrame, label: str) -> bool:
     return True
 
 
+def _scores_present(df: pd.DataFrame) -> tuple[dict[str, dict], dict[str, list]]:
+    """SCORE_COLUMNS / COMBINED_COLUMNS filtered to score columns present in *df*.
+
+    A dataset may carry only a subset of the configured scores (e.g. a 1-variable
+    run with ``score_rf`` but no ``risk_score_rf``). A combined entry is kept only
+    when *all* its constituent columns are present (its logistic fit needs them).
+    """
+    score_cols = {k: v for k, v in SCORE_COLUMNS.items() if v["column"] in df.columns}
+    combined_cols = {k: cols for k, cols in COMBINED_COLUMNS.items() if all(c in df.columns for c in cols)}
+    return score_cols, combined_cols
+
+
 def _prepare_scores(df: pd.DataFrame, include_combined: bool = False) -> dict[str, np.ndarray]:
     """Build negated score arrays from the dataframe, matching SCORE_COLUMNS config.
 
     When *include_combined* is True, also fit a logistic regression on
-    COMBINED_COLUMNS and append the resulting combined scores.
+    COMBINED_COLUMNS and append the resulting combined scores. Score columns
+    absent from *df* are skipped (so a dataset with only a subset of the
+    configured scores still produces metrics for the scores it has).
     """
     scores = {}
     for name, info in SCORE_COLUMNS.items():
+        if info["column"] not in df.columns:
+            continue
         sign = -1 if info["negate"] else 1
         scores[name] = sign * df[info["column"]].values
 
@@ -168,7 +184,12 @@ def _compute_for_period(
     if not _validate_target(df_booked, label):
         return None
 
-    required_cols = [TARGET_COLUMN] + [s["column"] for s in SCORE_COLUMNS.values()]
+    score_columns, combined_columns = _scores_present(df_booked)
+    if not score_columns:
+        logger.warning(f"[{label}] None of the configured score columns are present — skipping.")
+        return None
+
+    required_cols = [TARGET_COLUMN] + [s["column"] for s in score_columns.values()]
     df_booked = df_booked.dropna(subset=required_cols)
 
     if df_booked.empty or df_booked[TARGET_COLUMN].nunique() < 2:
@@ -182,8 +203,8 @@ def _compute_for_period(
     metrics_df = compute_score_discriminance(
         df_booked,
         target_column=TARGET_COLUMN,
-        score_columns=SCORE_COLUMNS,
-        combined_columns=COMBINED_COLUMNS,
+        score_columns=score_columns,
+        combined_columns=combined_columns,
     )
     metrics_df["level"] = level
     metrics_df["name"] = name
@@ -250,7 +271,8 @@ def _compute_rolling_gini(
     Returns a DataFrame with columns:
         [level, name, period, month, score, gini, n_records, n_bads].
     """
-    required_cols = [TARGET_COLUMN] + [s["column"] for s in SCORE_COLUMNS.values()]
+    score_columns, _ = _scores_present(df_booked)
+    required_cols = [TARGET_COLUMN] + [s["column"] for s in score_columns.values()]
     df = df_booked.dropna(subset=required_cols).copy()
     if df.empty:
         return pd.DataFrame()
