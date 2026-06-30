@@ -15,7 +15,7 @@ from loguru import logger
 from sklearn.metrics import roc_auc_score
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
-from src.constants import DEFAULT_RANDOM_STATE, Columns, RejectReason, StatusName
+from src.constants import DEFAULT_RANDOM_STATE, Columns, RejectReason, StatusName, SystemDecision
 
 if TYPE_CHECKING:
     from src.config import BinConfig, PreprocessingSettings
@@ -851,6 +851,12 @@ def update_status_and_reject_reason(data: pd.DataFrame, score_measures: list[str
     # Update status_name and reject_reason based on the mask
     result.loc[measure_mask, "status_name"] = StatusName.REJECTED.value
     result.loc[measure_mask, "reject_reason"] = RejectReason.OTHER.value
+    # A direct-measure rejection is an upstream system KO — keep se_decision_id
+    # consistent so the System Rejection Rate counts it (audit `se_decision_id == ko`).
+    # Guarded: se_decision_id is optional; assigning to an absent column would
+    # create a half-NaN column the rejection-rate logic treats as "present".
+    if Columns.SE_DECISION_ID in result.columns:
+        result.loc[measure_mask, Columns.SE_DECISION_ID] = SystemDecision.KO.value
 
     # Update reject_reason for score measures if provided
     if score_measures:
