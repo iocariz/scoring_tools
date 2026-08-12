@@ -216,3 +216,7 @@ Tests use pytest with synthetic DataFrames (no real data needed). Fixtures use `
 ## Ruff Configuration
 
 Line length: 120. Target: Python 3.12. Rules enabled: E, F, W, I, UP, B, SIM, C4. Per-file ignores for line length and unused vars. Format uses double quotes and Unix line endings. isort configured with `src` as first-party.
+
+## Working style
+- Extend existing patterns (Pydantic validators, OutputPaths, Expert/default-off toggles, constants.py enums) rather than adding parallel mechanisms.
+- Before declaring a change done: `uv run pytest && uv run ruff check .`.
