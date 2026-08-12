@@ -88,9 +88,13 @@ def generate_batch_reports(
         except Exception as e:
             logger.warning(f"[{seg_name}] Segment report failed: {e}")
 
-    # Consolidated report
+    # Consolidated report — only segments that succeeded this run (#61). Building
+    # from the full `segments` dict would fold a failed segment's PREVIOUS-run
+    # artifacts into the consolidated HTML, indistinguishable from fresh numbers
+    # (the Excel consolidation path already filters to successful segments).
+    successful_segments = {name: cfg for name, cfg in segments.items() if segment_results.get(name, False)}
     try:
-        context = build_consolidated_report(output_base, segments, supersegments)
+        context = build_consolidated_report(output_base, successful_segments, supersegments)
         if context.sections:
             consolidated_path = output_base_path / "consolidated_report.html"
             path = render_report(context, consolidated_path, template_name="consolidated_report.html")

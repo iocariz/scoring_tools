@@ -900,3 +900,114 @@ efx_bins = [0.0, 1.0]
         assert reports["seg_a"] == segment_dir / "report.html"
         assert reports["consolidated"] == output_base / "consolidated_report.html"
         assert captured["rendered_paths"][-1] == (output_base / "consolidated_report.html", "consolidated_report.html")
+
+    def test_consolidated_report_excludes_failed_segments(self, monkeypatch, tmp_path):
+        # #61: a segment that FAILED this run must not contribute its previous
+        # run's artifacts to the consolidated HTML.
+        output_base = tmp_path / "output"
+        for seg in ("seg_ok", "seg_fail"):
+            data_dir = output_base / seg / "data"
+            data_dir.mkdir(parents=True)
+            (data_dir / "risk_production_summary_table_base.csv").write_text(
+                "metric,value\nActual,1\n", encoding="utf-8"
+            )
+            (output_base / seg / "config_segment.toml").write_text(
+                """
+[preprocessing]
+keep_vars = [\"mis_date\"]
+indicators = [\"oa_amt\"]
+segment_filter = \"SEG\"
+date_ini_book_obs = \"2024-01-01\"
+date_fin_book_obs = \"2024-12-31\"
+variables = [\"var1\", \"var2\"]
+octroi_bins = [0.0, 1.0]
+efx_bins = [0.0, 1.0]
+""".strip(),
+                encoding="utf-8",
+            )
+        captured = {}
+
+        monkeypatch.setattr(
+            reporting_module,
+            "build_segment_report",
+            lambda output, settings, scenarios: SimpleNamespace(sections=[object()]),
+        )
+
+        def fake_build_consolidated_report(output_base, segments, supersegments):
+            captured["consolidated_segments"] = dict(segments)
+            return SimpleNamespace(sections=[object()])
+
+        monkeypatch.setattr(reporting_module, "build_consolidated_report", fake_build_consolidated_report)
+        monkeypatch.setattr(
+            reporting_module, "render_report", lambda context, output_path, template_name=None: Path(output_path)
+        )
+
+        reporting_module.generate_batch_reports(
+            output_base=str(output_base),
+            segments={"seg_ok": {"a": 1}, "seg_fail": {"a": 2}},
+            supersegments={},
+            segment_results={"seg_ok": True, "seg_fail": False},
+        )
+
+        assert "seg_ok" in captured["consolidated_segments"]
+        assert "seg_fail" not in captured["consolidated_segments"]
+
+
+class TestResimulationNoStaleData:
+    """#48: resimulation raises on missing artifacts (not silent return) and
+    purges scenarios it does not regenerate."""
+
+    def test_run_resimulation_raises_on_missing_artifacts(self, monkeypatch, tmp_path):
+        import main as main_module
+
+        fake_settings = SimpleNamespace(segment_filter="seg_a")
+        monkeypatch.setattr(main_module, "load_and_validate_config", lambda p: (fake_settings, None, None, 1.0))
+        output = OutputPaths(base_dir=tmp_path)
+        output.ensure_dirs()  # dirs exist, but none of the required artifacts do
+
+        with pytest.raises(main_module.ResimulationError, match="requires a previous full run"):
+            main_module.run_resimulation("dummy.toml", [1.0], output=output)
+
+    def test_cleanup_stale_scenarios_removes_non_active_keeps_protected(self, tmp_path):
+        import main as main_module
+
+        output = OutputPaths(base_dir=tmp_path)
+        output.ensure_dirs()
+        data_dir = Path(output.data_dir)
+        for name in ("base", "pessimistic", "optimistic", "target_1.50"):
+            (data_dir / f"risk_production_summary_table_{name}.csv").write_text("x", encoding="utf-8")
+            (data_dir / f"optimal_solution_{name}.csv").write_text("x", encoding="utf-8")
+            (data_dir / f"audit_{name}.csv").write_text("x", encoding="utf-8")
+        # An MR variant of base must NOT be mistaken for a distinct scenario.
+        (data_dir / "risk_production_summary_table_mr_base.csv").write_text("x", encoding="utf-8")
+
+        # Active = {"base"} (single-value resimulation), base also protected.
+        purged = main_module.cleanup_stale_scenarios(output, {"base"}, "seg_a", protect={"base"})
+
+        assert set(purged) == {"optimistic", "pessimistic", "target_1.50"}
+        # base kept (active + protected), MR marker untouched
+        assert (data_dir / "risk_production_summary_table_base.csv").exists()
+        assert (data_dir / "optimal_solution_base.csv").exists()
+        assert (data_dir / "audit_base.csv").exists()
+        assert (data_dir / "risk_production_summary_table_mr_base.csv").exists()
+        # stale scenarios fully removed (report CSV, solution, audit)
+        assert not (data_dir / "risk_production_summary_table_optimistic.csv").exists()
+        assert not (data_dir / "optimal_solution_pessimistic.csv").exists()
+        assert not (data_dir / "audit_target_1.50.csv").exists()
+
+    def test_cleanup_protect_saves_base_when_active_is_target_only(self, tmp_path):
+        # N-value resimulation writes target_X.XX names; "base" is NOT active but
+        # its desagregado grid is the optimization INPUT — protect must keep it.
+        import main as main_module
+
+        output = OutputPaths(base_dir=tmp_path)
+        output.ensure_dirs()
+        data_dir = Path(output.data_dir)
+        for name in ("base", "target_1.20", "target_1.60"):
+            (data_dir / f"risk_production_summary_table_{name}.csv").write_text("x", encoding="utf-8")
+            (data_dir / f"data_summary_desagregado_{name}.csv").write_text("x", encoding="utf-8")
+
+        purged = main_module.cleanup_stale_scenarios(output, {"target_1.20", "target_1.60"}, "seg_a", protect={"base"})
+
+        assert purged == []  # nothing stale: base protected, targets active
+        assert (data_dir / "data_summary_desagregado_base.csv").exists()
