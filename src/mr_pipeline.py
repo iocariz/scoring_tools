@@ -277,7 +277,39 @@ def _compute_account_maturity(mis_date: pd.Series, reference_date: pd.Timestamp 
     """
     if reference_date is None:
         reference_date = mis_date.max()
-    return (reference_date.year - mis_date.dt.year) * 12 + (reference_date.month - mis_date.dt.month)
+    reference_date = pd.to_datetime(reference_date)
+    months = (reference_date.year - mis_date.dt.year) * 12 + (reference_date.month - mis_date.dt.month)
+    # #52: day-of-month correction — a loan booked on the 31st is not "6 months"
+    # mature until the reference day-of-month reaches the 31st. The bare
+    # (year, month) diff overstates maturity by up to a month, so loans a few
+    # weeks short of maturity pass the ``>= mr_maturity_months`` filter and
+    # dilute b2_mr with immature (still-zero) outcomes. This makes complete-month
+    # maturity day-precise, matching the M4 backtest's ``DateOffset(months=...)``.
+    months = months - (reference_date.day < mis_date.dt.day).astype(int)
+    return months
+
+
+def _robust_ratio_clip_band(ratio_vals: np.ndarray) -> tuple[float, float]:
+    """Robust [1st, 99th]-percentile clip band for per-bin H6/H3 ratios.
+
+    #51: the previous inline guard reset ONLY ``upper_q`` to 5.0 when the band
+    was degenerate/inverted (all observed ratios ~equal). If ``lower_q`` then sat
+    at an observed ratio > 5, ``np.clip(x, lower_q, 5.0)`` with ``min > max``
+    collapses EVERY ratio to 5.0 — silently understating extrapolated MR risk
+    whenever the true ratio exceeds 5. Here a degenerate band is widened to
+    bracket the observed ratios, so the clip is a no-op on them.
+    """
+    finite = ratio_vals[np.isfinite(ratio_vals)]
+    if finite.size == 0:
+        return 0.5, 5.0
+    lower_q = float(np.nanpercentile(finite, 1.0))
+    upper_q = float(np.nanpercentile(finite, 99.0))
+    if not np.isfinite(lower_q) or lower_q <= 0:
+        lower_q = 0.5
+    if not np.isfinite(upper_q) or upper_q <= lower_q:
+        lower_q = min(0.5, float(np.nanmin(finite)))
+        upper_q = max(5.0, float(np.nanmax(finite)))
+    return lower_q, upper_q
 
 
 def _compute_hybrid_mr_risk(
@@ -335,9 +367,9 @@ def _compute_hybrid_mr_risk(
             reference_date = mr_h6_valid["mis_date"].max()
         else:
             reference_date = pd.to_datetime(maturity_reference_date)
-        maturity = (reference_date.year - mr_h6_valid["mis_date"].dt.year) * 12 + (
-            reference_date.month - mr_h6_valid["mis_date"].dt.month
-        )
+        # #52: single day-precise maturity implementation (was a duplicated
+        # (year, month) diff that overstated maturity by up to a month).
+        maturity = _compute_account_maturity(mr_h6_valid["mis_date"], reference_date)
         mature_mask = maturity >= mr_maturity_months
         n_total = len(mr_h6_valid)
         n_mature = mature_mask.sum()
@@ -671,19 +703,9 @@ def _compute_hybrid_mr_risk(
 
         # Robust clipping to prevent extreme ratios from dominating extrapolation.
         # Fixed [0.5, 5.0] can bias results when the ratio distribution drifts,
-        # so we clip to percentiles of the raw per-bin ratios.
-        ratio_vals = h6_h3_ratio_raw[np.isfinite(h6_h3_ratio_raw)]
-        if ratio_vals.size > 0:
-            lower_q = float(np.nanpercentile(ratio_vals, 1.0))
-            upper_q = float(np.nanpercentile(ratio_vals, 99.0))
-        else:
-            lower_q, upper_q = 0.5, 5.0
-
-        # Fallback guards for degenerate percentile outputs.
-        if not np.isfinite(lower_q) or lower_q <= 0:
-            lower_q = 0.5
-        if not np.isfinite(upper_q) or upper_q <= lower_q:
-            upper_q = 5.0
+        # so we clip to percentiles of the raw per-bin ratios (degenerate-band
+        # safe — see _robust_ratio_clip_band, #51).
+        lower_q, upper_q = _robust_ratio_clip_band(h6_h3_ratio_raw)
 
         n_clipped_low = int((h6_h3_ratio < lower_q).sum())
         n_clipped_high = int((h6_h3_ratio > upper_q).sum())

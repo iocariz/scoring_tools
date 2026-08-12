@@ -425,6 +425,46 @@ def test_update_status_no_se_decision_id_column():
     assert result.loc[0, "status_name"] == StatusName.REJECTED.value
 
 
+def test_run_data_transformations_updates_oa_amt_h0_after_status_relabel(config):
+    """#53: a booked row flagged by a direct measure is relabeled REJECTED, and
+    must then receive oa_amt_h0 = oa_amt (demanded). Requires the status relabel
+    (Step 3) to run BEFORE the oa_amt_h0 update (Step 4) — the old order left the
+    newly-rejected row with its booked (financed) H0, corrupting oa_amt_demand.
+    """
+    df = pd.DataFrame(
+        {
+            "mis_date": pd.to_datetime(["2024-06-01", "2024-06-01"]),
+            "status_name": ["booked", "booked"],
+            "risk_score_rf": [30.0, 60.0],
+            "se_decision_id": ["ok", "ok"],
+            "reject_reason": [None, None],
+            "score_rf": [360.0, 420.0],
+            "segment_cut_off": ["test_segment", "test_segment"],
+            "early_bad": [0, 0],
+            "acct_booked_h0": [1, 1],
+            "oa_amt": [10000.0, 20000.0],
+            "todu_30ever_h6": [1, 2],
+            "todu_amt_pile_h6": [500.0, 600.0],
+            "oa_amt_h0": [9000.0, 18000.0],  # financed H0 < demanded oa_amt
+            "fuera_norma": ["n", "n"],
+            "fraud_flag": ["n", "n"],
+            "nature_holder": ["physical", "physical"],
+            "m_ct_direct_sc_nov23": ["y", "n"],  # row 0 flagged, row 1 genuine booked
+        }
+    )
+
+    result = _run_data_transformations(df, config)
+
+    flagged = result[result["oa_amt"] == 10000.0].iloc[0]
+    assert flagged["status_name"] == StatusName.REJECTED.value
+    # demanded amount, NOT the 9000 financed H0 it carried while "booked"
+    assert flagged["oa_amt_h0"] == 10000.0
+
+    genuine = result[result["oa_amt"] == 20000.0].iloc[0]
+    assert genuine["status_name"] == StatusName.BOOKED.value
+    assert genuine["oa_amt_h0"] == 18000.0  # booked rows keep their financed H0
+
+
 # =============================================================================
 # Edge Cases Tests
 # =============================================================================

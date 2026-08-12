@@ -924,19 +924,22 @@ def _run_data_transformations(df: pd.DataFrame, settings: "PreprocessingSettings
     logger.info("=" * 80)
     data_clean = preprocess_data(df, settings.keep_vars, settings.indicators, settings.segment_filter)
 
-    # IMPORTANT: status_name ("booked" vs non-booked) drives bin-edge learning
-    # (booked mask) and oa_amt_h0 updates. update_status_and_reject_reason can
-    # relabel records, so apply it before learning any bin edges to avoid
-    # learning on an inconsistent "booked" definition.
+    # IMPORTANT ordering (#53): status_name ("booked" vs non-booked) drives BOTH
+    # bin-edge learning (booked mask) AND update_oa_amt_h0 (which sets
+    # oa_amt_h0 = oa_amt only for NON-booked rows). update_status_and_reject_reason
+    # relabels direct-measure booked rows to REJECTED, so it must run FIRST —
+    # otherwise those rows keep the booked (financed) oa_amt_h0 instead of the
+    # demanded amount, corrupting every €-weighted rejection / swap-in / RI
+    # denominator built on oa_amt_demand. Both still precede bin-edge learning.
     logger.info("\n" + "=" * 80)
-    logger.info("Step 3: Update oa_amt_h0 (before bin edge learning)")
-    logger.info("=" * 80)
-    data_clean = update_oa_amt_h0(data_clean)
-
-    logger.info("\n" + "=" * 80)
-    logger.info("Step 4: Update status and reject reasons (before bin edge learning)")
+    logger.info("Step 3: Update status and reject reasons (before oa_amt_h0 + bin edge learning)")
     logger.info("=" * 80)
     data_clean = update_status_and_reject_reason(data_clean, settings.score_measures)
+
+    logger.info("\n" + "=" * 80)
+    logger.info("Step 4: Update oa_amt_h0 (after status relabel, before bin edge learning)")
+    logger.info("=" * 80)
+    data_clean = update_oa_amt_h0(data_clean)
 
     if settings.bins:
         from src.constants import StatusName
