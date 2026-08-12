@@ -10,7 +10,6 @@ from loguru import logger
 from sklearn.base import clone as sklearn_clone
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, LogisticRegression, Ridge
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold, StratifiedKFold
 from xgboost import XGBRegressor
 
 from src.constants import DEFAULT_RANDOM_STATE
@@ -20,32 +19,13 @@ from src.estimators import HurdleRegressor, TweedieGLM, prepare_model_input
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
-def _get_regression_weights(processed_data: pd.DataFrame):
-    for col in ("todu_amt_pile_h6", "oa_amt_h0", "n_observations"):
-        if col in processed_data.columns:
-            return processed_data[col]
-    return None
-
-
-def _stratified_cv_splitter(raw_data: pd.DataFrame, cv_folds: int, random_state: int, indicators: list[str]):
-    """Create a StratifiedKFold splitter using a binarized risk indicator.
-
-    Credit risk data is heavily imbalanced (5-15% bad rate).  Standard KFold
-    produces folds with highly variable bad-rate distributions, biasing model
-    selection.  Stratifying on a binary default indicator keeps the bad rate
-    stable across folds.
-
-    Falls back to plain KFold when the indicator column is missing or has only
-    one class (e.g., synthetic test data).
-    """
-    strat_col = indicators[0] if indicators else None
-    if strat_col and strat_col in raw_data.columns:
-        y_strat = (raw_data[strat_col] > 0).astype(int)
-        if y_strat.nunique() >= 2 and y_strat.sum() >= cv_folds and (len(y_strat) - y_strat.sum()) >= cv_folds:
-            skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
-            return skf.split(raw_data, y_strat)
-    kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
-    return kfold.split(raw_data)
+# _get_regression_weights and _stratified_cv_splitter are imported lazily from
+# src.inference_optimized inside the tuning functions (module-level would be a
+# circular import): tuning CV MUST weight and stratify exactly like the
+# feature-set CV and the final fit. Divergent local copies here once tuned
+# hyperparameters under raw €-scale weights (alpha/min_child_weight effectively
+# inert during search, then applied uncalibrated at fit time) and stratified on
+# indicators[0] (audit #33's silent KFold fallback).
 
 
 def tune_tree_models(
@@ -90,7 +70,13 @@ def tune_tree_models(
     tuning_data = raw_data
     fresh_seed = random_state + 1000
 
-    from src.inference_optimized import _nadeau_bengio_cv_se, compute_outlier_stats, process_dataset
+    from src.inference_optimized import (
+        _get_regression_weights,
+        _nadeau_bengio_cv_se,
+        _stratified_cv_splitter,
+        compute_outlier_stats,
+        process_dataset,
+    )
 
     def eval_model(model, raw_eval, cv_folds, random_state):
         splits = _stratified_cv_splitter(raw_eval, cv_folds, random_state, indicators)
@@ -257,7 +243,13 @@ def tune_linear_models(
     # inference_optimized and is never used for selection.
     tuning_data = raw_data
 
-    from src.inference_optimized import _nadeau_bengio_cv_se, compute_outlier_stats, process_dataset
+    from src.inference_optimized import (
+        _get_regression_weights,
+        _nadeau_bengio_cv_se,
+        _stratified_cv_splitter,
+        compute_outlier_stats,
+        process_dataset,
+    )
     from src.models import transform_variables
 
     def _fit_hurdle_per_loan(model_clone, raw_train):

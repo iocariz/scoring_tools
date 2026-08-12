@@ -49,6 +49,27 @@ from src.utils import calculate_b2_ever_h6
 _STRATIFY_COL = "todu_30ever_h6"
 
 
+def _stratify_labels(raw_data: pd.DataFrame, indicators: list[str], min_per_class: int) -> pd.Series | None:
+    """Binary stratification labels binarized on the DEFAULT indicator.
+
+    Tries ``todu_30ever_h6 > 0`` (a loan defaulted) first, then the configured
+    indicators. Returns ``None`` when no candidate column yields two classes
+    with at least ``min_per_class`` members each.
+    """
+    candidates = [_STRATIFY_COL] + [c for c in (indicators or []) if c != _STRATIFY_COL]
+    for strat_col in candidates:
+        if strat_col not in raw_data.columns:
+            continue
+        y_strat = (raw_data[strat_col] > 0).astype(int)
+        if (
+            y_strat.nunique() >= 2
+            and y_strat.sum() >= min_per_class
+            and (len(y_strat) - y_strat.sum()) >= min_per_class
+        ):
+            return y_strat
+    return None
+
+
 def _stratified_cv_splitter(raw_data: pd.DataFrame, cv_folds: int, random_state: int, indicators: list[str]):
     """Create a StratifiedKFold splitter binarized on the DEFAULT indicator.
 
@@ -59,16 +80,13 @@ def _stratified_cv_splitter(raw_data: pd.DataFrame, cv_folds: int, random_state:
     real run. Falls back to KFold (loudly) when the default indicator is
     missing or single-class, trying the configured indicators next.
     """
-    candidates = [_STRATIFY_COL] + [c for c in (indicators or []) if c != _STRATIFY_COL]
-    for strat_col in candidates:
-        if strat_col not in raw_data.columns:
-            continue
-        y_strat = (raw_data[strat_col] > 0).astype(int)
-        if y_strat.nunique() >= 2 and y_strat.sum() >= cv_folds and (len(y_strat) - y_strat.sum()) >= cv_folds:
-            skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
-            return skf.split(raw_data, y_strat)
+    y_strat = _stratify_labels(raw_data, indicators, min_per_class=cv_folds)
+    if y_strat is not None:
+        skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+        return skf.split(raw_data, y_strat)
     logger.warning(
-        f"Stratified CV unavailable (no usable two-class indicator among {candidates}) — falling back to plain KFold."
+        f"Stratified CV unavailable (no usable two-class indicator among ['{_STRATIFY_COL}'] + {indicators}) "
+        "— falling back to plain KFold."
     )
     kfold = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
     return kfold.split(raw_data)
@@ -1145,12 +1163,9 @@ def evaluate_holdout_rmse(
 
     if len(raw_data) < 200:
         return None
-    stratify = None
-    strat_col = indicators[0] if indicators else None
-    if strat_col and strat_col in raw_data.columns:
-        y_strat = (raw_data[strat_col] > 0).astype(int)
-        if y_strat.nunique() >= 2 and y_strat.sum() >= 5 and (len(y_strat) - y_strat.sum()) >= 5:
-            stratify = y_strat
+    # Same stratification basis as the selection CV splitter (audit #33): the
+    # default indicator, not indicators[0] (~all 1s on booked → never stratified).
+    stratify = _stratify_labels(raw_data, indicators, min_per_class=5)
     try:
         train_raw, test_raw = train_test_split(
             raw_data, test_size=test_size, random_state=random_state, stratify=stratify
