@@ -861,6 +861,18 @@ def run_segments_sequential(
                     seg_progress.set_postfix_str(f"{segment_name} ✗ (dep failed)", refresh=True)
                     continue
 
+                # #61: the source did not run in this batch — its accepted_cells
+                # are from a PRIOR run and may be incoherent with the current
+                # data/config/code, silently breaking the nested-mask guarantee.
+                # Warn loudly but proceed (don't block legitimate incremental
+                # re-runs); the file-missing case still hard-fails below (#36).
+                if constraint_source not in results:
+                    logger.warning(
+                        f"[{segment_name}] Constraint source '{constraint_source}' did not run in this batch — "
+                        f"using its accepted_cells from a PRIOR run (potential staleness). Re-run "
+                        f"'{constraint_source}' in the same batch to guarantee a consistent nested mask."
+                    )
+
                 floor_path = Path(output_base) / constraint_source / "data" / "accepted_cells_base.csv"
                 if floor_path.exists():
                     floor_cells_path = str(floor_path.resolve())
@@ -1140,6 +1152,16 @@ def run_segments_parallel(
                     logger.error(f"[{segment_name}] Skipping: constraint source '{constraint_source}' failed")
                     results[segment_name] = False
                     continue
+
+                # #61: source not run this batch → its accepted_cells are from a
+                # PRIOR run (potential staleness). Warn but proceed; missing-file
+                # still hard-fails below (#36). See the sequential path for detail.
+                if constraint_source not in results:
+                    logger.warning(
+                        f"[{segment_name}] Constraint source '{constraint_source}' did not run in this batch — "
+                        f"using its accepted_cells from a PRIOR run (potential staleness). Re-run "
+                        f"'{constraint_source}' in the same batch to guarantee a consistent nested mask."
+                    )
 
                 floor_path = Path(output_base) / constraint_source / "data" / "accepted_cells_base.csv"
                 if floor_path.exists():
@@ -1562,11 +1584,14 @@ def main():
                 logger.error(f"[{seg_name}] Resimulation failed: {e}")
                 failed_segments.append(seg_name)
 
-        # Generate consolidated report
+        # Generate consolidated report — exclude segments whose resimulation
+        # failed (#48/#61): their on-disk artifacts are the PREVIOUS run's, so
+        # consolidating them would present stale targets as "resimulated".
+        consolidation_segments = {n: c for n, c in segments.items() if n not in failed_segments}
         try:
             consolidated_df, _ = generate_consolidation_report(
                 output_base=args.output,
-                segments=segments,
+                segments=consolidation_segments,
                 supersegments=all_supersegments,
                 output_path=args.output,
                 multiplier=base_config.get("multiplier", 7),
@@ -1576,7 +1601,7 @@ def main():
             logger.error(f"Consolidation failed: {e}")
 
         if failed_segments:
-            print(f"\nFailed segments: {failed_segments}")
+            print(f"\nFailed segments (excluded from consolidation): {failed_segments}")
             return 1
         print(f"\nResimulation complete for {len(segments_to_run)} segment(s)")
         return 0
