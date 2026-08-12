@@ -105,6 +105,40 @@ def test_build_policy_entry(tmp_path):
     assert entry.bin_edges == {"a": [0.0, 1.0, 2.0]}
 
 
+def test_build_policy_entry_refuses_unfrozen_bins(tmp_path):
+    """Learned (max_bins) bins have no persisted edges — registration must fail closed,
+    otherwise the compare-time edge guard silently never fires against {} (audit finding #5)."""
+    seg_dir = _build_run_tree(tmp_path, "seg_a")
+    settings = _settings("seg_a")
+    settings.bins = {"a": SimpleNamespace(bin_edges=None)}  # max_bins-style: edges not frozen
+    with pytest.raises(ValueError, match="no explicit bin_edges"):
+        build_policy_entry(seg_dir, settings, "_base")
+
+
+def test_build_policy_entry_refuses_empty_bins(tmp_path):
+    seg_dir = _build_run_tree(tmp_path, "seg_a")
+    settings = _settings("seg_a")
+    settings.bins = {}
+    with pytest.raises(ValueError, match="no explicit bin_edges"):
+        build_policy_entry(seg_dir, settings, "_base")
+
+
+def test_unfrozen_bin_vars():
+    from src.policy_registry import unfrozen_bin_vars
+
+    ok = SimpleNamespace(bins={"a": SimpleNamespace(bin_edges=[0.0, 1.0, 2.0])})
+    assert unfrozen_bin_vars(ok) == []
+    mixed = SimpleNamespace(
+        bins={
+            "a": SimpleNamespace(bin_edges=[0.0, 1.0]),
+            "b": SimpleNamespace(bin_edges=None),
+            "c": SimpleNamespace(bin_edges=[1.0]),  # degenerate: < 2 edges
+        }
+    )
+    assert unfrozen_bin_vars(mixed) == ["b", "c"]
+    assert unfrozen_bin_vars(SimpleNamespace(bins=None)) == []
+
+
 # --------------------------------------------------------------------------- #
 # Registry I/O
 # --------------------------------------------------------------------------- #
@@ -114,6 +148,20 @@ def test_load_registry_missing_returns_skeleton(tmp_path):
     reg = load_registry("seg_a", tmp_path)
     assert reg == {"segment": "seg_a", "champion_policy_id": None, "policies": []}
     assert get_champion("seg_a", tmp_path) is None
+
+
+def test_load_registry_corrupt_raises_and_preserves_file(tmp_path):
+    """A corrupt EXISTING registry must fail closed: treating it as empty let the next
+    --register wipe the committed history and auto-champion the new policy."""
+    register_policy(_entry(policy_id="seg_a-1111"), registry_dir=tmp_path)
+    path = registry_path("seg_a", tmp_path)
+    path.write_text('{"segment": "seg_a", "policies": [BROKEN')
+    corrupted = path.read_text()
+    with pytest.raises(ValueError, match="Corrupted policy registry"):
+        load_registry("seg_a", tmp_path)
+    with pytest.raises(ValueError, match="Corrupted policy registry"):
+        register_policy(_entry(policy_id="seg_a-2222"), registry_dir=tmp_path)
+    assert path.read_text() == corrupted  # nothing overwrote the evidence
 
 
 def test_register_bootstraps_champion(tmp_path):

@@ -32,7 +32,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from loguru import logger
 
 from src.backtest import (
     MIN_DEFAULTS_FOR_DRIFT,
@@ -122,12 +121,26 @@ def build_policy_entry(
     suffix: str = "_base",
     created: str | None = None,
 ) -> PolicyEntry:
-    """Assemble a :class:`PolicyEntry` from a completed run (reuses M5 ``extract_headline``)."""
+    """Assemble a :class:`PolicyEntry` from a completed run (reuses M5 ``extract_headline``).
+
+    Frozen bin edges are mandatory (same posture as ``backtest_segment``): a policy's
+    cell coordinates are only meaningful on the edges it was optimized under, and the
+    compare-time edge guard silently never fires against an empty ``bin_edges`` dict.
+    """
     seg_data_dir = Path(seg_output_dir) / "data"
     variables = list(settings.variables)
+    unfrozen = unfrozen_bin_vars(settings)
+    bin_edges = settings_bin_edges(settings)
+    if unfrozen or not bin_edges:
+        raise ValueError(
+            f"[{settings.segment_filter}] cannot register a reproducible policy: bin variable(s) "
+            f"{unfrozen or sorted((settings.bins or {}).keys())} have no explicit bin_edges in the run's "
+            "config (edges learned from max_bins are not persisted to config_segment.toml). Without frozen "
+            "edges the champion's cell indices cannot be validated or re-applied. Pin explicit bin_edges "
+            "(batch runs with global/supersegment bin learning persist them) and re-run before registering."
+        )
     headline = extract_headline(seg_output_dir, settings, suffix)
     accepted_set, _ = load_frozen_policy(seg_data_dir, variables, suffix)
-    bin_edges = {var: list(bc.bin_edges) for var, bc in (settings.bins or {}).items() if bc.bin_edges}
 
     return PolicyEntry(
         policy_id=f"{headline.segment}-{headline.accepted_set_hash[:8]}",
@@ -167,15 +180,23 @@ def registry_path(segment: str, registry_dir: Path = REGISTRY_DIR) -> Path:
 
 
 def load_registry(segment: str, registry_dir: Path = REGISTRY_DIR) -> dict:
-    """Load a segment's registry, or an empty skeleton if it does not exist yet."""
+    """Load a segment's registry, or an empty skeleton if it does not exist yet.
+
+    A registry file that EXISTS but cannot be parsed raises (fail-closed): treating it
+    as empty would let the next ``--register`` overwrite the committed history and
+    auto-champion the new policy with only a warning.
+    """
     path = registry_path(segment, registry_dir)
     if not path.exists():
         return {"segment": segment, "champion_policy_id": None, "policies": []}
     try:
         reg = json.loads(path.read_text())
-    except Exception:
-        logger.warning(f"Could not parse registry {path}; treating as empty.")
-        return {"segment": segment, "champion_policy_id": None, "policies": []}
+    except Exception as e:
+        raise ValueError(
+            f"Corrupted policy registry {path}: {e}. Refusing to treat it as empty — a subsequent save "
+            "would wipe the committed policy history and auto-champion the next registered policy. "
+            "Restore the file (e.g. `git checkout`) or delete it deliberately, then retry."
+        ) from e
     reg.setdefault("segment", segment)
     reg.setdefault("champion_policy_id", None)
     reg.setdefault("policies", [])
@@ -296,6 +317,17 @@ def settings_bin_edges(settings) -> dict:
     """The frozen bin edges a run's policy coordinates are defined on (same
     extraction as :func:`build_policy_entry`)."""
     return {var: list(bc.bin_edges) for var, bc in (settings.bins or {}).items() if bc.bin_edges}
+
+
+def unfrozen_bin_vars(settings) -> list[str]:
+    """Configured bin variables WITHOUT explicit (frozen) bin_edges.
+
+    Non-empty means the binning is not reproducible from the config alone
+    (edges would be re-learned on whatever population is loaded next), so both
+    registration and comparison must refuse — same check ``backtest_segment``
+    applies before touching data.
+    """
+    return [var for var, bc in (settings.bins or {}).items() if not bc.bin_edges or len(bc.bin_edges) < 2]
 
 
 def bin_edges_match(a: dict, b: dict) -> bool:

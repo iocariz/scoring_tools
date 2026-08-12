@@ -50,6 +50,7 @@ from src.policy_registry import (
     load_registry,
     register_policy,
     settings_bin_edges,
+    unfrozen_bin_vars,
     write_comparison_consolidated,
     write_comparison_report,
 )
@@ -151,11 +152,41 @@ def compare_segment(
     challenger_id = f"{segment}-{_accepted_set_hash(challenger_set)[:8]}"
     champion_set = champion.accepted_set()
 
+    # Frozen edges are mandatory (same posture as backtest_segment): a bin
+    # without explicit edges would be RE-LEARNED on today's population inside
+    # _run_data_transformations below, silently redefining the score regions
+    # both policies' cell coordinates refer to.
+    unfrozen = unfrozen_bin_vars(settings)
+    if unfrozen:
+        logger.error(f"[{segment}] bin(s) {unfrozen} have no explicit bin_edges — refusing to compare.")
+        return PolicyComparison(
+            segment=segment,
+            basis="realized_oot",
+            sufficient=False,
+            message=f"bin(s) {unfrozen} have no explicit bin_edges in config_segment.toml — comparing would "
+            "re-learn edges on the current population and score different score regions",
+            champion_policy_id=champion.policy_id,
+            challenger_policy_id=challenger_id,
+        )
+
     # Audit #31: the champion's cell indices are only meaningful on the bin
     # edges it was registered with — refuse to score it on different edges
-    # (the comparison would silently evaluate a different policy).
+    # (the comparison would silently evaluate a different policy). An empty
+    # champion.bin_edges (pre-guard registration) is refused too: the guard
+    # cannot verify anything against it.
     current_edges = settings_bin_edges(settings)
-    if champion.bin_edges and not bin_edges_match(champion.bin_edges, current_edges):
+    if not champion.bin_edges:
+        logger.error(f"[{segment}] champion has no frozen bin edges — refusing to compare.")
+        return PolicyComparison(
+            segment=segment,
+            basis="realized_oot",
+            sufficient=False,
+            message="champion was registered without frozen bin edges — its cell indices cannot be validated; "
+            "re-register the champion from a run with explicit bin_edges",
+            champion_policy_id=champion.policy_id,
+            challenger_policy_id=challenger_id,
+        )
+    if not bin_edges_match(champion.bin_edges, current_edges):
         logger.error(
             f"[{segment}] champion bin edges differ from the current config "
             f"(champion: {champion.bin_edges} | current: {current_edges}) — refusing to compare."
