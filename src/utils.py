@@ -420,7 +420,13 @@ def calculate_stress_factor(
     worst_num = df_worst[num_col].sum()
     worst_den = df_worst[den_col].sum()
 
-    worst_bad_rate = (worst_num / worst_den * DEFAULT_RISK_MULTIPLIER) if worst_den > 0 else 0.0
+    if worst_den <= 0:
+        # #54: no exposure in the worst-score slice — the stress factor is
+        # UNDEFINED, not zero. Returning 0 would multiply predicted risk to zero
+        # downstream (maximally anti-conservative). Fall back to neutral 1.0.
+        logger.warning("Worst-slice denominator is 0; returning neutral stress factor 1.0")
+        return 1.0
+    worst_bad_rate = worst_num / worst_den * DEFAULT_RISK_MULTIPLIER
 
     # Calculate stress factor
     if overall_bad_rate > 0:
@@ -498,7 +504,13 @@ def calculate_per_bin_stress_factors(
             worst = group[group[score_col] <= cutoff]
 
         worst_den = worst[den_col].sum()
-        worst_rate = (DEFAULT_RISK_MULTIPLIER * worst[num_col].sum() / worst_den) if worst_den > 0 else 0.0
+        if worst_den <= 0:
+            # #54: undefined worst-slice rate → neutral global fallback, not a
+            # 0 stress factor that would zero out this bin's predicted risk.
+            row["stress_factor"] = global_stress
+            rows.append(row)
+            continue
+        worst_rate = DEFAULT_RISK_MULTIPLIER * worst[num_col].sum() / worst_den
 
         row["stress_factor"] = worst_rate / overall_rate if overall_rate > 0 else global_stress
         rows.append(row)

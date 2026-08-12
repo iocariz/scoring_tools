@@ -15,6 +15,7 @@ from src.mr_pipeline import (
     _compute_hybrid_mr_risk,
     _mr_outcomes_available,
     _reoptimize_mr_mask_after_recalibration,
+    _robust_ratio_clip_band,
     _write_mr_cutoff_drift_overlay,
     calculate_metrics_from_cuts,
     process_mr_period,
@@ -828,8 +829,9 @@ class TestComputeHybridMRRisk:
 
         Regression for #2: with bookings 2025-10/11/12 and the default
         max(mis_date)=2025-12-15 anchor, maturities are [2,1,0] → none reach the
-        3mo H3 threshold.  Anchored to the observation horizon 2026-03-01,
-        maturities are [5,4,3] → all mature and counted.
+        3mo H3 threshold.  Anchored to the observation horizon 2026-03-15,
+        maturities are [5,4,3] → all mature and counted. (Reference aligned to the
+        15th so day-precise maturity, #52, matches the intended complete months.)
         """
         data_booked = pd.DataFrame(
             {
@@ -870,7 +872,7 @@ class TestComputeHybridMRRisk:
             merge_keys,
             min_obs=1,
             multiplier_h3=4,
-            maturity_reference_date=pd.Timestamp("2026-03-01"),
+            maturity_reference_date=pd.Timestamp("2026-03-15"),
         )
         assert comp_ref.iloc[0]["n_obs_mr_h3"] == 3
 
@@ -2556,6 +2558,20 @@ class TestTieredReconstruction:
         mat = _compute_account_maturity(dates)
         assert list(mat) == [5, 0]
 
+    def test_compute_account_maturity_is_day_precise(self):
+        """#52: maturity counts COMPLETE months (day-of-month aware). The bare
+        (year, month) diff overstated maturity by up to a month, so loans weeks
+        short of maturity passed the >= filter and diluted b2_mr with immature
+        zeros. Matches the M4 backtest's DateOffset(months=...) semantics."""
+        dates = pd.Series(pd.to_datetime(["2025-01-31", "2025-01-01", "2025-01-15", "2025-01-10"]))
+        ref = pd.Timestamp("2025-07-10")
+        mat = _compute_account_maturity(dates, ref)
+        # 01-31 → 07-31 not reached (10<31) → 5 (was 6 under the bare diff)
+        # 01-01 → 07-01 reached → 6
+        # 01-15 → 07-15 not reached (10<15) → 5
+        # 01-10 → 07-10 reached → 6
+        assert list(mat) == [5, 6, 5, 6]
+
     def test_assign_tiered_risk_honors_reference_date(self, merge_keys, merge_df):
         """Tier maturity must use the supplied observation horizon, not max(mis_date).
 
@@ -3008,3 +3024,27 @@ class TestMRCutoffDriftOverlay:
         # Should log-and-return without writing, never raise.
         _write_mr_cutoff_drift_overlay(np.array([1]), object(), np.array([1]), object(), settings, "_base", output)
         assert not Path(output.mr_cutoff_drift_html("_base")).exists()
+
+
+class TestRobustRatioClipBand:
+    """#51: the H6/H3 ratio clip band must never collapse ratios to a fixed bound."""
+
+    def test_degenerate_high_ratios_not_collapsed(self):
+        # All observed ratios equal 6 (> 5). The old guard reset only upper_q to
+        # 5.0, leaving lower_q at 6 -> np.clip(x, 6, 5) collapses every ratio to
+        # 5.0, understating extrapolated MR risk.
+        lo, hi = _robust_ratio_clip_band(np.array([6.0, 6.0, 6.0]))
+        assert lo <= hi  # valid, non-inverted band
+        assert hi >= 6.0  # brackets the observed ratio -> clip is a no-op
+        assert float(np.clip(6.0, lo, hi)) == 6.0
+
+    def test_normal_percentile_band_clips_outlier(self):
+        lo, hi = _robust_ratio_clip_band(np.array([1.0, 2.0, 3.0, 4.0, 100.0]))
+        assert lo <= hi
+        assert hi < 100.0  # the 100 outlier is still clipped by the 99th pct
+
+    def test_empty_input_falls_back_to_default_band(self):
+        assert _robust_ratio_clip_band(np.array([])) == (0.5, 5.0)
+
+    def test_all_nonfinite_falls_back_to_default_band(self):
+        assert _robust_ratio_clip_band(np.array([np.nan, np.inf])) == (0.5, 5.0)

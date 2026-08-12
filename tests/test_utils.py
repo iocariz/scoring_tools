@@ -777,9 +777,47 @@ class TestCalculateStressFactorEdgeCases:
 
         stress = calculate_stress_factor(df)
 
-        # With zero denominators, the function should fall back gracefully
-        assert isinstance(stress, float)
-        assert np.isfinite(stress)
+        # #54: with a zero worst-slice denominator the factor is UNDEFINED, so it
+        # must fall back to the neutral 1.0 — never 0.0, which would multiply
+        # every predicted risk to zero downstream.
+        assert stress == 1.0
+
+    def test_worst_slice_zero_denominator_returns_neutral(self):
+        """#54: overall exposure is fine, but the worst-score slice has zero
+        denominator → neutral 1.0, not a 0.0 stress factor."""
+        df = pd.DataFrame(
+            {
+                "status_name": ["booked"] * 20,
+                "risk_score_rf": np.linspace(0.0, 1.0, 20),  # row 0 = lowest score = worst
+                "todu_30ever_h6": [1] * 20,
+                "todu_amt_pile_h6": [0.0] + [500.0] * 19,  # only the worst-score row has 0 exposure
+            }
+        )
+
+        stress = calculate_stress_factor(df)
+
+        assert stress == 1.0
+
+    def test_per_bin_worst_slice_zero_denominator_uses_global_fallback(self):
+        """#54: a bin whose worst-score slice has zero denominator falls back to
+        the global stress factor, not a 0.0 that would zero the bin's risk."""
+        from src.utils import calculate_per_bin_stress_factors
+
+        df = pd.DataFrame(
+            {
+                "status_name": ["booked"] * 40,
+                "sc_octroi_new_clus": [1] * 20 + [2] * 20,
+                "risk_score_rf": list(np.linspace(0.0, 1.0, 20)) * 2,
+                "todu_30ever_h6": [1] * 40,
+                # bin 1: worst-score row (index 0) has 0 exposure; bin 2 is healthy
+                "todu_amt_pile_h6": ([0.0] + [500.0] * 19) + [500.0] * 20,
+            }
+        )
+
+        result = calculate_per_bin_stress_factors(df, variables=["sc_octroi_new_clus"], min_obs_per_bin=5)
+
+        assert (result["stress_factor"] > 0).all()  # no bin zeroed out
+        assert result["stress_factor"].notna().all()
 
     def test_empty_dataframe_after_filtering(self):
         """DataFrame with no matching status should return neutral 1.0."""
