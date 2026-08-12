@@ -79,6 +79,7 @@ The dataset and products changed (`config.toml` now points at `demanda_retail_in
 
 ## Notes
 
+- Future feature (deferred until the errors above are fixed): **hierarchical reporting supersegments / nested subtotals** for the new channel hierarchy — spec in `new_feature_specs.md`; fixing #45 and #62 first (or with it) is recommended since it builds on the same code.
 - Suggested order: #48 first (the remaining active P1 gate), then the certain P2 quartet (#51–#54, all small fixes with one-directional anti-conservative bias), then the P4 display/aggregation bugs (#50, #62, #49). The reproducibility items (#47 + the M5 re-pin) are deferred until the new dataset/product setup stabilizes — pick them up together as one re-validation pass.
 - Confidence: the numbered P1–P4 items were directly re-verified in source on 2026-08-12; the LOW bullets are careful agent reviews with quoted code at medium-high confidence. History shows several original HIGHs were overstated on close reading (#2, #3, #11, #13) — confirm each before changing behavior, and validate anything cutoff-touching on real data (the Done entries below document the before/after discipline to follow).
 
