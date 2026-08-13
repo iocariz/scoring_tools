@@ -213,6 +213,23 @@ def compare_segment(
             challenger_policy_id=challenger_id,
         )
 
+    # #41: a one-sided holdout override was silently ignored (fell through to
+    # auto-derive) — refuse loudly so a partial --holdout-start/--holdout-end
+    # doesn't quietly evaluate a different window than the user intended.
+    if bool(holdout_start) != bool(holdout_end):
+        logger.error(
+            f"[{segment}] holdout override requires BOTH --holdout-start and --holdout-end "
+            f"(got start={holdout_start!r}, end={holdout_end!r})."
+        )
+        return PolicyComparison(
+            segment=segment,
+            basis="realized_oot",
+            sufficient=False,
+            message="one-sided holdout override — pass both --holdout-start and --holdout-end, or neither",
+            champion_policy_id=champion.policy_id,
+            challenger_policy_id=challenger_id,
+        )
+
     # Bin the full population with the frozen edges, then slice the matured out-of-time cohort.
     data_clean = _run_data_transformations(full_data, settings)
     if holdout_start and holdout_end:
