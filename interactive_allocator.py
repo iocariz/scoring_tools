@@ -436,7 +436,10 @@ def run_optimization(n_clicks, target, method, scenario, table_data, global_prod
 
         for item in table_data_display:
             if "b2_ever_h6" in item and pd.notna(item["b2_ever_h6"]) and np.isfinite(item["b2_ever_h6"]):
-                item["b2_ever_h6"] = f"{item['b2_ever_h6']:.2%}"
+                # #50: b2_ever_h6 is ALREADY in percent units (calculate_b2_ever_h6
+                # as_percentage=True; the bar chart plots it raw as "(%)"). The
+                # `:.2%` format multiplies by 100 again → 1.5% shown as "150.00%".
+                item["b2_ever_h6"] = f"{item['b2_ever_h6']:.2f}%"
             if "oa_amt_h0" in item and pd.notna(item["oa_amt_h0"]) and np.isfinite(item["oa_amt_h0"]):
                 item["oa_amt_h0"] = f"\u20ac{item['oa_amt_h0']:,.0f}"
 
@@ -481,7 +484,9 @@ def run_optimization(n_clicks, target, method, scenario, table_data, global_prod
                             dbc.CardBody(
                                 [
                                     html.H4(
-                                        f"{overall_risk:.2%}"
+                                        # #50: global_risk is already in percent
+                                        # units (global_optimizer prints it as "%").
+                                        f"{overall_risk:.2f}%"
                                         if pd.notna(overall_risk) and np.isfinite(overall_risk)
                                         else "N/A",
                                         className="card-title",

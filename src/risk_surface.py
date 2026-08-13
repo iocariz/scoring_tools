@@ -24,9 +24,16 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from loguru import logger
 from plotly.subplots import make_subplots
 
 from src.utils import calculate_b2_ever_h6
+
+# The risk numerator/denominator that DEFINE the surface (z = b2_ever_h6). Absent,
+# _col would silently substitute zeros — a missing todu_30ever_h6 renders a
+# plausible flat-0% surface, a missing todu_amt_pile_h6 an empty one — feeding the
+# management deck a fabricated result with no warning (#49). Required, never zeroed.
+_REQUIRED_RISK_COLS = ("todu_30ever_h6", "todu_amt_pile_h6")
 
 # Audit categories: code (colour-band order), colour, legend label.
 CATEGORY_ORDER = ["keep", "swap_in", "swap_out", "rejected"]
@@ -59,6 +66,16 @@ def classify_cells(summary: pd.DataFrame, accepted_set: set[Cell], variables: li
     booked exposure (→ "booked before"), and ``acc_wt``/``rej_wt`` carry the cell's exposure on the
     accept / reject side of the proposed cutoff (so members combine by exposure for supersegments).
     """
+    # #49: fail loudly on a missing risk column rather than silently zeroing it
+    # into a fabricated flat-0 / empty surface. (boo_mass below stays optional —
+    # a missing booked-before column defensibly defaults to "no prior bookings".)
+    missing = [c for c in _REQUIRED_RISK_COLS if c not in summary.columns]
+    if missing:
+        raise ValueError(
+            f"risk_surface.classify_cells: summary is missing required risk column(s) {missing} — "
+            "cannot build a meaningful surface (they define b2_ever_h6). Regenerate the run's "
+            "data_summary_desagregado with these columns."
+        )
     df = summary.copy()
     coords = list(zip(*[df[v].astype("float64") for v in variables], strict=True))
     new_accept = np.array([c in accepted_set for c in coords])
@@ -67,6 +84,11 @@ def classify_cells(summary: pd.DataFrame, accepted_set: set[Cell], variables: li
     out = {v: df[v].to_numpy() for v in variables}
     out["t30"] = _col(df, "todu_30ever_h6")
     out["pile"] = pile
+    if "todu_amt_pile_h6_boo" not in df.columns:
+        logger.warning(
+            "risk_surface.classify_cells: 'todu_amt_pile_h6_boo' absent — booked-before defaults to none, "
+            "so every cell will colour as swap_in/rejected (no keep/swap_out). Check the summary artifact."
+        )
     out["boo_mass"] = _col(df, "todu_amt_pile_h6_boo")
     out["acc_wt"] = np.where(new_accept, weight, 0.0)
     out["rej_wt"] = np.where(new_accept, 0.0, weight)

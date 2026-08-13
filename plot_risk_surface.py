@@ -120,7 +120,13 @@ def _figure_for_unit(units: list[tuple], title: str):
     """Build the figure for one unit from a list of (summary, accepted_set, variables, multiplier)."""
     variables = units[0][2]
     multiplier = units[0][3]
-    long_parts = [classify_cells(summary, acc, variables) for summary, acc, _vars, _mult in units]
+    try:
+        long_parts = [classify_cells(summary, acc, variables) for summary, acc, _vars, _mult in units]
+    except ValueError as e:
+        # #49: a summary missing the risk columns can't yield a real surface —
+        # skip it with a visible warning rather than rendering a fabricated one.
+        logger.warning(f"Skipping risk surface '{title}': {e}")
+        return None
     cells = aggregate_to_cells(pd.concat(long_parts, ignore_index=True), variables, multiplier)
     if cells.empty:
         return None
