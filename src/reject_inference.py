@@ -21,6 +21,17 @@ from loguru import logger
 
 from src.constants import RejectReason, StatusName
 
+#: Lower clamp on the effective acceptance rate, shared by the runtime parceling
+#: uplift AND the RI-optimizer's calibration target (#58). Both must clamp at the
+#: SAME floor: the optimizer scores candidate uplifts against ``booked_risk /
+#: acc**gamma`` and the runtime applies ``(1/acc)**factor`` — if the optimizer
+#: floored at 0.05 while the runtime floored at 0.01, bins with effective
+#: acceptance in (0.01, 0.05) — the deepest-reject bins RI exists for — were
+#: calibrated against a rate up to 5x the one actually applied. 0.01 matches the
+#: anchor's own floor (``max(..., 0.01)`` below), so the effective rate never
+#: sits below it by construction except for well-observed sub-1%-acceptance bins.
+MIN_EFFECTIVE_ACCEPTANCE_RATE = 0.01
+
 _INCLUDE_ALL_REJECTIONS_DEPRECATION_WARNED = False
 
 
@@ -447,7 +458,9 @@ def _shrink_acceptance_rate(
     # all-rejected bin (unlike min); adapts across segments (unlike a magic constant).
     observed = acceptance_rates[rate_col].to_numpy(dtype=float)[counts > 0] if len(acceptance_rates) else np.array([])
     observed = observed[np.isfinite(observed)]
-    anchor = max(float(np.quantile(observed, anchor_percentile)), 0.01) if observed.size else 0.05
+    anchor = (
+        max(float(np.quantile(observed, anchor_percentile)), MIN_EFFECTIVE_ACCEPTANCE_RATE) if observed.size else 0.05
+    )
 
     conf_tbl = acceptance_rates[variables].copy()
     conf_tbl["__n"] = counts
@@ -749,8 +762,9 @@ def apply_parceling_adjustment(
 
     if method == "power":
         # Power-law: multiplier = (1 / acceptance_rate) ^ factor
-        # Clamp acceptance_rate away from 0 to avoid infinity
-        safe_rate = effective_rate.clip(lower=0.01)
+        # Clamp acceptance_rate away from 0 to avoid infinity (#58: the SAME
+        # floor the optimizer's calibration target uses).
+        safe_rate = effective_rate.clip(lower=MIN_EFFECTIVE_ACCEPTANCE_RATE)
         raw_multiplier = (1.0 / safe_rate) ** reject_uplift_factor
     elif method == "sigmoid":
         # Sigmoid: multiplier = 1 + max_uplift / (1 + exp(steepness * (rate - midpoint)))
@@ -766,7 +780,7 @@ def apply_parceling_adjustment(
 
     # Log bins with extreme acceptance rates
     if not quiet:
-        n_zero = int((effective_rate <= 0.01).sum())
+        n_zero = int((effective_rate <= MIN_EFFECTIVE_ACCEPTANCE_RATE).sum())
         n_full = int((effective_rate >= 0.99).sum())
         if n_zero > 0 or n_full > 0:
             logger.debug(
