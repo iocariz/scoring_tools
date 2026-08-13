@@ -377,6 +377,41 @@ class TestCalibrationRobustness:
         assert np.isfinite(err_low) and np.isfinite(err_high)
         assert err_low != pytest.approx(err_high)
 
+    def test_calibration_floor_matches_runtime_uplift_floor(self):
+        """#58: the optimizer's acceptance-rate floor must match the runtime power
+        method's (0.01), not the old 0.05. A well-observed bin at 0.02 acceptance
+        (in the (0.01, 0.05) gap) must calibrate against 0.02, not a floored 0.05 —
+        so its error differs from an otherwise-identical bin at 0.05. The old
+        floor clamped BOTH to 0.05, making the two indistinguishable."""
+        merged = pd.DataFrame(
+            {
+                "var0": [1],
+                "var1": [1],
+                "todu_30ever_h6_boo": [2.0],
+                "todu_amt_pile_h6_boo": [100.0],
+                "todu_30ever_h6": [2.0],
+                "todu_amt_pile_h6": [100.0],
+            }
+        )
+
+        def err_at(rate: float) -> float:
+            # No count columns → full confidence → effective rate = the observed rate.
+            acc = pd.DataFrame({"var0": [1], "var1": [1], "acceptance_rate": [rate]})
+            return _compute_calibration_error(merged, acc, ["var0", "var1"], multiplier=7.0, calibration_gamma=1.0)
+
+        # Deep-reject bin (0.02) calibrates differently from a 0.05 bin; under the
+        # old 0.05 floor both used acc=0.05 and these were equal.
+        assert err_at(0.02) != pytest.approx(err_at(0.05))
+
+    def test_min_effective_acceptance_rate_is_shared(self):
+        """#58: one constant, referenced by both the runtime and the optimizer."""
+        from src import reject_inference, reject_inference_optimizer
+
+        assert reject_inference.MIN_EFFECTIVE_ACCEPTANCE_RATE == 0.01
+        assert (
+            reject_inference_optimizer.MIN_EFFECTIVE_ACCEPTANCE_RATE is reject_inference.MIN_EFFECTIVE_ACCEPTANCE_RATE
+        )
+
     def test_select_best_ignores_non_finite_calibration_error(self):
         results_df = pd.DataFrame(
             {

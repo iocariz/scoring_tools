@@ -41,7 +41,11 @@ from loguru import logger
 
 from src.constants import DEFAULT_RANDOM_STATE, Suffixes
 from src.optimization_utils import CellGrid, evaluate_solution, milp_solve_cutoffs
-from src.reject_inference import _shrink_acceptance_rate, apply_parceling_adjustment
+from src.reject_inference import (
+    MIN_EFFECTIVE_ACCEPTANCE_RATE,
+    _shrink_acceptance_rate,
+    apply_parceling_adjustment,
+)
 from src.utils import calculate_b2_ever_h6
 
 ParcelingMethod = Literal["linear", "power", "sigmoid"]
@@ -100,7 +104,8 @@ def _compute_calibration_error(
     """Compute exposure-weighted mean squared relative calibration error.
 
     For each cell the selection-bias model predicts:
-        target_risk = booked_risk / clip(acceptance_rate, 0.05) ^ gamma
+        target_risk = booked_risk / clip(acceptance_rate, MIN_EFFECTIVE_ACCEPTANCE_RATE) ^ gamma
+    (the SAME floor the runtime parceling uplift clamps to — #58.)
 
     The predicted (blended) risk after RI is:
         predicted_risk = multiplier * todu_30ever_h6 / todu_amt_pile_h6
@@ -126,7 +131,10 @@ def _compute_calibration_error(
         anchor_percentile=no_demand_anchor_percentile,
         confidence_scale=confidence_scale,
     )
-    acc = rate_eff.clip(lower=0.05)
+    # #58: clamp at the SAME floor the runtime parceling uplift uses (was 0.05,
+    # while the runtime power method floored at 0.01) — otherwise the deepest-
+    # reject bins are calibrated against a rate up to 5x the one actually applied.
+    acc = rate_eff.clip(lower=MIN_EFFECTIVE_ACCEPTANCE_RATE)
 
     # Note: multiplier cancels in the relative error below; it is kept explicit
     # so both quantities read as actual annualized risks and stay correct if the
