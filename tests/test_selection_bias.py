@@ -15,6 +15,7 @@ from src.selection_bias import (
     compute_rolling_acceptance_rate,
     compute_score_correlations,
     compute_score_rejection_only_truncation,
+    compute_selection_bias_report,
     simulate_range_restriction,
     thorndike_case2_correction,
 )
@@ -244,6 +245,121 @@ class TestBookedVsRejected:
         score_cols = {"Score RF": {"column": "score_rf", "negate": True}}
         result = compute_booked_vs_rejected_discriminance(df, score_cols)
         assert result.iloc[0]["gini"] > 0.1
+
+
+# ---------------------------------------------------------------------------
+# #59: canceled applications (score-accepted, not taken up) are NOT rejections
+# ---------------------------------------------------------------------------
+class TestCanceledNotRejected:
+    @staticmethod
+    def _frames(seed=0):
+        rng = np.random.RandomState(seed)
+        booked = pd.DataFrame(
+            {
+                "score_rf": rng.normal(600, 40, 300),
+                "status_name": "booked",
+                "reject_reason": "",
+                "early_bad": rng.binomial(1, 0.1, 300).astype(float),
+            }
+        )
+        rejected = pd.DataFrame(
+            {
+                "score_rf": rng.normal(350, 40, 300),
+                "status_name": "rejected",
+                "reject_reason": "09-score",
+                "early_bad": np.nan,
+            }
+        )
+        # canceled: high (booked-like) scores — they PASSED the score
+        canceled = pd.DataFrame(
+            {
+                "score_rf": rng.normal(600, 40, 150),
+                "status_name": "canceled",
+                "reject_reason": "",
+                "early_bad": np.nan,
+            }
+        )
+        base = pd.concat([booked, rejected], ignore_index=True)
+        with_canceled = pd.concat([booked, rejected, canceled], ignore_index=True)
+        return base, with_canceled
+
+    def test_truncation_rejected_set_excludes_canceled(self):
+        df = pd.DataFrame(
+            {
+                "score_rf": [600.0, 610.0, 300.0, 310.0, 620.0, 630.0],
+                "status_name": ["booked", "booked", "rejected", "rejected", "canceled", "canceled"],
+                "reject_reason": ["", "", "09-score", "09-score", "", ""],
+            }
+        )
+        r = compute_distribution_truncation(df, "score_rf")
+        assert r["n_booked"] == 2
+        assert r["n_rejected"] == 2  # canceled NOT counted (was 4 under ~booked)
+        # rejected stats reflect the low-score rejections, not pulled up by high-score canceled
+        assert r["mean_rejected"] < 400
+
+    def test_rejection_profile_does_not_count_canceled(self):
+        _, with_canceled = self._frames()
+        prof = compute_rejection_profile(with_canceled, "score_rf")
+        assert prof["n_rejected"].sum() == 300  # the genuine rejections, not 450 (incl. canceled)
+
+    def test_booked_vs_rejected_gini_ignores_canceled(self):
+        base, with_canceled = self._frames()
+        score_cols = {"rf": {"column": "score_rf", "negate": True}}
+        g_base = compute_booked_vs_rejected_discriminance(base, score_cols).iloc[0]["gini"]
+        g_with = compute_booked_vs_rejected_discriminance(with_canceled, score_cols).iloc[0]["gini"]
+        assert g_base == pytest.approx(g_with)  # canceled dropped → identical (was depressed before)
+
+    def test_ri_gini_ignores_canceled(self):
+        base, with_canceled = self._frames()
+        g_base = compute_ri_gini(base, "score_rf", "early_bad", score_negate=True)
+        g_with = compute_ri_gini(with_canceled, "score_rf", "early_bad", score_negate=True)
+        assert g_base["ri_gini_mean"] == pytest.approx(g_with["ri_gini_mean"])
+        assert g_base["n_rejected"] == g_with["n_rejected"] == 300
+
+    def test_thorndike_uses_score_rejection_only_u_ratio(self):
+        """#59: the Thorndike Case-2 correction must be fed the score-rejection-only
+        u_ratio (direct selection on the score), not the all-demand one that 08-other
+        rejections widen (score-orthogonal → biases the correction)."""
+        rng = np.random.RandomState(3)
+        dates = pd.date_range("2024-01-01", periods=700, freq="h")
+        booked = pd.DataFrame(
+            {
+                "score_rf": rng.normal(600, 30, 300),
+                "status_name": "booked",
+                "reject_reason": "",
+                "early_bad": rng.binomial(1, 0.15, 300).astype(float),
+                "mis_date": dates[:300],
+            }
+        )
+        score_rej = pd.DataFrame(
+            {
+                "score_rf": rng.normal(400, 30, 200),
+                "status_name": "rejected",
+                "reject_reason": "09-score",
+                "early_bad": np.nan,
+                "mis_date": dates[300:500],
+            }
+        )
+        # 08-other: wide, score-orthogonal spread → widens the all-demand SD only.
+        other_rej = pd.DataFrame(
+            {
+                "score_rf": rng.normal(500, 200, 200),
+                "status_name": "rejected",
+                "reject_reason": "08-other",
+                "early_bad": np.nan,
+                "mis_date": dates[500:700],
+            }
+        )
+        df_demand = pd.concat([booked, score_rej, other_rej], ignore_index=True)
+        score_cols = {"rf": {"column": "score_rf", "negate": True}}
+
+        rep = compute_selection_bias_report(df_demand, booked, score_cols, "early_bad", "seg", "main")
+
+        all_u = rep["truncation"].iloc[0]["u_ratio"]
+        sro_u = rep["score_rejection_truncation"].iloc[0]["u_ratio"]
+        thor_u = rep["thorndike"].iloc[0]["u_ratio"]
+        assert sro_u != pytest.approx(all_u)  # 08-other widened the all-demand u_ratio
+        assert thor_u == pytest.approx(sro_u)  # correction used the score-only u_ratio
 
 
 # ---------------------------------------------------------------------------

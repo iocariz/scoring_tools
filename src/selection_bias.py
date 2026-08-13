@@ -62,7 +62,11 @@ def compute_distribution_truncation(
     demand = (sign * df_demand[score_col].dropna()).values
     booked_mask = df_demand["status_name"] == StatusName.BOOKED.value
     booked = (sign * df_demand.loc[booked_mask, score_col].dropna()).values
-    rejected = (sign * df_demand.loc[~booked_mask, score_col].dropna()).values
+    # #59: genuine rejections only — status == "rejected", NOT ~booked. The latter
+    # also swept in CANCELED applications, which PASSED the score but weren't taken
+    # up (score-accepted, not rejected), contaminating the rejected-score stats.
+    rejected_mask = df_demand["status_name"] == StatusName.REJECTED.value
+    rejected = (sign * df_demand.loc[rejected_mask, score_col].dropna()).values
 
     n_demand = len(demand)
     n_booked = len(booked)
@@ -359,13 +363,17 @@ def compute_rejection_profile(
          rejection_rate, pct_of_total_rejections].
     """
     df = df_demand.dropna(subset=[score_col]).copy()
+    # #59: a rejection profile counts the accept/reject DECISION — canceled apps
+    # (score-accepted, not taken up) are neither booked nor rejected, so drop them
+    # from both the deciles and the counts rather than counting them as rejections.
+    df = df[df["status_name"] != StatusName.CANCELED.value]
     if df.empty:
         return pd.DataFrame()
 
     sign = -1 if score_negate else 1
     df["_score"] = sign * df[score_col]
 
-    # Create decile bins from full demand
+    # Create decile bins from the decision population (booked + rejected)
     try:
         df["_decile"] = pd.qcut(df["_score"], q=n_bins, labels=False, duplicates="drop") + 1
     except ValueError:
@@ -457,6 +465,10 @@ def compute_booked_vs_rejected_discriminance(
     is the classic selection-bias signature.
     """
     df = df_demand.dropna(subset=[s["column"] for s in score_columns.values()]).copy()
+    # #59: compare booked against GENUINE rejections. Canceled apps passed the
+    # score; labeling them class 0 ("rejected") would blur the very boundary this
+    # Gini measures and depress it — exclude them entirely.
+    df = df[df["status_name"] != StatusName.CANCELED.value]
     if df.empty:
         return pd.DataFrame()
 
@@ -638,6 +650,9 @@ def compute_ri_gini(
     rng = np.random.RandomState(42)
 
     df = df_demand.dropna(subset=[score_col]).copy()
+    # #59: analyse the decision population only — canceled apps (score-accepted,
+    # not taken up) must not shift the score deciles nor receive imputed defaults.
+    df = df[df["status_name"] != StatusName.CANCELED.value]
     if df.empty:
         return {}
 
@@ -651,7 +666,10 @@ def compute_ri_gini(
 
     is_booked = df["status_name"] == StatusName.BOOKED.value
     df_booked = df[is_booked].dropna(subset=[target_col])
-    df_rejected = df[~is_booked]
+    # #59: impute default outcomes only for GENUINE rejections — canceled apps
+    # (score-accepted, not taken up) were never rejected and must not receive an
+    # imputed bad outcome.
+    df_rejected = df[df["status_name"] == StatusName.REJECTED.value]
 
     if df_booked.empty or df_booked[target_col].nunique() < 2 or df_rejected.empty:
         return {}
@@ -785,6 +803,20 @@ def compute_selection_bias_report(
         truncation_rows.append(trunc)
     results["truncation"] = pd.DataFrame(truncation_rows)
 
+    # 8 (computed early — feeds the Thorndike correction below). Score-rejection-only
+    # truncation: booked + (rejected AND 09-score), excluding canceled and 08-other.
+    # Thorndike Case 2 assumes DIRECT selection on the score, so its u_ratio must
+    # come from this score-restricted population — the all-demand analysis-1 u_ratio
+    # is widened by score-orthogonal removals (08-other + canceled) and biases the
+    # correction (#59).
+    sro = compute_score_rejection_only_truncation(df_demand, score_columns)
+    sro_u_by_score: dict = {}
+    if not sro.empty:
+        sro["segment"] = segment_name
+        sro["period"] = period
+        sro_u_by_score = dict(zip(sro["score"], sro["u_ratio"], strict=False))
+    results["score_rejection_truncation"] = sro
+
     # 2. Thorndike correction (needs observed Gini from booked)
     correction_rows = []
     required_cols = [target_col] + [s["column"] for s in score_columns.values()]
@@ -800,9 +832,13 @@ def compute_selection_bias_report(
             except ValueError:
                 continue
 
-            u_ratio = truncation_rows[[r for r, row in enumerate(truncation_rows) if row["score"] == score_name][0]][
-                "u_ratio"
-            ]
+            # #59: prefer the score-rejection-only u_ratio (Case 2's assumption);
+            # fall back to the all-demand u_ratio when no score rejections exist.
+            u_ratio = sro_u_by_score.get(score_name)
+            if u_ratio is None:
+                u_ratio = truncation_rows[
+                    [r for r, row in enumerate(truncation_rows) if row["score"] == score_name][0]
+                ]["u_ratio"]
             correction = thorndike_case2_correction(gini, u_ratio)
             correction["score"] = score_name
             correction["segment"] = segment_name
@@ -841,12 +877,8 @@ def compute_selection_bias_report(
         bvr["period"] = period
     results["booked_vs_rejected"] = bvr
 
-    # 8. Score-rejection-only truncation
-    sro = compute_score_rejection_only_truncation(df_demand, score_columns)
-    if not sro.empty:
-        sro["segment"] = segment_name
-        sro["period"] = period
-    results["score_rejection_truncation"] = sro
+    # 8. Score-rejection-only truncation — computed and stored earlier (it feeds
+    # the Thorndike correction); see block above.
 
     # 9. Bad rate gradient by score decile
     bad_rate_profiles = {}
