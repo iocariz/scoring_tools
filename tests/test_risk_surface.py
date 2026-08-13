@@ -44,6 +44,23 @@ def test_classify_carries_components_and_accept_weight():
     assert a2["acc_wt"] == 0.0 and a2["rej_wt"] == 100.0
 
 
+@pytest.mark.parametrize("missing", ["todu_30ever_h6", "todu_amt_pile_h6"])
+def test_classify_raises_on_missing_risk_column(missing):
+    """#49: a summary missing a risk column must fail loudly, not silently zero
+    it into a fabricated flat-0 / empty surface."""
+    summary = _summary().drop(columns=[missing])
+    with pytest.raises(ValueError, match="missing required risk column"):
+        classify_cells(summary, {(1.0, 1.0)}, ["a", "b"])
+
+
+def test_classify_tolerates_missing_booked_before_column():
+    """A missing booked-before column is optional: defaults to 'no prior bookings'
+    (all cells swap_in/rejected), not an error."""
+    summary = _summary().drop(columns=["todu_amt_pile_h6_boo"])
+    cells = aggregate_to_cells(classify_cells(summary, {(1.0, 1.0)}, ["a", "b"]), ["a", "b"])
+    assert set(cells["category"]) <= {"swap_in", "rejected"}  # no keep/swap_out without booked-before
+
+
 # ----------------------------- aggregate_to_cells -----------------------------
 
 

@@ -1283,6 +1283,50 @@ class TestPatchFromSegmentAudits:
         assert total["actual_production"] == 240.0
         assert total["optimum_production"] == 260.0
 
+    @classmethod
+    def _rate_row(cls, group: str, segments: str, sys_rate: float) -> dict:
+        r = cls._row(group, segments)
+        r["total_demand"] = 1000.0
+        r["actual_system_rejection_rate_pct"] = sys_rate
+        return r
+
+    def test_pooled_system_rate_none_poisoned_when_a_member_lacks_it(self, temp_output_dir):
+        """#62: a supersegment/TOTAL system-rejection rate must be n/a (NaN) when
+        any member lacks it — not a blended number from treating the missing
+        member's € rejections as 0 while its demand still counts in the pool."""
+        df = pd.DataFrame(
+            [
+                self._rate_row("supersegment_pl_known", "seg_a, seg_b", float("nan")),
+                self._rate_row("segment_seg_a", "seg_a", 10.0),  # has a rate
+                self._rate_row("segment_seg_b", "seg_b", float("nan")),  # no se_decision_id → NaN
+                self._rate_row("TOTAL", "seg_a, seg_b", float("nan")),
+            ]
+        )
+
+        out = patch_consolidated_production_from_segment_audits(df, temp_output_dir, {"seg_a": {}, "seg_b": {}})
+
+        ss = out[out["group"] == "supersegment_pl_known"].iloc[0]
+        total = out[out["group"] == "TOTAL"].iloc[0]
+        assert pd.isna(ss["actual_system_rejection_rate_pct"])  # n/a, not a fabricated blend
+        assert pd.isna(total["actual_system_rejection_rate_pct"])
+
+    def test_pooled_system_rate_blended_when_all_members_have_it(self, temp_output_dir):
+        """Control: with every member's rate present, the pooled rate is the
+        demand-weighted blend (10%·1000 + 20%·1000) / 2000 = 15%."""
+        df = pd.DataFrame(
+            [
+                self._rate_row("supersegment_pl_known", "seg_a, seg_b", float("nan")),
+                self._rate_row("segment_seg_a", "seg_a", 10.0),
+                self._rate_row("segment_seg_b", "seg_b", 20.0),
+                self._rate_row("TOTAL", "seg_a, seg_b", float("nan")),
+            ]
+        )
+
+        out = patch_consolidated_production_from_segment_audits(df, temp_output_dir, {"seg_a": {}, "seg_b": {}})
+
+        ss = out[out["group"] == "supersegment_pl_known"].iloc[0]
+        assert ss["actual_system_rejection_rate_pct"] == pytest.approx(15.0)
+
 
 # =============================================================================
 # Classification grid Total risk (audit #43)

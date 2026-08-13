@@ -730,10 +730,21 @@ def patch_consolidated_production_from_segment_audits(
                 work.loc[idx, "optimum_system_rejection_rate_pct"] = osr / td * 100.0
 
     def _rejections_from_rows(sub: pd.DataFrame, rate_col: str) -> float | None:
-        """Re-derive € rejections from already-patched member rows (rate × demand)."""
+        """Re-derive € rejections from already-patched member rows (rate × demand).
+
+        #62: None-poison when ANY member lacks the rate (NaN — e.g. a segment
+        with no ``se_decision_id`` has no system-rejection rate). ``fillna(0.0)``
+        kept that member's demand in the pooled denominator while contributing
+        zero rejections — understating the supersegment/TOTAL rate, and showing a
+        fabricated "0.0%" when NO member has the column. Mirrors the
+        None-poisoning in ``aggregate_metrics`` so the pooled cell reads "n/a".
+        """
         if rate_col not in sub.columns or "total_demand" not in sub.columns:
             return None
-        return float((sub[rate_col].fillna(0.0) / 100.0 * sub["total_demand"].fillna(0.0)).sum())
+        rates = sub[rate_col]
+        if rates.isna().any():
+            return None
+        return float((rates / 100.0 * sub["total_demand"].fillna(0.0)).sum())
 
     # Detect which segments ran in baseline mode (accept-all mask makes audit
     # swap-in classifications meaningless — skip audit patching for those).
@@ -3650,16 +3661,24 @@ def _write_per_segment_rp_sheets(
             output_base, segments, supersegments, seg_name, period="main", template_cols=list(df_rp.columns)
         )
 
-        # Build classification grid for main period
-        main_grid = _build_classification_grid(
-            output_base,
-            seg_name,
-            period="main",
-            variables=seg_vars_full,
-            multiplier=seg_settings["multiplier"],
-            multiplier_h3=seg_settings.get("multiplier_h3"),
-            inv_vars=seg_settings.get("inv_vars"),
-            income_threshold=_income_th,
+        # Build classification grid for main period. #62: skip for baseline
+        # segments — the accept-all mask makes the audit classify every
+        # score-rejected applicant as swap-in, so the grid would show large bogus
+        # Swap-in € contradicting the (correct) zero-swap RP table above it (same
+        # gate _build_income_bin_tables and the audit patch already apply).
+        main_grid = (
+            None
+            if seg_settings["baseline_mode"]
+            else _build_classification_grid(
+                output_base,
+                seg_name,
+                period="main",
+                variables=seg_vars_full,
+                multiplier=seg_settings["multiplier"],
+                multiplier_h3=seg_settings.get("multiplier_h3"),
+                inv_vars=seg_settings.get("inv_vars"),
+                income_threshold=_income_th,
+            )
         )
 
         sheet_name = f"RP {seg_name}"[:31]
@@ -3692,16 +3711,21 @@ def _write_per_segment_rp_sheets(
             output_base, segments, supersegments, seg_name, period="mr", template_cols=list(df_mr.columns)
         )
 
-        # Build classification grid for MR period (volumes only)
-        mr_grid = _build_classification_grid(
-            output_base,
-            seg_name,
-            period="mr",
-            variables=seg_vars_full,
-            multiplier=seg_settings["multiplier"],
-            multiplier_h3=seg_settings.get("multiplier_h3"),
-            inv_vars=seg_settings.get("inv_vars"),
-            income_threshold=_income_th,
+        # Build classification grid for MR period (volumes only). #62: skip for
+        # baseline segments — see the main-period note above.
+        mr_grid = (
+            None
+            if seg_settings["baseline_mode"]
+            else _build_classification_grid(
+                output_base,
+                seg_name,
+                period="mr",
+                variables=seg_vars_full,
+                multiplier=seg_settings["multiplier"],
+                multiplier_h3=seg_settings.get("multiplier_h3"),
+                inv_vars=seg_settings.get("inv_vars"),
+                income_threshold=_income_th,
+            )
         )
 
         mr_sheet_name = f"RP MR {seg_name}"[:31]

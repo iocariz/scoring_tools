@@ -145,7 +145,13 @@ def _all_surface_units(
         if u is None:
             continue
         loaded[seg_dir.name] = u
-        cells = aggregate_to_cells(classify_cells(u[0], u[1], u[2]), u[2], u[3])
+        try:
+            # #49: skip a segment whose summary lacks the risk columns rather
+            # than putting a fabricated flat-0 surface on a management slide.
+            cells = aggregate_to_cells(classify_cells(u[0], u[1], u[2]), u[2], u[3])
+        except ValueError as e:
+            logger.warning(f"[{seg_dir.name}] skipping risk surface: {e}")
+            continue
         if not cells.empty:
             units.append((seg_dir.name, cells, u[2]))
     if include_supersegments and not only:
@@ -154,8 +160,12 @@ def _all_surface_units(
             if len({tuple(x[2]) for x in us}) != 1:
                 continue
             variables, mult = us[0][2], us[0][3]
-            long = pd.concat([classify_cells(s, a, variables) for s, a, _v, _m in us], ignore_index=True)
-            cells = aggregate_to_cells(long, variables, mult)
+            try:
+                long = pd.concat([classify_cells(s, a, variables) for s, a, _v, _m in us], ignore_index=True)
+                cells = aggregate_to_cells(long, variables, mult)
+            except ValueError as e:
+                logger.warning(f"[{name}] skipping supersegment risk surface: {e}")
+                continue
             if not cells.empty:
                 units.append((f"{name} (supersegment)", cells, variables))
     return units
