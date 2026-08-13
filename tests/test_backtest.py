@@ -10,10 +10,12 @@ import pandas as pd
 import pytest
 
 from src.backtest import (
+    BacktestError,
     BacktestResult,
     _acceptance_rate,
     _realized_metrics,
     apply_policy,
+    backtest_segment,
     derive_holdout_window,
     write_backtest_report,
     write_consolidated_report,
@@ -81,6 +83,42 @@ def test_realized_metrics_zero_denominator_returns_none():
     )
     m = _realized_metrics(booked, apply_policy(booked, ["a", "b"], {(1.0, 1.0)}), multiplier=7.0)
     assert m["risk"] is None
+
+
+def test_realized_metrics_excludes_incomplete_h6_from_point_and_ci():
+    """#41: a loan with a valid default but NaN exposure (incomplete H6) must be
+    excluded from BOTH the risk point estimate AND the bootstrap CI — the old
+    per-column .sum() put its default in the numerator while the row-wise CI
+    dropped it, so the CI bracketed a different quantity than the point."""
+    booked = pd.DataFrame(
+        {
+            "a": [1.0, 1.0, 1.0],
+            "b": [10.0, 10.0, 10.0],
+            "oa_amt_h0": [100.0, 200.0, 300.0],
+            "todu_30ever_h6": [1.0, 2.0, 5.0],  # row 2 has a "default"...
+            "todu_amt_pile_h6": [100.0, 100.0, float("nan")],  # ...but NaN exposure → incomplete
+        }
+    )
+    accepted = apply_policy(booked, ["a", "b"], {(1.0, 10.0)})  # all three cells accepted
+    m = _realized_metrics(booked, accepted, multiplier=7.0)
+
+    # Risk computed over the 2 complete loans only: 7*(1+2)/(100+100)*100 = 10.5
+    assert m["risk"] == pytest.approx(10.5)
+    assert m["n_incomplete_h6"] == 1
+    assert m["n_defaults"] == 2  # the incomplete loan's default is not counted
+    assert m["todu_30ever_h6"] == pytest.approx(3.0)  # not 8.0 (per-column sum incl. the dropped loan)
+    # Production is unaffected by H6 completeness — all 3 accepted loans.
+    assert m["production"] == 600.0
+    # CI is defined and brackets the (complete-only) point estimate.
+    assert m["risk_ci_lower"] is not None and m["risk_ci_lower"] <= m["risk"] <= m["risk_ci_upper"]
+
+
+@pytest.mark.parametrize("kwargs", [{"holdout_start": "2025-06-01"}, {"holdout_end": "2025-08-01"}])
+def test_backtest_segment_rejects_one_sided_holdout_override(tmp_path, kwargs):
+    """#41: a one-sided holdout override was silently ignored (fell through to
+    auto-derive) — it must now fail fast with a clear error."""
+    with pytest.raises(BacktestError, match="both or neither"):
+        backtest_segment(pd.DataFrame(), _settings(), tmp_path, **kwargs)
 
 
 def test_acceptance_rate():

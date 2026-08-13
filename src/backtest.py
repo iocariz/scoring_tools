@@ -95,6 +95,7 @@ class BacktestResult:
             "holdout_end": self.window.get("end"),
             "n_booked_oot": self.coverage.get("n_booked_oot"),
             "n_defaults_oot": self.out_of_time.get("n_defaults"),
+            "n_incomplete_h6_oot": self.out_of_time.get("n_incomplete_h6"),  # #41: accepted loans dropped for NaN H6
             "pct_mature": self.coverage.get("pct_mature"),
             "predicted_risk_pct": pred_risk,
             "in_sample_realized_risk_pct": ins_risk,
@@ -206,17 +207,34 @@ def _bootstrap_risk_ci(acc: pd.DataFrame, multiplier: float, n_boot: int = 1000,
 def _realized_metrics(booked: pd.DataFrame, accepted: pd.Series, multiplier: float) -> dict:
     """Realized production (€) + risk (%) + default count + bootstrap CI over the accepted, booked subset."""
     acc = booked[accepted]
-    t30 = float(acc["todu_30ever_h6"].sum())
-    tamt = float(acc["todu_amt_pile_h6"].sum())
+    # #41: the risk numerator/denominator must be summed over the SAME loans the
+    # bootstrap CI resamples. pandas .sum() skips NaN PER COLUMN, so a loan with a
+    # valid default but NaN exposure (an incompletely-realized H6, or vice versa)
+    # entered the point estimate while the row-wise bootstrap dropped it — the CI
+    # then bracketed a different estimand than the number it decorated, and
+    # partial-H6 loans biased the point risk. Use ONE completeness mask (both todu
+    # fields present) for the risk point AND the CI. Production (oa_amt_h0) is
+    # summed over all accepted loans — it does not depend on the H6 outcome.
+    complete = acc["todu_30ever_h6"].notna() & acc["todu_amt_pile_h6"].notna()
+    acc_risk = acc[complete]
+    n_incomplete = int((~complete).sum())
+    if n_incomplete:
+        logger.debug(
+            f"backtest realized risk: excluded {n_incomplete}/{len(acc)} accepted loan(s) with "
+            "incomplete H6 (NaN todu) from the risk estimate and its CI."
+        )
+    t30 = float(acc_risk["todu_30ever_h6"].sum())
+    tamt = float(acc_risk["todu_amt_pile_h6"].sum())
     risk = float(calculate_b2_ever_h6(t30, tamt, multiplier=multiplier, as_percentage=True)) if tamt > 0 else None
-    risk_ci_lo, risk_ci_hi = _bootstrap_risk_ci(acc, multiplier)
+    risk_ci_lo, risk_ci_hi = _bootstrap_risk_ci(acc_risk, multiplier)
     return {
         "production": float(acc["oa_amt_h0"].sum()),
         "risk": risk,
         "risk_ci_lower": risk_ci_lo,
         "risk_ci_upper": risk_ci_hi,
         "n_accepted_booked": int(len(acc)),
-        "n_defaults": int((acc["todu_30ever_h6"] > 0).sum()),
+        "n_incomplete_h6": n_incomplete,
+        "n_defaults": int((acc_risk["todu_30ever_h6"] > 0).sum()),
         "todu_30ever_h6": t30,
         "todu_amt_pile_h6": tamt,
     }
@@ -303,6 +321,15 @@ def backtest_segment(
     multiplier = float(settings.multiplier)
     seg_data_dir = Path(seg_output_dir) / "data"
 
+    # #41: a one-sided holdout override used to fall through to auto-derive,
+    # silently ignoring the bound the user explicitly passed — fail fast (before
+    # any data work) instead. Pass both bounds or neither.
+    if bool(holdout_start) != bool(holdout_end):
+        raise BacktestError(
+            f"[{segment}] holdout override requires BOTH --holdout-start and --holdout-end "
+            f"(got start={holdout_start!r}, end={holdout_end!r}); pass both or neither."
+        )
+
     # Frozen edges are mandatory — re-learning on the held-out population would corrupt the test.
     for var, bc in (settings.bins or {}).items():
         if not bc.bin_edges or len(bc.bin_edges) < 2:
@@ -319,7 +346,8 @@ def backtest_segment(
     # Bin the FULL population once with the frozen edges (no re-learning), then slice windows.
     data_clean = _run_data_transformations(full_data, settings)
 
-    # Held-out window (auto-derived unless explicitly overridden).
+    # Held-out window (auto-derived unless BOTH override bounds are given; the
+    # one-sided case is rejected up front — see the guard at function entry).
     if holdout_start and holdout_end:
         window = {
             "start": pd.to_datetime(holdout_start),
