@@ -179,7 +179,10 @@ def _run_analyses_for_group(
     required = [TARGET_COLUMN] + [s["column"] for s in SCORE_COLUMNS.values()]
     df_clean = df_booked.dropna(subset=required)
     if not df_clean.empty and df_clean[TARGET_COLUMN].nunique() >= 2:
-        n_demand = len(df_demand_period)
+        # #59: the demand basis excludes canceled (booked + rejected), matching
+        # the pipeline's demand definition — so the acceptance rate is
+        # booked / (booked + rejected), not booked / (incl. canceled).
+        n_demand = int((df_demand_period["status_name"] != "canceled").sum())
         n_booked = int((df_demand_period["status_name"] == "booked").sum())
         acc_rate = n_booked / n_demand if n_demand > 0 else 0
 
