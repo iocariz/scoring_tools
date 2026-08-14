@@ -365,3 +365,33 @@ class TestNadeauBengioCvSe:
         # No correction term defined for k<2; falls back to the naive std/√n.
         assert io._nadeau_bengio_cv_se(0.02, 1) == pytest.approx(0.02)
         assert io._nadeau_bengio_cv_se(0.0, 4) == pytest.approx(0.0)
+
+
+class TestCheckModelDiscriminates:
+    """Hard gate against a constant / no-discriminatory-power risk model."""
+
+    @staticmethod
+    def _agg():
+        return pd.DataFrame({"f": [1.0, 2.0, 3.0, 4.0], "target": [0.1, 0.3, 0.5, 0.9]})
+
+    def test_raises_on_constant_predictions(self):
+        from sklearn.dummy import DummyRegressor
+
+        agg = self._agg()
+        const = DummyRegressor(strategy="mean").fit(agg[["f"]], agg["target"])  # predicts the mean
+        with pytest.raises(io.DegenerateModelError, match="no discriminatory power"):
+            io._check_model_discriminates(const, agg, ["f"], "target", "ConstModel", train_r2=0.0)
+
+    def test_passes_for_varying_model(self):
+        from sklearn.linear_model import LinearRegression
+
+        agg = self._agg()
+        lin = LinearRegression().fit(agg[["f"]], agg["target"])  # predictions track f
+        io._check_model_discriminates(lin, agg, ["f"], "target", "Linear", train_r2=0.99)  # no raise
+
+    def test_noop_for_single_bin(self):
+        from sklearn.dummy import DummyRegressor
+
+        agg = pd.DataFrame({"f": [1.0], "target": [0.1]})
+        const = DummyRegressor(strategy="mean").fit(agg[["f"]], agg["target"])
+        io._check_model_discriminates(const, agg, ["f"], "target", "C", train_r2=0.0)  # <2 bins → skip

@@ -70,6 +70,17 @@ def tune_tree_models(
     tuning_data = raw_data
     fresh_seed = random_state + 1000
 
+    # Dynamic leaf-size bounds (constant-model bug): trees train on the AGGREGATED
+    # bins (one row per bin) with sample weights normalized to sum = n_bins (mean 1
+    # per bin). A fixed min_child_weight / min_child_samples search range of
+    # [10, 100] then requires 10–100 bins per leaf — so on a small grid (e.g. the
+    # 10–12-bin pooled/retail models) NO split is possible and every booster
+    # collapses to a single leaf that predicts the weighted mean (a constant risk
+    # surface). Scale the ceiling to the data: a leaf floor well below n_bins.
+    n_groups = int(raw_data[variables].drop_duplicates().shape[0]) if variables else len(raw_data)
+    leaf_hi = max(2, min(100, n_groups // 3))
+    logger.debug(f"Tree tuning: {n_groups} bins → min_child leaf bound [1, {leaf_hi}] (was [10, 100]).")
+
     from src.inference_optimized import (
         _get_regression_weights,
         _nadeau_bengio_cv_se,
@@ -133,7 +144,7 @@ def tune_tree_models(
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
             "subsample": trial.suggest_float("subsample", 0.6, 1.0),
             "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
-            "min_child_weight": trial.suggest_int("min_child_weight", 10, 100),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, leaf_hi),
             "monotone_constraints": xgb_monotone,
             "random_state": random_state,
             "n_jobs": -1,
@@ -166,7 +177,7 @@ def tune_tree_models(
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
             "subsample": trial.suggest_float("subsample", 0.6, 1.0),
             "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
-            "min_child_samples": trial.suggest_int("min_child_samples", 10, 100),
+            "min_child_samples": trial.suggest_int("min_child_samples", 1, leaf_hi),
             "monotone_constraints": lgb_monotone,
             "random_state": random_state,
             "verbose": -1,
