@@ -88,6 +88,19 @@ def _filter_base_population(df: pd.DataFrame, segment_filter: str) -> pd.DataFra
     return filtered[filtered["segment_cut_off"] == segment_filter]
 
 
+def _dedup_loans(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop loans appearing more than once before pooling (#64).
+
+    Overlapping segment filters can place the same loan in multiple members, so a
+    naive ``concat`` for the supersegment/total metrics would over-count ``n`` and
+    understate SEs / DeLong p-values. Dedup on the loan id; a no-op when segments
+    are disjoint or the id column is absent.
+    """
+    if "authorization_id" in df.columns:
+        return df.drop_duplicates(subset="authorization_id")
+    return df
+
+
 def _filter_booked_period(df: pd.DataFrame, date_ini: str, date_fin: str) -> pd.DataFrame:
     """Filter to booked status within a date range."""
     booked = df[df["status_name"] == "booked"].copy()
@@ -624,9 +637,20 @@ def generate_score_discriminance_report(
             logger.warning(f"Segment '{seg_name}': no data after base filter — skipping.")
             continue
 
+        # #64: honour per-segment date-window overrides from segments.toml (was
+        # always the base config's windows) so a segment's Gini/AUC/DeLong are
+        # computed on the same cohort its pipeline run used.
         for period, d_ini, d_fin in [
-            ("main", date_ini_main, date_fin_main),
-            ("mr", date_ini_mr, date_fin_mr),
+            (
+                "main",
+                seg_config.get("date_ini_book_obs", date_ini_main),
+                seg_config.get("date_fin_book_obs", date_fin_main),
+            ),
+            (
+                "mr",
+                seg_config.get("date_ini_book_obs_mr", date_ini_mr),
+                seg_config.get("date_fin_book_obs_mr", date_fin_mr),
+            ),
         ]:
             result = _compute_for_period(df_base, d_ini, d_fin, period, "segment", seg_name, ss_name)
             if result is None:
@@ -652,7 +676,7 @@ def generate_score_discriminance_report(
         frames = [segment_base_cache[sn] for sn in member_segments if sn in segment_base_cache]
         if not frames:
             continue
-        df_combined = pd.concat(frames, ignore_index=True)
+        df_combined = _dedup_loans(pd.concat(frames, ignore_index=True))
 
         logger.info(f"Processing supersegment: {ss_name} ({len(frames)} segments, {len(df_combined):,} rows)")
 
@@ -674,7 +698,7 @@ def generate_score_discriminance_report(
 
     # --- Total (all segments combined) ---
     if segment_base_cache:
-        df_total = pd.concat(segment_base_cache.values(), ignore_index=True)
+        df_total = _dedup_loans(pd.concat(segment_base_cache.values(), ignore_index=True))
         logger.info(f"Processing total: {len(segment_base_cache)} segments, {len(df_total):,} rows")
 
         for period, d_ini, d_fin in [

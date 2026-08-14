@@ -65,3 +65,22 @@ class TestPrepareScores:
         df = _booked_df(50, with_risk_score=False)
         scores = rsm._prepare_scores(df, include_combined=True)
         assert list(scores.keys()) == ["Score RF"]
+
+
+class TestDedupLoans:
+    """#64: pooled supersegment/total metrics must not double-count loans that
+    overlapping segment filters place in more than one member."""
+
+    def test_dedup_removes_overlapping_loans(self):
+        seg_a = pd.DataFrame({"authorization_id": [1, 2, 3], "score_rf": [10.0, 20.0, 30.0]})
+        seg_b = pd.DataFrame({"authorization_id": [3, 4], "score_rf": [30.0, 40.0]})  # loan 3 overlaps
+        combined = rsm._dedup_loans(pd.concat([seg_a, seg_b], ignore_index=True))
+        assert sorted(combined["authorization_id"]) == [1, 2, 3, 4]  # loan 3 counted once, not twice
+
+    def test_dedup_noop_without_id_column(self):
+        df = pd.DataFrame({"score_rf": [1.0, 1.0, 2.0]})
+        assert len(rsm._dedup_loans(df)) == 3  # no id → no dedup
+
+    def test_dedup_noop_when_disjoint(self):
+        df = pd.DataFrame({"authorization_id": [1, 2, 3], "score_rf": [1.0, 2.0, 3.0]})
+        assert len(rsm._dedup_loans(df)) == 3

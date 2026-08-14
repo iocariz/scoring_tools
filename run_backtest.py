@@ -59,7 +59,7 @@ def backtest_all(
     data_dir: str | Path = "output",
     out_dir: str | Path = "output/backtest",
     scenario: str = "base",
-    maturity_months: int = 6,
+    maturity_months: int | None = None,
     segments: list[str] | None = None,
     holdout_start: str | None = None,
     holdout_end: str | None = None,
@@ -82,12 +82,16 @@ def backtest_all(
     for seg_dir in seg_dirs:
         try:
             settings = PreprocessingSettings.from_toml(str(seg_dir / "config_segment.toml"))
+            # #64: default to each segment's own mr_maturity_months (its H6
+            # maturity definition) rather than a hard-coded 6; an explicit
+            # --maturity-months override still applies to every segment.
+            seg_maturity = maturity_months if maturity_months is not None else settings.mr_maturity_months
             result = backtest_segment(
                 full_data,
                 settings,
                 seg_dir,
                 suffix=suffix,
-                maturity_months=maturity_months,
+                maturity_months=seg_maturity,
                 holdout_start=holdout_start,
                 holdout_end=holdout_end,
             )
@@ -127,7 +131,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", "-o", default="output/backtest", help="Output dir for backtest artifacts.")
     parser.add_argument("--scenario", default="base", help="Scenario suffix to backtest (default: base).")
     parser.add_argument("--segments", "-s", nargs="+", default=None, help="Subset of segments (default: all frozen).")
-    parser.add_argument("--maturity-months", type=int, default=6, help="Months of seasoning for H6 maturity.")
+    parser.add_argument(
+        "--maturity-months",
+        type=int,
+        default=None,
+        help="Months of seasoning for H6 maturity (default: each segment's own mr_maturity_months).",
+    )
     parser.add_argument("--holdout-start", default=None, help="Override: held-out window start (YYYY-MM-DD).")
     parser.add_argument("--holdout-end", default=None, help="Override: held-out window end (YYYY-MM-DD).")
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
@@ -142,7 +151,10 @@ def main(argv: list[str] | None = None) -> int:
     with open(args.config, "rb") as f:
         base_cfg = tomllib.load(f).get("preprocessing", {})
     data_path = base_cfg.get("data_path", "data/demanda_direct_out.sas7bdat")
-    full_data = load_and_standardize_data(data_path)
+    # #64: honour the configured SAS encoding (was hard-coded latin-1 default) so
+    # categorical values (statuses, segment codes) decode the same as the run that
+    # produced the frozen policy — a different encoding = a different population.
+    full_data = load_and_standardize_data(data_path, encoding=base_cfg.get("sas_encoding", "latin-1"))
     if full_data is None:
         logger.error(f"Could not load/standardize data from {data_path}")
         return 1
