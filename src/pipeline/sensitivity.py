@@ -3,6 +3,8 @@
 Extracted from ``src/pipeline/optimization.py`` in R2b-iv (todo #63). Exposes :func:`run_sensitivity_phase`.
 """
 
+import os
+
 import pandas as pd
 from loguru import logger
 
@@ -37,25 +39,50 @@ def run_sensitivity_phase(
     logger.info(f"[{segment}] Running sensitivity analysis...")
 
     try:
-        from src.optimization_utils import CellGrid, milp_solve_cutoffs
+        from src.optimization_utils import CellGrid, decode_mask, milp_solve_cutoffs
         from src.sensitivity import compute_cell_marginal_impact, run_sensitivity_analysis, sensitivity_cell_detail
 
         grid = CellGrid.from_summary(data_summary_desagregado, settings.variables)
 
-        # Get baseline mask from the base scenario's optimal solution
-        baseline_mask = milp_solve_cutoffs(
-            grid,
-            settings.optimum_risk,
-            settings.inv_vars,
-            settings.multiplier,
-            fixed_cells=fixed_cells,
-            max_swapin_production_pct=settings.max_swapin_production_pct,
-            max_swapin_risk=settings.max_swapin_risk,
-            time_limit=settings.milp_time_limit,
-            monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
-            monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
-            monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
-        )
+        # #38/#55: use the base scenario's ACTUALLY-SELECTED mask as the baseline
+        # (persisted acceptance_mask in optimal_solution_base.csv), not a fresh
+        # MILP re-solve at the raw, unrounded optimum_risk. Re-solving diverged
+        # from the shipped policy whenever selection_risk_basis="ci_upper" chose a
+        # different frontier point, or for fixed_cutoffs segments whose policy
+        # never came from the MILP at all. Fall back to a re-solve only if the
+        # frozen mask is unavailable.
+        baseline_mask = None
+        opt_path = output.optimal_solution_csv("_base")
+        if os.path.exists(opt_path):
+            try:
+                opt_sol = pd.read_csv(opt_path)
+                cell = opt_sol.iloc[0].get("acceptance_mask") if not opt_sol.empty else None
+                if pd.notna(cell):
+                    decoded = decode_mask(str(cell))
+                    if len(decoded) == len(grid.cell_data):
+                        baseline_mask = decoded
+                    else:
+                        logger.warning(
+                            f"[{segment}] Sensitivity: frozen mask length {len(decoded)} != grid "
+                            f"{len(grid.cell_data)}; re-solving the baseline."
+                        )
+            except (pd.errors.ParserError, OSError, ValueError) as e:
+                logger.warning(f"[{segment}] Sensitivity: could not read frozen base mask ({e}); re-solving.")
+
+        if baseline_mask is None:
+            baseline_mask = milp_solve_cutoffs(
+                grid,
+                settings.optimum_risk,
+                settings.inv_vars,
+                settings.multiplier,
+                fixed_cells=fixed_cells,
+                max_swapin_production_pct=settings.max_swapin_production_pct,
+                max_swapin_risk=settings.max_swapin_risk,
+                time_limit=settings.milp_time_limit,
+                monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
+                monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
+                monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
+            )
         if baseline_mask is None:
             logger.warning(f"[{segment}] Sensitivity: baseline solve infeasible, skipping")
             return

@@ -82,6 +82,29 @@ class TestPerturbRiskSummary:
         expected = perturbed["todu_30ever_h6_boo"] + perturbed["todu_30ever_h6_rep"]
         pd.testing.assert_series_equal(perturbed["todu_30ever_h6"], expected, check_names=False)
 
+    def test_perturb_moves_total_when_rep_is_zero(self):
+        """#55: with no reject-inference risk, the perturbation must still move the
+        TOTAL (booked) risk — the old version scaled only _rep and was a silent
+        no-op for booked-driven cells."""
+        df = pd.DataFrame(
+            {
+                "var0": [1, 2],
+                "var1": [1, 1],
+                "todu_30ever_h6": [10.0, 20.0],
+                "todu_30ever_h6_boo": [10.0, 20.0],
+                "todu_30ever_h6_rep": [0.0, 0.0],
+                "todu_amt_pile_h6": [100.0, 100.0],
+            }
+        )
+        perturbed = perturb_risk_summary(df, 10.0)
+        assert perturbed["todu_30ever_h6"].tolist() == pytest.approx([11.0, 22.0])  # was unchanged before
+
+    def test_perturb_scales_total_without_components(self):
+        """A summary with no _boo/_rep split: the total risk numerator is scaled directly."""
+        df = pd.DataFrame({"var0": [1], "var1": [1], "todu_30ever_h6": [10.0], "todu_amt_pile_h6": [100.0]})
+        perturbed = perturb_risk_summary(df, 50.0)
+        assert perturbed["todu_30ever_h6"].iloc[0] == pytest.approx(15.0)
+
 
 # =============================================================================
 # run_sensitivity_analysis Tests
@@ -286,3 +309,76 @@ class TestSolveWithFixedCells:
         assert kpis is not None
         assert "oa_amt_h0" in kpis
         assert "b2_ever_h6" in kpis
+
+
+# =============================================================================
+# run_sensitivity_phase — baseline reuses the shipped base mask (#38/#55)
+# =============================================================================
+
+
+class TestSensitivityPhaseBaseline:
+    @staticmethod
+    def _settings():
+        from src.config import PreprocessingSettings
+
+        return PreprocessingSettings(
+            keep_vars=["mis_date"],
+            indicators=INDICATORS,
+            segment_filter="seg",
+            date_ini_book_obs="2024-01-01",
+            date_fin_book_obs="2024-12-31",
+            variables=["sc_octroi_new_clus", "new_efx_clus"],
+            octroi_bins=[-np.inf, 0.5, 1.5, np.inf],
+            efx_bins=[-np.inf, 0.5, 1.5, np.inf],
+            run_sensitivity=True,
+            sensitivity_levels=[-10.0, 10.0],
+            optimum_risk=5.0,
+        )
+
+    @staticmethod
+    def _summary():
+        # 2x2 grid; cell_index order is cartesian: (1,1),(1,2),(2,1),(2,2) -> flat 0..3
+        return pd.DataFrame(
+            {
+                "sc_octroi_new_clus": [1, 1, 2, 2],
+                "new_efx_clus": [1, 2, 1, 2],
+                "todu_30ever_h6": [1.0, 2.0, 3.0, 9.0],
+                "todu_amt_pile_h6": [100.0, 100.0, 100.0, 100.0],
+                "oa_amt_h0": [100.0, 200.0, 300.0, 400.0],
+                "todu_30ever_h6_boo": [0.8, 1.6, 2.4, 7.2],
+                "todu_amt_pile_h6_boo": [80.0, 80.0, 80.0, 80.0],
+                "todu_30ever_h6_rep": [0.2, 0.4, 0.6, 1.8],
+                "todu_amt_pile_h6_rep": [20.0, 20.0, 20.0, 20.0],
+            }
+        )
+
+    def test_baseline_reuses_frozen_base_mask(self, tmp_path):
+        """#38/#55: the sensitivity baseline is the base scenario's ACTUALLY-SELECTED
+        mask (persisted acceptance_mask), not a fresh MILP re-solve. A deliberately
+        NON-monotone frozen mask (accept only the riskiest cell) — which the MILP
+        would never produce — must appear as the baseline, proving the reuse."""
+        from src.config import OutputPaths
+        from src.pipeline.optimization import run_sensitivity_phase
+
+        output = OutputPaths(base_dir=tmp_path)
+        output.ensure_dirs()
+        summary = self._summary()
+        # Frozen mask: reject the 3 safe cells, accept only the riskiest (2,2).
+        pd.DataFrame([{"acceptance_mask": "0,0,0,1", "oa_amt_h0": 400.0, "b2_ever_h6": 6.3}]).to_csv(
+            output.optimal_solution_csv("_base"), index=False
+        )
+
+        run_sensitivity_phase(
+            data_summary_desagregado=summary,
+            data_summary=summary,
+            settings=self._settings(),
+            output=output,
+        )
+
+        detail = pd.read_csv(output.sensitivity_analysis_csv("_cell_detail"))
+        status = {
+            (int(r["sc_octroi_new_clus"]), int(r["new_efx_clus"])): int(r["baseline_status"])
+            for _, r in detail.iterrows()
+        }
+        # exactly the frozen mask: only the (2,2) cell accepted
+        assert status == {(1, 1): 0, (1, 2): 0, (2, 1): 0, (2, 2): 1}

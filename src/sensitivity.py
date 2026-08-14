@@ -20,27 +20,40 @@ def perturb_risk_summary(
     data_summary: pd.DataFrame,
     perturbation_pct: float,
 ) -> pd.DataFrame:
-    """Scale todu_30ever_h6_rep by (1 + pct/100), recompute base column.
+    """Scale the TOTAL risk numerator ``todu_30ever_h6`` by ``(1 + pct/100)``.
 
-    Other indicators (_rep for oa_amt_h0, todu_amt_pile_h6) are unchanged.
+    #55: the old version scaled only the reject-inference component
+    (``todu_30ever_h6_rep``), so a cell whose accept/reject is driven by the
+    dominant BOOKED risk never flipped at any perturbation level — the reported
+    cutoff robustness was overstated (and it was a silent no-op when ``_rep`` was
+    absent). Perturbing the total risk (and its ``_boo`` / ``_rep`` components
+    proportionally, so they stay consistent) moves the actual risk surface the
+    MILP sees, so booked-driven cells can flip too.
 
     Args:
-        data_summary: Aggregated summary with _boo and _rep columns.
+        data_summary: Aggregated summary (total ``todu_30ever_h6``; optional
+            ``_boo`` / ``_rep`` components).
         perturbation_pct: Percentage change (e.g. 10 means +10%).
 
     Returns:
-        Copy of data_summary with perturbed risk columns.
+        Copy of data_summary with the perturbed risk numerator (and components).
     """
     df = data_summary.copy()
     factor = 1.0 + perturbation_pct / 100.0
 
-    # Perturb the _rep risk column
-    if "todu_30ever_h6_rep" in df.columns:
+    has_boo = "todu_30ever_h6_boo" in df.columns
+    has_rep = "todu_30ever_h6_rep" in df.columns
+    if has_boo:
+        df["todu_30ever_h6_boo"] = df["todu_30ever_h6_boo"] * factor
+    if has_rep:
         df["todu_30ever_h6_rep"] = df["todu_30ever_h6_rep"] * factor
 
-    # Recompute base = _boo + _rep
-    if "todu_30ever_h6_boo" in df.columns and "todu_30ever_h6_rep" in df.columns:
+    if has_boo and has_rep:
+        # Keep the total consistent with its (now-scaled) components.
         df["todu_30ever_h6"] = df["todu_30ever_h6_boo"] + df["todu_30ever_h6_rep"]
+    elif "todu_30ever_h6" in df.columns:
+        # No component split — scale the total risk numerator directly.
+        df["todu_30ever_h6"] = df["todu_30ever_h6"] * factor
 
     return df
 

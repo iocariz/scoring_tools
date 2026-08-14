@@ -596,18 +596,6 @@ def main(
 
         save_cutoff_summaries(cutoff_summaries, settings, output=output)
 
-        # Step 6b: Sensitivity analysis (optional, non-blocking, skipped in baseline mode)
-        if not settings.baseline_mode:
-            from src.pipeline.optimization import run_sensitivity_phase
-
-            run_sensitivity_phase(
-                data_summary_desagregado=data_summary_desagregado,
-                data_summary=data_summary,
-                settings=settings,
-                output=output,
-                fixed_cells=floor_fixed_cells,
-            )
-
         # Step 6c: Reject inference parameter optimization (optional, non-blocking, skipped in baseline mode)
         best_ri_params = None
         if not settings.baseline_mode:
@@ -693,6 +681,21 @@ def main(
                 save_cutoff_summaries(cutoff_summaries, settings, output=output)
             else:
                 logger.info(f"[{segment}] RI optimizer confirmed current params are optimal")
+
+        # Step 6e: Sensitivity analysis (optional, non-blocking, skipped in baseline mode).
+        # #55: runs AFTER the RI optimizer's re-optimization (6d) so it describes the
+        # FINAL surface + shipped base mask, not a pre-tuning policy that may have
+        # been superseded.
+        if not settings.baseline_mode:
+            from src.pipeline.optimization import run_sensitivity_phase
+
+            run_sensitivity_phase(
+                data_summary_desagregado=data_summary_desagregado,
+                data_summary=data_summary,
+                settings=settings,
+                output=output,
+                fixed_cells=floor_fixed_cells,
+            )
 
         # Step 7: Temporal trend analysis (non-blocking)
         try:
