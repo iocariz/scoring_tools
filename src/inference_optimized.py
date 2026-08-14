@@ -48,6 +48,16 @@ from src.utils import calculate_b2_ever_h6
 #: Loan-level default numerator — the binarized stratification target for CV.
 _STRATIFY_COL = "todu_30ever_h6"
 
+#: A final model whose predictions vary by less than this fraction of the target's
+#: own spread across the grid is treated as constant (no discriminatory power).
+_DEGENERATE_PRED_RANGE_FRAC = 1e-3
+
+
+class DegenerateModelError(ValueError):
+    """Raised when the selected risk model has no discriminatory power across the
+    score grid (constant / near-constant predictions) — a flat risk surface that
+    would make the downstream optimization meaningless."""
+
 
 def _stratify_labels(raw_data: pd.DataFrame, indicators: list[str], min_per_class: int) -> pd.Series | None:
     """Binary stratification labels binarized on the DEFAULT indicator.
@@ -374,6 +384,37 @@ def process_dataset(
             )
 
     return processed_data
+
+
+def _check_model_discriminates(
+    model, agg: pd.DataFrame, features: list, target_var: str, model_name: str, train_r2: float
+) -> None:
+    """Raise :class:`DegenerateModelError` if the model has no discriminatory power.
+
+    A risk model whose predictions are (near-)constant across the score grid gives
+    the MILP a FLAT risk surface — every cell has the same predicted risk, so
+    acceptance is driven only by production/exposure and the "optimization" is
+    meaningless. This used to ship silently (the pipeline merely logged
+    ``Train R²: 0.0000``). The classic cause is a tree booster forced to a single
+    leaf when a fixed ``min_child_weight`` / ``min_child_samples`` search range
+    exceeds the small bin count (also fixed at the source via dynamic leaf bounds
+    in ``optuna_tuning``). The check is model-agnostic — it catches zero-split
+    boosters and any other constant model.
+    """
+    if len(agg) < 2:
+        return
+    preds = np.asarray(model.predict(prepare_model_input(agg, features, model)), dtype=float)
+    pred_range = float(np.ptp(preds)) if preds.size else 0.0
+    target_range = float(np.ptp(agg[target_var]))
+    if pred_range < max(1e-9, _DEGENERATE_PRED_RANGE_FRAC * target_range):
+        raise DegenerateModelError(
+            f"Selected risk model '{model_name}' produces (near-)constant predictions across "
+            f"{len(agg)} score bins (prediction range {pred_range:.3e} vs target range {target_range:.3e}, "
+            f"train R²={train_r2:.2e}) — a flat risk surface with no discriminatory power, which makes the "
+            "downstream optimization meaningless. Likely causes: too few bins for the tuned tree leaf bounds, "
+            "or no bin-level signal in the data. Investigate the grid/data, or restrict the model family "
+            "(e.g. linear-only)."
+        )
 
 
 def compute_outlier_stats(processed_data: pd.DataFrame, target_var: str) -> tuple[float, float]:
@@ -1565,6 +1606,9 @@ def inference_pipeline(
     logger.info(f"Final model: {best_model_name} + {best_feature_info['feature_set_name']}")
     logger.info(f"  CV RMSE: {best_feature_info['cv_mean_rmse']:.4f} ± {best_feature_info['cv_std_rmse']:.4f}")
     logger.info(f"  Train R² (in-sample): {train_r2:.4f}")
+
+    # Hard gate against a no-discriminatory-power risk model (constant-model bug).
+    _check_model_discriminates(final_model, final_agg, final_features, target_var, best_model_name, train_r2)
 
     if hasattr(final_model, "coef_"):
         logger.debug("Model Coefficients:")

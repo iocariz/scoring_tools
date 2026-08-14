@@ -185,3 +185,43 @@ def test_val_fold_outlier_stats_come_from_train_fold(monkeypatch):
     assert passed_stats, "no val-fold call received train-derived outlier_stats (audit #32a leak)"
     # calls alternate train (None) / val (train stats): half of them carry stats
     assert len(passed_stats) == len(calls) // 2
+
+
+def test_tree_leaf_bounds_scale_to_small_grid():
+    """Constant-model bug: min_child_weight / min_child_samples must scale to the
+    bin count. On a 16-bin grid the search ceiling is 16 // 3 = 5, so no booster is
+    forced to a single leaf. The old fixed [10, 100] range required >= 10 bins per
+    leaf, collapsing every tree to a constant on small (e.g. pooled/retail) grids."""
+    rng = np.random.RandomState(0)
+    rows = []
+    for vx in range(1, 5):
+        for vy in range(1, 5):
+            for _ in range(25):  # 25 loans/bin over a 4x4 = 16-bin grid
+                pile = 100.0 + rng.rand() * 10
+                rows.append(
+                    {
+                        "var_x": vx,
+                        "var_y": vy,
+                        "todu_30ever_h6": (vx + vy) * 0.01 * pile + rng.rand(),  # real bin-level signal
+                        "todu_amt_pile_h6": pile,
+                        "status_name": "Booked",
+                    }
+                )
+    X = pd.DataFrame(rows)
+
+    _, models = tune_tree_models(
+        raw_data=X,
+        bins=None,
+        variables=["var_x", "var_y"],
+        indicators=["todu_30ever_h6", "todu_amt_pile_h6"],
+        target_var="b2_ever_h6",
+        multiplier=100.0,
+        z_threshold=3.0,
+        cv_folds=2,
+        n_trials=3,
+        random_state=0,
+    )
+
+    # leaf_hi = max(2, min(100, 16 // 3)) = 5 — both bounded well below the old 10.
+    assert 1 <= models["XGBoost (Optuna Tuned)"].get_params()["min_child_weight"] <= 5
+    assert 1 <= models["LightGBM (Optuna Tuned)"].get_params()["min_child_samples"] <= 5
