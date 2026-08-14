@@ -116,6 +116,7 @@ def run_inference_phase(
             model_base_path=output.model_base_path,
             create_visualizations=True,
             directions=settings.directions or None,
+            z_threshold=settings.z_threshold,
         )
 
         # Todu Average Inference

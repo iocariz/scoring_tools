@@ -232,6 +232,67 @@ class TestProcessDataset:
         assert "n_observations" in out.columns
         assert len(out) == 4  # 4 unique bin combinations
 
+    def test_winsorizes_extreme_target_bin_instead_of_dropping(self):
+        """#56: an extreme-risk bin is CLIPPED to the threshold boundary, not
+        removed — every observed bin keeps influencing the fit, and the high-risk
+        tail is retained (bounded) rather than dropped and extrapolated lower."""
+        # 10 well-behaved bins around risk 1.0 + one extreme high-risk bin.
+        rows = []
+        for i in range(10):
+            rows.append(
+                {
+                    "var0": i,
+                    "var1": 1,
+                    "todu_30ever_h6": 1.0,
+                    "todu_amt_pile_h6": 100.0,  # target = 100 * 1/100 = 1.0
+                    "oa_amt_h0": 100.0,
+                }
+            )
+        rows.append(
+            {"var0": 99, "var1": 1, "todu_30ever_h6": 50.0, "todu_amt_pile_h6": 100.0, "oa_amt_h0": 100.0}
+        )  # target = 50.0 (extreme)
+        df = pd.DataFrame(rows)
+
+        out = io.process_dataset(
+            df,
+            bins=(None, None),
+            variables=["var0", "var1"],
+            indicators=["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"],
+            target_var="target",
+            multiplier=100.0,
+            var_reg=[],
+            z_threshold=3.0,
+        )
+        assert len(out) == 11  # ALL bins retained (was 10 under the old drop)
+        extreme = out[out["var0"] == 99].iloc[0]["target"]
+        assert extreme < 50.0  # clipped down toward the boundary
+        assert extreme > 1.0  # but still the highest-risk cell (above the median)
+        assert extreme == out["target"].max()
+
+    def test_z_threshold_zero_disables_winsorization(self):
+        """z_threshold == 0 leaves the extreme target untouched."""
+        df = pd.DataFrame(
+            {
+                "var0": list(range(11)),
+                "var1": [1] * 11,
+                "todu_30ever_h6": [1.0] * 10 + [50.0],
+                "todu_amt_pile_h6": [100.0] * 11,
+                "oa_amt_h0": [100.0] * 11,
+            }
+        )
+        out = io.process_dataset(
+            df,
+            bins=(None, None),
+            variables=["var0", "var1"],
+            indicators=["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"],
+            target_var="target",
+            multiplier=100.0,
+            var_reg=[],
+            z_threshold=0,
+        )
+        assert len(out) == 11
+        assert out["target"].max() == pytest.approx(50.0)  # untouched
+
 
 class TestEvaluateHoldoutRmse:
     """Winner-only held-out RMSE report (audit #7)."""

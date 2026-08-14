@@ -106,6 +106,13 @@ def test_config_validation_valid():
     PreprocessingSettings(**{**_REQUIRED_FIELDS, "octroi_bins": [1.0, 2.0, 3.0], "efx_bins": [1.0, 2.0, 3.0]})
 
 
+def test_z_threshold_zero_allowed():
+    """#56: z_threshold=0 disables target winsorization and must be accepted
+    (the validator was gt=0, which rejected the disable value)."""
+    s = PreprocessingSettings(**{**_REQUIRED_FIELDS, "z_threshold": 0})
+    assert s.z_threshold == 0
+
+
 # =============================================================================
 # apply_binning_transformations Tests
 # =============================================================================
