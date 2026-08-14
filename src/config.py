@@ -338,7 +338,10 @@ class PreprocessingSettings(BaseModel):
     # them mis-scales the denominator; that's a guardrail signal, not a degree of freedom).
     multiplier: float = Field(default=7.0, gt=0)
     multiplier_h3: float = Field(default=4.0, gt=0)
-    z_threshold: float = Field(default=3.0, gt=0)
+    # Modified-z threshold for target-based outlier WINSORIZATION in the risk fit
+    # (#56: extreme-risk bins are clipped to the ±threshold boundary, not dropped).
+    # 0 disables it entirely; smaller = more aggressive clipping of the tail.
+    z_threshold: float = Field(default=3.0, ge=0)
     cv_folds: int = Field(default=4, ge=2, le=10)
     # Expert / default-off (audit #6). When True, a meaningful two-part HurdleRegressor is offered
     # as a model candidate, trained on PER-LOAN data (real zero mass in the default indicator) and

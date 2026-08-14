@@ -333,7 +333,15 @@ def process_dataset(
     # ---- 4. Filter missing targets ----
     processed_data = processed_data.dropna(subset=[target_var]).copy()
 
-    # ---- 5. Remove outlier bins by z-score on target variable ----
+    # ---- 5. Winsorize outlier bins by z-score on the target variable ----
+    # #56: the target-based outlier step used to DROP bins whose realized risk
+    # (the dependent variable) was extreme — overwhelmingly the high-risk tail on
+    # right-skewed credit-risk data. Dropping them let the smooth fitted surface
+    # extrapolate LOWER risk into exactly the cells where the accept/reject cutoff
+    # is most sensitive (anti-conservative). Winsorize instead: clip an extreme
+    # bin's target to the ±z_threshold boundary so EVERY observed bin keeps
+    # influencing the fit, while a single corrupt bin is still bounded. Set
+    # z_threshold == 0 to disable entirely.
     if z_threshold > 0 and len(processed_data) > 2:
         target_vals = processed_data[target_var]
 
@@ -348,16 +356,21 @@ def process_dataset(
                 target_mad = np.mean(np.abs(target_vals - target_median))
 
         if target_mad > 0:
-            z_scores = 0.6745 * np.abs(target_vals - target_median) / target_mad
-            outlier_mask = z_scores >= z_threshold
-            n_outliers = outlier_mask.sum()
-            if n_outliers > 0:
-                logger.debug(f"process_dataset: removed {n_outliers} outlier bins (z >= {z_threshold})")
-                processed_data = processed_data[~outlier_mask].copy()
+            # |z| >= z_threshold  <=>  |target - median| >= z_threshold * MAD / 0.6745
+            bound = z_threshold * target_mad / 0.6745
+            lower, upper = target_median - bound, target_median + bound
+            n_clipped = int(((target_vals < lower) | (target_vals > upper)).sum())
+            if n_clipped > 0:
+                logger.debug(
+                    f"process_dataset: winsorized {n_clipped} outlier bin(s) to "
+                    f"[{lower:.4f}, {upper:.4f}] (|z| >= {z_threshold}); all bins retained."
+                )
+                processed_data = processed_data.copy()
+                processed_data[target_var] = target_vals.clip(lower, upper)
         else:
             logger.debug(
                 f"process_dataset: target MAD=0 (all {len(target_vals)} bins have identical target); "
-                f"skipping outlier removal"
+                f"skipping outlier winsorization"
             )
 
     return processed_data
@@ -1422,6 +1435,7 @@ def inference_pipeline(
     model_base_path: str = "models",
     create_visualizations: bool = True,
     directions: dict[str, int] | None = None,
+    z_threshold: float = DEFAULT_Z_THRESHOLD,
 ):
     """
     Two-step inference pipeline using cross-validation throughout.
@@ -1483,7 +1497,7 @@ def inference_pipeline(
 
     # Global aggregation happens purely at the final stage for training/saving
     final_agg = process_dataset(
-        all_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold=DEFAULT_Z_THRESHOLD
+        all_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold=z_threshold
     )
     weights_all = _get_regression_weights(final_agg)
     # Zero mass for the hurdle (#6): measured PER-LOAN on the default-amount numerator, where real
@@ -1521,7 +1535,7 @@ def inference_pipeline(
         variables=variables,
         indicators=indicators,
         multiplier=multiplier,
-        z_threshold=DEFAULT_Z_THRESHOLD,
+        z_threshold=z_threshold,
         var_reg=var_reg,
         feature_sets=feature_sets,
         target_var=target_var,
@@ -1677,7 +1691,7 @@ def inference_pipeline(
             indicators=indicators,
             target_var=target_var,
             multiplier=multiplier,
-            z_threshold=DEFAULT_Z_THRESHOLD,
+            z_threshold=z_threshold,
             final_features=final_features,
             model_template=best_model_type["model_template"],
             cv_folds=cv_folds,
