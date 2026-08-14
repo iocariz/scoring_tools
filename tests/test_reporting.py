@@ -21,6 +21,7 @@ from src.reporting import (
     _build_portfolio_summary_sections,
     _build_scenario_kpi_table,
     _detect_variable_cols,
+    _portfolio_group_list,
     _read_cutoff_data,
     build_consolidated_report,
     build_segment_report,
@@ -941,3 +942,31 @@ class TestBuildPortfolioSummarySections:
         assert "badge-pessimistic" in all_html
         assert "badge-base" in all_html
         assert "badge-optimistic" in all_html
+
+
+class TestPortfolioGroupList:
+    """#45: standalone segments must appear alongside supersegments, not vanish."""
+
+    def test_standalone_segments_listed_alongside_supersegments(self):
+        # A reporting supersegment (+ its member detail row) AND a standalone
+        # segment outside every supersegment, plus TOTAL.
+        df = pd.DataFrame(
+            {
+                "group": [
+                    "supersegment_ecom",
+                    "ecom/known",  # member detail row
+                    "segment_standalone_pl",  # standalone — must not be dropped
+                    "TOTAL",
+                ]
+            }
+        )
+        groups = _portfolio_group_list(df)
+        names = [g for g, _ in groups]
+        assert "supersegment_ecom" in names
+        assert "segment_standalone_pl" in names  # was dropped when any supersegment existed
+        assert names[-1] == "TOTAL"  # TOTAL stays last
+
+    def test_no_supersegments_lists_all_standalone(self):
+        df = pd.DataFrame({"group": ["segment_a", "segment_b", "TOTAL"]})
+        names = [g for g, _ in _portfolio_group_list(df)]
+        assert names == ["segment_a", "segment_b", "TOTAL"]

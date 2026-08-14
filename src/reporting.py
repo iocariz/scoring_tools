@@ -804,13 +804,15 @@ def _portfolio_group_list(period_df: pd.DataFrame) -> list[tuple[str, str]]:
     supersegment_names = sorted(g[len("supersegment_") :] for g in all_groups if g.startswith("supersegment_"))
 
     group_list: list[tuple[str, str]] = []
-    if supersegment_names:
-        for ss in supersegment_names:
-            group_list.append((f"supersegment_{ss}", ss))
-    else:
-        for g in sorted(all_groups):
-            if g != "TOTAL":
-                group_list.append((g, g.replace("segment_", "")))
+    for ss in supersegment_names:
+        group_list.append((f"supersegment_{ss}", ss))
+    # #45: standalone segments (outside every reporting supersegment) are named
+    # "segment_<name>". They must ALWAYS be listed — the old code emitted them
+    # only when NO supersegment existed, so when any supersegment was present the
+    # standalones vanished from the portfolio sections while remaining in TOTAL,
+    # and the sections stopped reconciling to TOTAL.
+    for g in sorted(g for g in all_groups if g.startswith("segment_")):
+        group_list.append((g, g.replace("segment_", "")))
     if "TOTAL" in all_groups:
         group_list.append(("TOTAL", "Total"))
     return group_list

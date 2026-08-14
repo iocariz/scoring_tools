@@ -394,7 +394,10 @@ def main(argv: list[str] | None = None) -> int:
     with open(args.config, "rb") as f:
         base_cfg = tomllib.load(f).get("preprocessing", {})
     data_path = base_cfg.get("data_path", "data/demanda_direct_out.sas7bdat")
-    full_data = load_and_standardize_data(data_path)
+    # #64: honour the configured SAS encoding so the champion is scored on data
+    # decoded the same way as the run that froze it (a different encoding decodes
+    # statuses/segment codes differently → a different population).
+    full_data = load_and_standardize_data(data_path, encoding=base_cfg.get("sas_encoding", "latin-1"))
     if full_data is None:
         logger.error(f"Could not load/standardize data from {data_path}")
         return 1
