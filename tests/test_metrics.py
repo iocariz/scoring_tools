@@ -269,6 +269,58 @@ class TestCalculatePsiMetrics:
         assert isinstance(result, pd.DataFrame)
         assert "PSI" in result.columns  # no exception raised
 
+    def test_empty_window_returns_nan_not_crash(self):
+        """An empty reference/actual window (after the date filter) used to divide by zero.
+        Now it returns a single-row NaN PSI instead of inf/NaN percentages or a crash."""
+        data = self._make_data(
+            [500] * 50, [500] * 50, [pd.Timestamp("2023-01-15")] * 50, [pd.Timestamp("2023-06-15")] * 50
+        )
+        result = calculate_psi_by_period(
+            data,
+            date_column="date",
+            score_column="score",
+            start_date_ref=pd.Timestamp("2023-01-01"),
+            end_date_ref=pd.Timestamp("2023-02-01"),
+            # Actual window matches no rows -> empty actual.
+            start_date_act=pd.Timestamp("2024-06-01"),
+            end_date_act=pd.Timestamp("2024-07-01"),
+            buckets=5,
+            show_plots=False,
+        )
+        assert np.isnan(result["PSI"]).all()
+
+    def test_nan_scores_do_not_deflate_psi(self):
+        """NaN scores are dropped from both windows before counting, so bucket percentages
+        still sum to 1 (denominator = non-NaN count). Injecting NaNs into an otherwise
+        shifted actual must not push PSI toward 0 via a deflated denominator."""
+        np.random.seed(7)
+        ref_scores = np.random.normal(500, 100, 200)
+        act_scores = np.random.normal(560, 100, 200)  # a real shift
+        act_with_nan = np.concatenate([act_scores, [np.nan] * 200])  # half the actual is NaN
+        clean = self._make_data(
+            ref_scores, act_scores, [pd.Timestamp("2023-01-15")] * 200, [pd.Timestamp("2023-06-15")] * 200
+        )
+        noisy = self._make_data(
+            ref_scores, act_with_nan, [pd.Timestamp("2023-01-15")] * 200, [pd.Timestamp("2023-06-15")] * 400
+        )
+        kw = dict(
+            date_column="date",
+            score_column="score",
+            start_date_ref=pd.Timestamp("2023-01-01"),
+            end_date_ref=pd.Timestamp("2023-02-01"),
+            start_date_act=pd.Timestamp("2023-06-01"),
+            end_date_act=pd.Timestamp("2023-07-01"),
+            buckets=10,
+            show_plots=False,
+        )
+        psi_clean = calculate_psi_by_period(clean, **kw)["PSI"].sum()
+        psi_noisy = calculate_psi_by_period(noisy, **kw)["PSI"].sum()
+        # Same non-NaN distribution -> essentially the same PSI (NaNs were dropped, not deflating).
+        assert psi_noisy == pytest.approx(psi_clean, rel=1e-9)
+        # Percentages sum to 1 on the non-NaN denominator.
+        res = calculate_psi_by_period(noisy, **kw)
+        assert res["Actual Percent"].sum() == pytest.approx(1.0)
+
 
 # =============================================================================
 # calc_iv Tests

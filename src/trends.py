@@ -21,6 +21,7 @@ def compute_monthly_metrics(
     data: pd.DataFrame,
     date_column: str = "mis_date",
     segment_filter: str | None = None,
+    maturity_months: int | None = None,
 ) -> pd.DataFrame:
     """
     Compute monthly aggregated metrics from raw data.
@@ -29,6 +30,13 @@ def compute_monthly_metrics(
         data: DataFrame with at least date_column, status_name, and production columns.
         date_column: Name of the date column.
         segment_filter: Optional segment value to filter on (uses segment_cut_off column).
+        maturity_months: If set, blank (NaN) ``risk_rate`` for booking months too recent to
+            have a realized H6 — i.e. within ``maturity_months`` of the latest observed month.
+            Those months carry an incomplete numerator (few loans have reached H6 yet), so their
+            risk droops spuriously; blanking avoids a misleading falling tail. The reference is
+            ``max(year_month)`` in the (filtered) data — the same latest-observation proxy the MR
+            maturity filter uses. Production/approval are H0 (mature immediately) and untouched.
+            ``None`` (default) leaves every month populated — backward-compatible.
 
     Returns:
         DataFrame indexed by month with aggregated metrics.
@@ -78,6 +86,17 @@ def compute_monthly_metrics(
         result["risk_rate"] = calculate_b2_ever_h6(
             risk_agg[Columns.TODU_30EVER_H6], risk_agg[Columns.TODU_AMT_PILE_H6], as_percentage=True
         )
+        # Blank H6-immature months: their outcome window hasn't closed, so risk_rate is
+        # spuriously low (an artefactual falling tail). result is still month-indexed here.
+        if maturity_months and len(result.index) > 0:
+            latest = result.index.max()
+            immature = [m for m in result.index if (latest - m).n < maturity_months]
+            if immature:
+                result.loc[immature, "risk_rate"] = np.nan
+                logger.info(
+                    f"Trend risk_rate blanked for {len(immature)} H6-immature month(s) "
+                    f"(< {maturity_months}mo before {latest})"
+                )
 
     # Score metrics from booked records
     for score_col in ["sc_octroi", "new_efx", "risk_score_rf"]:

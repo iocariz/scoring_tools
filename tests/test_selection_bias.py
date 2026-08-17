@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from src.selection_bias import (
+    _nearest_decile_rate,
     compute_acceptance_gini_correlation,
     compute_bad_rate_by_decile,
     compute_booked_vs_rejected_discriminance,
@@ -438,6 +439,41 @@ class TestRiGini:
         result = compute_ri_gini(df, "score_rf", "early_bad", score_negate=True)
         assert "note" in result and result["note"]
         assert "circular" in result["note"].lower()
+
+    def test_nearest_decile_rate_inherits_and_breaks_ties_conservatively(self):
+        # Covered deciles 2 and 5. Uncovered deciles inherit the nearest covered rate.
+        bin_rates = {2: 0.10, 5: 0.50}
+        assert _nearest_decile_rate(bin_rates, 5) == 0.50  # covered -> itself
+        assert _nearest_decile_rate(bin_rates, 1) == 0.10  # nearest is 2
+        assert _nearest_decile_rate(bin_rates, 6) == 0.50  # nearest is 5
+        # Equidistant (3 is 1 away from 2, 4 is 1 away from 5): tie breaks toward the HIGHER rate.
+        eq = {2: 0.10, 4: 0.90}
+        assert _nearest_decile_rate(eq, 3) == 0.90  # dist 1 both ways -> conservative (higher)
+
+    def test_fully_rejected_riskiest_band_is_not_imputed_all_good(self):
+        # A demand frame where the riskiest low-score band is FULLY rejected (no booked loans),
+        # so its decile has no observed bad rate. The old code left those imputed as 0 (all good);
+        # now they inherit the nearest covered (high) rate, so the RI Gini stays meaningfully high.
+        rng = np.random.RandomState(0)
+        n = 4000
+        scores = rng.normal(500, 100, n)
+        # Fully reject everything below the 20th percentile (the riskiest tail); accept the rest.
+        cut = np.percentile(scores, 20)
+        is_booked = scores >= cut
+        default_prob = 1 / (1 + np.exp((scores - 400) / 50))
+        early_bad = np.where(is_booked, rng.binomial(1, default_prob), np.nan)
+        df = pd.DataFrame(
+            {
+                "score_rf": scores,
+                "status_name": np.where(is_booked, "booked", "rejected"),
+                "early_bad": early_bad.astype(float),
+            }
+        )
+        result = compute_ri_gini(df, "score_rf", "early_bad", score_negate=True, n_bins=10)
+        assert result  # non-empty
+        # If the fully-rejected riskiest band were imputed all-good, the full-population Gini
+        # would be depressed; inheriting the nearest high rate keeps it clearly positive.
+        assert result["ri_gini_mean"] > 0.05
 
 
 # ---------------------------------------------------------------------------
