@@ -110,6 +110,7 @@ def csv_to_html_table(
         df = df.drop(columns=[c for c in exclude_cols if c in df.columns])
 
     if len(df) > max_rows:
+        logger.warning(f"CSV table truncated for display: showing {max_rows} of {len(df)} rows.")
         df = df.head(max_rows)
 
     # Apply float formatting
@@ -177,6 +178,11 @@ def _build_cutoff_reference_table(csv_path: str | Path, max_rows: int = 200) -> 
         return _build_cutoff_reference_grids(df, bin_cols, ci_pairs)
 
     if len(df) > max_rows:
+        logger.warning(
+            f"Cutoff reference table truncated: showing {max_rows} of {len(df)} rows "
+            f"({len(df) - max_rows} dropped). Display cap on the N>=3-var listing, not a "
+            f"change to the optimization."
+        )
         df = df.head(max_rows)
 
     # Build display column order: bin cols, then KPIs
@@ -538,20 +544,23 @@ def _build_acceptance_strip_1d(df: pd.DataFrame, var_col: str) -> str:
         bins = seg_sorted[var_col].values
         accepted = seg_sorted["accepted"].values
 
-        n_accepted = int(accepted.sum())
-        n_total = len(accepted)
+        # Three-state: NaN = unobserved (phantom) cell — neither accepted nor rejected.
+        # pandas .sum() skips NaN (raw ndarray .sum() returned NaN → int(NaN) CRASHED) and the
+        # rate is over OBSERVED cells only (counting N/A in the denominator understated it).
+        acc_series = pd.Series(accepted)
+        n_accepted = int(acc_series.sum())
+        n_observed = int(acc_series.notna().sum())
+        pct = 100 * n_accepted / n_observed if n_observed > 0 else 0.0
 
         # Summary line
-        parts.append(
-            f'<div class="strip-summary">{n_accepted}/{n_total} bins accepted ({100 * n_accepted / n_total:.0f}%)</div>'
-        )
+        parts.append(f'<div class="strip-summary">{n_accepted}/{n_observed} bins accepted ({pct:.0f}%)</div>')
 
         # Horizontal strip
         parts.append('<div class="acceptance-strip">')
         parts.append(f'<div class="strip-label">{var_col}</div>')
         parts.append('<div class="strip-cells">')
         for bv, acc in zip(bins, accepted):
-            cls = "m-ok" if acc == 1 else "m-no"
+            cls = "m-na" if pd.isna(acc) else ("m-ok" if acc == 1 else "m-no")
             label = int(bv) if isinstance(bv, float) and bv == int(bv) else bv
             parts.append(f'<div class="strip-cell {cls}"><span class="strip-bin">{label}</span></div>')
         parts.append("</div></div>")

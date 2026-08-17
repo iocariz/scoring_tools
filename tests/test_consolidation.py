@@ -158,6 +158,28 @@ class TestMapScenarioNames:
 
         assert mapping["_1.0"] == "base"
 
+    def test_four_or_more_middles_warn_on_collapse(self, caplog):
+        """>3 legacy numeric scenarios: extremes map to pessimistic/optimistic and every
+        middle collapses to 'base' (they overwrite each other). This must be WARNED, not silent."""
+        import logging
+
+        from src import consolidation
+
+        suffixes = ["_0.8", "_1.0", "_1.2", "_1.4"]  # two middles both -> base
+        # loguru -> caplog bridge for this call
+        handler_id = consolidation.logger.add(caplog.handler, format="{message}", level="WARNING")
+        try:
+            with caplog.at_level(logging.WARNING):
+                mapping = map_scenario_names(suffixes)
+        finally:
+            consolidation.logger.remove(handler_id)
+
+        assert mapping["_0.8"] == "pessimistic"
+        assert mapping["_1.4"] == "optimistic"
+        assert mapping["_1.0"] == "base"
+        assert mapping["_1.2"] == "base"  # both middles collapse
+        assert any("collapse" in rec.message for rec in caplog.records), "expected a collapse warning"
+
 
 # =============================================================================
 # Metrics Extraction Tests

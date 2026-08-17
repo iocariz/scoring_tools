@@ -427,6 +427,15 @@ def map_scenario_names(scenario_suffixes: list[str]) -> dict[str, str]:
                 mapping[numeric_suffixes[-1][0]] = "optimistic"
                 for suffix, _val in numeric_suffixes[1:-1]:
                     mapping[suffix] = "base"
+                if len(numeric_suffixes) > 3:
+                    # >1 middle scenario all collapse to the single "base" key → all but the
+                    # last silently overwrite each other. Surface it (legacy numeric format only;
+                    # the named-scenario format doesn't hit this).
+                    middles = [s for s, _ in numeric_suffixes[1:-1]]
+                    logger.warning(
+                        f"{len(middles)} legacy middle scenarios ({middles}) all map to 'base' and "
+                        f"will collapse to one; only the last is kept. Use named scenarios to keep all."
+                    )
 
     return mapping
 
@@ -3038,12 +3047,15 @@ def _write_acceptance_strip_1d(ws, cutoff_df, seg_name, start_row, scenario="bas
     bins = scen_sorted[var_col].values
     accepted = scen_sorted["accepted"].values
     n_accepted = int(np.nansum(accepted))  # NaN = unobserved cell, not accepted
-    n_total = len(accepted)
+    # Rate over OBSERVED cells only — an N/A (phantom) cell is neither accepted nor rejected,
+    # so counting it in the denominator understated the acceptance rate.
+    n_observed = int((~pd.isna(accepted)).sum())
+    pct = 100 * n_accepted / n_observed if n_observed > 0 else 0.0
 
     # Section header
     ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=max(len(bins) + 1, 12))
     lbl = ws.cell(row=start_row, column=1)
-    lbl.value = f"  {seg_name}  |  {scenario.title()}  —  {n_accepted}/{n_total} bins accepted ({100 * n_accepted / n_total:.0f}%)"
+    lbl.value = f"  {seg_name}  |  {scenario.title()}  —  {n_accepted}/{n_observed} bins accepted ({pct:.0f}%)"
     lbl.font = _FONT_SECTION
     lbl.fill = _FILL_SECTION
     lbl.alignment = _ALIGN_LEFT
