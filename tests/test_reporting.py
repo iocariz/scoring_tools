@@ -15,6 +15,7 @@ from src.reporting import (
     ReportContext,
     ReportSection,
     _build_acceptance_matrices,
+    _build_acceptance_strip_1d,
     _build_cutoff_comparison_section,
     _build_cutoff_reference_table,
     _build_portfolio_metric_table,
@@ -710,6 +711,37 @@ class TestBuildAcceptanceMatrices:
         html = _build_acceptance_matrices(df, ["octroi_bin", "efx_bin"])
         assert html is not None
         assert "m-ok" in html or "m-no" in html
+
+
+class TestBuildAcceptanceStrip1D:
+    def test_three_state_no_crash_and_observed_denominator(self):
+        # A 1D strip with an unobserved (NaN) cell: must NOT crash (raw .sum() -> int(NaN)),
+        # render the NaN cell as m-na, and compute the rate over OBSERVED cells only.
+        df = pd.DataFrame(
+            {
+                "segment": ["seg_a"] * 4,
+                "octroi_bin": [0, 1, 2, 3],
+                # 2 accepted, 1 rejected, 1 unobserved -> 2/3 observed accepted = 67%
+                "accepted": [1.0, 1.0, 0.0, float("nan")],
+            }
+        )
+        html = _build_acceptance_strip_1d(df, "octroi_bin")
+        assert html is not None
+        assert "m-na" in html  # the NaN cell rendered as the three-state neutral class
+        assert "m-ok" in html and "m-no" in html
+        assert "2/3 bins accepted (67%)" in html  # denominator excludes the N/A cell
+
+    def test_all_observed_denominator_matches_total(self):
+        df = pd.DataFrame(
+            {
+                "segment": ["seg_a"] * 3,
+                "octroi_bin": [0, 1, 2],
+                "accepted": [1.0, 0.0, 1.0],
+            }
+        )
+        html = _build_acceptance_strip_1d(df, "octroi_bin")
+        assert "2/3 bins accepted (67%)" in html
+        assert "m-na" not in html
 
 
 # =============================================================================
