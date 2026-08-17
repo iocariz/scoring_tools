@@ -180,6 +180,48 @@ def cleanup_stale_scenarios(
     return stale
 
 
+def _resolve_resimulation_model_path(output: OutputPaths, config_path: str, segment: str = "") -> str | None:
+    """Find the model directory to reuse for resimulation.
+
+    Order: the segment's OWN model dir, else THIS segment's modelling supersegment
+    (`output/_supersegment_<ms>/models/`, resolved from the segment config — #40),
+    else, as a loud last resort, any `_supersegment_*` model. The last resort was
+    the only prior behaviour, and a bare lexicographic glob over ALL supersegments
+    picks the wrong model the moment a second modelling supersegment exists.
+    Returns the model-dir path, or ``None`` when nothing is found.
+    """
+    import tomllib
+
+    from src.utils import resolve_modelling_supersegment
+
+    output_root = output.base_dir.parent
+    model_dirs = sorted(Path(output.models_dir).glob("model_*"), reverse=True)
+    if model_dirs:
+        return str(model_dirs[0])
+
+    try:
+        raw = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
+        seg_cfg = raw.get("preprocessing", raw)
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        seg_cfg = {}
+    modelling_ss = resolve_modelling_supersegment(seg_cfg)
+
+    if modelling_ss:
+        ss_dirs = sorted((output_root / f"_supersegment_{modelling_ss}" / "models").glob("model_*"), reverse=True)
+        if ss_dirs:
+            logger.info(f"[{segment}] Resimulation: using modelling supersegment '{modelling_ss}' model.")
+            return str(ss_dirs[0])
+
+    fallback = sorted(output_root.glob("_supersegment_*/models/model_*"), reverse=True)
+    if fallback:
+        logger.warning(
+            f"[{segment}] Resimulation: no model for modelling_supersegment '{modelling_ss or '(none)'}'; "
+            f"falling back to {fallback[0]} — verify it is the intended model."
+        )
+        return str(fallback[0])
+    return None
+
+
 def run_resimulation(
     config_path: str,
     resimulate_risk: list[float],
@@ -265,17 +307,9 @@ def run_resimulation(
 
     values_per_var = {var: sorted(data_summary_desagregado[var].unique()) for var in settings.variables}
 
-    # 6. Load model (fast — just loads from disk)
-    # Search: segment models dir first, then supersegment dirs
-    model_dirs = sorted(Path(output.models_dir).glob("model_*"), reverse=True)
-    if not model_dirs:
-        # Search supersegment model directories (e.g., output/_supersegment_total/models/model_*)
-        output_root = output.base_dir.parent
-        for ss_dir in sorted(output_root.glob("_supersegment_*/models/model_*"), reverse=True):
-            model_dirs.append(ss_dir)
-    if model_dirs:
-        model_path = str(model_dirs[0])
-    else:
+    # 6. Load model (fast — just loads from disk).
+    model_path = _resolve_resimulation_model_path(output, config_path, segment)
+    if model_path is None:
         # #48: raise (do not return) — see the missing-artifacts branch above.
         raise ResimulationError(f"[{segment}] No model directory found in {output.models_dir} or supersegment dirs")
     risk_inference, reg_todu_amt_pile = run_inference_phase(data_clean, settings, model_path, output=output)
