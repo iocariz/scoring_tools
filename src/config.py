@@ -609,8 +609,11 @@ class PreprocessingSettings(BaseModel):
                 raise ValueError(
                     f"Invalid MR period: start date ({start_mr.date()}) is after end date ({end_mr.date()})"
                 )
-            # Warn if main and MR periods overlap (data leakage risk)
-            if start_mr < end:
+            # Warn if main and MR periods overlap (data leakage risk). Use <= because the
+            # pipeline date filters are INCLUSIVE on both ends: start_mr == end means the
+            # shared boundary day is counted in BOTH periods (a one-day leak), which the old
+            # strict `<` let through unwarned.
+            if start_mr <= end:
                 import warnings
 
                 warnings.warn(

@@ -274,6 +274,29 @@ class TestOptimizeDtypes:
         # String columns should not be converted to numeric
         assert not pd.api.types.is_numeric_dtype(result["a"])
 
+    def test_value_above_uint32_kept_int64_no_wrap(self):
+        """A positive value beyond uint32 max must stay int64 — casting to uint32
+        would silently WRAP it (e.g. a euro-cent sum > 4.29e9)."""
+        big = 5_000_000_000  # > 4_294_967_295
+        df = pd.DataFrame({"a": pd.array([1, big], dtype="int64")})
+        result = optimize_dtypes(df)
+        assert result["a"].dtype == np.int64
+        assert result["a"].iloc[1] == big  # value preserved, not wrapped
+
+    def test_value_below_int32_kept_int64_no_overflow(self):
+        """A negative value beyond int32 range must stay int64 (no overflow)."""
+        very_negative = -5_000_000_000  # < -2_147_483_648
+        df = pd.DataFrame({"a": pd.array([very_negative, 0, 10], dtype="int64")})
+        result = optimize_dtypes(df)
+        assert result["a"].dtype == np.int64
+        assert result["a"].iloc[0] == very_negative
+
+    def test_uint32_boundary_still_downcasts(self):
+        """Exactly uint32 max still fits — must downcast to uint32 (regression guard)."""
+        df = pd.DataFrame({"a": pd.array([0, 4_294_967_295], dtype="int64")})
+        result = optimize_dtypes(df)
+        assert result["a"].dtype == np.uint32
+
 
 # =============================================================================
 # get_data_information Tests
