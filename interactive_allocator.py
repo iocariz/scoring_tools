@@ -186,6 +186,15 @@ app.layout = dbc.Container(
                                                 {"name": "Max Risk", "id": "max_risk", "type": "numeric"},
                                                 {"name": "Min Production", "id": "min_production", "type": "numeric"},
                                                 {"name": "Locked", "id": "locked", "presentation": "dropdown"},
+                                                # #50: filled in after each run with the segment's chosen
+                                                # frontier point; a "Locked = Yes" segment is then pinned to
+                                                # it on the next run. Read-only (the allocator sets it).
+                                                {
+                                                    "name": "Locked → sol_fac",
+                                                    "id": "locked_sol_fac",
+                                                    "type": "numeric",
+                                                    "editable": False,
+                                                },
                                             ],
                                             data=[],
                                             editable=True,
@@ -301,6 +310,7 @@ def populate_constraints_table(scenario):
                 "max_risk": cfg.get("max_risk"),
                 "min_production": None,
                 "locked": "No",
+                "locked_sol_fac": None,  # #50: populated after the first run
             }
         )
 
@@ -308,9 +318,54 @@ def populate_constraints_table(scenario):
     return rows
 
 
+def _build_segment_constraints(table_data: list[dict] | None) -> dict[str, SegmentConstraints]:
+    """Build per-segment :class:`SegmentConstraints` from the editable constraints table.
+
+    #50: a row locks its segment to a specific frontier point only when
+    ``locked == "Yes"`` AND ``locked_sol_fac`` is present (written back by a prior
+    run via :func:`_apply_allocation_to_table`).
+    """
+    constraints: dict[str, SegmentConstraints] = {}
+    for row in table_data or []:
+        seg = row.get("segment")
+        if not seg:
+            continue
+        sc = SegmentConstraints(
+            min_risk=row.get("min_risk") if row.get("min_risk") not in (None, "") else None,
+            max_risk=row.get("max_risk") if row.get("max_risk") not in (None, "") else None,
+            min_production=row.get("min_production") if row.get("min_production") not in (None, "") else None,
+        )
+        if row.get("locked") == "Yes" and row.get("locked_sol_fac") not in (None, ""):
+            sc.locked_sol_fac = int(row["locked_sol_fac"])
+        if (
+            sc.min_risk is not None
+            or sc.max_risk is not None
+            or sc.min_production is not None
+            or sc.locked_sol_fac is not None
+        ):
+            constraints[seg] = sc
+    return constraints
+
+
+def _apply_allocation_to_table(table_data: list[dict] | None, allocations: dict[str, int]) -> list[dict]:
+    """Write each segment's chosen ``sol_fac`` back into the constraints-table rows,
+    preserving the user's other edits, so a ``Locked = Yes`` segment is pinned to
+    it on the next run (#50)."""
+    updated = [dict(r) for r in (table_data or [])]
+    for r in updated:
+        sf = allocations.get(r.get("segment"))
+        if sf is not None:
+            r["locked_sol_fac"] = int(sf)
+    return updated
+
+
 @app.callback(
     Output("results-output", "children"),
     Output("results-csv-store", "data"),
+    # #50: write each segment's chosen sol_fac back into the constraints table so a
+    # "Locked = Yes" segment can be pinned to it on the next run. allow_duplicate
+    # because populate_constraints_table also targets this data.
+    Output("constraints-table", "data", allow_duplicate=True),
     Input("run-button", "n_clicks"),
     State("risk-target-input", "value"),
     State("method-input", "value"),
@@ -321,13 +376,17 @@ def populate_constraints_table(scenario):
 )
 def run_optimization(n_clicks, target, method, scenario, table_data, global_prod_floor):
     if n_clicks == 0:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
 
     if target is None:
-        return dbc.Alert("Global Risk Target must be set.", color="danger"), dash.no_update
+        return dbc.Alert("Global Risk Target must be set.", color="danger"), dash.no_update, dash.no_update
 
     if scenario is None:
-        return dbc.Alert("No scenario selected. Run the pipeline first.", color="danger"), dash.no_update
+        return (
+            dbc.Alert("No scenario selected. Run the pipeline first.", color="danger"),
+            dash.no_update,
+            dash.no_update,
+        )
 
     allocator = GlobalAllocator()
     output_base = Path("output")
@@ -336,6 +395,7 @@ def run_optimization(n_clicks, target, method, scenario, table_data, global_prod
     if not output_base.exists():
         return (
             dbc.Alert("Output directory 'output/' does not exist. Run run_batch.py first.", color="danger"),
+            dash.no_update,
             dash.no_update,
         )
 
@@ -350,42 +410,25 @@ def run_optimization(n_clicks, target, method, scenario, table_data, global_prod
                     logger.info(f"Loaded frontier for {segment_dir.name}")
                 except Exception as e:
                     logger.error(f"Failed to load {frontier_path}: {e}")
-                    return dbc.Alert(f"Failed to load {frontier_path}: {e}", color="danger"), dash.no_update
+                    return (
+                        dbc.Alert(f"Failed to load {frontier_path}: {e}", color="danger"),
+                        dash.no_update,
+                        dash.no_update,
+                    )
 
     if not segments_found:
         logger.warning(f"No efficient frontiers found for scenario '{scenario}'")
         return (
             dbc.Alert(f"No efficient frontiers found for scenario '{scenario}' in output/*/", color="danger"),
             dash.no_update,
+            dash.no_update,
         )
 
-    # Build SegmentConstraints from table data
-    constraints = {}
-    if table_data:
-        for row in table_data:
-            seg = row.get("segment")
-            if not seg:
-                continue
-            sc = SegmentConstraints(
-                min_risk=row.get("min_risk") if row.get("min_risk") not in (None, "") else None,
-                max_risk=row.get("max_risk") if row.get("max_risk") not in (None, "") else None,
-                min_production=row.get("min_production") if row.get("min_production") not in (None, "") else None,
-            )
-            # Handle locking: if locked, use the current allocation's sol_fac (set after first run)
-            # For now, locked=Yes without a prior result means no lock
-            if row.get("locked") == "Yes" and row.get("locked_sol_fac") is not None:
-                sc.locked_sol_fac = int(row["locked_sol_fac"])
-            # Only add constraint if it has any non-None value
-            if (
-                sc.min_risk is not None
-                or sc.max_risk is not None
-                or sc.min_production is not None
-                or sc.locked_sol_fac is not None
-            ):
-                constraints[seg] = sc
-
-        if constraints:
-            logger.info(f"Segment constraints loaded for: {list(constraints.keys())}")
+    # Build SegmentConstraints from table data (locking applied when a prior run
+    # has written back locked_sol_fac — #50).
+    constraints = _build_segment_constraints(table_data)
+    if constraints:
+        logger.info(f"Segment constraints loaded for: {list(constraints.keys())}")
 
     global_production_floor = global_prod_floor if global_prod_floor not in (None, "") else None
 
@@ -537,11 +580,21 @@ def run_optimization(n_clicks, target, method, scenario, table_data, global_prod
 
         results_layout = html.Div(results_children)
 
-        return results_layout, csv_string
+        # #50: write each segment's chosen sol_fac back into the constraints table
+        # so a "Locked = Yes" segment is pinned to it on the next run.
+        updated_constraints = (
+            _apply_allocation_to_table(table_data, result.allocations) if table_data else dash.no_update
+        )
+
+        return results_layout, csv_string, updated_constraints
 
     except Exception as e:
         logger.error(f"Optimization failed: {e}")
-        return dbc.Alert(f"An unexpected error occurred during optimization: {e}", color="danger"), dash.no_update
+        return (
+            dbc.Alert(f"An unexpected error occurred during optimization: {e}", color="danger"),
+            dash.no_update,
+            dash.no_update,
+        )
 
 
 @app.callback(
