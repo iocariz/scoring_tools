@@ -76,6 +76,23 @@ def combined_score_cv(X: pd.DataFrame, y, n_splits: int = 5, random_state: int =
     return out
 
 
+def _warn_if_many_bootstrap_skips(n_kept: int, n_iterations: int, label: str) -> None:
+    """Surface how many bootstrap resamples were single-class and dropped.
+
+    A CI computed on far fewer than ``n_iterations`` resamples (tiny / heavily
+    imbalanced population) is unreliable — silently returning it reads as a solid
+    interval. Warn when >20% were skipped; info otherwise.
+    """
+    n_skipped = n_iterations - n_kept
+    if n_skipped <= 0:
+        return
+    msg = (
+        f"Bootstrap CI ({label}): {n_skipped}/{n_iterations} resamples were single-class and "
+        f"dropped; the interval rests on {n_kept} resample(s)."
+    )
+    (logger.warning if n_kept < 0.8 * n_iterations else logger.info)(msg)
+
+
 def _bootstrap_ci_combined(
     X: pd.DataFrame,
     y,
@@ -90,6 +107,14 @@ def _bootstrap_ci_combined(
     score. Each replicate refits scaler+logistic on the resampled rows and
     evaluates Gini/KS on the OUT-OF-BAG rows (those not drawn), so the
     replicate metric is itself out-of-sample.
+
+    Basis caveat: this CI is deliberately CONSERVATIVE and is not a bracket around
+    the ``combined_score_cv`` point estimate. Each replicate trains on the in-bag
+    sample (~63% unique rows) and scores on OOB (~37%), whereas the point estimate
+    is K-fold OOF (trains on ~(k-1)/k of the data, scores every row once). The
+    smaller training set + noisier evaluation bias the replicate metrics DOWN, so
+    the interval typically sits below the point estimate. Read it as a
+    lower-leaning uncertainty band, not a symmetric CI.
     """
     Xv = np.asarray(X, dtype=float)
     yv = np.asarray(y)
@@ -109,6 +134,7 @@ def _bootstrap_ci_combined(
         kss.append(ks)
     if not ginis:
         return (np.nan, np.nan), (np.nan, np.nan)
+    _warn_if_many_bootstrap_skips(len(ginis), n_iterations, "combined-score OOB")
     lo, hi = 100 * alpha / 2, 100 * (1 - alpha / 2)
     return (
         (float(np.percentile(ginis, lo)), float(np.percentile(ginis, hi))),
@@ -174,6 +200,7 @@ def bootstrap_confidence_interval(
         nan_ci = (float("nan"), float("nan"))
         return nan_ci, nan_ci
 
+    _warn_if_many_bootstrap_skips(len(gini_scores), n_iterations, "Gini/KS")
     gini_ci = (np.percentile(gini_scores, 100 * alpha / 2.0), np.percentile(gini_scores, 100 * (1 - alpha / 2.0)))
     ks_ci = (np.percentile(ks_scores, 100 * alpha / 2.0), np.percentile(ks_scores, 100 * (1 - alpha / 2.0)))
 
@@ -530,9 +557,6 @@ def compute_score_discriminance(
         ``[score, auroc, gini, ks, n_records, n_bads, bad_rate]``.
     """
     y_true = df[target_column]
-    n_records = len(y_true)
-    n_bads = int(y_true.sum())
-    bad_rate = n_bads / n_records if n_records > 0 else 0.0
 
     scores_dict: dict[str, np.ndarray] = {}
     for name, info in score_columns.items():
@@ -547,9 +571,15 @@ def compute_score_discriminance(
     for name, scores in scores_dict.items():
         scores = np.asarray(scores, dtype=float)
         valid = ~np.isnan(scores)
-        gini, roc_auc, ks, _ = compute_metrics(
-            y_true[valid] if not valid.all() else y_true, scores[valid] if not valid.all() else scores
-        )
+        # Count on the population the metric was ACTUALLY computed on. A combined (OOF) score
+        # is NaN for rows in unfittable folds; labelling its gini with the full-population
+        # n_records/n_bads overstates the sample the discriminance rests on.
+        y_valid = y_true[valid] if not valid.all() else y_true
+        s_valid = scores[valid] if not valid.all() else scores
+        gini, roc_auc, ks, _ = compute_metrics(y_valid, s_valid)
+        n_records = int(len(y_valid))
+        n_bads = int(np.asarray(y_valid).sum())
+        bad_rate = n_bads / n_records if n_records > 0 else 0.0
         rows.append(
             {
                 "score": name,

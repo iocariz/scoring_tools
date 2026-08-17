@@ -626,3 +626,45 @@ class TestCombinedScoreCV:
         lo, hi = comb["Gini CI"]
         assert lo <= hi
         assert lo < 0.25, "refit-OOB CI on noise should not sit at overfit levels"
+
+
+class TestDiscriminanceCounts:
+    def test_counts_reflect_valid_rows_not_full_population(self):
+        """A score that is NaN for some rows can't rank them, so its gini rests on the
+        valid subset. n_records/n_bads/bad_rate must count that subset, not the whole df."""
+        from src.metrics import compute_score_discriminance
+
+        rng = np.random.RandomState(5)
+        n = 400
+        df = pd.DataFrame({"s": rng.randn(n), "bad": (rng.uniform(size=n) < 0.3).astype(int)})
+        df.loc[:49, "s"] = np.nan  # 50 rows unscoreable
+        out = compute_score_discriminance(df, "bad", {"S": {"column": "s", "negate": False}})
+        row = out.loc[out["score"] == "S"].iloc[0]
+
+        valid = df["s"].notna()
+        assert row["n_records"] == int(valid.sum()) == n - 50
+        assert row["n_bads"] == int(df.loc[valid, "bad"].sum())
+        assert row["bad_rate"] == round(row["n_bads"] / row["n_records"], 4)
+
+    def test_full_population_counts_when_no_nan(self):
+        """The common path (no NaN scores) still reports the full population."""
+        from src.metrics import compute_score_discriminance
+
+        rng = np.random.RandomState(6)
+        n = 300
+        df = pd.DataFrame({"s": rng.randn(n), "bad": (rng.uniform(size=n) < 0.25).astype(int)})
+        out = compute_score_discriminance(df, "bad", {"S": {"column": "s", "negate": False}})
+        row = out.loc[out["score"] == "S"].iloc[0]
+        assert row["n_records"] == n
+        assert row["n_bads"] == int(df["bad"].sum())
+
+
+class TestBootstrapSkipWarning:
+    def test_warn_helper_runs_for_all_branches(self):
+        """Smoke-test the skip diagnostic: no-skip (quiet), moderate, and heavy skip."""
+        from src.metrics import _warn_if_many_bootstrap_skips
+
+        # Should not raise in any branch.
+        _warn_if_many_bootstrap_skips(n_kept=100, n_iterations=100, label="test")  # no skips
+        _warn_if_many_bootstrap_skips(n_kept=90, n_iterations=100, label="test")  # 10% -> info
+        _warn_if_many_bootstrap_skips(n_kept=30, n_iterations=100, label="test")  # 70% -> warning
