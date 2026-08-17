@@ -147,6 +147,40 @@ class TestHurdleRegressorParams:
         assert params["classifier"] is clf
         assert params["regressor"] is reg
 
+    def test_set_params_nested_on_present_estimator(self):
+        # Applying a nested param on a present sub-estimator works; setting the estimator and
+        # its nested param in ONE call also works (top-level applied before nested).
+        model = HurdleRegressor()
+        model.set_params(classifier=LogisticRegression(), classifier__C=0.25)
+        assert model.classifier.get_params()["C"] == 0.25
+
+    def test_set_params_nested_on_none_raises_not_silently_dropped(self):
+        # classifier is None -> a nested classifier__ param can't apply. Raise (sklearn
+        # semantics) instead of silently dropping it.
+        model = HurdleRegressor()
+        with pytest.raises(ValueError, match="classifier.*is None"):
+            model.set_params(classifier__C=0.5)
+
+
+class TestHurdleRegressorNotFitted:
+    def test_predict_before_fit_raises_not_fitted(self):
+        from sklearn.exceptions import NotFittedError
+
+        model = HurdleRegressor()
+        X = np.array([[1.0], [2.0]])
+        with pytest.raises(NotFittedError):
+            model.predict(X)
+
+    def test_predict_binary_and_magnitude_before_fit_raise(self):
+        from sklearn.exceptions import NotFittedError
+
+        model = HurdleRegressor()
+        X = np.array([[1.0], [2.0]])
+        with pytest.raises(NotFittedError):
+            model.predict_binary(X)
+        with pytest.raises(NotFittedError):
+            model.predict_magnitude(X)
+
 
 # =============================================================================
 # TweedieGLM Tests

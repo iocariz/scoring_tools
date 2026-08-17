@@ -197,9 +197,17 @@ def save_model_with_metadata(
     # Generate timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Create version directory
+    # Create version directory. Two saves in the same second (e.g. a fast sequential
+    # batch) would otherwise reuse the same model_<ts> dir and silently OVERWRITE the
+    # first model's .pkl. Disambiguate with a counter suffix so no model is lost.
     version_path = base_dir / f"model_{timestamp}"
-    version_path.mkdir(exist_ok=True)
+    if version_path.exists():
+        n = 1
+        while (base_dir / f"model_{timestamp}_{n}").exists():
+            n += 1
+        version_path = base_dir / f"model_{timestamp}_{n}"
+        logger.warning(f"Model dir model_{timestamp} already exists; saving as {version_path.name} to avoid overwrite.")
+    version_path.mkdir(parents=True, exist_ok=False)
 
     # Save model and write integrity sidecar
     model_path = version_path / "model.pkl"
@@ -405,13 +413,22 @@ def predict_on_new_data(model_path: str, new_data: pd.DataFrame) -> np.ndarray:
     logger.info(f"  Prediction range: [{predictions.min():.4f}, {predictions.max():.4f}]")
     logger.info(f"  Mean prediction: {predictions.mean():.4f}")
 
-    # Additional info for Hurdle models
-    if metadata.get("is_hurdle", False):
-        if isinstance(model, HurdleRegressor):
+    # Additional info for Hurdle models (diagnostic only — must never abort a valid
+    # prediction run). A hurdle classifier trained on a single-class fold has one column
+    # in predict_proba, so the old [:, 1] raised IndexError.
+    if metadata.get("is_hurdle", False) and isinstance(model, HurdleRegressor):
+        try:
             binary_pred = model.predict_binary(new_data[features])
-            prob_nonzero = model.classifier_.predict_proba(new_data[features])[:, 1]
+            proba = model.classifier_.predict_proba(new_data[features])
+            if proba.shape[1] > 1:
+                prob_nonzero = proba[:, 1]
+            else:
+                # Single-class classifier: P(non-zero) is 1 iff its sole class is the positive one.
+                prob_nonzero = np.full(len(proba), float(model.classifier_.classes_[0] == 1))
             logger.info("Hurdle Model Details:")
             logger.info(f"  Predicted non-zero: {binary_pred.sum():,} ({binary_pred.mean():.1%})")
             logger.info(f"  Mean P(non-zero): {prob_nonzero.mean():.2%}")
+        except Exception as e:
+            logger.warning(f"Could not compute hurdle diagnostics (non-fatal): {e}")
 
     return predictions
