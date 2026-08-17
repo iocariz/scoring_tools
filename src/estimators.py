@@ -8,7 +8,7 @@ This module provides specialized machine learning estimators:
 import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin, clone
 from sklearn.linear_model import LogisticRegression, Ridge
-from sklearn.utils.validation import check_X_y
+from sklearn.utils.validation import check_is_fitted, check_X_y
 
 from src.constants import DEFAULT_RANDOM_STATE, DEFAULT_ZERO_THRESHOLD
 
@@ -132,6 +132,7 @@ class HurdleRegressor(BaseEstimator, RegressorMixin):
         Returns:
             predictions: Array of predictions
         """
+        check_is_fitted(self)
         # Stage 1: Predict probability of being non-zero
         # Handle single-class case where predict_proba returns 1-column array
         proba = self.classifier_.predict_proba(X)
@@ -154,10 +155,12 @@ class HurdleRegressor(BaseEstimator, RegressorMixin):
 
     def predict_binary(self, X):
         """Predict binary outcome (zero vs non-zero) only."""
+        check_is_fitted(self)
         return self.classifier_.predict(X)
 
     def predict_magnitude(self, X):
         """Predict magnitude (without zero-inflation adjustment)."""
+        check_is_fitted(self)
         return self.regressor_.predict(X)
 
     def get_params(self, deep=True):
@@ -177,18 +180,28 @@ class HurdleRegressor(BaseEstimator, RegressorMixin):
         return params
 
     def set_params(self, **params):
-        """Set parameters for this estimator, including nested estimator params."""
-        nested = {}
+        """Set parameters for this estimator, including nested estimator params.
+
+        Top-level params (``classifier``/``regressor``/``zero_threshold``) are applied
+        first, then nested ``<estimator>__<param>`` params — so setting the estimator and
+        its nested params in one call works. A nested param targeting a ``None`` sub-estimator
+        RAISES (matching sklearn) instead of being silently dropped: set the estimator first.
+        """
+        nested: dict[str, dict] = {}
         for key, value in params.items():
             if "__" in key:
                 prefix, sub_key = key.split("__", 1)
                 nested.setdefault(prefix, {})[sub_key] = value
             else:
                 setattr(self, key, value)
-        if "classifier" in nested and self.classifier is not None:
-            self.classifier.set_params(**nested["classifier"])
-        if "regressor" in nested and self.regressor is not None:
-            self.regressor.set_params(**nested["regressor"])
+        for prefix, sub in nested.items():
+            target = getattr(self, prefix, None)
+            if target is None:
+                raise ValueError(
+                    f"Invalid parameter '{prefix}__*' for estimator {type(self).__name__}: "
+                    f"'{prefix}' is None. Set '{prefix}' to an estimator before its nested params."
+                )
+            target.set_params(**sub)
         return self
 
 

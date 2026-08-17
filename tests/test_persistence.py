@@ -1,6 +1,8 @@
 import json
 import os
 import sys
+from datetime import datetime
+from pathlib import Path
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -110,6 +112,28 @@ class TestSaveModelWithMetadata:
         assert os.path.isfile(metadata_path), "metadata.json not found"
         assert os.path.isfile(features_path), "features.txt not found"
         assert os.path.isfile(summary_path), "model_summary.txt not found"
+
+    def test_same_second_saves_do_not_overwrite(
+        self, tmp_path, fitted_linear_model, sample_features, sample_metadata, monkeypatch
+    ):
+        """Two saves in the same wall-clock second must land in DISTINCT dirs — the first
+        model's .pkl must not be silently overwritten."""
+        import src.persistence as persistence_mod
+
+        class _FixedDatetime:
+            @staticmethod
+            def now():
+                return datetime(2026, 1, 2, 3, 4, 5)  # fixed to the same second
+
+        monkeypatch.setattr(persistence_mod, "datetime", _FixedDatetime)
+        model, X, y = fitted_linear_model
+        base = str(tmp_path / "models")
+        d1 = save_model_with_metadata(model=model, features=sample_features, metadata=sample_metadata, base_path=base)
+        d2 = save_model_with_metadata(model=model, features=sample_features, metadata=sample_metadata, base_path=base)
+
+        assert d1 != d2, "same-second save reused the directory (overwrite)"
+        assert Path(d1, "model.pkl").is_file()
+        assert Path(d2, "model.pkl").is_file()  # both models preserved
 
     def test_returns_string_path(self, tmp_path, fitted_linear_model, sample_features, sample_metadata):
         model, X, y = fitted_linear_model
@@ -275,6 +299,30 @@ class TestPredictOnNewData:
         )
         predictions = predict_on_new_data(saved_model_path, new_data)
         assert len(predictions) == 2
+
+    def test_single_class_hurdle_predict_does_not_crash(self, tmp_path):
+        """A hurdle model whose classifier saw one class has a 1-column predict_proba.
+        The diagnostic log block used to index [:, 1] -> IndexError, aborting a valid
+        prediction run. It must now degrade gracefully and still return predictions."""
+        from sklearn.dummy import DummyClassifier
+
+        from src.estimators import HurdleRegressor
+
+        rng = np.random.RandomState(0)
+        X = pd.DataFrame({"f1": rng.randn(30), "f2": rng.randn(30)})
+        y = np.abs(rng.randn(30)) + 1.0  # ALL non-zero -> single-class binary target
+        # DummyClassifier tolerates a single-class fit (LogisticRegression does not), producing
+        # the 1-column predict_proba that used to crash the diagnostic block.
+        model = HurdleRegressor(classifier=DummyClassifier(strategy="most_frequent")).fit(X, y)
+        model_dir = save_model_with_metadata(
+            model=model,
+            features=["f1", "f2"],
+            metadata={"is_hurdle": True, "cv_mean_r2": 0.5},
+            base_path=str(tmp_path / "hmodels"),
+        )
+        new = pd.DataFrame({"f1": rng.randn(5), "f2": rng.randn(5)})
+        preds = predict_on_new_data(model_dir, new)  # must not raise
+        assert len(preds) == 5
 
 
 # =============================================================================
