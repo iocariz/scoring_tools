@@ -97,6 +97,15 @@ class TestBootstrapConfidenceInterval:
         assert len(gini_ci) == 2
         assert len(ks_ci) == 2
 
+    def test_single_class_returns_nan_ci(self):
+        # No resample can produce a Gini/KS (target is single-class) → CI is undefined
+        # → NaN, not the old (0.0, 0.0) sentinel that reads as a real, tight CI. Audit #12.
+        y_true = pd.Series(np.zeros(60, dtype=int))
+        y_scores = pd.Series(np.random.RandomState(42).rand(60))
+        gini_ci, ks_ci = bootstrap_confidence_interval(y_true, y_scores, n_iterations=20)
+        assert np.isnan(gini_ci[0]) and np.isnan(gini_ci[1])
+        assert np.isnan(ks_ci[0]) and np.isnan(ks_ci[1])
+
     def test_lower_bound_less_than_upper(self):
         np.random.seed(42)
         y_true = pd.Series(np.random.randint(0, 2, 100))

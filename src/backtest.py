@@ -60,24 +60,34 @@ class BacktestResult:
     calibration: pd.DataFrame = field(default_factory=pd.DataFrame)  # per-cell predicted vs realized
 
     def drift_flag(self) -> str:
-        """Noise-aware out-of-time drift verdict: OK / DRIFT / INCONCLUSIVE / —.
+        """Noise-aware out-of-time drift verdict: OK / DRIFT / BELOW / INCONCLUSIVE / —.
 
         DRIFT only when there are enough OOT defaults to estimate a rate AND the OOT risk CI
-        does NOT overlap the in-sample CI. Too few defaults → INCONCLUSIVE (thin window);
+        sits entirely ABOVE the in-sample CI. BELOW is the informational mirror — the OOT CI
+        sits entirely below in-sample (realized risk clearly lower, not a concern but worth
+        surfacing rather than folding into OK). Too few defaults → INCONCLUSIVE (thin window);
         overlapping CIs → OK (within sampling noise). This replaces the old point-estimate
         |Δ|>0.5pp flag that overstated thin-window noise as drift (M4/M5 finding).
+
+        Caveat: the CIs come from a loan-level iid bootstrap, which ignores vintage clustering
+        on a ~2-cohort window, so they are somewhat narrower than the true sampling spread.
         """
         if not self.sufficient:
             return "—"
         n_def = self.out_of_time.get("n_defaults")
         oot_lo = self.out_of_time.get("risk_ci_lower")
+        oot_hi = self.out_of_time.get("risk_ci_upper")
+        ins_lo = self.in_sample.get("risk_ci_lower")
         ins_hi = self.in_sample.get("risk_ci_upper")
         if n_def is None or n_def < MIN_DEFAULTS_FOR_DRIFT:
             return "INCONCLUSIVE"
         if oot_lo is None or ins_hi is None:
             return "INCONCLUSIVE"
-        # Clearly higher iff the OOT CI sits entirely above the in-sample CI.
-        return "DRIFT" if oot_lo > ins_hi else "OK"
+        if oot_lo > ins_hi:  # OOT CI entirely above in-sample → clearly higher
+            return "DRIFT"
+        if oot_hi is not None and ins_lo is not None and oot_hi < ins_lo:  # entirely below
+            return "BELOW"
+        return "OK"
 
     def aggregate_row(self) -> dict:
         """Flat one-row summary for the consolidated report."""
@@ -284,7 +294,8 @@ def _per_cell_calibration(
                             )
                         )
                         if g["todu_amt_pile_h6"].sum() > 0
-                        else None
+                        else np.nan  # NaN, not None: None makes the column object dtype and
+                        # the risk_delta_pp subtraction below TypeErrors
                     ),
                     "n_booked_oot": int(len(g)),
                 }

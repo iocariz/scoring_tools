@@ -1424,7 +1424,10 @@ def _compute_mr_stability_metrics(
         requested_vars = ["score_rf", "risk_score_rf", "oa_amt"]
         stability_vars = [v for v in requested_vars if v in data_booked.columns and v in data_booked_mr.columns]
         if not stability_vars:
-            shared_cols = set(data_booked.columns) & set(data_booked_mr.columns)
+            # sorted() so the fallback picks a DETERMINISTIC set of monitored
+            # variables (and score_var below) across runs — a bare set iterates in
+            # hash-randomized order, making the reported PSI non-reproducible.
+            shared_cols = sorted(set(data_booked.columns) & set(data_booked_mr.columns))
             stability_vars = [c for c in shared_cols if data_booked[c].dtype.kind in ("f", "i") and c not in VARIABLES][
                 :5
             ]

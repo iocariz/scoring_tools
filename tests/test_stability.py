@@ -163,17 +163,18 @@ class TestCalculatePsi:
         assert psi > 0.1  # Should show drift
 
     def test_empty_baseline(self):
+        # An empty population makes PSI UNDEFINED → NaN (not 0.0 = false "stable"); audit #12.
         baseline = pd.Series([], dtype=float)
         comparison = pd.Series([1, 2, 3])
         psi, breakdown = calculate_psi(baseline, comparison)
-        assert psi == 0.0
+        assert np.isnan(psi)
         assert breakdown.empty
 
     def test_empty_comparison(self):
         baseline = pd.Series([1, 2, 3])
         comparison = pd.Series([], dtype=float)
         psi, breakdown = calculate_psi(baseline, comparison)
-        assert psi == 0.0
+        assert np.isnan(psi)
 
     def test_with_nan_values(self):
         np.random.seed(42)
