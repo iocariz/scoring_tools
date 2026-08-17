@@ -359,20 +359,26 @@ def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     for col in df.columns:
         # Convert integer columns
         if df[col].dtype == "int64":
-            if df[col].min() >= 0:
-                if df[col].max() <= 255:
+            col_min = df[col].min()
+            col_max = df[col].max()
+            if col_min >= 0:
+                if col_max <= 255:
                     df[col] = df[col].astype("uint8")
-                elif df[col].max() <= 65535:
+                elif col_max <= 65535:
                     df[col] = df[col].astype("uint16")
-                else:
+                elif col_max <= 4294967295:
                     df[col] = df[col].astype("uint32")
+                # else: exceeds uint32 max — keep int64. Blindly casting to uint32
+                # would silently WRAP large financial amounts (e.g. euro-cent sums
+                # > 4.29e9) into tiny wrong values.
             else:
-                if df[col].min() >= -128 and df[col].max() <= 127:
+                if col_min >= -128 and col_max <= 127:
                     df[col] = df[col].astype("int8")
-                elif df[col].min() >= -32768 and df[col].max() <= 32767:
+                elif col_min >= -32768 and col_max <= 32767:
                     df[col] = df[col].astype("int16")
-                else:
+                elif col_min >= -2147483648 and col_max <= 2147483647:
                     df[col] = df[col].astype("int32")
+                # else: exceeds int32 range — keep int64 (avoid silent overflow).
 
         # Float64 columns are intentionally preserved to avoid precision loss
 

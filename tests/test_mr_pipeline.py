@@ -2501,11 +2501,27 @@ class TestH3FloorEnforcement:
             multiplier_h3=4.0,
         )
         assert result is not None
+        multiplier = 7.0
+        clamped_any = False
         for _, row in result.iterrows():
             h6 = row.get("Risk (%)")
             h3 = row.get("Risk H3 (%)")
             if pd.notna(h6) and pd.notna(h3):
                 assert h6 >= h3 - 1e-9, f"{row['Metric']}: H6 ({h6:.4f}%) < H3 ({h3:.4f}%)"
+            # Persisted H6 numerator must stay consistent with the displayed (possibly clamped)
+            # rate: multiplier * num / den * 100 == Risk (%). Otherwise a CSV consumer
+            # recomputing risk from the numerators disagrees with the shown value.
+            num = row.get("todu_30ever_h6")
+            den = row.get("todu_amt_pile_h6")
+            if pd.notna(h6) and pd.notna(num) and pd.notna(den) and den > 0:
+                recomputed = multiplier * num / den * 100.0
+                assert recomputed == pytest.approx(h6, abs=1e-6), (
+                    f"{row['Metric']}: recomputed {recomputed:.4f}% != displayed {h6:.4f}%"
+                )
+                # This fixture forces H6 < H3, so at least one row must have been clamped up.
+                if h6 == pytest.approx(row.get("Risk H3 (%)"), abs=1e-6):
+                    clamped_any = True
+        assert clamped_any, "fixture should have triggered at least one H3-floor clamp"
 
 
 # =============================================================================

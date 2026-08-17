@@ -65,6 +65,23 @@ class TestPreprocessorSettings:
             PreprocessingSettings(**valid_config_dict)
         assert "multiplier" in str(excinfo.value)
 
+    def test_mr_overlap_shared_boundary_day_warns(self, valid_config_dict):
+        # MR starts exactly on the main period's INCLUSIVE end day -> the boundary day is
+        # counted in both periods (a one-day leak). The old strict `<` let this through unwarned.
+        valid_config_dict["date_ini_book_obs_mr"] = "2023-12-31"  # == date_fin_book_obs
+        valid_config_dict["date_fin_book_obs_mr"] = "2024-06-30"
+        with pytest.warns(UserWarning, match="overlaps with MR"):
+            PreprocessingSettings(**valid_config_dict)
+
+    def test_mr_non_overlapping_does_not_warn(self, valid_config_dict):
+        # Default fixture: MR starts 2024-01-01, the day AFTER the main end -> no overlap.
+        import warnings
+
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter("always")
+            PreprocessingSettings(**valid_config_dict)
+        assert not any("overlaps with MR" in str(w.message) for w in rec)
+
     def test_invalid_date_format(self, valid_config_dict):
         valid_config_dict["date_ini_book_obs"] = "invalid-date"
         with pytest.raises(ValidationError) as excinfo:

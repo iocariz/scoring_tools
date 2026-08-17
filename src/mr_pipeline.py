@@ -246,6 +246,12 @@ def calculate_metrics_from_cuts(
                         f"< H3 risk ({h3_val:.2f}%). Clamping H6 to H3 value."
                     )
                     row["Risk (%)"] = h3_val
+                    # Keep the persisted H6 numerator consistent with the clamped rate.
+                    # Otherwise a CSV consumer recomputing multiplier*num/den reproduces the
+                    # OLD un-floored (lower) risk, disagreeing with the displayed Risk (%).
+                    den = row.get("todu_amt_pile_h6")
+                    if den is not None and pd.notna(den) and multiplier:
+                        row["todu_30ever_h6"] = (h3_val / 100.0) * den / multiplier
 
         return pd.DataFrame(summary_data)
 
