@@ -1387,8 +1387,15 @@ def create_consolidation_dashboard(df: pd.DataFrame, title: str = "Consolidated 
     def _pick_total_row(period: str) -> pd.Series | None:
         rows = total_df[(total_df["period"] == period) & (total_df["scenario"] == "base")]
         if rows.empty:
-            rows = total_df[total_df["period"] == period].sort_values(["_scenario_order"]).head(1)
-        return rows.iloc[0] if not rows.empty else None
+            # #62: don't fall back to a different scenario's TOTAL under the base
+            # label — return None (indicator shows N/A) instead of mislabeling.
+            if not total_df[total_df["period"] == period].empty:
+                logger.warning(
+                    f"Exec summary: no base-scenario TOTAL for period='{period}' — showing N/A rather "
+                    "than a different scenario's numbers."
+                )
+            return None
+        return rows.iloc[0]
 
     def _add_indicator(
         row_data: pd.Series | None,
@@ -3254,8 +3261,15 @@ def _get_total_row(consolidated_df: pd.DataFrame, period: str, scenario: str = "
     rows = consolidated_df[mask]
     if not rows.empty:
         return rows.iloc[0]
-    fallback = consolidated_df[(consolidated_df["group"] == "TOTAL") & (consolidated_df["period"] == period)]
-    return fallback.iloc[0] if not fallback.empty else None
+    # #62: do NOT silently substitute a different scenario's TOTAL row — that put
+    # e.g. pessimistic numbers under the base label on legacy runs with no base
+    # scenario. Return None (callers degrade to "N/A") and log the gap.
+    if not consolidated_df[(consolidated_df["group"] == "TOTAL") & (consolidated_df["period"] == period)].empty:
+        logger.warning(
+            f"Exec summary: no TOTAL row for scenario='{scenario}' period='{period}' "
+            "(other scenarios exist) — showing N/A rather than a mislabeled scenario."
+        )
+    return None
 
 
 # =============================================================================

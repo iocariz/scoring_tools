@@ -1011,3 +1011,53 @@ class TestResimulationNoStaleData:
 
         assert purged == []  # nothing stale: base protected, targets active
         assert (data_dir / "data_summary_desagregado_base.csv").exists()
+
+    def _write_config(self, path, modelling_ss=None):
+        lines = ["[preprocessing]", 'segment_filter = "seg_a"']
+        if modelling_ss is not None:
+            lines.append(f'modelling_supersegment = "{modelling_ss}"')
+        path.write_text("\n".join(lines), encoding="utf-8")
+
+    def test_resim_model_resolves_via_modelling_supersegment(self, tmp_path):
+        """#40: with the segment's own model absent, resolve THIS segment's
+        modelling supersegment's model — not a lexicographic glob over ALL
+        _supersegment_* dirs (which would pick 'zzz' over the correct 'total')."""
+        import main as main_module
+
+        seg_dir = tmp_path / "seg_a"
+        output = OutputPaths(base_dir=seg_dir)
+        output.ensure_dirs()  # seg's own models/ exists but is empty
+        cfg = seg_dir / "config_segment.toml"
+        self._write_config(cfg, modelling_ss="total")
+        # Two supersegment models; 'zzz' sorts after 'total' lexicographically.
+        (tmp_path / "_supersegment_total" / "models" / "model_20260101_000000").mkdir(parents=True)
+        (tmp_path / "_supersegment_zzz" / "models" / "model_20260101_000000").mkdir(parents=True)
+
+        resolved = main_module._resolve_resimulation_model_path(output, str(cfg), "seg_a")
+        assert resolved is not None
+        assert "_supersegment_total" in resolved  # the modelling SS, not lexicographic 'zzz'
+
+    def test_resim_model_falls_back_loudly_without_modelling_ss(self, tmp_path):
+        """No modelling supersegment configured → last-resort glob still returns a
+        model (loud), so the run isn't blocked."""
+        import main as main_module
+
+        seg_dir = tmp_path / "seg_a"
+        output = OutputPaths(base_dir=seg_dir)
+        output.ensure_dirs()
+        cfg = seg_dir / "config_segment.toml"
+        self._write_config(cfg, modelling_ss=None)
+        (tmp_path / "_supersegment_only" / "models" / "model_20260101_000000").mkdir(parents=True)
+
+        resolved = main_module._resolve_resimulation_model_path(output, str(cfg), "seg_a")
+        assert resolved is not None and "_supersegment_only" in resolved
+
+    def test_resim_model_none_when_absent(self, tmp_path):
+        import main as main_module
+
+        seg_dir = tmp_path / "seg_a"
+        output = OutputPaths(base_dir=seg_dir)
+        output.ensure_dirs()
+        cfg = seg_dir / "config_segment.toml"
+        self._write_config(cfg, modelling_ss="total")  # no supersegment dirs exist
+        assert main_module._resolve_resimulation_model_path(output, str(cfg), "seg_a") is None

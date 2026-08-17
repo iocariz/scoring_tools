@@ -25,6 +25,7 @@ import pytest
 
 from src.consolidation import (
     ConsolidatedMetrics,
+    _get_total_row,
     aggregate_metrics,
     consolidate_segments,
     create_consolidation_dashboard,
@@ -1397,3 +1398,27 @@ class TestClassificationGridTotalRisk:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestGetTotalRowNoCrossScenarioFallback:
+    """#62: the exec-summary TOTAL lookup must not substitute a different
+    scenario's row under the requested scenario's label."""
+
+    @staticmethod
+    def _df():
+        return pd.DataFrame(
+            [
+                {"group": "TOTAL", "period": "main", "scenario": "pessimistic", "risk": 1.0},
+                {"group": "TOTAL", "period": "main", "scenario": "optimistic", "risk": 2.0},
+            ]
+        )
+
+    def test_missing_scenario_returns_none(self):
+        # 'base' absent → None (NOT pessimistic/optimistic mislabeled as base)
+        assert _get_total_row(self._df(), "main", "base") is None
+
+    def test_present_scenario_returned(self):
+        assert _get_total_row(self._df(), "main", "pessimistic")["risk"] == 1.0
+
+    def test_missing_period_returns_none(self):
+        assert _get_total_row(self._df(), "mr", "pessimistic") is None
