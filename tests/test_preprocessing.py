@@ -358,24 +358,45 @@ def test_update_status_basic():
     assert result.loc[2, "status_name"] == "rejected"
 
 
-def test_update_status_with_score_measures():
-    """Test status update with score measures."""
+def test_update_status_score_only_vs_dual_measure():
+    """#53 part 2: only a SCORE-ONLY rejection is 09-score (repesca/swap-in-eligible).
+    A row that also tripped a non-score direct measure (fraud/legal/policy KO) must
+    stay 08-other — the non-score KO is absolute and a better score can't overturn
+    it, so it must not be counted as swap-in production."""
+    data = pd.DataFrame(
+        {
+            "status_name": ["booked", "booked", "booked"],
+            "reject_reason": [None, None, None],
+            "m_ct_direct_score": ["y", "y", "n"],  # the configured score gate
+            "m_ct_direct_fraud": ["n", "y", "y"],  # a non-score direct measure
+        }
+    )
+
+    result = update_status_and_reject_reason(data, score_measures=["m_ct_direct_score"])
+
+    # row 0: score-only rejection → 09-score (swap-in-eligible)
+    assert result.loc[0, "reject_reason"] == RejectReason.SCORE.value
+    # row 1: score AND non-score → non-score wins → 08-other (NOT swap-in-eligible)
+    assert result.loc[1, "reject_reason"] == RejectReason.OTHER.value
+    # row 2: non-score only → 08-other
+    assert result.loc[2, "reject_reason"] == RejectReason.OTHER.value
+    # all three tripped a direct measure → all rejected
+    assert (result["status_name"] == StatusName.REJECTED.value).all()
+
+
+def test_update_status_all_score_measures_no_non_score():
+    """When every direct measure IS a score measure, a 'y' still maps to 09-score
+    (no non-score measure to override it)."""
     data = pd.DataFrame(
         {
             "status_name": ["booked", "booked"],
             "reject_reason": [None, None],
-            "m_ct_direct_test": ["y", "y"],
-            "score_measure": ["y", "n"],
+            "m_ct_direct_score": ["y", "n"],
         }
     )
-
-    result = update_status_and_reject_reason(data, score_measures=["score_measure"])
-
-    # First row has 'y' in score measure
+    result = update_status_and_reject_reason(data, score_measures=["m_ct_direct_score"])
     assert result.loc[0, "reject_reason"] == RejectReason.SCORE.value
-
-    # Second row has 'n' in score measure, should be OTHER
-    assert result.loc[1, "reject_reason"] == RejectReason.OTHER.value
+    assert result.loc[1, "status_name"] == "booked"  # no measure tripped
 
 
 def test_update_status_no_measures():

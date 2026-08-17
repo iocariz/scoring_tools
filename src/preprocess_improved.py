@@ -869,7 +869,25 @@ def update_status_and_reject_reason(data: pd.DataFrame, score_measures: list[str
             f"Found {score_measure_count:,} records with 'y' in score measure columns "
             f"({score_measure_count / len(result):.1%} of data)"
         )
-        result.loc[score_measure_mask, "reject_reason"] = RejectReason.SCORE.value
+        # #53 part 2: a hard non-score direct measure (fraud / legal / policy KO)
+        # is absolute — a better score can't overturn it — so a row that tripped
+        # one must stay 08-other, NOT be relabeled 09-score. Only 09-score
+        # rejections are swap-in/repesca-eligible; relabeling a dual-measure loan
+        # would count it as swap-in production that could never actually be booked
+        # and feed its imputed risk into reject inference. Non-score KO wins
+        # (credit-team-confirmed precedence): relabel only rows that are
+        # score-rejected AND not also non-score-rejected.
+        non_score_cols = [c for c in m_ct_cols if c not in score_measures]
+        non_score_mask = (
+            result[non_score_cols].eq("y").any(axis=1) if non_score_cols else pd.Series(False, index=result.index)
+        )
+        n_dual = int((score_measure_mask & non_score_mask).sum())
+        if n_dual:
+            logger.info(
+                f"{n_dual:,} record(s) tripped BOTH a score and a non-score direct measure — "
+                "kept as 08-other (non-score KO wins; not swap-in-eligible)."
+            )
+        result.loc[score_measure_mask & ~non_score_mask, "reject_reason"] = RejectReason.SCORE.value
 
     # Log status name distribution after update
     status_counts = result["status_name"].value_counts()
