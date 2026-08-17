@@ -216,6 +216,21 @@ def calculate_rejection_thresholds(y_true: np.ndarray, scores: np.ndarray, thres
     return results
 
 
+def _nan_psi_frame() -> pd.DataFrame:
+    """A single-row PSI result whose PSI is NaN (undefined) — never 0 (false "stable")."""
+    return pd.DataFrame(
+        {
+            "Bucket": [1],
+            "Breakpoint Value": [np.inf],
+            "Expected Count": [0],
+            "Actual Count": [0],
+            "Expected Percent": [0.0],
+            "Actual Percent": [0.0],
+            "PSI": [float("nan")],
+        }
+    )
+
+
 def calculate_psi_by_period(
     data: pd.DataFrame,
     date_column: str,
@@ -269,6 +284,22 @@ def calculate_psi_by_period(
     expected = data.loc[(data[date_column] >= start_date_ref) & (data[date_column] <= end_date_ref)]
     actual = data.loc[(data[date_column] >= start_date_act) & (data[date_column] <= end_date_act)]
 
+    # Drop NaN scores from BOTH windows before counting. Two failure modes otherwise:
+    #  - np.histogram silently omits NaN, but the denominator len(window) still counts
+    #    those rows → every bucket's percent is deflated → PSI understated.
+    #  - np.percentile propagates NaN, so a single NaN in the reference poisons every
+    #    breakpoint → an unwarranted all-NaN PSI.
+    expected = expected[expected[score_column].notna()]
+    actual = actual[actual[score_column].notna()]
+
+    # Empty window → PSI undefined (avoid the 0/0 that used to produce inf/NaN percentages).
+    if len(expected) == 0 or len(actual) == 0:
+        logger.warning(
+            f"PSI by period: empty {'reference' if len(expected) == 0 else 'actual'} window "
+            f"for '{score_column}' (after date filter + NaN drop). Returning NaN."
+        )
+        return _nan_psi_frame()
+
     # Create buckets
     if breakpoints is None:
         breakpoints = np.percentile(expected[score_column], np.linspace(0, 100, buckets + 1))
@@ -279,17 +310,7 @@ def calculate_psi_by_period(
         # Near-constant reference: PSI undefined. Return a NaN result (not a crash, not a 0 that
         # would read as "stable").
         logger.warning(f"PSI by period: fewer than 2 distinct score breakpoints for '{score_column}'. Returning NaN.")
-        return pd.DataFrame(
-            {
-                "Bucket": [1],
-                "Breakpoint Value": [np.inf],
-                "Expected Count": [0],
-                "Actual Count": [0],
-                "Expected Percent": [0.0],
-                "Actual Percent": [0.0],
-                "PSI": [float("nan")],
-            }
-        )
+        return _nan_psi_frame()
     # Extend edges to (-inf, +inf) so out-of-range actual values are captured
     # (mirrors stability.calculate_psi behaviour).
     breakpoints = list(breakpoints)

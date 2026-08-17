@@ -622,6 +622,16 @@ def compute_score_correlations(
 # ---------------------------------------------------------------------------
 # Analysis 11: Reject inference Gini (bin-level imputation)
 # ---------------------------------------------------------------------------
+def _nearest_decile_rate(bin_rates: dict, dec: int) -> float:
+    """Bad rate for decile *dec*, inheriting the nearest covered decile when *dec* has no
+    booked loans (a fully-rejected band). Ties in distance break toward the HIGHER bad rate —
+    the conservative side, since an uncovered band is typically the riskiest, deepest-reject one.
+    """
+    if dec in bin_rates:
+        return bin_rates[dec]
+    return bin_rates[min(bin_rates, key=lambda c: (abs(c - dec), -bin_rates[c]))]
+
+
 def compute_ri_gini(
     df_demand: pd.DataFrame,
     score_col: str,
@@ -677,13 +687,19 @@ def compute_ri_gini(
     # Compute per-decile bad rate from booked
     bin_rates = df_booked.groupby("_decile")[target_col].mean().to_dict()
 
+    # Deciles with no booked loans (a fully-rejected band — the riskiest, deepest-reject
+    # tail) have no observed bad rate. Imputing 0 there (the old np.zeros default that never
+    # got overwritten) treats every rejected loan in that band as GOOD — anti-conservative
+    # exactly where risk is highest. Instead inherit the nearest covered decile's rate.
+    rejected_deciles = [d for d in np.unique(df_rejected["_decile"].values) if not pd.isna(d)]
+
     # Impute and compute Gini multiple times
     gini_samples = []
     for _ in range(50):
         imputed_bad = np.zeros(len(df_rejected))
-        for dec, rate in bin_rates.items():
+        for dec in rejected_deciles:
             mask = df_rejected["_decile"].values == dec
-            imputed_rate = min(rate * uplift_factor, 1.0)
+            imputed_rate = min(_nearest_decile_rate(bin_rates, dec) * uplift_factor, 1.0)
             imputed_bad[mask] = rng.binomial(1, imputed_rate, mask.sum())
 
         y_full = np.concatenate([df_booked[target_col].values, imputed_bad])

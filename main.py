@@ -735,7 +735,12 @@ def main(
         try:
             from src.trends import compute_monthly_metrics, detect_trend_changes, plot_metric_trends
 
-            monthly = compute_monthly_metrics(data_clean, date_column="mis_date", segment_filter=segment)
+            monthly = compute_monthly_metrics(
+                data_clean,
+                date_column="mis_date",
+                segment_filter=segment,
+                maturity_months=settings.mr_maturity_months,
+            )
             if not monthly.empty:
                 # Save monthly metrics
                 monthly.to_csv(output.monthly_metrics_csv(segment))

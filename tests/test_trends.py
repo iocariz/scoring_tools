@@ -96,6 +96,24 @@ class TestComputeMonthlyMetrics:
 
         assert (result["booked_count"] <= result["total_records"]).all()
 
+    def test_maturity_blanks_immature_risk_tail(self):
+        # 6 booking months; with maturity_months=2 the last 2 months are too recent to have
+        # a realized H6 -> their risk_rate is blanked (NaN); earlier months stay populated.
+        data = _make_monthly_data(6)
+        result = compute_monthly_metrics(data, maturity_months=2).sort_values("year_month").reset_index(drop=True)
+
+        assert "risk_rate" in result.columns
+        assert result["risk_rate"].iloc[:-2].notna().all()  # mature months populated
+        assert result["risk_rate"].iloc[-2:].isna().all()  # last 2 months blanked
+        # Production (H0) is never blanked — it matures immediately.
+        assert result["total_production"].notna().all()
+
+    def test_maturity_none_leaves_all_months(self):
+        # Backward-compatible default: no blanking.
+        data = _make_monthly_data(6)
+        result = compute_monthly_metrics(data)
+        assert result["risk_rate"].notna().all()
+
 
 class TestPlotMetricTrends:
     def test_returns_figure(self):
