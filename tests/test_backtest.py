@@ -181,6 +181,10 @@ class TestDriftFlag:
     def test_separated_cis_with_enough_defaults_is_drift(self):
         assert _result((0.6, 1.0), (1.5, 3.0), 20).drift_flag() == "DRIFT"
 
+    def test_oot_ci_entirely_below_insample_is_below(self):
+        # OOT CI [0.1,0.4] entirely below in-sample [0.6,1.0] → informational BELOW, not OK.
+        assert _result((0.6, 1.0), (0.1, 0.4), 20).drift_flag() == "BELOW"
+
     def test_too_few_defaults_is_inconclusive(self):
         # ef-like: only 2 OOT defaults → inconclusive regardless of the point estimate.
         assert _result((0.27, 2.12), (0.0, 7.38), 2).drift_flag() == "INCONCLUSIVE"

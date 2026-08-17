@@ -166,8 +166,11 @@ def calculate_psi(
     comparison_clean = comparison.dropna()
 
     if len(baseline_clean) == 0 or len(comparison_clean) == 0:
-        logger.warning("Empty series provided for PSI calculation")
-        return 0.0, pd.DataFrame()
+        # An all-NaN / empty population is a realistic drift symptom (e.g. a score
+        # not populated on the MR cohort). Return NaN (→ get_psi_status UNSTABLE),
+        # never 0.0, which would read as a confident "stable" (matches audit #12).
+        logger.warning("Empty series provided for PSI calculation — returning NaN (undefined, not stable)")
+        return float("nan"), pd.DataFrame()
 
     # Create bins from baseline distribution (audit #12: never let quantile binning silently
     # collapse to a single bin — that returns PSI=0 = false "stable" regardless of any real shift).

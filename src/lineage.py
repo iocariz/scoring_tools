@@ -70,11 +70,15 @@ def file_provenance(path: str | None) -> dict[str, Any]:
 
 
 def git_provenance() -> dict[str, Any]:
-    """Current git commit + dirty flag. Never raises.
+    """Current git commit + dirty flag of the CODE's repo. Never raises.
 
     Returns ``{"commit": None, ...}`` when not in a repo, git is absent, or the
     call times out (e.g. inside a Docker image with no .git).
     """
+    # Run git in THIS source tree's directory, not the process CWD — otherwise
+    # launching the pipeline from inside another git repo would stamp that repo's
+    # commit/dirty flag into the lineage / Excel provenance (a wrong-looking-real value).
+    repo_dir = str(Path(__file__).resolve().parent)
     try:
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -82,6 +86,7 @@ def git_provenance() -> dict[str, Any]:
             text=True,
             timeout=5,
             check=True,
+            cwd=repo_dir,
         ).stdout.strip()
         status = subprocess.run(
             ["git", "status", "--porcelain"],
@@ -89,6 +94,7 @@ def git_provenance() -> dict[str, Any]:
             text=True,
             timeout=5,
             check=True,
+            cwd=repo_dir,
         ).stdout
         return {"commit": commit, "short": commit[:12], "dirty": bool(status.strip())}
     except Exception:

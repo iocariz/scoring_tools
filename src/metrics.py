@@ -168,7 +168,11 @@ def bootstrap_confidence_interval(
         ks_scores.append(ks_statistic(sampled_y_true, sampled_y_scores))
 
     if not gini_scores:
-        return (0.0, 0.0), (0.0, 0.0)
+        # Every resample was single-class (tiny / imbalanced population): the CI is
+        # UNDEFINED. Return NaN, not (0.0, 0.0) — the latter reads downstream as a
+        # confident zero-width CI (Gini is precisely 0), which is not what happened.
+        nan_ci = (float("nan"), float("nan"))
+        return nan_ci, nan_ci
 
     gini_ci = (np.percentile(gini_scores, 100 * alpha / 2.0), np.percentile(gini_scores, 100 * (1 - alpha / 2.0)))
     ks_ci = (np.percentile(ks_scores, 100 * alpha / 2.0), np.percentile(ks_scores, 100 * (1 - alpha / 2.0)))
