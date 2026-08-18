@@ -177,6 +177,13 @@ def compute_acceptance_rates(
                 "falling back to unweighted acceptance rates."
             )
             decay_half_life_months = None
+            # The counts-based `else` branch below is NOT reached (the outer `if decay is
+            # not None` was True when evaluated), so compute the unweighted aggregates here —
+            # otherwise `n_booked`/`n_rejected` stay undefined and the merge below NameErrors.
+            n_booked = booked.groupby(variables).size().reset_index(name="n_booked")
+            n_rejected = rejected.groupby(variables).size().reset_index(name="n_score_rejected")
+            n_booked_raw = n_booked.rename(columns={"n_booked": "n_booked_raw"})
+            n_rejected_raw = n_rejected.rename(columns={"n_score_rejected": "n_score_rejected_raw"})
         else:
             age_days = (max_date - pd.to_datetime(data_tmp[date_col], errors="coerce")).dt.total_seconds() / (3600 * 24)
             age_months = age_days / 30.437
