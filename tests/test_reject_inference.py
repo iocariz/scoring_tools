@@ -283,6 +283,26 @@ class TestTimeAwareAcceptanceRates:
         bin_11 = rates[(rates["var0"] == 1) & (rates["var1"] == 1)].iloc[0]
         assert bin_11["acceptance_rate"] == pytest.approx(expected, rel=1e-3)
 
+    def test_decay_with_unparseable_dates_falls_back_to_counts_no_crash(self):
+        """Decay requested but every date is unparseable -> max_date is NaT. The old code set
+        decay=None but never computed the counts-based aggregates, so the merge NameErrored.
+        Now it falls back to unweighted counts and returns valid rates."""
+        demand = _make_demand_with_dates(
+            [
+                (1, 1, "not-a-date", "booked", None),
+                (1, 1, "also-bad", "rejected", "09-score"),
+            ]
+        )
+        rates = compute_acceptance_rates(
+            demand,
+            VARIABLES,
+            recent_months=None,
+            decay_half_life_months=0.5,  # decay requested
+        )
+        # Unweighted fallback: 1 booked + 1 score-rejected -> acceptance rate 0.5
+        bin_11 = rates[(rates["var0"] == 1) & (rates["var1"] == 1)].iloc[0]
+        assert bin_11["acceptance_rate"] == pytest.approx(0.5)
+
     def test_empirical_bayes_adjusts_effective_prior_strength(self):
         """Empirical-Bayes should adapt prior strength based on cross-bin variance.
 

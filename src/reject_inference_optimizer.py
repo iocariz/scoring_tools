@@ -381,7 +381,9 @@ def run_reject_inference_optimization(
     Returns:
         Tuple of (results_df with all combos + KPIs, best_params dict).
         Best = min calibration_error among feasible solutions; ties within
-        5% of the minimum error are broken by max oa_amt_h0.
+        5% of the minimum error are broken CONSERVATIVELY — LOWEST oa_amt_h0
+        (audit #29), not max, since a lower-production RI parameterization is
+        the less anti-conservative choice within the noise band.
         Empty dict if nothing feasible.
     """
     uplift_values = np.linspace(uplift_range[0], uplift_range[1], uplift_steps)
