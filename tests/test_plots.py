@@ -34,6 +34,42 @@ def cleanup_matplotlib():
 
 
 # =============================================================================
+# TestSelectionFeasibility — the infeasible-threshold flag (audit)
+# =============================================================================
+
+
+class TestSelectionFeasibility:
+    """_get_selected_solution_row sets _selection_feasible: False only when NO Pareto point
+    meets optimum_risk (min-risk fallback). Tested surgically (the method reads just 3 attrs)."""
+
+    def _viz(self, optimum_risk, target_sol_fac=None):
+        from src.plots import RiskProductionVisualizer
+
+        viz = RiskProductionVisualizer.__new__(RiskProductionVisualizer)
+        viz.target_sol_fac = target_sol_fac
+        viz.optimum_risk = optimum_risk
+        viz.data_summary = pd.DataFrame({"b2_ever_h6": [2.0, 3.0], "oa_amt_h0": [100.0, 200.0], "sol_fac": [0, 1]})
+        viz._selection_feasible = True
+        return viz
+
+    def test_feasible_when_a_point_meets_target(self):
+        viz = self._viz(optimum_risk=2.5)  # 2.0 <= 2.5
+        viz._get_selected_solution_row()
+        assert viz._selection_feasible is True
+
+    def test_infeasible_when_no_point_meets_target(self):
+        viz = self._viz(optimum_risk=1.0)  # min b2 is 2.0 > 1.0 -> fallback
+        viz._get_selected_solution_row()
+        assert viz._selection_feasible is False
+
+    def test_locked_sol_fac_is_always_feasible(self):
+        # A deliberately locked frontier point is not a target-optimization -> feasible.
+        viz = self._viz(optimum_risk=1.0, target_sol_fac=1)
+        viz._get_selected_solution_row()
+        assert viz._selection_feasible is True
+
+
+# =============================================================================
 # TestPlotRocCurve
 # =============================================================================
 

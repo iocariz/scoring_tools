@@ -933,6 +933,34 @@ def _build_cutoff_comparison_section(output_base: Path, segments: dict) -> Repor
 # ---------------------------------------------------------------------------
 
 
+def _feasibility_banner(csv_path: str | Path, scenario: str) -> str:
+    """Return an HTML warning banner when the summary marks the risk target INFEASIBLE.
+
+    The optimizer falls back to the minimum-risk solution when no Pareto point meets
+    ``optimum_risk``, but the row is still labeled "Optimum selected" (many exact-string
+    consumers). The persisted ``Feasible`` column carries the real status; surface it loudly.
+    Returns "" when feasible, the column is absent (old runs), or the CSV can't be read.
+    """
+    try:
+        df = pd.read_csv(csv_path)
+    except (OSError, pd.errors.ParserError, ValueError):
+        return ""
+    if df.empty or "Feasible" not in df.columns:
+        return ""
+    feasible = df["Feasible"].astype(str).str.strip().str.lower()
+    if not feasible.isin(["false", "0", "0.0"]).any():
+        return ""
+    return (
+        '<div class="alert-infeasible" style="background:#FADBD8;border-left:5px solid #C0392B;'
+        'padding:10px 14px;margin:8px 0;color:#922B21;border-radius:3px;">'
+        f"⚠ <strong>Risk target INFEASIBLE</strong> for scenario <em>{escape(scenario or 'base')}</em>: "
+        "no frontier point met the configured <code>optimum_risk</code>, so the figures below are the "
+        "<strong>closest (minimum-risk) fallback</strong>, not a target-meeting optimum. "
+        "Consider raising <code>optimum_risk</code>."
+        "</div>"
+    )
+
+
 def build_segment_report(
     output_paths: OutputPaths,
     settings: PreprocessingSettings,
@@ -959,12 +987,14 @@ def build_segment_report(
     exec_section.notes = config_notes
 
     # Add per-scenario summary tables
-    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)"]
+    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)", "Feasible"]
     for scenario in scenarios:
         suffix = f"_{scenario}" if scenario else ""
-        tbl = csv_to_html_table(output_paths.risk_production_summary_csv(suffix), exclude_cols=_exclude_todu)
+        csv_p = output_paths.risk_production_summary_csv(suffix)
+        tbl = csv_to_html_table(csv_p, exclude_cols=_exclude_todu)
         if tbl:
-            exec_section.tables.append(f"<h4>Scenario: {scenario or 'base'}</h4>{tbl}")
+            banner = _feasibility_banner(csv_p, scenario)
+            exec_section.tables.append(f"<h4>Scenario: {scenario or 'base'}</h4>{banner}{tbl}")
     sections.append(exec_section)
 
     # --- Preprocessing ---
@@ -995,9 +1025,11 @@ def build_segment_report(
         div = extract_plotly_div(output_paths.risk_production_visualizer_html(suffix))
         if div:
             sa_section.charts.append(div)
-        tbl = csv_to_html_table(output_paths.risk_production_summary_csv(suffix), exclude_cols=_exclude_todu)
+        csv_p = output_paths.risk_production_summary_csv(suffix)
+        tbl = csv_to_html_table(csv_p, exclude_cols=_exclude_todu)
         if tbl:
-            sa_section.tables.append(tbl)
+            banner = _feasibility_banner(csv_p, scenario)
+            sa_section.tables.append(f"{banner}{tbl}")
         # Optimal cutoffs: for 1D/N-d, decode acceptance_mask into a visual strip
         opt_csv = Path(output_paths.optimal_solution_csv(suffix))
         if is_1d and opt_csv.exists():
@@ -1109,7 +1141,7 @@ def build_consolidated_report(
         sections.append(dash_section)
 
     # --- Segment Comparison ---
-    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)"]
+    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)", "Feasible"]
     _exclude_todu_mr = _exclude_todu + ["todu_30ever_h3", "todu_amt_pile_h3"]
 
     # Main period

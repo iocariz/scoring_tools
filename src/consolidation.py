@@ -685,6 +685,15 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
         if rate is not None and td > 0:
             metrics[dest] = rate / 100.0 * td
 
+    # Segment-level feasibility of the risk target (audit: infeasible-threshold fallback was
+    # shown as a plain "Optimum selected"). False when the summary marks any row infeasible.
+    # Absent column (old runs) → assume feasible.
+    metrics["_feasible"] = True
+    if "feasible" in df.columns:
+        feas = df["feasible"].astype(str).str.strip().str.lower()
+        if feas.isin(["false", "0", "0.0"]).any():
+            metrics["_feasible"] = False
+
     return metrics
 
 
@@ -3660,7 +3669,7 @@ def _write_per_segment_rp_sheets(
 
     Extracted from export_consolidated_excel body in R2b-iii step 14.
     """
-    _rp_exclude_cols = {"todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)"}
+    _rp_exclude_cols = {"todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)", "Feasible"}
     _rp_exclude_cols_mr = _rp_exclude_cols | {"todu_30ever_h3", "todu_amt_pile_h3"}
 
     for seg_name in segments:
@@ -4029,10 +4038,40 @@ def _kv(ws, row: int, key: str, value: str, note: str = "") -> int:
     return row + 1
 
 
+def _infeasible_segments(output_base, segments: dict, suffix: str) -> list[str]:
+    """Segments whose risk target was INFEASIBLE in the main period (the optimizer fell back to
+    the min-risk solution — still labeled "Optimum selected"), read from the persisted `Feasible`
+    column. Empty when all feasible or the column is absent (older runs)."""
+    out: list[str] = []
+    for seg in segments:
+        try:
+            df = load_risk_production_table(Path(output_base) / seg, period="main", scenario_suffix=suffix)
+        except Exception:
+            df = None
+        if df is None or df.empty:
+            continue
+        cols = {c.lower().strip(): c for c in df.columns}
+        if "feasible" not in cols:
+            continue
+        feas = df[cols["feasible"]].astype(str).str.strip().str.lower()
+        if feas.isin(["false", "0", "0.0"]).any():
+            out.append(seg)
+    return out
+
+
 def _write_exec_recommendation(ws, start_row: int, consolidated_df, output_base, segments: dict, suffix: str) -> int:
     """Plain-language 'Recommendation & key risks' block on the Exec Summary. Returns next free row."""
     row = _section_title(ws, start_row, "Recommendation & key risks", ncols=12)
     lines: list[str] = []
+
+    infeasible = _infeasible_segments(output_base, segments, suffix)
+    if infeasible:
+        lines.append(
+            f"⚠ RISK TARGET INFEASIBLE for {len(infeasible)} segment(s): {', '.join(sorted(infeasible))}. "
+            "No frontier point met the configured optimum_risk, so those figures are the closest "
+            "(minimum-risk) fallback — NOT a target-meeting optimum. Raise optimum_risk or revisit the "
+            "constraints before acting on them."
+        )
 
     tr = _get_total_row(consolidated_df, "main")
     if tr is not None:
@@ -4166,6 +4205,26 @@ def _write_sheet_validation_governance(wb, output_base, segments: dict, consolid
         ws.cell(row=row, column=6).fill = PatternFill(start_color=fill, end_color=fill, fill_type="solid")
         row += 1
     row += 1
+
+    # Risk-target feasibility — the optimizer silently falls back to the min-risk solution when
+    # no frontier point meets optimum_risk; surface that as a governance fact, not a log line.
+    row = _section_title(ws, row, "Risk-target feasibility")
+    infeasible = _infeasible_segments(output_base, segments, suffix)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+    c = ws.cell(row=row, column=1)
+    if infeasible:
+        c.value = (
+            f"⚠ INFEASIBLE — {len(infeasible)} segment(s) fell back to the minimum-risk solution "
+            f"(no frontier point met optimum_risk): {', '.join(sorted(infeasible))}. Their "
+            "'Optimum selected' figures are NOT a target-meeting optimum — raise optimum_risk or revisit constraints."
+        )
+        c.font = Font(bold=True, color=_CLR_BAD, size=10, name=_FN)
+        c.fill = PatternFill(start_color=_CLR_BAD_LIGHT, end_color=_CLR_BAD_LIGHT, fill_type="solid")
+    else:
+        c.value = "All segments met their configured risk target (no minimum-risk fallback)."
+        c.font = _FONT_SUBTITLE
+    c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    row += 2
 
     row = _section_title(ws, row, "Sign-off")
     row = _kv(

@@ -22,6 +22,7 @@ from src.reporting import (
     _build_portfolio_summary_sections,
     _build_scenario_kpi_table,
     _detect_variable_cols,
+    _feasibility_banner,
     _portfolio_group_list,
     _read_cutoff_data,
     build_consolidated_report,
@@ -711,6 +712,37 @@ class TestBuildAcceptanceMatrices:
         html = _build_acceptance_matrices(df, ["octroi_bin", "efx_bin"])
         assert html is not None
         assert "m-ok" in html or "m-no" in html
+
+
+class TestFeasibilityBanner:
+    def _csv(self, tmp_path, feasible_values):
+        p = tmp_path / "rp.csv"
+        pd.DataFrame(
+            {
+                "Metric": ["Actual", "Optimum selected"],
+                "Risk (%)": [1.0, 1.5],
+                "Feasible": feasible_values,
+            }
+        ).to_csv(p, index=False)
+        return p
+
+    def test_banner_when_infeasible(self, tmp_path):
+        p = self._csv(tmp_path, [False, False])
+        html = _feasibility_banner(p, "base")
+        assert "INFEASIBLE" in html
+        assert "optimum_risk" in html
+
+    def test_no_banner_when_feasible(self, tmp_path):
+        p = self._csv(tmp_path, [True, True])
+        assert _feasibility_banner(p, "base") == ""
+
+    def test_no_banner_when_column_absent(self, tmp_path):
+        p = tmp_path / "rp.csv"
+        pd.DataFrame({"Metric": ["Actual"], "Risk (%)": [1.0]}).to_csv(p, index=False)
+        assert _feasibility_banner(p, "base") == ""
+
+    def test_no_banner_when_file_missing(self, tmp_path):
+        assert _feasibility_banner(tmp_path / "nope.csv", "base") == ""
 
 
 class TestBuildAcceptanceStrip1D:

@@ -26,6 +26,7 @@ import pytest
 from src.consolidation import (
     ConsolidatedMetrics,
     _get_total_row,
+    _infeasible_segments,
     aggregate_metrics,
     consolidate_segments,
     create_consolidation_dashboard,
@@ -111,6 +112,35 @@ class TestFindScenarioSuffix:
 # =============================================================================
 # Scenario Name Mapping Tests
 # =============================================================================
+
+
+class TestInfeasibleSegments:
+    """_infeasible_segments reads the persisted Feasible column per segment (main period)."""
+
+    def _write_seg(self, base, seg, feasible):
+        d = base / seg / "data"
+        d.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            {
+                "Metric": ["Actual", "Optimum selected"],
+                "Risk (%)": [1.0, 1.5],
+                "Feasible": [feasible, feasible],
+            }
+        ).to_csv(d / "risk_production_summary_table_base.csv", index=False)
+
+    def test_flags_only_infeasible_segments(self, tmp_path):
+        self._write_seg(tmp_path, "seg_ok", True)
+        self._write_seg(tmp_path, "seg_bad", False)
+        result = _infeasible_segments(tmp_path, {"seg_ok": {}, "seg_bad": {}}, suffix="_base")
+        assert result == ["seg_bad"]
+
+    def test_empty_when_all_feasible(self, tmp_path):
+        self._write_seg(tmp_path, "seg_ok", True)
+        assert _infeasible_segments(tmp_path, {"seg_ok": {}}, suffix="_base") == []
+
+    def test_missing_segment_file_is_skipped(self, tmp_path):
+        # No CSV for the segment -> not flagged (absence != infeasible).
+        assert _infeasible_segments(tmp_path, {"ghost": {}}, suffix="_base") == []
 
 
 class TestMapScenarioNames:
@@ -228,6 +258,23 @@ class TestExtractMetricsFromTable:
         metrics = extract_metrics_from_table(None)
 
         assert metrics["actual"]["production"] == 0
+
+    def test_feasible_default_when_column_absent(self, sample_summary_table):
+        # No Feasible column (old runs) -> assume feasible.
+        metrics = extract_metrics_from_table(sample_summary_table)
+        assert metrics["_feasible"] is True
+
+    def test_feasible_false_when_flagged(self, sample_summary_table):
+        df = sample_summary_table.copy()
+        df["Feasible"] = [False, False, False, False]
+        metrics = extract_metrics_from_table(df)
+        assert metrics["_feasible"] is False
+
+    def test_feasible_true_when_flag_true(self, sample_summary_table):
+        df = sample_summary_table.copy()
+        df["Feasible"] = True
+        metrics = extract_metrics_from_table(df)
+        assert metrics["_feasible"] is True
 
 
 # =============================================================================

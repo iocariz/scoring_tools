@@ -249,6 +249,12 @@ def run_scenario_analysis(
 
     summary_table = visualizer.get_summary_table()
 
+    # Feasibility of a risk TARGET only applies when we optimized against it. Baseline mode
+    # (shows the current book as-is) and fixed_cutoffs (a deliberately pre-committed policy) are
+    # not target-optimizations, so never flag them "infeasible".
+    if "Feasible" in summary_table.columns and (settings.baseline_mode or settings.fixed_cutoffs):
+        summary_table["Feasible"] = True
+
     # Loan-level audit totals are canonical for production (€): reconcile summary before save
     data_main_period = filter_by_date(
         data_clean,
