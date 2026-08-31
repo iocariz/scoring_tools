@@ -110,3 +110,52 @@ def test_run_optimization_pipeline_collapses_duplicate_per_bin_tasa_fin(monkeypa
     assert len(out) == 1
     # repesca contribution should be scaled by mean tasa_fin=3.0: 2*3=6; total = 1+6
     assert out.iloc[0]["todu_30ever_h6"] == 7.0
+
+
+def test_tree_winner_cv_r2_is_nan_not_zero(monkeypatch):
+    """When a tree model wins, its CV R² was never computed (tree tuning is RMSE-only), so the
+    metadata must record NaN ('not computed') — never 0.0, which is indistinguishable from a
+    genuinely flat model (the #65 degenerate case)."""
+    import numpy as np
+    from sklearn.linear_model import LinearRegression
+
+    import src.inference_optimized as io
+
+    tree_df = pd.DataFrame(
+        [
+            {
+                "Model": "XGBoost (Optuna Tuned)",
+                "CV Mean RMSE": 0.10,  # clearly best
+                "CV Std RMSE": 0.01,
+                "model_template": LinearRegression(),
+            }
+        ]
+    )
+    lin_df = pd.DataFrame(
+        [{"Model": "Ridge", "CV Mean RMSE": 0.50, "CV Std RMSE": 0.02, "model_template": LinearRegression()}]
+    )
+    monkeypatch.setattr(io, "tune_tree_models", lambda **kw: (tree_df, {}))
+    monkeypatch.setattr(
+        io,
+        "_select_model_type_cv",
+        lambda **kw: (
+            lin_df,
+            {"name": "Ridge", "model_template": LinearRegression(), "cv_mean_rmse": 0.5, "cv_std_rmse": 0.02},
+        ),
+    )
+
+    _, _, _, best_feature_info = io._select_best_model_and_features(
+        raw_data=pd.DataFrame(),
+        bins=(),
+        variables=["v0", "v1"],
+        indicators=[],
+        multiplier=7.0,
+        z_threshold=3.0,
+        var_reg=[],
+        feature_sets={},
+        target_var="t",
+        cv_folds=3,
+        include_hurdle=False,
+    )
+    assert np.isnan(best_feature_info["cv_mean_r2"]), "tree-winner CV R² must be NaN, not 0.0"
+    assert np.isnan(best_feature_info["cv_std_r2"])

@@ -835,9 +835,13 @@ def _select_feature_set_cv(
         # Nadeau–Bengio corrected SE (audit #32d): the naive std/sqrt(k) treats
         # correlated fold scores as independent and roughly halves the 1SE band.
         cv_std = _nadeau_bengio_cv_se(np.std(cv_scores, ddof=1), len(cv_scores)) if len(cv_scores) > 1 else 0.0
-        cv_r2_mean = np.mean(cv_r2_scores) if cv_r2_scores else 0.0
+        # NaN (not 0.0) when R² is undefined: no scored folds, or a single fold (std undefined).
+        # A stored 0.0 reads as "computed, no skill / perfectly stable" — a false signal.
+        cv_r2_mean = np.mean(cv_r2_scores) if cv_r2_scores else float("nan")
         cv_r2_std = (
-            _nadeau_bengio_cv_se(np.std(cv_r2_scores, ddof=1), len(cv_r2_scores)) if len(cv_r2_scores) > 1 else 0.0
+            _nadeau_bengio_cv_se(np.std(cv_r2_scores, ddof=1), len(cv_r2_scores))
+            if len(cv_r2_scores) > 1
+            else float("nan")
         )
 
         feature_results.append(
@@ -868,8 +872,8 @@ def _select_feature_set_cv(
         "features": best_row["Features"],
         "cv_mean_rmse": best_row["CV Mean RMSE"],
         "cv_std_rmse": best_row["CV Std RMSE"],
-        "cv_mean_r2": best_row.get("CV Mean R2", 0.0),
-        "cv_std_r2": best_row.get("CV Std R2", 0.0),
+        "cv_mean_r2": best_row.get("CV Mean R2", float("nan")),
+        "cv_std_r2": best_row.get("CV Std R2", float("nan")),
     }
 
     # Log results table
@@ -1157,8 +1161,11 @@ def _select_best_model_and_features(
             "features": variables,
             "cv_mean_rmse": best_row["CV Mean RMSE"],
             "cv_std_rmse": best_row["CV Std RMSE"],
-            "cv_mean_r2": best_row.get("CV Mean R2", 0.0),
-            "cv_std_r2": best_row.get("CV Std R2", 0.0),
+            # Tree models are tuned/selected on RMSE only — CV R² is NOT computed for them, so the
+            # column is absent here. Record NaN ("not computed"), never 0.0: a stored 0.0 is
+            # indistinguishable from a genuinely flat model (R²≈0, the #65 degenerate case).
+            "cv_mean_r2": best_row.get("CV Mean R2", float("nan")),
+            "cv_std_r2": best_row.get("CV Std R2", float("nan")),
         }
     else:
         # A linear/GLM model won. Proceed with Step 3.
