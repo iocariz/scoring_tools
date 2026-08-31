@@ -472,6 +472,9 @@ class RiskProductionVisualizer:
         self.directions = directions or {}
         self._pareto_masks = pareto_masks or []
         self._nd_grid = grid
+        # Set by _get_selected_solution_row: False when the risk target was infeasible and
+        # we fell back to the min-risk solution (see get_summary_table's "Feasible" column).
+        self._selection_feasible = True
         self.multiplier = multiplier
         self._total_demand = total_demand
 
@@ -733,6 +736,12 @@ class RiskProductionVisualizer:
 
     def _get_selected_solution_row(self):
         """Helper to find the selected optimal solution based on cz2024 or target_sol_fac"""
+        # A deliberately-locked frontier point (target_sol_fac) or a genuine target-meeting
+        # optimum is feasible; only the min-risk fallback below (no Pareto point meets the
+        # risk target) is INFEASIBLE. Track it so the summary/report can flag it — the row is
+        # still labeled "Optimum selected" for the many exact-string consumers, so the flag
+        # rides alongside as a separate signal (mirrors the allocation `feasible` flag, #15/#42).
+        self._selection_feasible = True
         if self.target_sol_fac is not None:
             # Find solution with sol_fac matching target_sol_fac
             if "sol_fac" in self.data_summary.columns:
@@ -752,6 +761,7 @@ class RiskProductionVisualizer:
         b2_col = candidates["b2_ever_h6"]
         data_filtered = candidates[b2_col <= self.optimum_risk]
         if data_filtered.empty:
+            self._selection_feasible = False
             min_b2 = b2_col.min()
             max_b2 = b2_col.max()
             logger.warning(
@@ -1008,9 +1018,12 @@ class RiskProductionVisualizer:
 
         df_summary = pd.DataFrame(summary_data)
 
-        # Add a formatted column for display if needed or just return raw values
-        # Let's keep it raw for programmatic use, but maybe add string formatting for print equivalent?
-        # The user asked for "output table with relevant information". A DataFrame is best.
+        # Segment-level feasibility of the risk target (audit: the infeasible-threshold
+        # fallback used to be shown as a plain "Optimum selected"). False when no Pareto point
+        # met optimum_risk and we fell back to the min-risk solution. `_get_selected_solution_row`
+        # (called above) set the flag; carried as a column so it survives the CSV round-trip and
+        # reaches the segment report + consolidated Excel. Missing column reads as feasible.
+        df_summary["Feasible"] = bool(getattr(self, "_selection_feasible", True))
 
         return df_summary
 
