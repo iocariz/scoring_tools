@@ -582,6 +582,16 @@ def milp_solve_cutoffs(
     )
 
     if not result.success:
+        # scipy milp status: 1 = iteration/time limit reached, 2 = infeasible. A TIMEOUT is not
+        # the same as infeasible — it silently drops this frontier point though a feasible
+        # incumbent may exist. Log it distinctly so a thin frontier isn't misread as "no solution
+        # exists here". (Behaviour unchanged — still None; returning the incumbent would move the
+        # frontier and needs validation.)
+        if getattr(result, "status", None) == 1:
+            logger.warning(
+                f"MILP hit the {time_limit}s time limit (no proven-optimal solution) — this frontier "
+                "point was dropped; raise milp_time_limit if the Pareto frontier looks thin."
+            )
         return None
 
     return np.round(result.x).astype(int)
@@ -914,6 +924,7 @@ def trace_pareto_frontier(
                 multiplier,
                 indicators,
                 n_points,
+                multiplier_h3=multiplier_h3,
                 show_progress=show_progress,
                 monotonicity_relaxation_enabled=monotonicity_relaxation_enabled,
                 monotonicity_uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
@@ -1243,6 +1254,7 @@ def _ga_pareto_fallback(
     multiplier: float,
     indicators: list[str],
     n_points: int,
+    multiplier_h3: float | None = None,
     show_progress: bool = True,
     monotonicity_relaxation_enabled: bool = False,
     monotonicity_uncertainty_min_exposure: float = 0.0,
@@ -1370,7 +1382,9 @@ def _ga_pareto_fallback(
             mask_key = tuple(mask.tolist())
             if mask_key not in seen_masks:
                 seen_masks.add(mask_key)
-                kpis = evaluate_solution(mask, grid, indicators, multiplier)
+                # Pass multiplier_h3 so GA-fallback solutions carry the H3 KPI columns too — the
+                # MILP path already does; the old GA call omitted it, dropping b2_ever_h3.
+                kpis = evaluate_solution(mask, grid, indicators, multiplier, multiplier_h3=multiplier_h3)
                 solutions.append(kpis)
                 all_masks.append(mask)
 
