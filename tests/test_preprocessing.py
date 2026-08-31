@@ -399,6 +399,42 @@ def test_update_status_all_score_measures_no_non_score():
     assert result.loc[1, "status_name"] == "booked"  # no measure tripped
 
 
+def test_update_status_new_convention_auto_detects_score_by_m_ct_sc_prefix():
+    """New dataset convention: normal measures start with 'm_ct_', score measures with
+    'm_ct_sc'. With NO explicit score_measures, the m_ct_sc* columns are auto-detected as
+    the score gate; other m_ct_* columns are non-score (and win a dual-measure conflict)."""
+    data = pd.DataFrame(
+        {
+            "status_name": ["booked", "booked", "booked"],
+            "reject_reason": [None, None, None],
+            "m_ct_sc_ecom": ["y", "y", "n"],  # score measure (m_ct_sc prefix)
+            "m_ct_fraud": ["n", "y", "y"],  # non-score measure (m_ct_ but not m_ct_sc)
+        }
+    )
+    result = update_status_and_reject_reason(data)  # no explicit list -> auto-detect
+
+    assert result.loc[0, "reject_reason"] == RejectReason.SCORE.value  # score-only -> 09-score
+    assert result.loc[1, "reject_reason"] == RejectReason.OTHER.value  # dual -> non-score wins
+    assert result.loc[2, "reject_reason"] == RejectReason.OTHER.value  # non-score only
+    assert (result["status_name"] == StatusName.REJECTED.value).all()
+
+
+def test_update_status_m_ct_prefix_detects_measures_without_direct():
+    """Measures no longer require the legacy 'm_ct_direct' prefix — a plain 'm_ct_' column
+    is recognized as a (non-score) measure."""
+    data = pd.DataFrame(
+        {
+            "status_name": ["booked", "booked"],
+            "reject_reason": [None, None],
+            "m_ct_norm": ["y", "n"],  # non-score measure, plain m_ct_ prefix (not m_ct_sc)
+        }
+    )
+    result = update_status_and_reject_reason(data)
+    assert result.loc[0, "status_name"] == StatusName.REJECTED.value
+    assert result.loc[0, "reject_reason"] == RejectReason.OTHER.value  # non-score -> 08-other
+    assert result.loc[1, "status_name"] == "booked"
+
+
 def test_update_status_no_measures():
     """Test status update when no m_ct_direct columns exist."""
     data = pd.DataFrame(

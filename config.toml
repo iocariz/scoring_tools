@@ -24,12 +24,12 @@ date_fin_book_obs_mr = "2026-04-01"
 
 #cutoff_ordering_mode = "bottom_up"
 
-score_measures = [
-    "m_ct_direct_sc_ecom_25"
-    ]
+# Score measures are auto-detected by the "m_ct_sc" prefix (normal measures start with
+# "m_ct_", score measures with "m_ct_sc"). Uncomment + list explicitly to override.
+# score_measures = ["m_ct_direct_sc_ecom_25"]
 
 log_level = "INFO"
-data_path = "data/demanda_retail_inftel_out_3.sas7bdat"
+data_path = "data/out_cutoffs_direct.sas7bdat"
 n_months = 12
 variables = ['sc_octroi_new_clus']
 inference_variables = ['sc_octroi_new_clus']

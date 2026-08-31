@@ -113,13 +113,15 @@ def preprocess_data(
     required_filter_cols = ["fuera_norma", "fraud_flag", "nature_holder", "segment_cut_off"]
     validate_dataframe_columns(df, required_filter_cols, "preprocess_data")
 
-    # Collect all measure columns (m_ct_direct*)
-    m_ct_direct_columns = [col for col in df.columns if col.startswith("m_ct_direct")]
-    logger.info(f"Found {len(m_ct_direct_columns)} measure columns starting with 'm_ct_direct'")
+    # Collect all measure columns. Convention: normal measures start with "m_ct_",
+    # score measures with "m_ct_sc" (a subset). The legacy "m_ct_direct*" names also
+    # start with "m_ct_", so old datasets keep working unchanged.
+    m_ct_columns = [col for col in df.columns if col.startswith("m_ct_")]
+    logger.info(f"Found {len(m_ct_columns)} measure columns starting with 'm_ct_'")
 
     # Validate that requested columns exist (H3 columns are optional)
     h3_optional = {Columns.TODU_30EVER_H3, Columns.TODU_AMT_PILE_H3}
-    all_requested_columns = list(dict.fromkeys(keep_vars + indicators + m_ct_direct_columns))
+    all_requested_columns = list(dict.fromkeys(keep_vars + indicators + m_ct_columns))
     required_columns = [c for c in all_requested_columns if c not in h3_optional]
     validate_dataframe_columns(df, required_columns, "preprocess_data")
 
@@ -832,12 +834,13 @@ def update_status_and_reject_reason(data: pd.DataFrame, score_measures: list[str
 
     result = data.copy()
 
-    # Get all direct measure columns
-    m_ct_cols = [col for col in result.columns if col.startswith("m_ct_direct")]
-    logger.info(f"Found {len(m_ct_cols)} direct measure columns")
+    # Get all measure columns. Convention: normal measures start with "m_ct_", score
+    # measures with "m_ct_sc" (a subset). Legacy "m_ct_direct*" names also match "m_ct_".
+    m_ct_cols = [col for col in result.columns if col.startswith("m_ct_")]
+    logger.info(f"Found {len(m_ct_cols)} measure columns (prefix 'm_ct_')")
 
     if not m_ct_cols:
-        logger.warning("No m_ct_direct* columns found, skipping measure-based updates")
+        logger.warning("No m_ct_* columns found, skipping measure-based updates")
         return result
 
     # Create a mask for any 'y' in direct measure columns
@@ -858,7 +861,14 @@ def update_status_and_reject_reason(data: pd.DataFrame, score_measures: list[str
     if Columns.SE_DECISION_ID in result.columns:
         result.loc[measure_mask, Columns.SE_DECISION_ID] = SystemDecision.KO.value
 
-    # Update reject_reason for score measures if provided
+    # Score measures: use the explicit config list if given, else auto-detect by the
+    # "m_ct_sc" prefix (the dataset convention: score measures are the m_ct_sc* subset).
+    if not score_measures:
+        score_measures = [col for col in m_ct_cols if col.startswith("m_ct_sc")]
+        if score_measures:
+            logger.info(f"Auto-detected {len(score_measures)} score measures by 'm_ct_sc' prefix: {score_measures}")
+
+    # Update reject_reason for score measures if any
     if score_measures:
         logger.info(f"Updating reject_reason for score measures: {score_measures}")
         validate_dataframe_columns(result, score_measures, "update_status_and_reject_reason")
