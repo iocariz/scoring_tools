@@ -2401,3 +2401,79 @@ class TestWarnUnenforceableSwapinCaps:
 
     def test_no_warning_when_caps_unset(self):
         assert self._warns(["oa_amt_h0"], None, None) == []
+
+
+# =============================================================================
+# TestGAFallbackH3 — GA fallback must carry H3 KPI columns when multiplier_h3 set
+# =============================================================================
+
+
+class TestGAFallbackH3:
+    def _grid(self):
+        return CellGrid.from_summary(_make_summary_2d(2, 2), ["var0", "var1"])
+
+    # H3 raw columns are in `indicators` in the live config, so evaluate_solution sums them;
+    # b2_ever_h3 then appears only when multiplier_h3 is also passed (the fix).
+    _INDICATORS = ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0", "todu_30ever_h3", "todu_amt_pile_h3"]
+
+    def test_ga_fallback_includes_h3_when_multiplier_h3_set(self, monkeypatch):
+        _install_dummy_pymoo(monkeypatch)
+        pareto_df, _, masks = _ga_pareto_fallback(
+            grid=self._grid(), inv_vars=[], multiplier=7, indicators=self._INDICATORS, n_points=3, multiplier_h3=4
+        )
+        assert masks
+        assert "b2_ever_h3" in pareto_df.columns  # H3 KPI no longer dropped in the GA path
+
+    def test_ga_fallback_omits_h3_without_multiplier_h3(self, monkeypatch):
+        _install_dummy_pymoo(monkeypatch)
+        pareto_df, _, _ = _ga_pareto_fallback(
+            grid=self._grid(), inv_vars=[], multiplier=7, indicators=self._INDICATORS, n_points=3
+        )
+        assert "b2_ever_h3" not in pareto_df.columns  # unchanged when H3 not requested
+
+
+# =============================================================================
+# TestMilpTimeoutLogging — timeout (status 1) logged distinctly from infeasible
+# =============================================================================
+
+
+class TestMilpTimeoutLogging:
+    def _grid(self):
+        return CellGrid.from_summary(_make_summary_2d(2, 2), ["var0", "var1"])
+
+    def _run(self, monkeypatch, status):
+        import logging
+
+        import src.optimization_utils as ou
+
+        class _Res:
+            success = False
+
+            def __init__(self, st):
+                self.status = st
+                self.x = None
+
+        monkeypatch.setattr(ou, "milp", lambda **kw: _Res(status))
+
+        recs = []
+
+        class _Sink(logging.Handler):
+            def emit(self, record):
+                recs.append(record.getMessage())
+
+        hid = logger.add(_Sink(level=logging.WARNING), level="WARNING", format="{message}")
+        try:
+            mask = milp_solve_cutoffs(self._grid(), target_risk=5.0, inv_vars=[], multiplier=7.0)
+        finally:
+            logger.remove(hid)
+        return mask, recs
+
+    def test_timeout_status_logs_and_returns_none(self, monkeypatch):
+        mask, recs = self._run(monkeypatch, status=1)
+        assert mask is None
+        assert any("time limit" in m for m in recs)
+
+    def test_infeasible_status_no_timeout_warning(self, monkeypatch):
+        mask, recs = self._run(monkeypatch, status=2)
+        assert mask is None
+        assert not any("time limit" in m for m in recs)
