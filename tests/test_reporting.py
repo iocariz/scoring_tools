@@ -713,6 +713,36 @@ class TestBuildAcceptanceMatrices:
         assert html is not None
         assert "m-ok" in html or "m-no" in html
 
+    def test_mixed_dimensionality_segments_both_render(self):
+        # A 2-var segment (income_bin NaN) consolidated with a 3-var segment. The old global
+        # slice-var groupby dropped the 2-var segment's NaN income_bin group -> it vanished.
+        # Per-segment vars now render each on its own dimensionality.
+        rows = []
+        for a in range(2):
+            for b in range(2):
+                rows.append(
+                    {"var_a": a, "var_b": b, "income_bin": None, "accepted": 1, "segment": "seg_2d", "scenario": "base"}
+                )
+        for a in range(2):
+            for b in range(2):
+                for inc in range(2):
+                    rows.append(
+                        {
+                            "var_a": a,
+                            "var_b": b,
+                            "income_bin": inc,
+                            "accepted": 0,
+                            "segment": "seg_3d",
+                            "scenario": "base",
+                        }
+                    )
+        df = pd.DataFrame(rows)
+        html = _build_acceptance_matrices(df, ["var_a", "var_b", "income_bin"])
+        assert html is not None
+        assert "seg_2d" in html  # the 2-var segment did NOT silently vanish
+        assert "seg_3d" in html
+        assert "income_bin=" in html  # 3-var slice label present for the 3-var segment
+
 
 class TestFeasibilityBanner:
     def _csv(self, tmp_path, feasible_values):

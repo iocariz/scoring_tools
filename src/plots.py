@@ -278,6 +278,25 @@ def plot_group_statistics(data_frame, group_col, binary_outcome):
     return fig
 
 
+def _weighted_group_mean(df: pd.DataFrame, keys: list[str], value_cols: list[str], weight_col: str) -> pd.DataFrame:
+    """Group *df* by *keys* → exposure-weighted mean of each value col (weights from *weight_col*;
+    non-finite/non-positive weights ignored). A group whose weights sum to zero falls back to a
+    plain mean, so a zero-exposure cell still appears rather than dropping to NaN."""
+    d = df.copy()
+    w = pd.to_numeric(d[weight_col], errors="coerce").to_numpy(dtype=float)
+    d["__w"] = np.where(np.isfinite(w) & (w > 0), w, 0.0)
+    out = d.groupby(keys, as_index=False, dropna=False)["__w"].sum().rename(columns={"__w": "__wsum"})
+    for col in value_cols:
+        v = pd.to_numeric(d[col], errors="coerce").to_numpy(dtype=float)
+        d[f"__wv_{col}"] = np.where(np.isfinite(v), v, 0.0) * d["__w"].to_numpy()
+        num = d.groupby(keys, as_index=False, dropna=False)[f"__wv_{col}"].sum()
+        unweighted = d.groupby(keys, as_index=False, dropna=False)[col].mean().rename(columns={col: f"__u_{col}"})
+        out = out.merge(num, on=keys).merge(unweighted, on=keys)
+        out[col] = np.where(out["__wsum"] > 0, out[f"__wv_{col}"] / out["__wsum"], out[f"__u_{col}"])
+        out = out.drop(columns=[f"__wv_{col}", f"__u_{col}"])
+    return out.drop(columns=["__wsum"])
+
+
 def plot_3d_graph(
     data_train: pd.DataFrame, data_surf: pd.DataFrame, variables: list[str], var_target: str
 ) -> go.Figure:
@@ -300,12 +319,24 @@ def plot_3d_graph(
         Plotly Figure object with 3D surface and scatter plots.
     """
     if len(variables) > 2:
-        logger.info(f"plot_3d_graph: N>2 variables ({len(variables)}), marginalizing to first 2 for surface")
-        agg_cols = [f"{var_target}_pred", var_target]
-        agg_cols = [c for c in agg_cols if c in data_surf.columns]
-        data_surf = data_surf.groupby(variables[:2])[agg_cols].mean().reset_index()
-        data_train = data_train.groupby(variables[:2])[[var_target]].mean().reset_index()
-        variables = variables[:2]
+        keys = variables[:2]
+        agg_cols = [c for c in (f"{var_target}_pred", var_target) if c in data_surf.columns]
+        # Marginalize the extra dimension(s) EXPOSURE-WEIGHTED: a risk surface averaged with a plain
+        # mean lets a tiny high-risk cell count as much as a huge low-risk one (biased vs the real
+        # portfolio). Weight by the first available exposure column; unweighted only if none exists.
+        w_col = next((c for c in ("todu_amt_pile_h6", "oa_amt_h0", "oa_amt") if c in data_surf.columns), None)
+        if w_col is not None:
+            logger.info(f"plot_3d_graph: N>2 vars — marginalizing to first 2, exposure-weighted by '{w_col}'.")
+            data_surf = _weighted_group_mean(data_surf, keys, agg_cols, w_col)
+        else:
+            logger.info("plot_3d_graph: N>2 vars — marginalizing to first 2 (unweighted; no exposure column).")
+            data_surf = data_surf.groupby(keys)[agg_cols].mean().reset_index()
+        tw_col = w_col if (w_col is not None and w_col in data_train.columns) else None
+        if tw_col is not None:
+            data_train = _weighted_group_mean(data_train, keys, [var_target], tw_col)
+        else:
+            data_train = data_train.groupby(keys)[[var_target]].mean().reset_index()
+        variables = keys
 
     if len(variables) == 1:
         # 1D: line chart instead of 3D surface
@@ -995,12 +1026,15 @@ class RiskProductionVisualizer:
                 B2 - self.B2_0,
             ],
             "Production (€)": [self.OA_0, OA_REP, OA_CUT, OA, OA - self.OA_0],
+            # True percent (×100) so this matches its "(%)" label and the "0.00" number format,
+            # consistent with every other "(%)" column (Risk/Rejection). Levels are % of Actual
+            # (Actual = 100); the Summary row is the % delta. Underlying € is unchanged.
             "Production (%)": [
-                self.OA_0 / self.OA_0,
-                OA_REP / self.OA_0,
-                OA_CUT / self.OA_0,
-                OA / self.OA_0,
-                (OA - self.OA_0) / self.OA_0,
+                100.0 * self.OA_0 / self.OA_0,
+                100.0 * OA_REP / self.OA_0,
+                100.0 * OA_CUT / self.OA_0,
+                100.0 * OA / self.OA_0,
+                100.0 * (OA - self.OA_0) / self.OA_0,
             ],
             "todu_30ever_h6": [self.actual_todu_30, TODU30_REP, TODU30_CUT, TODU30, TODU30 - self.actual_todu_30],
             "todu_amt_pile_h6": [

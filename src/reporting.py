@@ -489,20 +489,37 @@ def _build_acceptance_matrices(df: pd.DataFrame, variable_cols: list[str], scena
     if len(variable_cols) == 1:
         return _build_acceptance_strip_1d(scen_df, variable_cols[0])
 
-    col_var = variable_cols[0]  # columns of the pivot
-    row_var = variable_cols[1]  # rows of the pivot
-    slice_vars = variable_cols[2:]  # additional dimensions → sub-tables
-
     parts: list[str] = []
 
     for seg_name, seg_df in scen_df.groupby("segment", sort=True):
+        # Per-segment grid vars: in a consolidated view segments can differ in dimensionality
+        # (a 2-var segment alongside 3-var ones). Using the global union would give the 2-var
+        # segment NaN in the slice vars, and groupby(slice_vars) drops NaN groups → its whole
+        # matrix silently vanished. Instead render each segment on its OWN populated vars.
+        seg_vars = [v for v in variable_cols if seg_df[v].notna().any()]
+        if not seg_vars:
+            logger.warning(f"Acceptance matrix: segment '{seg_name}' has no populated grid variables — skipped.")
+            continue
+
+        if len(seg_vars) == 1:
+            # _build_acceptance_strip_1d adds its own <h4> per segment.
+            parts.append(_build_acceptance_strip_1d(seg_df, seg_vars[0]) or "")
+            continue
+
         parts.append(f"<h4>{seg_name}</h4>")
+        col_var = seg_vars[0]  # columns of the pivot
+        row_var = seg_vars[1]  # rows of the pivot
+        slice_vars = seg_vars[2:]  # additional dimensions → sub-tables
 
         if slice_vars:
-            # Group by the slice variables for sub-tables
-            slice_groups = seg_df.groupby(slice_vars, sort=True)
-            # Cap at 12 sub-tables
-            group_items = list(slice_groups)[:12]
+            # dropna=False so a slice value of NaN still forms a (visible) group instead of
+            # silently dropping those cells.
+            slice_groups = list(seg_df.groupby(slice_vars, sort=True, dropna=False))
+            if len(slice_groups) > 12:
+                logger.warning(
+                    f"Acceptance matrix: segment '{seg_name}' has {len(slice_groups)} slices; showing the first 12."
+                )
+            group_items = slice_groups[:12]
         else:
             group_items = [(None, seg_df)]
 

@@ -652,8 +652,10 @@ def plot_3d_surface(
                 xaxis_title=var0,
                 yaxis_title=var1,
                 zaxis_title=target_var,
-                xaxis=dict(range=[1, max(1, x_max)]),
-                yaxis=dict(range=[1, max(1, y_max)]),
+                # Start at the actual minimum bin (x_min/y_min), not a hard-coded 1 — the old
+                # range clipped bin 0 (a real score band) out of the surface entirely.
+                xaxis=dict(range=[x_min, max(x_min, x_max)]),
+                yaxis=dict(range=[y_min, max(y_min, y_max)]),
                 aspectratio=dict(x=1, y=1, z=0.8),
             )
         )

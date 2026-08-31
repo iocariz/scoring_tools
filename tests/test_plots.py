@@ -70,6 +70,59 @@ class TestSelectionFeasibility:
 
 
 # =============================================================================
+# TestWeightedGroupMean — exposure-weighted 3D marginalization (#1)
+# =============================================================================
+
+
+class TestWeightedGroupMean:
+    def test_weighted_mean_differs_from_plain_mean(self):
+        from src.plots import _weighted_group_mean
+
+        # One key group with a tiny high-risk cell and a huge low-risk cell.
+        df = pd.DataFrame(
+            {
+                "v0": [1, 1],
+                "v1": [1, 1],
+                "risk": [10.0, 1.0],  # plain mean = 5.5
+                "exposure": [1.0, 99.0],  # weighted mean = (10*1 + 1*99)/100 = 1.09
+            }
+        )
+        out = _weighted_group_mean(df, ["v0", "v1"], ["risk"], "exposure")
+        val = out["risk"].iloc[0]
+        assert val == pytest.approx((10 * 1 + 1 * 99) / 100)
+        assert val != pytest.approx(5.5)  # not the unweighted mean
+
+    def test_zero_weight_group_falls_back_to_plain_mean(self):
+        from src.plots import _weighted_group_mean
+
+        df = pd.DataFrame({"v0": [1, 1], "v1": [1, 1], "risk": [4.0, 6.0], "exposure": [0.0, 0.0]})
+        out = _weighted_group_mean(df, ["v0", "v1"], ["risk"], "exposure")
+        assert out["risk"].iloc[0] == pytest.approx(5.0)  # plain mean, not NaN
+
+
+class TestPlot3dSurfaceAxis:
+    def test_bin_zero_not_clipped(self):
+        from sklearn.linear_model import LinearRegression
+
+        from src.inference_optimized import plot_3d_surface
+
+        rng = np.random.RandomState(0)
+        df = pd.DataFrame(
+            {
+                "var0": rng.randint(0, 5, 80),  # includes bin 0
+                "var1": rng.randint(0, 5, 80),
+                "target": rng.rand(80),
+            }
+        )
+        model = LinearRegression().fit(df[["var0", "var1"]], df["target"])
+        fig = plot_3d_surface(model, df, df.head(15), ["var0", "var1"], "target", ["var0", "var1"])
+        assert fig is not None
+        # Axis must start at the actual min bin (0), not the old hard-coded 1.
+        assert fig.layout.scene.xaxis.range[0] == 0
+        assert fig.layout.scene.yaxis.range[0] == 0
+
+
+# =============================================================================
 # TestPlotRocCurve
 # =============================================================================
 
