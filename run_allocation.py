@@ -87,6 +87,30 @@ def _parse_target_list(target: float | None, what_if: str | None) -> list[float]
     return targets
 
 
+def _discover_segment_frontiers(output_base: Path, scenario: str) -> list[tuple[str, Path]]:
+    """Resolve which efficient-frontier CSVs to load, as an ordered ``(name, path)`` list.
+
+    Prefers the multi-segment (batch) layout over the single-segment layout so a directory that
+    has BOTH (a top-level ``data/`` AND per-segment subdirs) doesn't double-count the root as an
+    extra 'segment' — the old code ran both blocks unconditionally and summed the root frontier on
+    top of the real segments.
+
+    - Multi-segment (batch): ``<output_base>/<segment>/data/efficient_frontier_<scenario>.csv``
+    - Single-segment (fallback only): ``<output_base>/data/efficient_frontier_<scenario>.csv``
+    """
+    found: list[tuple[str, Path]] = []
+    for segment_dir in sorted(p for p in output_base.iterdir() if p.is_dir()):
+        fp = segment_dir / "data" / f"efficient_frontier_{scenario}.csv"
+        if fp.exists():
+            found.append((segment_dir.name, fp))
+    if found:
+        return found
+    single = output_base / "data" / f"efficient_frontier_{scenario}.csv"
+    if single.exists():
+        return [(output_base.name, single)]
+    return []
+
+
 def main():
     parser = argparse.ArgumentParser(description="Global Portfolio Risk Allocation")
     parser.add_argument(
@@ -156,29 +180,14 @@ def main():
 
     segments_found = []
 
-    # 1) Single-segment layout: <data-dir>/data/efficient_frontier_<scenario>.csv
-    single_frontier = output_base / "data" / f"efficient_frontier_{args.scenario}.csv"
-    if single_frontier.exists():
-        logger.info(f"Loading frontier for {output_base.name} from {single_frontier}")
-        try:
-            df = pd.read_csv(single_frontier)
-            allocator.load_frontier(output_base.name, df)
-            segments_found.append(output_base.name)
-        except Exception as e:
-            logger.error(f"Failed to load {single_frontier}: {e}")
-
-    # 2) Multi-segment layout: <data-dir>/<segment>/data/efficient_frontier_<scenario>.csv
-    for segment_dir in output_base.iterdir():
-        if not segment_dir.is_dir():
-            continue
-        frontier_path = segment_dir / "data" / f"efficient_frontier_{args.scenario}.csv"
-        if not frontier_path.exists():
-            continue
-        logger.info(f"Loading frontier for {segment_dir.name} from {frontier_path}")
+    # Multi-segment (batch) layout preferred; single-segment as a fallback — never both, so a
+    # directory with both layouts isn't double-counted.
+    for name, frontier_path in _discover_segment_frontiers(output_base, args.scenario):
+        logger.info(f"Loading frontier for {name} from {frontier_path}")
         try:
             df = pd.read_csv(frontier_path)
-            allocator.load_frontier(segment_dir.name, df)
-            segments_found.append(segment_dir.name)
+            allocator.load_frontier(name, df)
+            segments_found.append(name)
         except Exception as e:
             logger.error(f"Failed to load {frontier_path}: {e}")
 

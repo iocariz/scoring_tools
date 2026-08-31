@@ -13,6 +13,7 @@ from src.optimization_utils import (
     _build_monotonicity_constraints,
     _ga_pareto_fallback,
     _validate_nd_cutoff_structure,
+    _warn_unenforceable_swapin_caps,
     add_bin_columns,
     classify_by_mask,
     create_fixed_cutoff_mask,
@@ -2358,3 +2359,45 @@ class TestInvVar1KpiSide:
         # normal direction keeps the 0 sentinel
         df_n = get_fact_sol([1.0, 2.0], values_var1, inv_var1=False)
         assert (df_n[[c for c in df_n.columns if c != "sol_fac"]] == 0.0).all(axis=1).any()
+
+
+# =============================================================================
+# TestWarnUnenforceableSwapinCaps — silent-skip guard for swap-in caps
+# =============================================================================
+
+
+class TestWarnUnenforceableSwapinCaps:
+    """Warn when a swap-in cap is configured but the required `_rep` columns are absent (the
+    MILP/GA constraint is otherwise silently skipped and the cap never binds)."""
+
+    def _warns(self, columns, prod_pct, risk):
+        import logging
+
+        records = []
+
+        class _Sink(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        sink = _Sink(level=logging.WARNING)
+        hid = logger.add(sink, level="WARNING", format="{message}")
+        try:
+            _warn_unenforceable_swapin_caps(columns, prod_pct, risk)
+        finally:
+            logger.remove(hid)
+        return records
+
+    def test_production_cap_without_rep_warns(self):
+        msgs = self._warns(["oa_amt_h0", "todu_30ever_h6"], 5.0, None)
+        assert any("swap-in production cap" in m for m in msgs)
+
+    def test_risk_cap_without_rep_warns(self):
+        msgs = self._warns(["oa_amt_h0_rep", "todu_30ever_h6"], None, 1.2)
+        assert any("swap-in risk cap" in m for m in msgs)
+
+    def test_no_warning_when_rep_present(self):
+        cols = ["oa_amt_h0_rep", "todu_30ever_h6_rep", "todu_amt_pile_h6_rep"]
+        assert self._warns(cols, 5.0, 1.2) == []
+
+    def test_no_warning_when_caps_unset(self):
+        assert self._warns(["oa_amt_h0"], None, None) == []

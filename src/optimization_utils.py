@@ -720,6 +720,26 @@ def pareto_keep_indices(production) -> list[int]:
     return keep
 
 
+def _warn_unenforceable_swapin_caps(
+    columns, max_swapin_production_pct: float | None, max_swapin_risk: float | None
+) -> None:
+    """Warn when a swap-in cap is configured but the repesca (``_rep``) columns needed to enforce
+    it are absent from the grid. Otherwise the MILP/GA constraint is SILENTLY skipped at every
+    solve (``if ... and "oa_amt_h0_rep" in cell.columns``) and the analyst believes a cap applies
+    that never bound anything (e.g. reject inference produced no ``_rep`` columns)."""
+    cols = set(columns)
+    if max_swapin_production_pct is not None and "oa_amt_h0_rep" not in cols:
+        logger.warning(
+            f"max_swapin_production_pct={max_swapin_production_pct} is set but 'oa_amt_h0_rep' is absent "
+            "from the grid — the swap-in production cap will NOT be enforced (no reject-inference data)."
+        )
+    if max_swapin_risk is not None and not {"todu_30ever_h6_rep", "todu_amt_pile_h6_rep"} <= cols:
+        logger.warning(
+            f"max_swapin_risk={max_swapin_risk} is set but the '_rep' risk columns are absent from the "
+            "grid — the swap-in risk cap will NOT be enforced (no reject-inference data)."
+        )
+
+
 def trace_pareto_frontier(
     data_summary_desagregado: pd.DataFrame,
     variables: list[str],
@@ -763,6 +783,9 @@ def trace_pareto_frontier(
     if missing:
         logger.error(f"CellGrid missing required columns: {missing}. Cannot trace Pareto frontier.")
         return pd.DataFrame(), grid, []
+
+    # One-time (per sweep) check — both the MILP and GA-fallback paths share this grid.
+    _warn_unenforceable_swapin_caps(grid.cell_data.columns, max_swapin_production_pct, max_swapin_risk)
 
     # Determine risk sweep range
     # Max risk = all cells accepted
