@@ -405,12 +405,14 @@ def reconcile_risk_production_summary_with_audit(
             st.loc[mask, "Production (%)"] = pct
 
     if actual_prod > 0:
-        _set_rows("Actual", actual_prod, 1.0)
-        _set_rows("Swap-in", swap_in, swap_in / actual_prod)
-        _set_rows("Swap-out", swap_out, swap_out / actual_prod)
-        _set_rows("Optimum selected", optimum_prod, optimum_prod / actual_prod)
+        # "Production (%)" is a TRUE percent (×100), matching its label + "0.00" format and every
+        # other "(%)" column. Levels are % of Actual (Actual = 100); Summary is the % delta.
+        _set_rows("Actual", actual_prod, 100.0)
+        _set_rows("Swap-in", swap_in, 100.0 * swap_in / actual_prod)
+        _set_rows("Swap-out", swap_out, 100.0 * swap_out / actual_prod)
+        _set_rows("Optimum selected", optimum_prod, 100.0 * optimum_prod / actual_prod)
         delta = optimum_prod - actual_prod
-        _set_rows("Summary", delta, delta / actual_prod)
+        _set_rows("Summary", delta, 100.0 * delta / actual_prod)
     else:
         _set_rows("Actual", actual_prod, None)
         _set_rows("Swap-in", swap_in, None)

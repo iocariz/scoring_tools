@@ -243,6 +243,34 @@ class TestReconcileRiskProductionSummary:
         assert out.loc[out["Metric"] == "Optimum selected", "Production (€)"].values[0] == optimum
         assert out.loc[out["Metric"] == "Summary", "Production (€)"].values[0] == optimum - actual
 
+    def test_reconcile_production_pct_is_true_percent(self):
+        """Production (%) is a TRUE percent (Actual = 100, levels are % of Actual, Summary is
+        the % delta) — matching its label + the "0.00" number format, not a raw fraction."""
+        audit_df = pd.DataFrame(
+            {
+                "status_name": [StatusName.BOOKED.value, StatusName.BOOKED.value, StatusName.REJECTED.value],
+                "classification": ["keep", "swap_out", "swap_in"],
+                "oa_amt_adjusted": [1000.0, 3000.0, 500.0],
+            }
+        )
+        summary = pd.DataFrame(
+            {
+                "Metric": ["Actual", "Swap-in", "Swap-out", "Optimum selected", "Summary"],
+                "Production (€)": [0.0, 0.0, 0.0, 0.0, 0.0],
+                "Production (%)": [1.0, 0.0, 0.0, 0.0, 0.0],
+            }
+        )
+        out = reconcile_risk_production_summary_with_audit(summary, audit_df)
+        actual = 4000.0  # keep + swap_out
+        optimum = actual - 3000.0 + 500.0  # 1500
+        assert out.loc[out["Metric"] == "Actual", "Production (%)"].values[0] == pytest.approx(100.0)
+        assert out.loc[out["Metric"] == "Optimum selected", "Production (%)"].values[0] == pytest.approx(
+            100.0 * optimum / actual
+        )
+        assert out.loc[out["Metric"] == "Summary", "Production (%)"].values[0] == pytest.approx(
+            100.0 * (optimum - actual) / actual
+        )
+
     def test_reconcile_per_income_bin_sums_to_full_audit(self):
         """Splitting audit by income_bin and reconciling each slice sums to the full audit."""
         rows = []
