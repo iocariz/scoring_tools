@@ -334,6 +334,33 @@ def compute_acceptance_rates(
             f"alpha={alpha:.2f}, beta={beta:.2f}"
         )
 
+        # Prior-dominance diagnostic (reject Bayesian prior sensitivity). The smoothed rate is a
+        # weighted average of the bin's own rate (weight = evidence) and the global prior mean
+        # (weight = effective_prior_strength K): prior weight = K/(evidence + K). When that weight is
+        # large for most bins, the acceptance rates — and thus the swap-in reject multipliers and
+        # cutoffs — are driven by the global prior, not the bin data, so results become sensitive to
+        # `reject_bayesian_prior_strength`. Log-only; tells the analyst which regime a segment is in.
+        evidence = np.asarray(n_eff if decay_half_life_months is not None else total, dtype=float)
+        prior_weight = effective_prior_strength / (evidence + effective_prior_strength)
+        prior_weight = prior_weight[np.isfinite(prior_weight)]
+        if prior_weight.size:
+            med_pw = float(np.median(prior_weight))
+            frac_dom = float(np.mean(prior_weight > 0.5))
+            med_ev = float(np.median(evidence[np.isfinite(evidence)])) if np.isfinite(evidence).any() else float("nan")
+            msg = (
+                f"Bayesian smoothing prior influence | median prior weight K/(n_eff+K)={med_pw:.2f} "
+                f"(K={effective_prior_strength:.1f}, median n_eff={med_ev:.1f}) | "
+                f"{frac_dom:.0%} of bins prior-dominated (>0.5)"
+            )
+            if med_pw > 0.5:
+                logger.warning(
+                    msg + " — PRIOR-DOMINATED: smoothed acceptance rates (→ reject multipliers/cutoffs) "
+                    "are driven more by the global prior than by bin data; results are sensitive to "
+                    "reject_bayesian_prior_strength (lower it or add data)."
+                )
+            else:
+                logger.debug(msg)
+
     # Non-score (08-other) rejections are excluded from the denominator by design
     # (they are not swap-in candidates).  Surface their share so sparse or skewed
     # bins can be assessed — but stabilize via Bayesian smoothing / min-obs, not by
