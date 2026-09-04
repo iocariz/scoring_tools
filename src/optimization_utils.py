@@ -597,14 +597,25 @@ def milp_solve_cutoffs(
     )
 
     if not result.success:
-        # scipy milp status: 1 = iteration/time limit reached, 2 = infeasible. A TIMEOUT is not
-        # the same as infeasible — it silently drops this frontier point though a feasible
-        # incumbent may exist. Log it distinctly so a thin frontier isn't misread as "no solution
-        # exists here". (Behaviour unchanged — still None; returning the incumbent would move the
-        # frontier and needs validation.)
-        if getattr(result, "status", None) == 1:
+        # scipy milp status: 1 = iteration/time limit reached, 2 = infeasible.
+        status = getattr(result, "status", None)
+        if status == 1 and getattr(result, "x", None) is not None:
+            # TIMEOUT with a feasible integer incumbent. Every constraint (risk budget, denominator
+            # floor, monotonicity, swap-in) is a HARD linear constraint, so the incumbent is
+            # risk-feasible and monotone by construction — it may only be production-SUBOPTIMAL.
+            # Return it (recovers a valid frontier point instead of silently dropping it); the
+            # downstream Pareto filter discards it if another target's optimum dominates it. This is
+            # strictly safer than dropping: worst case a slightly-lower-production point at the same
+            # risk cap, never an over-risk one.
             logger.warning(
-                f"MILP hit the {time_limit}s time limit (no proven-optimal solution) — this frontier "
+                f"MILP hit the {time_limit}s time limit — returning the best FEASIBLE incumbent "
+                "(risk-feasible + monotone, not proven production-optimal). Raise milp_time_limit "
+                "for a tighter frontier."
+            )
+            return np.round(result.x).astype(int)
+        if status == 1:
+            logger.warning(
+                f"MILP hit the {time_limit}s time limit with NO feasible incumbent — this frontier "
                 "point was dropped; raise milp_time_limit if the Pareto frontier looks thin."
             )
         return None

@@ -747,6 +747,46 @@ class TestMILPSolver:
         if mask is not None:
             assert mask.sum() == 0
 
+    def test_timeout_with_incumbent_returns_it(self, monkeypatch):
+        """scipy status==1 (time limit) WITH a feasible integer incumbent → return the incumbent
+        (rounded), not None. Every constraint is hard, so the incumbent is risk-feasible/monotone by
+        construction; recovering it beats dropping the frontier point."""
+        from types import SimpleNamespace
+
+        from src import optimization_utils as ou
+
+        df = _make_summary_2d(2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        incumbent = np.array([1.0, 0.0, 0.9999, 0.0001])  # float noise → must be rounded to 0/1
+
+        monkeypatch.setattr(ou, "milp", lambda **kw: SimpleNamespace(success=False, status=1, x=incumbent))
+        mask = milp_solve_cutoffs(grid, target_risk=50.0, inv_vars=[], multiplier=7)
+        assert mask is not None
+        assert mask.tolist() == [1, 0, 1, 0]
+        assert set(mask).issubset({0, 1})
+
+    def test_timeout_without_incumbent_returns_none(self, monkeypatch):
+        """status==1 but no feasible incumbent (x is None) → None (point dropped)."""
+        from types import SimpleNamespace
+
+        from src import optimization_utils as ou
+
+        df = _make_summary_2d(2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        monkeypatch.setattr(ou, "milp", lambda **kw: SimpleNamespace(success=False, status=1, x=None))
+        assert milp_solve_cutoffs(grid, target_risk=50.0, inv_vars=[], multiplier=7) is None
+
+    def test_infeasible_status2_returns_none_even_with_x(self, monkeypatch):
+        """status==2 (infeasible) → None regardless of any x attribute (only timeouts recover)."""
+        from types import SimpleNamespace
+
+        from src import optimization_utils as ou
+
+        df = _make_summary_2d(2, 2)
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        monkeypatch.setattr(ou, "milp", lambda **kw: SimpleNamespace(success=False, status=2, x=np.ones(grid.n_cells)))
+        assert milp_solve_cutoffs(grid, target_risk=50.0, inv_vars=[], multiplier=7) is None
+
     def test_phantom_cells_not_accepted_in_milp(self):
         """Phantom/unobserved cells must never be accepted by MILP.
 
