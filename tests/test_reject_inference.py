@@ -243,6 +243,49 @@ class TestBayesianSmoothing:
         assert tiny == pytest.approx(global_rate * 20 / 21, rel=0.05)
 
 
+class TestPriorDominanceDiagnostic:
+    """The smoothing logs whether a segment's acceptance rates are prior-driven (sensitive to
+    reject_bayesian_prior_strength) or data-driven (robust) via the prior weight K/(n_eff+K)."""
+
+    def _warnings(self, demand, K):
+        from io import StringIO
+
+        from loguru import logger
+
+        buf = StringIO()
+        hid = logger.add(buf, format="{message}", level="WARNING")
+        try:
+            compute_acceptance_rates(
+                demand,
+                VARIABLES,
+                bayesian_smoothing=True,
+                bayesian_prior_strength=K,
+                decay_half_life_months=6.0,  # decay path → effective prior == configured K (no auto-tune)
+                date_col="mis_date",
+            )
+        finally:
+            logger.remove(hid)
+        return buf.getvalue()
+
+    def test_warns_when_prior_dominated(self):
+        # Tiny bins (~3 records each) + large prior → prior weight 100/103 ≈ 0.97 > 0.5.
+        rows = []
+        for b in range(4):
+            rows.append((b, b, "2026-01-01", "booked", None))
+            rows += [(b, b, "2026-01-01", "rejected", "09-score")] * 2
+        demand = _make_demand_with_dates(rows)
+        assert "PRIOR-DOMINATED" in self._warnings(demand, K=100.0)
+
+    def test_no_warn_when_data_dominated(self):
+        # Large bins (~240 records each) + small prior → prior weight 2/242 ≈ 0.008 < 0.5.
+        rows = []
+        for b in range(2):
+            rows += [(b, b, "2026-01-01", "booked", None)] * 120
+            rows += [(b, b, "2026-01-01", "rejected", "09-score")] * 120
+        demand = _make_demand_with_dates(rows)
+        assert "PRIOR-DOMINATED" not in self._warnings(demand, K=2.0)
+
+
 # =============================================================================
 # Time-aware acceptance rate Tests
 # =============================================================================
