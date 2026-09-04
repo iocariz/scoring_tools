@@ -954,8 +954,10 @@ def trace_pareto_frontier(
         logger.warning("Pareto frontier: all MILP sweep solutions filtered out (NaN/inf risk).")
         return pd.DataFrame(), grid, []
 
-    # Sort by risk, keep track of original indices for mask alignment
-    sort_idx = df["b2_ever_h6"].argsort().values
+    # Sort by (risk ASC, production DESC) so the highest-production point wins each risk tie; the
+    # strict-`>` sweep below then drops the lower-production same-risk (dominated) points. A
+    # risk-only sort left the within-tie order arbitrary, so a dominated point could survive.
+    sort_idx = np.lexsort((-df["oa_amt_h0"].to_numpy(), df["b2_ever_h6"].to_numpy()))
     df = df.iloc[sort_idx].reset_index(drop=True)
     all_masks = [all_masks[i] for i in sort_idx]
 
@@ -1033,8 +1035,8 @@ def trace_pareto_frontier(
         if not found_new:
             break
 
-        # Re-sort and re-filter after each refinement round
-        sort_idx = df["b2_ever_h6"].argsort().values
+        # Re-sort (risk ASC, production DESC) and re-filter after each refinement round
+        sort_idx = np.lexsort((-df["oa_amt_h0"].to_numpy(), df["b2_ever_h6"].to_numpy()))
         df = df.iloc[sort_idx].reset_index(drop=True)
         pareto_masks = [pareto_masks[i] for i in sort_idx]
         prev_max = float("-inf")
@@ -1421,8 +1423,9 @@ def _ga_pareto_fallback(
         logger.warning("GA fallback: all solutions filtered out (NaN/inf risk).")
         return pd.DataFrame(), grid, []
 
-    # Sort by risk ascending
-    sort_idx = df["b2_ever_h6"].argsort().values
+    # Sort by (risk ASC, production DESC) — highest-production point wins each risk tie so the
+    # strict-`>` sweep below drops lower-production same-risk (dominated) points.
+    sort_idx = np.lexsort((-df["oa_amt_h0"].to_numpy(), df["b2_ever_h6"].to_numpy()))
     df = df.iloc[sort_idx].reset_index(drop=True)
     all_masks = [all_masks[i] for i in sort_idx]
 
@@ -2127,15 +2130,15 @@ def get_optimal_solutions(df_v: pd.DataFrame, data_sumary: pd.DataFrame, chunk_s
         )
         data_sumary = data_sumary[valid_risk].copy()
 
-    data_sumary = data_sumary.sort_values(by=["b2_ever_h6", "oa_amt_h0"])
-    # Dedup by exact (risk, production) pairs only — rounding dedup removed
-    # because it merged distinct frontier points and discarded better
-    # production for tight risk caps (#27).
-    data_sumary = data_sumary.drop_duplicates(subset=["b2_ever_h6", "oa_amt_h0"], keep="last")
-
-    cummax = data_sumary["oa_amt_h0"].cummax()
-    pareto_mask = data_sumary["oa_amt_h0"] >= cummax
-    data_sumary = data_sumary[pareto_mask]
+    # Canonical Pareto sweep (audit #13, single source of truth): sort (risk ASC, production DESC)
+    # so the highest-production point wins each risk tie, dedup exact (risk, production) pairs, then
+    # keep strictly-improving production via pareto_keep_indices. The old `cummax` with `>=` on a
+    # production-ASCENDING sort kept dominated points at equal risk (and equal-production points at
+    # higher risk) — now dropped, matching the MILP/GA path.
+    data_sumary = data_sumary.sort_values(by=["b2_ever_h6", "oa_amt_h0"], ascending=[True, False])
+    data_sumary = data_sumary.drop_duplicates(subset=["b2_ever_h6", "oa_amt_h0"], keep="first")
+    keep = pareto_keep_indices(data_sumary["oa_amt_h0"].to_numpy())
+    data_sumary = data_sumary.iloc[keep]
 
     chunks = [df_v.iloc[i : i + chunk_size] for i in range(0, len(df_v), chunk_size)]
 
