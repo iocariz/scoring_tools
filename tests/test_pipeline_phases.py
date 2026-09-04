@@ -463,3 +463,25 @@ class TestRunScenarioAnalysisEarlyExit:
         )
 
         assert result.empty
+
+
+class TestSlashedSegmentPaths:
+    """Segment filters use the raw segment_cut_off value (e.g. 'direct/pl/known/nopremium/a-b').
+    The '/' must NOT leak into trend/monthly-metrics filenames (it created non-existent
+    sub-directories and crashed the writes)."""
+
+    def test_monthly_metrics_and_trend_paths_have_no_slash(self, tmp_path):
+        output = OutputPaths(base_dir=tmp_path)
+        seg = "direct/pl/known/nopremium/a-b"
+        for path in (
+            output.monthly_metrics_csv(seg),
+            output.metric_trends_html(seg),
+            output.trend_anomalies_csv(seg),
+        ):
+            fname = path.rsplit("/", 1)[-1]  # basename
+            assert "/" not in fname
+            assert "direct_pl_known_nopremium_a-b" in fname  # slashes -> underscores
+
+    def test_plain_segment_name_unchanged(self, tmp_path):
+        output = OutputPaths(base_dir=tmp_path)
+        assert output.monthly_metrics_csv("seg_a").endswith("monthly_metrics_seg_a.csv")

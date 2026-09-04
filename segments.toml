@@ -21,41 +21,95 @@
 #   reporting:  reporting_supersegment > supersegment > None (standalone)
 
 
-[modelling_supersegments.total]
-segment_filters = ["known_af", "new"]
+[modelling_supersegments.direct]
+segment_filters = [
+    "direct/consolidation/known/nopremium/a-f",
+    "direct/consolidation/known/premium",
+    "direct/pl/known/nopremium/a-b",
+    "direct/pl/known/nopremium/c-d",
+    "direct/pl/known/nopremium/e-f",
+    "direct/pl/known/precon",
+    "direct/pl/new"
+]
 
-[reporting_supersegments.ecommerce_inf_tel]
-segment_filters = ["known_af", "new"]
+[reporting_supersegments.direct-pl-known-premium-precon]
+segment_filters = ["direct/pl/known/precon"]
+bin_edges.income_bin = [-inf, 2000.0, inf]
 
-[segments.known]
-segment_filter = "known_af"
-optimum_risk = 2.0  
-risk_step = 0.5
-reporting_supersegment = "ecommerce_inf_tel"
-modelling_supersegment = "total"
+[reporting_supersegments.direct-consolidation]
+segment_filters = ["direct/consolidation/known/nopremium/a-f", "direct/consolidation/known/premium","direct/consolidation/new"]
+bin_edges.income_bin = [-inf, 2000.0, inf]
 
-[segments.new]
-segment_filter = "new"
-optimum_risk = 4
-risk_step = 0.5
-run_ri_optimizer = false
-reporting_supersegment = "ecommerce_inf_tel"
-modelling_supersegment = "total"
-# Octroi as the grid anchor (var0) so the fixed_cutoffs table below reads as
-# "for each octroi bin, the efx cutoff". inference_variables stays global, so
-# the shared `total` model is unaffected — only the optimization-grid
-# orientation changes for this segment.
-#variables = ['sc_octroi_new_clus', 'new_efx_clus']
+[segments.direct-conso-known-no-premium]
+segment_filter = "direct/consolidation/known/nopremium/a-f"
+optimum_risk = 0.8  # CHANGED (was 1.3)
+risk_step = 0.1
+reporting_supersegment = "direct-consolidation"
+modelling_supersegment = "direct"
+min_risk = 0.7  # Optional: minimum risk for global allocation
+max_risk = 1.4  # Optional: maximum risk for global allocation
 
-# Re-derived for the 12-bin octroi grid (config.toml bin_edges, K=12 €-balanced):
-# the old 10-quantile-bin staircase [7,5,5,5,4,4,2,2,2,1] mapped onto the 12 new
-# fixed octroi bins by the €-dominant old policy level per bin (preserves the
-# same acceptance region; already monotone non-increasing).
-#[segments.new.fixed_cutoffs]
-#sc_octroi_new_clus = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
-#new_efx_clus = [7, 5, 5, 5, 4, 4, 4, 2, 2, 2, 1, 1]
-#run_all_scenarios = false
 
+[segments.direct-conso-known-premium]
+segment_filter = "direct/consolidation/known/premium"
+reporting_supersegment = "direct-consolidation"
+modelling_supersegment = "direct"
+baseline_mode = true
+
+[reporting_supersegments.direct-pl-new]
+segment_filters = ["direct/pl/new"]
+bin_edges.income_bin = [-inf, 2000.0, inf]
+
+[segments.direct-pl-new]
+segment_filter = "direct/pl/new"
+optimum_risk = 1.2  # CHANGED (was 1.1)
+risk_step = 0.1
+reporting_supersegment = "direct-pl-new"
+modelling_supersegment = "direct"
+min_risk = 0.8  # Optional: minimum risk for global allocation
+max_risk = 1.3  # Optional: maximum risk for global allocation
+
+[reporting_supersegments.direct-pl-known-no-premium]
+segment_filters = ["direct/pl/known/nopremium/a-b", "direct/pl/known/nopremium/c-d","direct/pl/known/nopremium/e-f"]
+bin_edges.income_bin = [-inf, 2000.0, inf]
+
+[segments.direct-known-no_premium-ab]
+segment_filter = "direct/pl/known/nopremium/a-b"
+optimum_risk = 1.1
+risk_step = 0.1
+reporting_supersegment = "direct-pl-known-no-premium"
+modelling_supersegment = "direct"
+min_risk = 0.8
+max_risk = 1.4
+cutoff_floor_segment = "direct-known-no_premium-cd"  # Must accept at least what cd accepts (least restrictive)
+
+[segments.direct-known-no_premium-cd]
+segment_filter = "direct/pl/known/nopremium/c-d"
+optimum_risk = 1.4
+risk_step = 0.1
+reporting_supersegment = "direct-pl-known-no-premium"
+modelling_supersegment = "direct"
+min_risk = 0.8
+max_risk = 1.6
+cutoff_floor_segment = "direct-known-no_premium-ef"
+
+[segments.direct-known-no_premium-ef]
+segment_filter = "direct/pl/known/nopremium/e-f"
+optimum_risk = 1.4  # CHANGED (was 1.09)
+risk_step = 0.1
+reporting_supersegment = "direct-pl-known-no-premium"
+modelling_supersegment = "direct"
+min_risk = 0.8
+max_risk = 1.5
+
+[segments.direct-pl-known-premium-precon]
+segment_filter = "direct/pl/known/precon"
+optimum_risk = 1.4
+risk_step = 0.1
+reporting_supersegment = "direct-pl-known-premium-precon"
+modelling_supersegment = "direct"
+min_risk = 0.8
+max_risk = 1.4
 
 # Add more segments as needed:
 # [segments.another_segment]
