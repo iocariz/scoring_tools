@@ -497,11 +497,24 @@ def _shrink_acceptance_rate(
     return pd.Series(rate_eff, index=target.index), anchor, n_no_demand
 
 
+def _slice_weights(slice_df: pd.DataFrame, weight_col: str | None):
+    """``sample_weight`` for an isotonic slice: the evidence column if present and non-degenerate,
+    else ``None`` (unweighted). A slice whose weights are non-finite or sum to ~0 falls back to
+    unweighted so PAVA never sees an all-zero-weight input."""
+    if weight_col is None or weight_col not in slice_df.columns:
+        return None
+    w = slice_df[weight_col].to_numpy(dtype=float)
+    if not np.isfinite(w).all() or w.sum() <= 0:
+        return None
+    return w
+
+
 def _enforce_multiplier_monotonicity(
     result: pd.DataFrame,
     variables: list[str],
     inv_vars: list[str] | None = None,
     *,
+    weight_col: str | None = None,
     max_iterations: int = 10,
     tol: float = 1e-6,
     quiet: bool = False,
@@ -522,6 +535,11 @@ def _enforce_multiplier_monotonicity(
     inv_vars:
         Variables whose higher bin values indicate *lower* risk. Isotonic
         regression uses ``increasing=False`` for these.
+    weight_col:
+        Optional column of per-cell evidence weights (e.g. demand count). When set, PAVA
+        pools adjacent violators by the EXPOSURE-weighted mean instead of the unweighted mean,
+        so a high-evidence bin dominates a pooled block rather than being averaged 1:1 with a
+        thin one. A slice whose weights sum to ~0 falls back to unweighted for that slice.
     max_iterations:
         Maximum number of full passes over all variables.
     tol:
@@ -552,7 +570,9 @@ def _enforce_multiplier_monotonicity(
                     continue
                 iso = IsotonicRegression(increasing=increasing, out_of_bounds="clip")
                 iso_values = iso.fit_transform(
-                    sorted_df[var].values.astype(float), sorted_df["reject_risk_multiplier"].values
+                    sorted_df[var].values.astype(float),
+                    sorted_df["reject_risk_multiplier"].values,
+                    sample_weight=_slice_weights(sorted_df, weight_col),
                 )
                 result.loc[sorted_df.index, "reject_risk_multiplier"] = iso_values
             else:
@@ -565,7 +585,9 @@ def _enforce_multiplier_monotonicity(
                         continue
                     iso = IsotonicRegression(increasing=increasing, out_of_bounds="clip")
                     iso_values = iso.fit_transform(
-                        slice_df[var].values.astype(float), slice_df["reject_risk_multiplier"].values
+                        slice_df[var].values.astype(float),
+                        slice_df["reject_risk_multiplier"].values,
+                        sample_weight=_slice_weights(slice_df, weight_col),
                     )
                     result.loc[slice_df.index, "reject_risk_multiplier"] = iso_values
 
@@ -584,7 +606,7 @@ def _enforce_multiplier_monotonicity(
     # A cell a dominates b if a[v] >= b[v] for all v (respecting direction) ⇒ multiplier[a] >= multiplier[b].
     # Guarantees zero residual violations after the alternating axis-wise warm-start.
     if len(variables) >= 2 and len(result) > 1:
-        n_merges = _fix_partial_order_violations(result, variables, inv_set)
+        n_merges = _fix_partial_order_violations(result, variables, inv_set, weight_col=weight_col)
         if n_merges > 0:
             log_fn = logger.debug if quiet else logger.warning
             log_fn(
@@ -600,6 +622,7 @@ def _fix_partial_order_violations(
     variables: list[str],
     inv_set: set[str],
     *,
+    weight_col: str | None = None,
     tol: float = 1e-9,
 ) -> int:
     """Project the multiplier surface onto monotonicity over the cell poset (audit #17).
@@ -619,6 +642,17 @@ def _fix_partial_order_violations(
         return 0
 
     vals = result["reject_risk_multiplier"].to_numpy(dtype=float)
+    # Per-cell evidence weights (default 1 each → the original unweighted block mean). When set, a
+    # pooled block's value is the EXPOSURE-weighted mean of its members, so a high-evidence cell
+    # dominates a thin one instead of being averaged 1:1. Degenerate weights → fall back to unweighted.
+    if weight_col is not None and weight_col in result.columns:
+        w = result[weight_col].to_numpy(dtype=float)
+        if not np.isfinite(w).all() or w.sum() <= 0:
+            w = np.ones(n)
+        else:
+            w = np.maximum(w, 1e-9)  # guard singleton blocks against a zero denominator
+    else:
+        w = np.ones(n)
     # Orient coordinates so that higher = riskier in all dimensions.
     signs = np.array([(-1 if v in inv_set else 1) for v in variables])
     oriented = result[variables].to_numpy() * signs
@@ -635,10 +669,11 @@ def _fix_partial_order_violations(
     if not dom_pairs:
         return 0
 
-    # Union-find over cells; a block's value is the unweighted mean of its members' multipliers.
+    # Union-find over cells; a block's value is the WEIGHTED mean of its members' multipliers:
+    # block_wsum = Σ(w·mult), block_wtot = Σw → value = block_wsum / block_wtot.
     parent = list(range(n))
-    block_sum = vals.copy()
-    block_size = np.ones(n)
+    block_wsum = vals * w
+    block_wtot = w.copy()
 
     def find(x: int) -> int:
         while parent[x] != x:
@@ -653,18 +688,18 @@ def _fix_partial_order_violations(
             ri, rj = find(i), find(j)
             if ri == rj:
                 continue
-            if block_sum[ri] / block_size[ri] < block_sum[rj] / block_size[rj] - tol:
+            if block_wsum[ri] / block_wtot[ri] < block_wsum[rj] / block_wtot[rj] - tol:
                 # i dominates j but block(i) is less risky than block(j): pool the two blocks.
                 parent[rj] = ri
-                block_sum[ri] += block_sum[rj]
-                block_size[ri] += block_size[rj]
+                block_wsum[ri] += block_wsum[rj]
+                block_wtot[ri] += block_wtot[rj]
                 merges += 1
                 changed = True
         if not changed:
             break
 
     if merges:
-        result["reject_risk_multiplier"] = np.array([block_sum[find(k)] / block_size[find(k)] for k in range(n)])
+        result["reject_risk_multiplier"] = np.array([block_wsum[find(k)] / block_wtot[find(k)] for k in range(n)])
     return merges
 
 
@@ -757,6 +792,20 @@ def apply_parceling_adjustment(
         how="left",
     )
 
+    # Per-cell evidence (demand count) for the monotone projection: a bin's multiplier is only as
+    # reliable as the demand backing its acceptance rate. Merge it so the isotonic/PAVA pooling is
+    # exposure-weighted (a 5-loan bin no longer counts 1:1 with a 50k-loan bin). Floored at 1 so a
+    # no-demand bin still has minimal, non-degenerate weight; internal column, dropped before return.
+    if {"n_booked", "n_score_rejected"}.issubset(acceptance_rates.columns):
+        ev = acceptance_rates[variables].copy()
+        ev["_ri_evidence"] = (
+            (acceptance_rates["n_booked"] + acceptance_rates["n_score_rejected"]).to_numpy(dtype=float).clip(min=1.0)
+        )
+        result = result.merge(ev, on=variables, how="left")
+        result["_ri_evidence"] = result["_ri_evidence"].fillna(1.0)
+    else:
+        result["_ri_evidence"] = 1.0
+
     # No-demand / low-demand bins carry the highest selection-bias uncertainty. Instead of the
     # (anti-conservative) median observed rate, shrink every bin's rate toward a conservative LOW
     # anchor by confidence: no-demand → anchor (high uplift), well-observed → ~unchanged. This also
@@ -814,7 +863,11 @@ def apply_parceling_adjustment(
     # is the final word and the output is provably both monotone and within [1, max_risk_multiplier].
     if enforce_monotonicity:
         result["reject_risk_multiplier"] = result["reject_risk_multiplier"].clip(lower=1.0, upper=max_risk_multiplier)
-        result = _enforce_multiplier_monotonicity(result, variables, inv_vars=inv_vars, quiet=quiet)
+        result = _enforce_multiplier_monotonicity(
+            result, variables, inv_vars=inv_vars, weight_col="_ri_evidence", quiet=quiet
+        )
+
+    result = result.drop(columns=["_ri_evidence"], errors="ignore")
 
     # Warn about bins with extreme adjustments or very few observations
     extreme_bins = (result["reject_risk_multiplier"] >= max_risk_multiplier * 0.9).sum()

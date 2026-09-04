@@ -837,6 +837,48 @@ class TestMonotonicityEnforcement:
         mults = enforced.sort_values("var0")["reject_risk_multiplier"].values
         np.testing.assert_array_almost_equal(mults, [1.0, 1.5, 2.0])
 
+    def test_weighted_isotonic_pools_toward_high_evidence_bin(self):
+        """A violating pair pools by the EXPOSURE-weighted mean, not the 1:1 midpoint: the
+        high-evidence bin dominates the pooled value (audit: unweighted PAVA was evidence-blind)."""
+        result = pd.DataFrame(
+            {
+                "var0": [1, 2],
+                "var1": [1, 1],
+                "reject_risk_multiplier": [3.0, 1.0],  # violates increasing monotonicity in var0
+                "_ev": [1000.0, 10.0],  # bin 0 has 100x the evidence
+            }
+        )
+        # Unweighted: pooled to the simple midpoint 2.0
+        unweighted = _enforce_multiplier_monotonicity(result.copy(), VARIABLES)
+        assert unweighted["reject_risk_multiplier"].tolist() == pytest.approx([2.0, 2.0])
+        # Weighted: pooled toward the high-evidence bin's 3.0
+        weighted = _enforce_multiplier_monotonicity(result.copy(), VARIABLES, weight_col="_ev")
+        expected = (3.0 * 1000 + 1.0 * 10) / 1010
+        assert weighted["reject_risk_multiplier"].tolist() == pytest.approx([expected, expected])
+        assert weighted["reject_risk_multiplier"].iloc[0] > 2.5  # clearly toward 3.0, not the midpoint
+
+    def test_weighted_partial_order_pools_toward_high_evidence(self):
+        """The poset block-pooling (_fix_partial_order_violations) is also exposure-weighted."""
+        # (2,2) dominates (1,1) but is LESS risky (1.0 < 3.0) -> violation -> pool.
+        result = pd.DataFrame(
+            {
+                "var0": [1, 2],
+                "var1": [1, 2],
+                "reject_risk_multiplier": [3.0, 1.0],
+                "_ev": [10.0, 1000.0],  # the dominating (2,2) cell has 100x evidence
+            }
+        )
+        unweighted = result.copy()
+        n_u = _fix_partial_order_violations(unweighted, VARIABLES, set())
+        assert n_u == 1
+        assert unweighted["reject_risk_multiplier"].tolist() == pytest.approx([2.0, 2.0])
+        weighted = result.copy()
+        n_w = _fix_partial_order_violations(weighted, VARIABLES, set(), weight_col="_ev")
+        expected = (3.0 * 10 + 1.0 * 1000) / 1010
+        assert n_w == 1
+        assert weighted["reject_risk_multiplier"].tolist() == pytest.approx([expected, expected])
+        assert weighted["reject_risk_multiplier"].iloc[0] < 1.5  # toward the high-evidence 1.0
+
     def test_monotonicity_in_parceling(self):
         """enforce_monotonicity param in apply_parceling_adjustment works."""
         repesca = pd.DataFrame(
