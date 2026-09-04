@@ -394,6 +394,37 @@ class TestCalculateAnnualCoef:
         coef = calculate_annual_coef(start, end)
         assert coef == pytest.approx(0.5)
 
+    @staticmethod
+    def _coef_capturing_warnings(start, end):
+        import logging
+
+        from src import utils as u
+
+        recs = []
+
+        class _Sink(logging.Handler):
+            def emit(self, record):
+                recs.append(record.getMessage())
+
+        hid = u.logger.add(_Sink(level=logging.WARNING), level="WARNING", format="{message}")
+        try:
+            coef = calculate_annual_coef(start, end)
+        finally:
+            u.logger.remove(hid)
+        return coef, recs
+
+    def test_month_aligned_window_no_warning(self):
+        coef, warns = self._coef_capturing_warnings(pd.Timestamp("2024-06-01"), pd.Timestamp("2025-05-01"))
+        assert coef == pytest.approx(1.0)  # 12 monthly cohorts
+        assert not any("month-start-aligned" in m for m in warns)
+
+    def test_non_aligned_window_warns_but_value_unchanged(self):
+        # Mid-month endpoints: same month labels (n_month=12), so coef is unchanged — but the
+        # cohort basis is undefined for a non-aligned window, so it must WARN.
+        coef, warns = self._coef_capturing_warnings(pd.Timestamp("2024-06-15"), pd.Timestamp("2025-05-20"))
+        assert coef == pytest.approx(1.0)
+        assert any("month-start-aligned" in m for m in warns)
+
 
 # =============================================================================
 # generate_cutoff_summary Tests
