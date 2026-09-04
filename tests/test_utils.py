@@ -15,6 +15,7 @@ from src.utils import (
     calculate_todu_30ever_from_b2,
     consolidate_cutoff_summaries,
     extrapolate_h3_to_h6,
+    fit_h3_curvature_within_bin_temporal,
     fit_h3_extrapolation_curve,
     format_cutoff_summary_table,
     generate_cutoff_summary,
@@ -808,6 +809,88 @@ class TestFitH3ExtrapolationCurve:
         weights = np.array([20, 50, 100, 200, 400, 800], dtype=float)
         _, _, diag = fit_h3_extrapolation_curve(b2_h3, b2_h6, weights=weights)
         assert diag["weighting_scheme"] == "inverse_variance_proxy"
+
+
+# =============================================================================
+# fit_h3_curvature_within_bin_temporal Tests (ecological-transfer check)
+# =============================================================================
+
+
+class TestFitH3CurvatureWithinBinTemporal:
+    """Tests for the within-bin temporal curvature estimator."""
+
+    def _make_cells(self, bins, periods_per_bin, alpha, level_by_bin, ratio_by_period, noise=0.0, seed=0):
+        """Build (bin, period) cells whose WITHIN-BIN slope of log(h6) on log(h3) is `alpha`.
+
+        Each bin has its own level (fixed effect); within a bin, h3 varies across periods by
+        `ratio_by_period` and h6 = C_bin * h3**alpha, so de-meaning removes C_bin and the pooled
+        within-bin slope recovers `alpha` regardless of the cross-bin level spread.
+        """
+        rng = np.random.RandomState(seed)
+        bin_ids, h3, h6, w = [], [], [], []
+        for b in range(bins):
+            base_h3 = level_by_bin[b]
+            for r in ratio_by_period[:periods_per_bin]:
+                x = base_h3 * r
+                y = level_by_bin[b] * (x**alpha) * (1.0 + rng.normal(0, noise))
+                bin_ids.append(f"bin{b}")
+                h3.append(x)
+                h6.append(y)
+                w.append(100.0)
+        return np.array(bin_ids), np.array(h3), np.array(h6), np.array(w)
+
+    def test_recovers_within_bin_slope_independent_of_cross_bin_levels(self):
+        # True within-bin maturation slope = 1.4. Bins sit at very different levels (a strong
+        # cross-bin gradient) — the estimator must remove the bin fixed effect and recover 1.4.
+        level_by_bin = [0.01, 0.05, 0.2, 0.8]  # wide cross-bin level spread
+        ratio_by_period = [0.8, 1.0, 1.25]  # 3 periods per bin
+        bin_ids, h3, h6, w = self._make_cells(
+            4, 3, alpha=1.4, level_by_bin=level_by_bin, ratio_by_period=ratio_by_period
+        )
+        alpha_within, diag = fit_h3_curvature_within_bin_temporal(bin_ids, h3, h6, weights=w)
+        assert np.isclose(alpha_within, 1.4, atol=0.05)
+        assert diag["n_bins"] == 4
+        assert diag["n_pairs"] == 12
+
+    def test_within_slope_differs_from_cross_bin_slope(self):
+        # Within-bin slope is 0.5, but the cross-bin arrangement (levels rising with base h3) makes
+        # the cross-sectional slope ~1 — exactly the ecological-transfer gap this monitor exists for.
+        level_by_bin = [0.02, 0.06, 0.18, 0.54]
+        ratio_by_period = [0.9, 1.0, 1.15]
+        bin_ids, h3, h6, w = self._make_cells(
+            4, 3, alpha=0.5, level_by_bin=level_by_bin, ratio_by_period=ratio_by_period
+        )
+        alpha_within, _ = fit_h3_curvature_within_bin_temporal(bin_ids, h3, h6, weights=w)
+        # Cross-bin fit on the SAME cells sees the level gradient, not the within slope.
+        cross_method, cross_curv, cross_diag = fit_h3_extrapolation_curve(h3, h6, weights=w)
+        assert np.isclose(alpha_within, 0.5, atol=0.05)
+        assert abs(cross_diag["alpha"] - alpha_within) > 0.2  # the two bases genuinely disagree
+
+    def test_single_period_bins_return_nan(self):
+        # Every bin appears in only one period → no within-bin temporal variation → NaN.
+        bin_ids = np.array(["a", "b", "c", "d", "e"])
+        h3 = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
+        h6 = h3 * 2.0
+        alpha_within, diag = fit_h3_curvature_within_bin_temporal(bin_ids, h3, h6)
+        assert np.isnan(alpha_within)
+        assert diag["n_bins"] == 0
+
+    def test_insufficient_valid_cells_return_nan(self):
+        bin_ids = np.array(["a", "a"])
+        h3 = np.array([1.0, 1.5])
+        h6 = np.array([2.0, 3.0])
+        alpha_within, diag = fit_h3_curvature_within_bin_temporal(bin_ids, h3, h6, min_pairs=4)
+        assert np.isnan(alpha_within)
+        assert diag["note"] == "insufficient valid cells"
+
+    def test_nonpositive_and_nonfinite_cells_dropped(self):
+        # Zeros / NaN cells are dropped (log-log needs positive), leaving a clean 2-bin×2-period set.
+        bin_ids = np.array(["a", "a", "a", "b", "b", "b"])
+        h3 = np.array([1.0, 2.0, 0.0, 1.0, 2.0, np.nan])
+        h6 = np.array([1.0, 4.0, 5.0, 1.0, 4.0, 4.0])  # within slope = 2 (log4/log2)
+        alpha_within, diag = fit_h3_curvature_within_bin_temporal(bin_ids, h3, h6, min_pairs=4)
+        assert np.isclose(alpha_within, 2.0, atol=0.05)
+        assert diag["n_pairs"] == 4  # the 0.0 and NaN cells dropped
 
 
 # =============================================================================
