@@ -441,6 +441,30 @@ class TestComputeHybridMRRisk:
         for _, row in comparison_df.iterrows():
             assert np.isclose(row["b2_ever_h6_tmp"], row["b2_mr"])
 
+    def test_bin_with_nan_b2_mr_not_labeled_observed(self, data_booked_main, merge_keys):
+        """A bin can clear min_obs yet have b2_mr = NaN (zero H6 pile → undefined rate). It must
+        NOT be labeled 'mr_observed' with a NaN risk; it falls through to a real fallback."""
+        n = 40
+        mr = pd.DataFrame(
+            {
+                "bin_a": [1] * n + [2] * n,
+                "bin_b": [1] * (2 * n),
+                # bin (1,1): 40 obs but ZERO H6 pile → b2_mr undefined (NaN)
+                # bin (2,1): 40 obs with a normal pile → b2_mr valid
+                "todu_30ever_h6": [0.0] * n + [8.0] * n,
+                "todu_amt_pile_h6": [0.0] * n + [100.0] * n,
+                "oa_amt_h0": [1000.0] * (2 * n),
+                "status_name": ["booked"] * (2 * n),
+            }
+        )
+        _, comparison_df = _compute_hybrid_mr_risk(data_booked_main, mr, merge_keys, min_obs=30)
+        by_bin = comparison_df.set_index("bin_a")
+        # bin 1: NaN b2_mr despite 40 obs → NOT mr_observed, and its risk is a real (non-NaN) fallback
+        assert by_bin.loc[1, "risk_source"] != "mr_observed"
+        assert not np.isnan(by_bin.loc[1, "b2_ever_h6_tmp"])
+        # bin 2: valid b2_mr → mr_observed
+        assert by_bin.loc[2, "risk_source"] == "mr_observed"
+
     def test_falls_back_to_main_for_sparse_bins(self, data_booked_main, merge_keys):
         """Bins with n_obs < threshold use main-period risk."""
         # Only 5 MR obs per bin -> below threshold of 30
