@@ -610,8 +610,12 @@ def _compute_hybrid_mr_risk(
         logger.debug("H6/H3 ratio trend: skipped — no H3 data configured")
 
     # --- Choose risk source per bin ---
-    # Mature H6 observed data (may be empty if MR window < mr_maturity_months)
-    use_mr = combined["n_obs_mr"].fillna(0) >= min_obs
+    # Mature H6 observed data (may be empty if MR window < mr_maturity_months). Require BOTH
+    # enough observations AND a usable (non-NaN) b2_mr: a bin can clear min_obs yet still have
+    # b2_mr = NaN (e.g. zero H6 exposure/pile so calculate_b2_ever_h6 is undefined). Without the
+    # notna() guard such a bin was labeled "mr_observed" with a NaN risk; now it falls through to
+    # H3 extrapolation / main-imputation / model-fallback like any other bin with no usable MR risk.
+    use_mr = (combined["n_obs_mr"].fillna(0) >= min_obs) & combined["b2_mr"].notna()
 
     if has_h3:
         # H3→H6 ratio from main-period (fully mature) data
