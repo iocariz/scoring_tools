@@ -220,6 +220,28 @@ class TestBayesianSmoothing:
         # Smoothed rate for large bin (2,2) should barely change
         assert bin_22["smoothed_acceptance_rate"] < bin_22["acceptance_rate"]
 
+    def test_smoothing_prior_mean_unbiased_at_low_global_rate(self):
+        """At a very low global acceptance rate the Beta prior mean must equal global_rate, not
+        be inflated toward 0.5 by an asymmetric alpha floor. A tiny 0-acceptance bin should be
+        shrunk to just BELOW global_rate (prior mean × shrinkage); the old max(.,0.5) alpha floor
+        pushed the prior mean ABOVE global_rate (anti-conservative in deep-reject bins)."""
+        demand = _make_demand(
+            [
+                # Bin (1,1): 4 booked / 196 score-rejected -> drives global_rate ≈ 0.02
+                *[(1, 1, "booked", None)] * 4,
+                *[(1, 1, "rejected", "09-score")] * 196,
+                # Bin (2,2): a single score-rejected record -> tiny, prior-dominated
+                *[(2, 2, "rejected", "09-score")] * 1,
+            ]
+        )
+        rates = compute_acceptance_rates(demand, VARIABLES, bayesian_smoothing=True, bayesian_prior_strength=20.0)
+        global_rate = 4 / 201  # ≈ 0.0199
+        tiny = rates[rates["var0"] == 2].iloc[0]["smoothed_acceptance_rate"]
+        # Unbiased: prior mean == global_rate, so the 0-acceptance tiny bin lands just below it
+        # (≈ global_rate × strength/(strength+1)); the old floored prior put it ABOVE global_rate.
+        assert tiny < global_rate
+        assert tiny == pytest.approx(global_rate * 20 / 21, rel=0.05)
+
 
 # =============================================================================
 # Time-aware acceptance rate Tests
