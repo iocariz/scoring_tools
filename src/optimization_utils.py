@@ -367,8 +367,23 @@ def _build_monotonicity_constraints(
         q = np.clip(t30 / safe_exp, 0.0, 1.0)
         risk_metric = multiplier * q
 
-        # Approximate standard error of q with n_eff ~= exposure.
-        n_eff = np.where(exposure > 0, exposure, np.nan)
+        # Standard error of q uses the cell's LOAN COUNT as the binomial n, NOT the € exposure.
+        # b2 is an amount-weighted default rate; the number of independent observations backing it is
+        # the number of booked accounts (acct_booked_h0, ~4-115/cell), not todu_amt_pile_h6 (€,
+        # ~1e5-1e6). Using € as n understated the SE by ~sqrt(exposure/count) (hundreds ×), so the
+        # `diff < z * pooled_se` test was almost never true and the whole relaxation was statistically
+        # inert (todo #58). Fall back to exposure only when the count column is absent (synthetic
+        # grids) — with a warning, since that path reproduces the inert behaviour.
+        if "acct_booked_h0" in grid.cell_data.columns:
+            n_raw = grid.cell_data["acct_booked_h0"].to_numpy(dtype=float)
+            n_eff = np.where((exposure > 0) & (n_raw > 0), n_raw, np.nan)
+        else:
+            logger.warning(
+                "Monotonicity uncertainty relaxation: grid has no 'acct_booked_h0' (loan count); "
+                "falling back to €-exposure as the SE sample size, which understates the SE and makes "
+                "the relaxation largely inert. Provide acct_booked_h0 for a valid standard error."
+            )
+            n_eff = np.where(exposure > 0, exposure, np.nan)
         q_se = np.sqrt(np.clip(q * (1.0 - q), 0.0, None) / n_eff)
         risk_se = multiplier * q_se
 
