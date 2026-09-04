@@ -30,6 +30,7 @@ dependencies = [
     "statsmodels>=0.14.6",
     "gradio>=6.8.0",
     "openpyxl>=3.1.0",
+    "pyarrow>=25.0.1",
 ]
 
 [project.optional-dependencies]
