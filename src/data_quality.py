@@ -19,6 +19,13 @@ if TYPE_CHECKING:
     from src.config import PreprocessingSettings
 
 
+#: Normal-consistency constants that rescale a robust dispersion estimate to an estimate of the
+#: standard deviation σ, so the modified z-score in ``check_numeric_outliers`` means the same thing
+#: (a standard-normal z) regardless of which dispersion estimate the fallback landed on.
+_MAD_TO_SIGMA = 0.6745  # Φ⁻¹(0.75); median absolute deviation → σ (Iglewicz–Hoaglin modified z-score)
+_MEAN_AD_TO_SIGMA = 0.7979  # √(2/π); mean absolute deviation → σ
+
+
 class CheckStatus(Enum):
     """Status of a data quality check."""
 
@@ -311,14 +318,21 @@ def check_numeric_outliers(
         median = values.median()
         mad = np.median(np.abs(values - median))
 
-        if mad == 0:
-            # Fallback to mean absolute deviation or simple std if MAD is 0 (e.g. lots of identical values)
-            mad = np.mean(np.abs(values - median))
-            if mad == 0:
-                continue
+        if mad > 0:
+            scale, consistency = mad, _MAD_TO_SIGMA
+        else:
+            # MAD is 0 (>50% of values identical). Fall back to the MEAN absolute deviation, which
+            # needs its OWN normal-consistency constant: reusing the MAD constant (0.6745) with a
+            # mean-AD scale understated the z-score by ~15% (0.6745/0.7979), flagging fewer outliers
+            # than intended — anti-conservative in a fail-closed DQ gate.
+            mean_ad = np.mean(np.abs(values - median))
+            if mean_ad == 0:
+                continue  # all values identical → no dispersion, no outliers possible
+            scale, consistency = mean_ad, _MEAN_AD_TO_SIGMA
 
-        # Modified Z-score formula: 0.6745 * (x - median) / MAD
-        z_scores = 0.6745 * np.abs(values - median) / mad
+        # Modified Z-score: consistency * (x - median) / scale, where `consistency` rescales the
+        # robust dispersion estimate to σ for normal data so `z_threshold` means the same thing.
+        z_scores = consistency * np.abs(values - median) / scale
         outlier_count = (z_scores > z_threshold).sum()
         outlier_pct = outlier_count / len(values)
 
