@@ -9,6 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from .constants import DEFAULT_N_BOOTSTRAPS, DEFAULT_SENSITIVITY_LEVELS
 
 
+def _fs_safe(name: str) -> str:
+    """Make a segment label safe to embed in a filename. Segment filters use the raw
+    ``segment_cut_off`` value (e.g. ``direct/pl/known/nopremium/a-b``), whose ``/`` would
+    otherwise be read as sub-directories that don't exist (trend/monthly-metrics writes crashed)."""
+    return str(name).replace("/", "_").replace("\\", "_")
+
+
 @dataclass
 class OutputPaths:
     """Centralized output path configuration for the pipeline.
@@ -140,13 +147,13 @@ class OutputPaths:
     # -- trends --
 
     def monthly_metrics_csv(self, segment: str) -> str:
-        return str(self.data_dir / f"monthly_metrics_{segment}.csv")
+        return str(self.data_dir / f"monthly_metrics_{_fs_safe(segment)}.csv")
 
     def metric_trends_html(self, segment: str) -> str:
-        return str(self.images_dir / f"metric_trends_{segment}.html")
+        return str(self.images_dir / f"metric_trends_{_fs_safe(segment)}.html")
 
     def trend_anomalies_csv(self, segment: str) -> str:
-        return str(self.data_dir / f"trend_anomalies_{segment}.csv")
+        return str(self.data_dir / f"trend_anomalies_{_fs_safe(segment)}.csv")
 
     # -- reporting --
 
