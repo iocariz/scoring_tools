@@ -348,6 +348,9 @@ def _make_summary_2d(n_var0=3, n_var1=4):
                 {
                     "var0": v0,
                     "var1": v1,
+                    # Loan count (SE sample size, todo #58). Deterministic from `amt` so this does
+                    # NOT consume from the RandomState stream and perturb other fixtures' draws.
+                    "acct_booked_h0": max(round(amt / 100.0), 2),
                     "todu_30ever_h6": risk * amt / 7,
                     "todu_amt_pile_h6": amt,
                     "oa_amt_h0": production,
@@ -519,11 +522,14 @@ class TestMonotonicityConstraints:
         df = _make_summary_2d(2, 2)
 
         # Force very sparse and near-equal neighboring cells on var1 axis
-        # so they become "ambiguous" under z-threshold logic.
+        # so they become "ambiguous" under z-threshold logic. Few loans (small
+        # acct_booked_h0) → large SE → the near-equal risks are indistinguishable.
         df.loc[(df["var0"] == 1) & (df["var1"] == 1), "todu_amt_pile_h6"] = 50.0
         df.loc[(df["var0"] == 1) & (df["var1"] == 2), "todu_amt_pile_h6"] = 50.0
         df.loc[(df["var0"] == 1) & (df["var1"] == 1), "todu_30ever_h6"] = 0.50
         df.loc[(df["var0"] == 1) & (df["var1"] == 2), "todu_30ever_h6"] = 0.51
+        df.loc[(df["var0"] == 1) & (df["var1"] == 1), "acct_booked_h0"] = 3
+        df.loc[(df["var0"] == 1) & (df["var1"] == 2), "acct_booked_h0"] = 3
 
         grid = CellGrid.from_summary(df, ["var0", "var1"])
         A_strict = _build_monotonicity_constraints(grid, inv_vars=[])
@@ -537,6 +543,74 @@ class TestMonotonicityConstraints:
         )
 
         assert A_relaxed.shape[0] < A_strict.shape[0]
+
+    def test_relaxation_se_uses_loan_count_not_exposure(self):
+        """The SE sample size is the loan count (acct_booked_h0), not € exposure (todo #58).
+
+        Two adjacent cells with LARGE € exposure but a moderate risk gap: with few loans the gap is
+        within noise (relax); with many loans the same gap is significant (enforce). Under the old
+        exposure-as-n SE both would look significant (n ~ 9e5 → SE ~ 0) and neither would relax —
+        i.e. the relaxation was inert. Holding exposure fixed and only changing the loan count proves
+        the SE now responds to the count.
+        """
+        df = _make_summary_2d(2, 2)
+        big_exp = 900_000.0
+        for v1, b2 in ((1, 0.07), (2, 0.17)):  # moderate risk gap along var1 (q=0.01 vs ~0.024)
+            sel = (df["var0"] == 1) & (df["var1"] == v1)
+            df.loc[sel, "todu_amt_pile_h6"] = big_exp
+            df.loc[sel, "todu_30ever_h6"] = (b2 / 7.0) * big_exp  # b2 = 7 * t30 / exposure
+
+        def relaxed_count(loan_count):
+            d = df.copy()
+            d.loc[(d["var0"] == 1) & (d["var1"].isin([1, 2])), "acct_booked_h0"] = loan_count
+            grid = CellGrid.from_summary(d, ["var0", "var1"])
+            strict = _build_monotonicity_constraints(grid, inv_vars=[])
+            relaxed = _build_monotonicity_constraints(
+                grid,
+                inv_vars=[],
+                relax_on_uncertainty=True,
+                uncertainty_min_exposure=1_000_000.0,  # 900k < 1M → the pair counts as sparse
+                uncertainty_z_threshold=2.0,
+                multiplier=7.0,
+            )
+            return strict.shape[0] - relaxed.shape[0]  # #constraints dropped
+
+        # Only the two target cells' loan count changes between the calls, so the DIFFERENCE isolates
+        # them. Few loans → large SE → the 0.10 b2 gap is within 2·SE → the target constraint is
+        # dropped; many loans → small SE → the same gap is significant → that constraint is kept.
+        # (More SE can only add ambiguous pairs, never remove them, so the count is monotone.)
+        dropped_few = relaxed_count(5)
+        dropped_many = relaxed_count(5000)
+        assert dropped_few >= 1
+        assert dropped_few > dropped_many  # the target pair flips from relaxed → enforced
+
+    def test_relaxation_falls_back_to_exposure_when_count_absent(self):
+        """No acct_booked_h0 → warn and fall back to €-exposure as n (backward-compat path)."""
+        from io import StringIO
+
+        df = _make_summary_2d(2, 2).drop(columns=["acct_booked_h0"])
+        df.loc[(df["var0"] == 1) & (df["var1"] == 1), "todu_amt_pile_h6"] = 50.0
+        df.loc[(df["var0"] == 1) & (df["var1"] == 2), "todu_amt_pile_h6"] = 50.0
+        df.loc[(df["var0"] == 1) & (df["var1"] == 1), "todu_30ever_h6"] = 0.50
+        df.loc[(df["var0"] == 1) & (df["var1"] == 2), "todu_30ever_h6"] = 0.51
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+
+        log_capture = StringIO()
+        handler_id = logger.add(log_capture, format="{message}", level="WARNING")
+        try:
+            A = _build_monotonicity_constraints(
+                grid,
+                inv_vars=[],
+                relax_on_uncertainty=True,
+                uncertainty_min_exposure=100.0,
+                uncertainty_z_threshold=2.0,
+                multiplier=7.0,
+            )
+        finally:
+            logger.remove(handler_id)
+        assert A.shape[1] == grid.n_cells  # still builds
+        logs = log_capture.getvalue()
+        assert "acct_booked_h0" in logs and "falling back" in logs
 
 
 class TestMonotonicityPhantomBridging:
