@@ -2308,6 +2308,52 @@ class TestParetoKeepIndices:
         assert pareto_keep_indices(prod) == expected
 
 
+class TestParetoTieHandlingSort:
+    """The frontier sweep sorts by (risk ASC, production DESC) before pareto_keep_indices.
+    A risk-only sort left the within-tie order arbitrary, so a lower-production point at the
+    SAME risk (dominated) could survive. This verifies the (risk, -prod) lexsort drops it
+    regardless of input order — the exact composition the fixed code uses."""
+
+    @staticmethod
+    def _frontier(risk, prod):
+        risk = np.asarray(risk, dtype=float)
+        prod = np.asarray(prod, dtype=float)
+        order = np.lexsort((-prod, risk))  # risk asc, prod desc — the fixed sort
+        keep = pareto_keep_indices(prod[order])
+        kept = order[keep]
+        return sorted(zip(risk[kept].tolist(), prod[kept].tolist()))
+
+    def test_dominated_same_risk_point_dropped_regardless_of_order(self):
+        # Two points at risk 1.0: prod 50 (dominated) and prod 100. Only (1.0, 100) is efficient.
+        a = self._frontier([1.0, 1.0, 1.1], [50.0, 100.0, 120.0])
+        b = self._frontier([1.0, 1.0, 1.1], [100.0, 50.0, 120.0])  # reversed within the tie
+        assert a == b == [(1.0, 100.0), (1.1, 120.0)]
+
+    def test_equal_production_at_higher_risk_dropped(self):
+        # (1.1, 100) is dominated by (1.0, 100): same production, higher risk.
+        assert self._frontier([1.0, 1.1], [100.0, 100.0]) == [(1.0, 100.0)]
+
+    def test_old_risk_only_sort_was_order_dependent(self):
+        # Documents the bug: a risk-only sort leaves the within-tie order intact, so the
+        # dominated (1.0, 50) point survives or not depending purely on input order.
+        risk = np.array([1.0, 1.0, 1.1])
+
+        def risk_only(prod):
+            prod = np.asarray(prod, dtype=float)
+            order = np.argsort(risk, kind="stable")  # risk-only (old behavior)
+            return sorted(prod[order][pareto_keep_indices(prod[order])].tolist())
+
+        r1 = risk_only([50.0, 100.0, 120.0])  # 50 before 100 in the tie -> 50 (dominated) survives
+        r2 = risk_only([100.0, 50.0, 120.0])  # 100 before 50 -> 50 dropped
+        assert r1 != r2 and 50.0 in r1  # order-dependent, and the dominated point can survive
+        # The fixed (risk ASC, prod DESC) sort is order-invariant and always drops it:
+        assert (
+            self._frontier([1.0, 1.0, 1.1], [50.0, 100.0, 120.0])
+            == self._frontier([1.0, 1.0, 1.1], [100.0, 50.0, 120.0])
+            == [(1.0, 100.0), (1.1, 120.0)]
+        )
+
+
 class TestInvVar1KpiSide:
     """Audit #37: with variables[1] inverted (higher bin = safer), the KPI
     evaluation must sum the var1 >= cutoff side — the old call sites defaulted
