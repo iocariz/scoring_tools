@@ -532,12 +532,32 @@ def calculate_per_bin_stress_factors(
 
 
 def calculate_annual_coef(date_ini_book_obs: pd.Timestamp, date_fin_book_obs: pd.Timestamp) -> float:
-    """
-    Calculate annual coefficient based on the time range.
+    """Annualization coefficient for observation-window production: ``12 / n_month``.
+
+    ``n_month`` is the number of monthly booking COHORTS in the window, counted from the
+    calendar-month labels of the endpoints, inclusive: ``(Δyears·12 + Δmonths) + 1``. Production
+    is aggregated per booking-month cohort, so this cohort count — NOT the elapsed day count — is
+    the correct annualization basis: a window covering 12 month-labelled cohorts is one full year
+    (coef 1.0) even though month-start to month-start spans only ~11 calendar months.
+
+    This is correct only when both endpoints are MONTH-START markers (``day == 1``), i.e. the window
+    is aligned to whole cohort months. A non-aligned window (mid-month endpoints, or a sub-month
+    slice) is silently mis-annualized — e.g. a 20-day window ``day 1 → day 20`` still counts as 1
+    cohort → coef 12, treating a partial month as a full one. We WARN on non-aligned endpoints
+    rather than guess a fractional cohort count (the cohort basis is only defined for whole months);
+    align both dates to a month start to silence it. Switching to elapsed days would be wrong — it
+    would break the cohort basis and inflate production on the (correct) aligned windows.
     """
     if date_fin_book_obs < date_ini_book_obs:
         raise ValueError(
             f"date_fin_book_obs ({date_fin_book_obs.date()}) is before date_ini_book_obs ({date_ini_book_obs.date()})"
+        )
+    if date_ini_book_obs.day != 1 or date_fin_book_obs.day != 1:
+        logger.warning(
+            f"calculate_annual_coef: observation window {date_ini_book_obs.date()} -> {date_fin_book_obs.date()} "
+            "is not month-start-aligned (an endpoint's day != 1). The coefficient counts whole monthly "
+            "cohorts, so a non-aligned window mis-annualizes production — align both dates to a month "
+            "start (day 1)."
         )
     n_month = (
         (date_fin_book_obs.year - date_ini_book_obs.year) * 12 + (date_fin_book_obs.month - date_ini_book_obs.month) + 1
