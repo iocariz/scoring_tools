@@ -265,7 +265,12 @@ def compute_acceptance_rates(
     # This deliberate asymmetry keeps the count path bit-identical while making the
     # decay path defensible under independent model validation.
     if bayesian_smoothing:
-        global_rate = rates["n_booked"].sum() / max(total.sum(), 1)
+        # Zero-guarded denominator. The old max(total.sum(), 1) clamped the total to >= 1, which
+        # is fine for integer counts but WRONG under time-decay where `total` is Σw (float
+        # effective weight): when Σw < 1 (heavily-decayed / sparse bins) the clamp understated
+        # global_rate. Divide by the true Σw; fall back to 0 only when there is no weight at all.
+        _denom = float(total.sum())
+        global_rate = float(rates["n_booked"].sum() / _denom) if _denom > 0 else 0.0
         if decay_half_life_months is None:
             # Empirical-Bayes adjustment (integer-count path only):
             # The configured `bayesian_prior_strength` is treated as a baseline
@@ -304,8 +309,17 @@ def compute_acceptance_rates(
             effective_prior_strength = float(bayesian_prior_strength)
 
         effective_prior_strength = float(np.clip(effective_prior_strength, 0.5, 1000.0))
-        alpha = max(effective_prior_strength * global_rate, 0.5)
-        beta = max(effective_prior_strength * (1 - global_rate), 0.5)
+        # Unbiased Beta prior: mean alpha/(alpha+beta) == global_rate by construction, so
+        # smoothing shrinks toward the true global acceptance rate. The old per-component
+        # max(., 0.5) floors were applied ASYMMETRICALLY: when global_rate was near 0 (or 1)
+        # they raised the smaller component to 0.5, pulling the prior mean toward 0.5 — e.g. a
+        # deep-reject global_rate=0.016 became a prior mean of 0.025 (+55%), inflating inferred
+        # acceptance in exactly the riskiest bins (anti-conservative). Keep the configured
+        # strength (already clipped); clip only global_rate away from exact 0/1 to avoid a
+        # degenerate zero component.
+        gr = float(np.clip(global_rate, 1e-6, 1.0 - 1e-6))
+        alpha = effective_prior_strength * gr
+        beta = effective_prior_strength * (1.0 - gr)
         if decay_half_life_months is None:
             # Literal count-based posterior (kept bit-identical for regression tests).
             rates["smoothed_acceptance_rate"] = (rates["n_booked"] + alpha) / (total + alpha + beta)
