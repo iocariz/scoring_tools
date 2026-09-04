@@ -1410,18 +1410,24 @@ def _write_mr_summary_table(
 
 
 def _compute_mr_stability_metrics(
-    data_booked: pd.DataFrame,
-    data_booked_mr: pd.DataFrame,
+    data_demand_main: pd.DataFrame,
+    data_demand_mr: pd.DataFrame,
     settings: "PreprocessingSettings",
     file_suffix: str,
     output: OutputPaths,
 ) -> None:
     """Compute and persist PSI/CSI stability metrics (Main vs MR).
 
-    Picks up to 5 numeric columns shared between *data_booked* and
-    *data_booked_mr* (prefers ``score_rf`` / ``risk_score_rf`` /
-    ``oa_amt``), calls :func:`compare_main_vs_mr`, writes the HTML report
-    + CSV, generates drift alerts JSON, and logs a warning if any
+    Computed on the **demand** (through-the-door, all-status) populations, not booked-only:
+    PSI monitors applicant-population drift and must be cutoff-invariant. The MR mask
+    re-optimizes by default, so a booked-only Main-vs-MR comparison conflates genuine
+    population drift with the acceptance-policy change (cells moving in/out of the booked
+    set) — inflating PSI and flagging "drift" that is just the new cutoff. The demand
+    population is unaffected by the cutoff, so its PSI isolates real distributional shift.
+
+    Picks up to 5 numeric columns shared between *data_demand_main* and *data_demand_mr*
+    (prefers ``score_rf`` / ``risk_score_rf`` / ``oa_amt``), calls :func:`compare_main_vs_mr`,
+    writes the HTML report + CSV, generates drift alerts JSON, and logs a warning if any
     variable exceeds ``PSI_UNSTABLE_THRESHOLD``.
 
     Errors downgrade to a warning — stability metrics are informational,
@@ -1432,15 +1438,15 @@ def _compute_mr_stability_metrics(
     try:
         # Prefer known score columns, fall back to any shared numeric columns
         requested_vars = ["score_rf", "risk_score_rf", "oa_amt"]
-        stability_vars = [v for v in requested_vars if v in data_booked.columns and v in data_booked_mr.columns]
+        stability_vars = [v for v in requested_vars if v in data_demand_main.columns and v in data_demand_mr.columns]
         if not stability_vars:
             # sorted() so the fallback picks a DETERMINISTIC set of monitored
             # variables (and score_var below) across runs — a bare set iterates in
             # hash-randomized order, making the reported PSI non-reproducible.
-            shared_cols = sorted(set(data_booked.columns) & set(data_booked_mr.columns))
-            stability_vars = [c for c in shared_cols if data_booked[c].dtype.kind in ("f", "i") and c not in VARIABLES][
-                :5
-            ]
+            shared_cols = sorted(set(data_demand_main.columns) & set(data_demand_mr.columns))
+            stability_vars = [
+                c for c in shared_cols if data_demand_main[c].dtype.kind in ("f", "i") and c not in VARIABLES
+            ][:5]
             if stability_vars:
                 logger.info(f"Stability: using fallback numeric columns: {stability_vars}")
 
@@ -1449,8 +1455,8 @@ def _compute_mr_stability_metrics(
             score_var = "risk_score_rf" if "risk_score_rf" in stability_vars else stability_vars[0]
 
             stability_report = compare_main_vs_mr(
-                main_df=data_booked,
-                mr_df=data_booked_mr,
+                main_df=data_demand_main,
+                mr_df=data_demand_mr,
                 variables=stability_vars,
                 score_variable=score_var,
                 output_path=output.stability_report_html(file_suffix),
@@ -2571,8 +2577,16 @@ def process_mr_period(
             output=output,
         )
 
-        # --- Calculate PSI/CSI Stability Metrics ---
-        _compute_mr_stability_metrics(data_booked, data_booked_mr, settings, file_suffix, output)
+        # --- Calculate PSI/CSI Stability Metrics (demand basis) ---
+        # PSI must be computed on the through-the-door (demand) populations, not booked-only:
+        # the MR mask re-optimizes by default, so booked-only Main-vs-MR PSI conflates genuine
+        # population drift with the cutoff change (cells moving in/out of the booked set). Main
+        # demand is the main-window slice of data_clean (all statuses); data_demand_mr is already
+        # the MR demand (all statuses).
+        data_demand_main = filter_by_date(
+            data_clean, "mis_date", settings.date_ini_book_obs, settings.date_fin_book_obs
+        )
+        _compute_mr_stability_metrics(data_demand_main, data_demand_mr, settings, file_suffix, output)
 
     except (ValueError, KeyError, RuntimeError) as e:
         logger.opt(exception=True).error(f"Error processing MR period: {e}")
