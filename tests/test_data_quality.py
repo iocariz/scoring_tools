@@ -318,6 +318,28 @@ class TestCheckNumericOutliers:
         result = check_numeric_outliers(df, ["a"])
         assert result.status == CheckStatus.PASSED
 
+    def test_mad_zero_fallback_uses_mean_ad_consistency_constant(self):
+        # >50% of values identical → MAD == 0, so the check falls back to the MEAN absolute
+        # deviation. 90 values at the mode (0) + 10 at 100 give median=0, MAD=0, mean_ad=10, so
+        # each outlier's modified z is `consistency * 100 / 10` (independent of the outlier
+        # magnitude — mean_ad scales with it). With the CORRECT mean-AD constant (0.7979) that is
+        # 7.979 (> 7.0 → flagged, 10% > max_outlier_pct → WARNING); with the old MAD constant
+        # (0.6745) it is 6.745 (< 7.0 → missed → PASS). z_threshold=7.0 straddles the two, so this
+        # fails on the pre-fix code and asserts the corrected, more-conservative behavior.
+        df = pd.DataFrame({"a": [0.0] * 90 + [100.0] * 10})
+        result = check_numeric_outliers(df, ["a"], z_threshold=7.0, max_outlier_pct=0.05)
+        assert result.status == CheckStatus.WARNING
+        assert "a" in result.details
+
+    def test_mad_zero_fallback_constant_is_not_overscaled(self):
+        # Same MAD-zero fixture (z of each outlier == consistency * 10). A threshold just above the
+        # corrected z (7.979 < 8.0) must PASS — the fix rescales to σ via √(2/π)≈0.7979, it does NOT
+        # simply inflate every deviation. Together with the test above this brackets the effective
+        # constant to [0.70, 0.80), i.e. the mean-AD value, excluding the old 0.6745 MAD constant.
+        df = pd.DataFrame({"a": [0.0] * 90 + [100.0] * 10})
+        result = check_numeric_outliers(df, ["a"], z_threshold=8.0, max_outlier_pct=0.05)
+        assert result.status == CheckStatus.PASSED
+
 
 # =============================================================================
 # check_indicator_values Tests
