@@ -205,9 +205,15 @@ def learn_quantile_bins(
 ) -> list[float]:
     """Learn bin edges from quantiles of the source column (unsupervised).
 
-    Uses equally-spaced quantiles so each bin has roughly the same number of
-    records.  This avoids using the target variable for feature engineering
-    and eliminates the risk of circularity / overfitting.
+    Uses equally-spaced quantiles as split VALUES — a clean, reproducible, operationally
+    implementable cutpoint (every record at a given value lands in the same bin). Bins are
+    only *approximately* equal-count: a mass point at a quantile (e.g. a common/rounded income
+    at the median) combined with the right-closed ``pd.cut`` (``right=True``) sends that whole
+    mass into one bin, so the realized counts can be materially unequal. We deliberately keep
+    the clean value cutpoint over exact count-balance — rank-splitting a mass point would treat
+    identical inputs differently and is not reproducible (governance). ``_apply_binning_from_config``
+    warns when the realized bins are materially skewed. Quantiles (not a supervised split) avoid
+    target leakage.
 
     Parameters
     ----------
@@ -248,6 +254,17 @@ def learn_quantile_bins(
     # Compute quantile edges (e.g. 2 bins → median, 3 bins → terciles)
     quantiles = [i / max_bins for i in range(1, max_bins)]
     thresholds = sorted(valid.quantile(quantiles).unique().tolist())
+
+    # Quantile-tie collapse: on a discrete / mass-pointed source, distinct requested quantiles
+    # can map to the SAME value, so .unique() yields fewer split points than asked → fewer bins
+    # than max_bins (a silently-coarsened optimization grid). Surface it as a WARNING, not INFO.
+    n_expected = max_bins - 1
+    if 0 < len(thresholds) < n_expected:
+        logger.warning(
+            f"learn_quantile_bins: '{source_col}' quantile ties collapsed {n_expected} requested "
+            f"split(s) to {len(thresholds)} → {len(thresholds) + 1} bin(s) instead of {max_bins} "
+            f"(discrete / mass-pointed source). The optimization grid is coarser than configured."
+        )
 
     if not thresholds:
         raise ValueError(
@@ -610,11 +627,16 @@ def _apply_binning_from_config(
             raise ValueError(f"{bc.output_col}: bin_edges must have at least 2 values")
 
         try:
+            # right=True (explicit): intervals are (a, b] — a record whose value equals a split
+            # edge falls in the LEFT bin. Deliberate + documented: it makes the cut a clean,
+            # reproducible value cutpoint (all records at a given value share a bin), at the cost
+            # of exact equal counts when a mass point sits on an edge (see the skew warning below).
             transformed_data[bc.output_col] = pd.cut(
                 transformed_data[bc.source_col],
                 bins=bc.bin_edges,
                 labels=False,
                 include_lowest=True,
+                right=True,
             )
 
             nan_count = transformed_data[bc.output_col].isna().sum()
@@ -668,6 +690,21 @@ def _apply_binning_from_config(
         logger.info("=" * 60)
         summary = _generate_bin_summary(transformed_data, bin_col=bc.output_col, source_col=bc.source_col)
         logger.info(f"\n{summary.to_string(index=False)}")
+
+        # Honest-warning for quantile bins: they TARGET ~equal counts, but a mass point at a split
+        # value + the right-closed cut can skew the realized populations (the value cutpoint is
+        # kept deliberately — reproducible + implementable — over rank-splitting the mass). Surface
+        # a material imbalance so a non-equal-count grid isn't mistaken for the intended one.
+        if getattr(bc, "method", None) == "quantile" and "count" in summary.columns and len(summary) > 1:
+            counts = summary["count"].to_numpy(dtype=float)
+            if counts.min() > 0 and counts.max() / counts.min() > 1.5:
+                shares = ", ".join(f"{c / counts.sum():.0%}" for c in counts)
+                logger.warning(
+                    f"{bc.output_col}: quantile bins are materially unequal (shares {shares}; "
+                    f"max/min={counts.max() / counts.min():.2f}) — a mass point at a split value + the "
+                    f"right-closed cut prevents an equal-count split. The value cutpoint is kept "
+                    f"(reproducible/implementable); raise max_bins or set explicit bin_edges to rebalance."
+                )
 
     elapsed_time = time.time() - start_time
     logger.info(f"Binning transformations completed in {elapsed_time:.2f} seconds")

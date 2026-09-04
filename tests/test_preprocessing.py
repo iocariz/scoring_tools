@@ -6,12 +6,14 @@ from pydantic import ValidationError
 from src.config import BinConfig, PreprocessingSettings
 from src.constants import RejectReason, StatusName, SystemDecision
 from src.preprocess_improved import (
+    _apply_binning_from_config,
     _infer_direction_from_bins,
     _run_data_transformations,
     apply_binning_transformations,
     complete_preprocessing_pipeline,
     filter_by_date,
     learn_optimization_bins,
+    learn_quantile_bins,
     preprocess_data,
     update_oa_amt_h0,
     update_status_and_reject_reason,
@@ -957,3 +959,74 @@ class TestInferDirectionFromBins:
         a = _infer_direction_from_bins(bins, risk, w)
         b = _infer_direction_from_bins(bins, risk, w)
         assert a == b
+
+
+# =============================================================================
+# Binning honest-warnings (quantile tie-collapse + realized skew)
+# =============================================================================
+
+
+def _capture_warnings(fn):
+    """Run fn() capturing loguru WARNING messages via a stdlib handler bridge."""
+    import logging
+
+    from src import preprocess_improved as pp
+
+    recs = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record):
+            recs.append(record.getMessage())
+
+    hid = pp.logger.add(_Sink(level=logging.WARNING), level="WARNING", format="{message}")
+    try:
+        out = fn()
+    finally:
+        pp.logger.remove(hid)
+    return out, recs
+
+
+def test_learn_quantile_bins_warns_on_tie_collapse():
+    """A discrete/mass-pointed source whose quantiles tie yields fewer bins than max_bins —
+    surfaced as a WARNING (was INFO-only), and the returned grid is genuinely coarser."""
+    # 90% at value 1: both the 1/3 and 2/3 quantiles are 1 -> terciles collapse to 1 split.
+    data = pd.DataFrame({"inc": [1.0] * 90 + [2.0] * 10})
+    edges, warns = _capture_warnings(lambda: learn_quantile_bins(data, source_col="inc", max_bins=3))
+    assert any("collapsed" in m for m in warns)
+    assert len(edges) - 1 < 3  # fewer bins than requested max_bins=3
+
+
+def test_apply_binning_warns_on_quantile_skew():
+    """A mass point on a split edge + the right-closed cut makes the realized quantile bins
+    materially unequal; that must be WARNED (value cutpoint kept, not rank-split)."""
+    from src.config import BinConfig
+
+    # 70 records at exactly the edge (2000) -> right-closed cut puts them ALL in the left bin.
+    data = pd.DataFrame({"inc": [2000.0] * 70 + [3000.0] * 30})
+    bc = BinConfig(
+        source_col="inc",
+        output_col="income_bin",
+        max_bins=2,
+        bin_edges=[float("-inf"), 2000.0, float("inf")],
+        method="quantile",
+    )
+    out, warns = _capture_warnings(lambda: _apply_binning_from_config(data, {"income_bin": bc}))
+    assert any("materially unequal" in m for m in warns)
+    # value cutpoint is kept: everyone at 2000 shares bin 1 (1-indexed), 3000s in bin 2
+    assert set(out["income_bin"].unique()) == {1, 2}
+
+
+def test_apply_binning_no_skew_warning_when_balanced():
+    """A quantile binning with balanced populations must NOT warn."""
+    from src.config import BinConfig
+
+    data = pd.DataFrame({"inc": list(range(100))})  # uniform -> ~50/50 at the median edge
+    bc = BinConfig(
+        source_col="inc",
+        output_col="income_bin",
+        max_bins=2,
+        bin_edges=[float("-inf"), 49.5, float("inf")],
+        method="quantile",
+    )
+    _, warns = _capture_warnings(lambda: _apply_binning_from_config(data, {"income_bin": bc}))
+    assert not any("materially unequal" in m for m in warns)
