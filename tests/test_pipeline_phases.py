@@ -5,6 +5,7 @@ These modules are thin orchestration glue — we verify the gating semantics
 failures are swallowed as "non-blocking". Heavy dependencies are mocked.
 """
 
+import os
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -485,3 +486,46 @@ class TestSlashedSegmentPaths:
     def test_plain_segment_name_unchanged(self, tmp_path):
         output = OutputPaths(base_dir=tmp_path)
         assert output.monthly_metrics_csv("seg_a").endswith("monthly_metrics_seg_a.csv")
+
+
+class TestMirrorMrArtifacts:
+    """_mirror_mr_artifacts copies the base scenario's MR artifacts from the '_base' suffix to the
+    default '' names so both sets are byte-identical (replaces a redundant second process_mr_period
+    run that could diverge under a time-limited re-optimization MILP)."""
+
+    def test_mirrors_all_mr_artifacts_byte_identical(self, tmp_path):
+        output = OutputPaths(base_dir=tmp_path)
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "images").mkdir(parents=True, exist_ok=True)
+
+        path_fns = [
+            output.mr_summary_csv,
+            output.mr_optimal_solution_csv,
+            output.mr_risk_production_summary_csv,
+            output.mr_cutoff_summary_wide_csv,
+            output.mr_risk_comparison_csv,
+            output.stability_psi_csv,
+            output.drift_alerts_json,
+            output.mr_cutoff_drift_html,
+            output.stability_report_html,
+        ]
+        # Write distinct content to each "_base" artifact.
+        for i, fn in enumerate(path_fns):
+            with open(fn("_base"), "w") as f:
+                f.write(f"content-{i}\n")
+
+        scenarios_module._mirror_mr_artifacts(output, src_suffix="_base", dst_suffix="")
+
+        for i, fn in enumerate(path_fns):
+            dst = fn("")
+            assert os.path.exists(dst), f"default-named MR artifact not mirrored: {dst}"
+            with open(dst) as f:
+                assert f.read() == f"content-{i}\n"  # byte-identical to the "_base" source
+
+    def test_missing_source_is_skipped_no_crash(self, tmp_path):
+        output = OutputPaths(base_dir=tmp_path)
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "images").mkdir(parents=True, exist_ok=True)
+        # No "_base" files exist → nothing to copy, must not raise or create default files.
+        scenarios_module._mirror_mr_artifacts(output, src_suffix="_base", dst_suffix="")
+        assert not os.path.exists(output.mr_summary_csv(""))
