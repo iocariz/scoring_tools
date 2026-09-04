@@ -525,6 +525,58 @@ def _compute_hybrid_mr_risk(
                 f"SE={fit_diag['se']:.3f}, R²={fit_diag['r_squared']:.3f}, "
                 f"n_bins={fit_diag['n_bins']})"
             )
+
+            # --- Ecological-transfer validation (log-only) ---
+            # The alpha above is a CROSS-BIN slope but is applied as a WITHIN-BIN TEMPORAL maturation
+            # exponent. When the main period spans ≥2 months we can estimate the maturation slope
+            # directly (per bin: H3 vs H6 across months, bin fixed effects removed) and warn when it
+            # diverges materially — signalling the cross-bin curvature is a weak proxy for maturation.
+            if "mis_date" in data_booked.columns:
+                try:
+                    from src.utils import fit_h3_curvature_within_bin_temporal
+
+                    _h3c = ["todu_30ever_h3", "todu_amt_pile_h3"]
+                    _h6c = ["todu_30ever_h6", "todu_amt_pile_h6"]
+                    if all(c in data_booked.columns for c in _h3c + _h6c):
+                        _bt = data_booked[merge_keys + _h3c + _h6c + ["mis_date"]].copy()
+                        _bt["_period"] = pd.to_datetime(_bt["mis_date"]).dt.to_period("M").astype(str)
+                        _grp = _bt.groupby(merge_keys + ["_period"])
+                        _cell = _grp[_h3c + _h6c].sum()
+                        _cell["_n"] = _grp.size()
+                        _cell = _cell.reset_index()
+                        _cell["_b2_h3"] = calculate_b2_ever_h6(
+                            _cell["todu_30ever_h3"], _cell["todu_amt_pile_h3"], multiplier=multiplier_h3, decimals=6
+                        )
+                        _cell["_b2_h6"] = calculate_b2_ever_h6(
+                            _cell["todu_30ever_h6"], _cell["todu_amt_pile_h6"], multiplier=multiplier, decimals=6
+                        )
+                        _bin_id = _cell[merge_keys].astype(str).agg("|".join, axis=1).to_numpy()
+                        alpha_within, wdiag = fit_h3_curvature_within_bin_temporal(
+                            _bin_id,
+                            _cell["_b2_h3"].to_numpy(),
+                            _cell["_b2_h6"].to_numpy(),
+                            weights=_cell["_n"].to_numpy(),
+                        )
+                        if np.isfinite(alpha_within):
+                            gap = abs(alpha_within - fit_diag["alpha"])
+                            combined_se = float(np.hypot(fit_diag.get("se", np.nan), wdiag.get("se", np.nan)))
+                            margin = max(2.0 * combined_se, 0.5) if np.isfinite(combined_se) else 0.5
+                            base = (
+                                f"H3→H6 ecological-transfer check: cross-bin alpha={fit_diag['alpha']:.3f} "
+                                f"vs within-bin temporal alpha={alpha_within:.3f} "
+                                f"(bins={wdiag['n_bins']}, pairs={wdiag['n_pairs']}, gap={gap:.3f}, margin={margin:.3f})"
+                            )
+                            if gap > margin:
+                                logger.warning(
+                                    base + " — MATERIAL DIVERGENCE: the cross-bin curvature is a weak "
+                                    "proxy for temporal maturation; treat extrapolated MR risk with caution."
+                                )
+                            else:
+                                logger.info(base + " — consistent.")
+                        else:
+                            logger.debug(f"H3→H6 ecological-transfer check skipped: {wdiag.get('note')}")
+                except (ValueError, KeyError) as _e:
+                    logger.debug(f"H3→H6 ecological-transfer check skipped: {_e}")
         else:
             mr_extrapolation_method = "linear"
             mr_extrapolation_curvature = 1.0

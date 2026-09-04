@@ -236,6 +236,14 @@ def fit_h3_extrapolation_curve(
     to determine whether the relationship is convex (alpha > 1), linear (~1),
     or concave (alpha < 1).
 
+    ECOLOGICAL-TRANSFER CAVEAT: this alpha is a **cross-bin / cross-sectional** slope (variation is
+    across score bins in the mature main period). It is then applied to project a single bin's OWN
+    observed H3 forward to H6 over time (within-bin, temporal) — assuming the cross-sectional
+    curvature equals the temporal maturation curvature within a bin. That need not hold. When the
+    main period has ≥2 sub-periods, use :func:`fit_h3_curvature_within_bin_temporal` to estimate the
+    within-bin temporal alpha and compare: a large gap means this cross-bin alpha is a poor proxy for
+    maturation and the extrapolated MR risk carries model risk beyond the reported ``se``.
+
     Args:
         b2_h3: Per-bin H3 risk values (main period).
         b2_h6: Per-bin H6 risk values (main period).
@@ -320,6 +328,107 @@ def fit_h3_extrapolation_curve(
 
     curvature = float(np.clip(alpha, 0.3, 3.0))
     return ("power", curvature, diagnostics)
+
+
+def fit_h3_curvature_within_bin_temporal(
+    bin_ids: np.ndarray,
+    b2_h3: np.ndarray,
+    b2_h6: np.ndarray,
+    weights: np.ndarray | None = None,
+    min_bins: int = 2,
+    min_pairs: int = 4,
+) -> tuple[float, dict]:
+    """Estimate the H3→H6 curvature from **within-bin temporal** variation (ecological-transfer check).
+
+    :func:`fit_h3_extrapolation_curve` fits a **cross-bin** (cross-sectional) slope: it regresses
+    ``log(b2_h6)`` on ``log(b2_h3)`` across the score bins in the mature main period. That slope is
+    then applied to project a single bin's OWN observed H3 forward to H6 over time (within-bin,
+    temporal). That is an **ecological transfer** — it assumes the cross-sectional H6~H3 curvature
+    equals the temporal H3→H6 maturation curvature *within* a bin, which need not hold (the cross
+    section mixes bins of different populations; maturation is a different mechanism).
+
+    This function is the direct validation when the main period has ≥2 sub-periods. Given
+    ``(bin, period)`` cells — each carrying that bin's H3 and H6 rate in one period — it removes each
+    bin's own (weighted) mean in log space (a bin fixed effect) and fits the pooled slope on the
+    residual variation, i.e. how a bin's H6 moves with its OWN H3 across time. Comparing the returned
+    ``alpha_within`` to the cross-bin alpha validates (or refutes) the ecological transfer: close ⇒
+    the transfer holds on this data; far apart ⇒ the cross-bin curvature is a poor proxy for
+    maturation and the extrapolated MR risk carries model risk beyond the reported SE.
+
+    Args:
+        bin_ids: Bin identifier per cell (rows with the same id are the same score bin in different
+            periods). Any hashable/array dtype; only equality is used.
+        b2_h3: H3 risk per cell (same order as ``bin_ids``).
+        b2_h6: H6 risk per cell.
+        weights: Optional exposure/count per cell (e.g. booked accounts); used both to weight each
+            bin's mean and the pooled slope. Uniform if omitted.
+        min_bins: Minimum number of bins that appear in ≥2 periods (else return NaN).
+        min_pairs: Minimum usable cells across those multi-period bins (else return NaN).
+
+    Returns:
+        ``(alpha_within, diagnostics)``. ``alpha_within`` is ``nan`` when there is insufficient
+        within-bin temporal variation. ``diagnostics`` carries ``alpha``, ``se``, ``n_bins``
+        (multi-period bins used), ``n_pairs`` (cells used), and a ``note`` when degenerate.
+    """
+    bin_ids = np.asarray(bin_ids)
+    b2_h3 = np.asarray(b2_h3, dtype=float)
+    b2_h6 = np.asarray(b2_h6, dtype=float)
+    w = np.asarray(weights, dtype=float) if weights is not None else np.ones_like(b2_h3)
+
+    valid = np.isfinite(b2_h3) & np.isfinite(b2_h6) & (b2_h3 > 0) & (b2_h6 > 0) & np.isfinite(w) & (w > 0)
+    nan_diag = {"alpha": float("nan"), "se": float("nan"), "n_bins": 0, "n_pairs": 0}
+    if valid.sum() < min_pairs:
+        return (float("nan"), {**nan_diag, "note": "insufficient valid cells"})
+
+    bids = bin_ids[valid]
+    log_h3 = np.log(b2_h3[valid])
+    log_h6 = np.log(b2_h6[valid])
+    wv = w[valid]
+
+    # Keep only bins that appear in ≥2 periods (≥2 cells) — those carry temporal variation.
+    rx, ry, rw = [], [], []
+    n_bins_used = 0
+    for b in np.unique(bids):
+        m = bids == b
+        if m.sum() < 2:
+            continue
+        wb = wv[m]
+        wsum = wb.sum()
+        if wsum <= 0:
+            continue
+        # De-mean in log space with the bin's own weighted mean (remove the bin fixed effect),
+        # leaving only within-bin temporal variation.
+        mx = np.average(log_h3[m], weights=wb)
+        my = np.average(log_h6[m], weights=wb)
+        rx.append(log_h3[m] - mx)
+        ry.append(log_h6[m] - my)
+        rw.append(wb)
+        n_bins_used += 1
+
+    if n_bins_used < min_bins:
+        return (float("nan"), {**nan_diag, "note": "too few multi-period bins", "n_bins": n_bins_used})
+
+    rx = np.concatenate(rx)
+    ry = np.concatenate(ry)
+    rw = np.concatenate(rw)
+    n_pairs = int(rx.size)
+
+    ss_x = float(np.sum(rw * rx**2))
+    if not np.isfinite(ss_x) or ss_x <= 1e-10:
+        return (
+            float("nan"),
+            {**nan_diag, "note": "no within-bin log-H3 spread", "n_bins": n_bins_used, "n_pairs": n_pairs},
+        )
+
+    # Slope through the origin (data are within-bin de-meaned ⇒ intercept is 0 by construction).
+    alpha = float(np.sum(rw * rx * ry) / ss_x)
+    residuals = ry - alpha * rx
+    # dof: n_pairs observations − n_bins_used means already spent − 1 slope.
+    dof = max(n_pairs - n_bins_used - 1, 1)
+    mse = float(np.sum(rw * residuals**2) / dof)
+    se = float(np.sqrt(mse / ss_x)) if ss_x > 0 else float("inf")
+
+    return (alpha, {"alpha": alpha, "se": se, "n_bins": n_bins_used, "n_pairs": n_pairs})
 
 
 def get_data_information(df: pd.DataFrame) -> pd.DataFrame:
