@@ -13,6 +13,7 @@ from src.mr_pipeline import (
     _assign_tiered_risk,
     _compute_account_maturity,
     _compute_hybrid_mr_risk,
+    _compute_mr_stability_metrics,
     _mr_outcomes_available,
     _reoptimize_mr_mask_after_recalibration,
     _robust_ratio_clip_band,
@@ -3088,3 +3089,45 @@ class TestRobustRatioClipBand:
 
     def test_all_nonfinite_falls_back_to_default_band(self):
         assert _robust_ratio_clip_band(np.array([np.nan, np.inf])) == (0.5, 5.0)
+
+
+class TestMrStabilityDemandBasis:
+    """PSI/CSI must be computed on the demand (through-the-door) populations, not booked-only:
+    the MR mask re-optimizes by default, so a booked-only comparison conflates real population
+    drift with the cutoff change."""
+
+    def _frames(self):
+        # Same demand `oa_amt` multiset in both periods (→ demand PSI == 0), but the booked subset
+        # is the LOW block in main and the HIGH block in MR (as if the cutoff flipped). A booked-only
+        # PSI would be maximal (disjoint distributions → UNSTABLE); a demand-basis PSI is ~0 (STABLE).
+        rng = np.random.RandomState(42)
+        low = rng.normal(10.0, 1.0, 100)
+        high = rng.normal(20.0, 1.0, 100)
+        oa = np.concatenate([low, high])  # identical demand values in both periods
+        main = pd.DataFrame(
+            {"oa_amt": oa, "binvar": np.repeat([0, 1], 100), "status_name": ["booked"] * 100 + ["rejected"] * 100}
+        )
+        mr = pd.DataFrame(
+            {"oa_amt": oa, "binvar": np.repeat([0, 1], 100), "status_name": ["rejected"] * 100 + ["booked"] * 100}
+        )
+        return main, mr
+
+    def test_demand_basis_psi_is_stable_when_only_the_cutoff_moved(self, tmp_path):
+        from types import SimpleNamespace
+
+        main_demand, mr_demand = self._frames()
+        settings = SimpleNamespace(variables=["binvar"], segment_filter="test/segment")
+        output = OutputPaths(base_dir=tmp_path)
+        output.data_dir.mkdir(parents=True, exist_ok=True)
+        output.images_dir.mkdir(parents=True, exist_ok=True)
+
+        _compute_mr_stability_metrics(main_demand, mr_demand, settings, "", output)
+
+        psi_csv = output.stability_psi_csv("")
+        assert os.path.exists(psi_csv), "stability PSI CSV should be written"
+        df = pd.read_csv(psi_csv)
+        row = df[df["variable"] == "oa_amt"]
+        assert not row.empty, "oa_amt should be a monitored PSI variable"
+        # Identical demand distributions → PSI ~ 0 (STABLE). Booked-only would be UNSTABLE (PSI>=0.25).
+        assert float(row.iloc[0]["psi"]) < 0.1
+        assert row.iloc[0]["status"] == "stable"
