@@ -4,9 +4,28 @@ from pathlib import Path
 from typing import Any, Literal
 
 import pandas as pd
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .constants import DEFAULT_N_BOOTSTRAPS, DEFAULT_SENSITIVITY_LEVELS
+
+#: Keys that legitimately appear in a config's ``[preprocessing]`` section (or a frozen segment
+#: config) but are consumed by OTHER components — batch orchestration and per-segment constraints —
+#: not by :class:`PreprocessingSettings`. They are allowlisted so the unknown-key typo guard does
+#: not flag them. Everything else that is not a model field is reported as a likely typo.
+_KNOWN_EXTERNAL_CONFIG_KEYS = frozenset(
+    {
+        "cutoff_ordering_mode",  # batch-level; run_batch.py reads it from the raw TOML
+        "cutoff_floor_segment",  # sequential cutoff ordering (segments.toml / batch)
+        "min_risk",  # SegmentConstraints
+        "max_risk",
+        "min_production",
+        "locked_sol_fac",
+        "supersegment",  # supersegment resolution
+        "modelling_supersegment",
+        "reporting_supersegment",
+    }
+)
 
 
 def _fs_safe(name: str) -> str:
@@ -251,6 +270,29 @@ class PreprocessingSettings(BaseModel):
     """Configuration for preprocessing and overall pipeline settings."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _warn_unknown_config_keys(cls, data: Any) -> Any:
+        """Warn (loudly) about config keys that are neither a model field nor a known
+        cross-component key (#63). Pydantic's default ``extra="ignore"`` otherwise silently drops a
+        misspelled governance key (e.g. ``ri_optimizer_methods`` vs ``ri_optimizer_method``,
+        ``mr_reoptimize_cutoffs``, ``dq_allow_warnings``), so the run proceeds on the default with no
+        signal. We warn rather than hard-``forbid`` for back-compat (legit external keys share the
+        section). The value is still dropped — only the silence is fixed."""
+        if isinstance(data, dict):
+            known = set(cls.model_fields.keys())
+            for f in cls.model_fields.values():
+                if getattr(f, "alias", None):
+                    known.add(f.alias)
+            unknown = sorted(k for k in data if k not in known and k not in _KNOWN_EXTERNAL_CONFIG_KEYS)
+            if unknown:
+                logger.warning(
+                    f"Config: ignoring unrecognized key(s) {unknown} — likely a typo. A misspelled "
+                    "key silently falls back to its default (no effect). Check the spelling against "
+                    "the documented PreprocessingSettings fields."
+                )
+        return data
 
     # Required fields
     keep_vars: list[str]
