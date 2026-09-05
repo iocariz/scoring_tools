@@ -3,6 +3,8 @@
 Extracted from ``src/pipeline/optimization.py`` in R2b-iv (todo #63). Exposes :func:`run_scenario_analysis`, :func:`build_scenario_list`, :func:`compute_mr_annual_coef`, :func:`save_cutoff_summaries`.
 """
 
+import os
+import shutil
 import time
 from typing import Any
 
@@ -32,6 +34,40 @@ from src.utils import (
     format_cutoff_summary_table,
     generate_cutoff_summary,
 )
+
+
+def _mirror_mr_artifacts(output: OutputPaths, src_suffix: str, dst_suffix: str) -> None:
+    """Copy the base scenario's MR artifacts from *src_suffix* to *dst_suffix* so the scenario-named
+    ("_base") and default-named ("") MR files are byte-identical.
+
+    The base scenario needs its MR artifacts under both suffixes ("_base" for scenario-aware
+    consumers, "" for backward-compat). Previously ``process_mr_period`` was called twice (once per
+    suffix), recomputing the whole MR pipeline — including a time-limited re-optimization MILP whose
+    incumbent can differ between wall-clock-timed runs — so the two artifact sets could silently
+    diverge. We now run it once and mirror the files. Best-effort: a copy failure never aborts.
+
+    (``audit_<scen>_mr.csv`` is intentionally excluded: it is named by scenario — ``base`` for both
+    ``""`` and ``"_base"`` — so it is single-named and written once by the surviving run.)
+    """
+    mr_path_fns = (
+        output.mr_summary_csv,
+        output.mr_optimal_solution_csv,
+        output.mr_risk_production_summary_csv,
+        output.mr_cutoff_summary_wide_csv,
+        output.mr_risk_comparison_csv,
+        output.stability_psi_csv,
+        output.drift_alerts_json,
+        output.mr_cutoff_drift_html,
+        output.stability_report_html,
+    )
+    for path_fn in mr_path_fns:
+        src = path_fn(src_suffix)
+        dst = path_fn(dst_suffix)
+        if src != dst and os.path.exists(src):
+            try:
+                shutil.copyfile(src, dst)
+            except OSError as e:
+                logger.warning(f"MR artifact mirror {src} -> {dst} failed (non-blocking): {e}")
 
 
 def run_scenario_analysis(
@@ -454,27 +490,11 @@ def run_scenario_analysis(
         data_summary_desagregado.to_csv(output.data_summary_desagregado_csv(), index=False)
         logger.debug(f"[{segment}] Base scenario outputs also saved to default filenames")
 
-        # Base Scenario MR Processing (Default filenames)
-        process_mr_period(
-            data_clean=data_clean,
-            data_booked=data_booked,
-            settings=settings,
-            risk_inference=risk_inference,
-            reg_todu_amt_pile=reg_todu_amt_pile,
-            stress_factor=stress_factor,
-            tasa_fin=tasa_fin,
-            annual_coef=annual_coef_mr,
-            optimal_solution_df=opt_sol,
-            file_suffix="",
-            output=output,
-            mask=selected_mask,
-            grid=grid,
-            per_bin_stress=per_bin_stress,
-            per_bin_tasa_fin=per_bin_tasa_fin,
-            audit_mr_df=audit_mr if len(audit_mr) else None,
-        )
-
-    # Scenario MR Processing
+    # Scenario MR Processing — run ONCE. The base scenario needs its MR artifacts under both the
+    # scenario suffix ("_base") and the default "" names; running process_mr_period a second time
+    # (the old "default filenames" call) recomputed the whole MR pipeline, including a time-limited
+    # re-optimization MILP whose incumbent can differ between wall-clock-timed runs, so the two
+    # artifact sets could silently diverge. Run once, then mirror the files (below).
     process_mr_period(
         data_clean=data_clean,
         data_booked=data_booked,
@@ -493,6 +513,10 @@ def run_scenario_analysis(
         per_bin_tasa_fin=per_bin_tasa_fin,
         audit_mr_df=audit_mr if len(audit_mr) else None,
     )
+    if scenario_name == "base":
+        # Mirror the "_base" MR artifacts to the default ("") names so both are byte-identical
+        # (replaces the second process_mr_period run; audit_base_mr.csv is single-named already).
+        _mirror_mr_artifacts(output, src_suffix=suffix, dst_suffix="")
 
     elapsed = time.perf_counter() - t0
     logger.info(
