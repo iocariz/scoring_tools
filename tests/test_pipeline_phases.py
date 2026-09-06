@@ -529,3 +529,34 @@ class TestMirrorMrArtifacts:
         # No "_base" files exist → nothing to copy, must not raise or create default files.
         scenarios_module._mirror_mr_artifacts(output, src_suffix="_base", dst_suffix="")
         assert not os.path.exists(output.mr_summary_csv(""))
+
+
+class TestSelectTargetNoBankersRound:
+    """_select_target normalizes the SELECTION risk target without the old banker's round(x,1)
+    that quantized sub-decimal targets and collapsed sub-0.1-step scenarios (audit #38)."""
+
+    def test_preserves_sub_decimal_target(self):
+        # Old round(1.25, 1) == 1.2 (banker's) → selected too tight. Now the exact target survives.
+        assert scenarios_module._select_target(1.25) == 1.25
+        assert round(1.25, 1) == 1.2  # documents the old (wrong) behavior
+
+    def test_sub_decimal_step_scenarios_stay_distinct(self):
+        # optimum_risk=1.2, risk_step=0.05 → pessimistic/base/optimistic = 1.15/1.2/1.25.
+        base = 1.2
+        step = 0.05
+        targets = [scenarios_module._select_target(t) for t in (base - step, base, base + step)]
+        assert len(set(targets)) == 3, f"targets collapsed: {targets}"
+        # The old round(x,1) rule collapsed targets: base(1.2) and optimistic(1.25→1.2) merge.
+        old = [round(t, 1) for t in (base - step, base, base + step)]
+        assert len(set(old)) < 3, f"expected the old rule to collapse targets, got {old}"
+
+    def test_cleans_float_noise_and_is_noop_on_1decimal_configs(self):
+        # base ± step introduces binary-float noise: 1.2 - 0.1 == 1.0999999999999999.
+        pess = 1.2 - 0.1
+        assert pess != 1.1  # the raw float is not exactly 1.1
+        # _select_target cleans it to exactly 1.1 — byte-identical to the OLD round(pess, 1).
+        assert scenarios_module._select_target(pess) == 1.1
+        assert scenarios_module._select_target(pess) == round(pess, 1)
+        # And on any 1-decimal target the two rules agree (proves no-op on current configs).
+        for t in (0.8, 1.1, 1.2, 1.3, 1.4):
+            assert scenarios_module._select_target(t) == round(t, 1)
