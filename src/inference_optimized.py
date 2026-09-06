@@ -1399,6 +1399,7 @@ def _save_model_to_disk(
     weights: pd.Series | None,
     model_base_path: str,
     model_variables: list[str] | None = None,
+    bin_edges: tuple | None = None,
 ) -> str:
     """Build metadata, save model with metadata, return path."""
     model_metadata = {
@@ -1424,6 +1425,12 @@ def _save_model_to_disk(
 
     if model_variables is not None:
         model_metadata["model_variables"] = model_variables
+
+    # Persist the grid identity so a reused model can be validated against the current config (#40):
+    # the model learned "bin index → risk" for THESE edges, so reusing it under different edges maps
+    # the same cell indices onto different score regions. Stored per model_variable, aligned by order.
+    if bin_edges is not None and model_variables is not None:
+        model_metadata["bin_edges"] = {var: [float(e) for e in edges] for var, edges in zip(model_variables, bin_edges)}
 
     if weights is not None:
         model_metadata["weight_stats"] = {
@@ -1684,6 +1691,7 @@ def inference_pipeline(
             weights_all,
             model_base_path,
             model_variables=variables,
+            bin_edges=bins,
         )
 
     # SHAP interpretability (non-blocking)
