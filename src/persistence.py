@@ -30,7 +30,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import joblib
 import numpy as np
@@ -38,6 +38,9 @@ import pandas as pd
 from loguru import logger
 
 from src.estimators import HurdleRegressor
+
+if TYPE_CHECKING:
+    from src.config import PreprocessingSettings
 
 # ---------------------------------------------------------------------------
 # Integrity helpers (todo #44 — pickle RCE mitigation)
@@ -367,6 +370,57 @@ def load_model_for_prediction(model_path: str) -> tuple[Any, dict, list[str]]:
         logger.info(f"   Test R²: {test_r2:.4f}" if isinstance(test_r2, (int, float)) else f"   Test R²: {test_r2}")
 
     return model, metadata, features
+
+
+def validate_reused_model_config(metadata: dict, settings: "PreprocessingSettings") -> None:
+    """Validate a REUSED model's persisted config against the current settings (#40).
+
+    A reused model (``--model-path`` / batch supersegment model sharing) learned "bin index → risk"
+    for a SPECIFIC (multiplier, inference variables, per-variable bin edges). Applying it under a
+    different grid maps the same cell indices onto different score regions → silently wrong
+    predictions that no metric surfaces. This raises ``ValueError`` on a clear mismatch (multiplier,
+    inference variables, or bin edges) and warns (does not fail) when the model predates metadata
+    capture, so those fields simply cannot be validated.
+
+    The metadata keys are populated by ``_save_model_to_disk`` (``multiplier``, ``model_variables``,
+    ``bin_edges``); older models lack ``bin_edges`` (→ warn).
+    """
+    seg = getattr(settings, "segment_filter", "?")
+    problems: list[str] = []
+
+    saved_mult = metadata.get("multiplier")
+    if saved_mult is not None and float(saved_mult) != float(settings.multiplier):
+        problems.append(f"multiplier {saved_mult} != config {settings.multiplier}")
+
+    inf_vars = list(settings.inference_variables)
+    saved_vars = metadata.get("model_variables")
+    if saved_vars is not None and list(saved_vars) != inf_vars:
+        problems.append(f"inference variables {list(saved_vars)} != config {inf_vars}")
+
+    saved_edges = metadata.get("bin_edges")
+    if isinstance(saved_edges, dict) and getattr(settings, "bins", None):
+        for var in inf_vars:
+            if var not in saved_edges or var not in settings.bins:
+                continue
+            se = [float(e) for e in saved_edges[var]]
+            ce = [float(e) for e in settings.bins[var].bin_edges]
+            if se != ce:
+                problems.append(f"bin_edges['{var}'] changed ({len(se)}→{len(ce)} edges / values differ)")
+
+    if problems:
+        raise ValueError(
+            f"[{seg}] Reused model is INCOMPATIBLE with the current config (#40): "
+            + "; ".join(problems)
+            + ". The model's cell indices map to different score regions under this config — retrain "
+            "for this config, or point --model-path at a model trained on it."
+        )
+
+    absent = [k for k in ("multiplier", "model_variables", "bin_edges") if metadata.get(k) is None]
+    if absent:
+        logger.warning(
+            f"[{seg}] Reused model predates metadata capture for {absent}; those cannot be validated "
+            "against the current config. Retrain to enable full model-reuse validation (#40)."
+        )
 
 
 def predict_on_new_data(model_path: str, new_data: pd.DataFrame) -> np.ndarray:

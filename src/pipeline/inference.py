@@ -7,7 +7,7 @@ from loguru import logger
 
 from src.config import OutputPaths, PreprocessingSettings
 from src.inference_optimized import inference_pipeline, todu_average_inference
-from src.persistence import load_model_for_prediction, safe_joblib_load
+from src.persistence import load_model_for_prediction, safe_joblib_load, validate_reused_model_config
 
 
 def run_inference_phase(
@@ -39,6 +39,10 @@ def run_inference_phase(
     if model_path:
         # Load pre-trained model from supersegment
         model, metadata, features = load_model_for_prediction(model_path)
+        # Fail loudly if the reused model was trained under an incompatible grid (#40): a different
+        # multiplier / inference variables / bin edges means its cell indices map to different score
+        # regions. Old models (no bin_edges) warn instead of failing.
+        validate_reused_model_config(metadata, settings)
         # Support both old (test_r2) and new (cv_mean_r2) metric formats
         if "cv_mean_r2" in metadata:
             r2_display = f"{metadata['cv_mean_r2']:.4f} +/- {metadata.get('cv_std_r2', 0.0):.4f}"

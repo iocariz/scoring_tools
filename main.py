@@ -45,8 +45,16 @@ class ResimulationError(PipelineExecutionError):
 
 
 def _config_hash(settings) -> str:
-    """Compute a short hash of key config fields for staleness detection."""
-    key_fields = f"{settings.variables}|{settings.multiplier}|{settings.data_path}"
+    """Compute a short hash of key config fields for staleness detection.
+
+    Includes the resolved per-variable bin_edges (#40): a bin-edge change alone (same variables /
+    multiplier / data_path) redefines every grid cell, so the old 3-field hash missed it and a
+    resimulation would reuse a Pareto frontier built on a different grid.
+    """
+    edges = ""
+    if getattr(settings, "bins", None):
+        edges = ";".join(f"{v}={list(settings.bins[v].bin_edges)}" for v in sorted(settings.bins))
+    key_fields = f"{settings.variables}|{settings.multiplier}|{settings.data_path}|{edges}"
     return hashlib.md5(key_fields.encode()).hexdigest()[:12]
 
 

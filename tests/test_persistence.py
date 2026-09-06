@@ -15,6 +15,7 @@ from src.persistence import (
     load_model_for_prediction,
     predict_on_new_data,
     save_model_with_metadata,
+    validate_reused_model_config,
 )
 
 # =============================================================================
@@ -511,3 +512,66 @@ class TestPickleIntegrity:
         loaded_model, metadata, features = load_model_for_prediction(model_dir)
         assert hasattr(loaded_model, "predict")
         assert features == sample_features
+
+
+# =============================================================================
+# #40 — reused-model config validation
+# =============================================================================
+
+
+def _settings_stub(multiplier=7.0, inf_vars=("a", "b"), edges=None):
+    from types import SimpleNamespace
+
+    edges = edges or {"a": [float("-inf"), 1.0, float("inf")], "b": [float("-inf"), 2.0, 5.0, float("inf")]}
+    bins = {v: SimpleNamespace(bin_edges=list(e)) for v, e in edges.items()}
+    return SimpleNamespace(segment_filter="seg", multiplier=multiplier, inference_variables=list(inf_vars), bins=bins)
+
+
+def _full_metadata(multiplier=7.0, model_variables=("a", "b"), edges=None):
+    edges = edges or {"a": [float("-inf"), 1.0, float("inf")], "b": [float("-inf"), 2.0, 5.0, float("inf")]}
+    return {"multiplier": multiplier, "model_variables": list(model_variables), "bin_edges": edges}
+
+
+class TestValidateReusedModelConfig:
+    def test_matching_config_passes(self):
+        validate_reused_model_config(_full_metadata(), _settings_stub())  # no raise
+
+    def test_multiplier_mismatch_raises(self):
+        with pytest.raises(ValueError, match="multiplier"):
+            validate_reused_model_config(_full_metadata(multiplier=10.0), _settings_stub(multiplier=7.0))
+
+    def test_inference_variables_mismatch_raises(self):
+        with pytest.raises(ValueError, match="inference variables"):
+            validate_reused_model_config(
+                _full_metadata(model_variables=("a", "c")), _settings_stub(inf_vars=("a", "b"))
+            )
+
+    def test_bin_edges_mismatch_raises(self):
+        meta = _full_metadata(
+            edges={"a": [float("-inf"), 999.0, float("inf")], "b": [float("-inf"), 2.0, 5.0, float("inf")]}
+        )
+        with pytest.raises(ValueError, match="bin_edges"):
+            validate_reused_model_config(meta, _settings_stub())
+
+    def test_old_model_without_bin_edges_warns_not_raises(self):
+        from io import StringIO
+
+        from loguru import logger
+
+        meta = {"multiplier": 7.0, "model_variables": ["a", "b"]}  # no bin_edges (old model)
+        buf = StringIO()
+        hid = logger.add(buf, format="{message}", level="WARNING")
+        try:
+            validate_reused_model_config(meta, _settings_stub())  # must NOT raise
+        finally:
+            logger.remove(hid)
+        assert "predates metadata capture" in buf.getvalue() and "bin_edges" in buf.getvalue()
+
+    def test_bin_edges_roundtrip_through_json_with_inf(self, tmp_path):
+        # json.dump writes inf as Infinity and reads it back as float('inf') → validation still exact.
+        meta = _full_metadata()
+        p = tmp_path / "metadata.json"
+        p.write_text(json.dumps(meta))
+        loaded = json.loads(p.read_text())
+        assert loaded["bin_edges"]["a"][0] == float("-inf")
+        validate_reused_model_config(loaded, _settings_stub())  # no raise after round-trip
