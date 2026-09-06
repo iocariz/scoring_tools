@@ -194,7 +194,7 @@ def check_segment_exists(df: pd.DataFrame, segment_filter: str, segment_column: 
     # Handle regex patterns (supersegments)
     if "|" in segment_filter:
         # Regex pattern
-        mask = df[segment_column].astype(str).str.match(segment_filter, na=False)
+        mask = df[segment_column].astype(str).str.fullmatch(segment_filter, na=False)
         match_count = mask.sum()
     else:
         # Exact match
@@ -234,7 +234,7 @@ def check_segment_size(
 
     # Count matching rows
     if "|" in segment_filter:
-        mask = df[segment_column].astype(str).str.match(segment_filter, na=False)
+        mask = df[segment_column].astype(str).str.fullmatch(segment_filter, na=False)
         count = mask.sum()
     else:
         count = (df[segment_column] == segment_filter).sum()
@@ -401,7 +401,9 @@ def _segment_demand_scope(df: pd.DataFrame, segment_filter: str | None) -> pd.Da
     scoped = df
     if segment_filter and "segment_cut_off" in scoped.columns:
         seg_col = scoped["segment_cut_off"].astype(str)
-        seg_mask = seg_col.str.match(segment_filter, na=False) if "|" in segment_filter else (seg_col == segment_filter)
+        seg_mask = (
+            seg_col.str.fullmatch(segment_filter, na=False) if "|" in segment_filter else (seg_col == segment_filter)
+        )
         scoped = scoped[seg_mask]
     for excl_col, keep_val in (("fuera_norma", "n"), ("fraud_flag", "n")):
         if excl_col in scoped.columns:

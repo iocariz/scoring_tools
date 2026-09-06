@@ -216,6 +216,20 @@ class TestCheckSegmentExists:
         result = check_segment_exists(df, "A")
         assert result.status == CheckStatus.SKIPPED
 
+    def test_fullmatch_rejects_prefix_extended_segment(self):
+        # Only prefix-EXTENDED values present (no exact match). str.match (start-anchored) would
+        # absorb them (PASS); str.fullmatch requires the whole string → 0 match → FAILED (#39).
+        df = pd.DataFrame({"segment_cut_off": ["premium_plus", "premium_extra"]})
+        result = check_segment_exists(df, "premium|precon")
+        assert result.status == CheckStatus.FAILED
+
+    def test_fullmatch_matches_exact_or_pattern(self):
+        # Exact values under the OR pattern still match (no-op on real, exactly-named segments).
+        df = pd.DataFrame({"segment_cut_off": ["premium", "precon", "premium_plus", "no_premium"]})
+        result = check_segment_exists(df, "premium|precon")
+        assert result.status == CheckStatus.PASSED
+        assert "Found 2 rows" in result.message  # premium + precon only; the other two excluded
+
 
 # =============================================================================
 # check_segment_size Tests

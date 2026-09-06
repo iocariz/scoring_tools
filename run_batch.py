@@ -244,9 +244,11 @@ def learn_supersegment_bin_edges(
         if not segment_filters:
             continue
 
-        # Filter to this supersegment's population
-        pattern = "|".join(re.escape(sf) for sf in segment_filters)
-        ss_mask = quality_mask & data["segment_cut_off"].str.contains(pattern, regex=True, na=False)
+        # Filter to this supersegment's population. Use EXACT set membership (isin), not
+        # str.contains: a substring match let a filter like "premium" absorb "no_premium_*" (or any
+        # segment whose full name contains another's), silently pooling the wrong rows into the
+        # learned edges (#39). segment_cut_off holds the full segment path, so isin is exact.
+        ss_mask = quality_mask & data["segment_cut_off"].isin(segment_filters)
         ss_demand = data[ss_mask]
         if date_ini and date_fin:
             ss_demand = filter_by_date(ss_demand, "mis_date", date_ini, date_fin)
