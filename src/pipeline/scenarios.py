@@ -36,6 +36,19 @@ from src.utils import (
 )
 
 
+def _select_target(scenario_risk: float) -> float:
+    """Normalize a scenario risk target for SELECTION (audit #38).
+
+    The old ``round(scenario_risk, 1)`` quantized the *selection* target with banker's rounding:
+    a directly-configured ``optimum_risk=1.25`` selected at ≤1.2%, and a sub-0.1 ``risk_step``
+    collapsed pessimistic/base/optimistic onto one 1-decimal target (e.g. 1.15/1.2/1.25 → all 1.2).
+    Rounding to 6 decimals instead cleans the binary-float noise from the ``base ± step`` derivation
+    (``1.2 - 0.1 == 1.0999999999999999`` → 1.1, so it stays byte-identical to the old behavior on
+    1-decimal configs) while preserving genuinely sub-decimal targets. Display stays 1-decimal via
+    the log format strings — this only governs which frontier points qualify (risk ≤ target)."""
+    return float(round(scenario_risk, 6))
+
+
 def _mirror_mr_artifacts(output: OutputPaths, src_suffix: str, dst_suffix: str) -> None:
     """Copy the base scenario's MR artifacts from *src_suffix* to *dst_suffix* so the scenario-named
     ("_base") and default-named ("") MR files are byte-identical.
@@ -121,7 +134,7 @@ def run_scenario_analysis(
 
     t0 = time.perf_counter()
     segment = settings.segment_filter
-    current_risk = float(round(scenario_risk, 1))
+    current_risk = _select_target(scenario_risk)  # exact target for selection, not banker's round(.,1) (#38)
 
     # Calculate main annual coef for production scaling
     date_ini_main = settings.get_date("date_ini_book_obs")
@@ -226,14 +239,14 @@ def run_scenario_analysis(
     opt_sol = visualizer.get_selected_solution()
     if opt_sol.empty:
         logger.warning(
-            f"[{segment}] Scenario {scenario_name} | risk_threshold={current_risk:.1f}% | "
+            f"[{segment}] Scenario {scenario_name} | risk_threshold={current_risk:.2f}% | "
             "no feasible solution found on Pareto frontier"
         )
         return pd.DataFrame()
     selected_b2 = opt_sol.iloc[0].get("b2_ever_h6", float("nan"))
     selected_prod = opt_sol.iloc[0].get("oa_amt_h0", float("nan"))
     logger.info(
-        f"[{segment}] Scenario {scenario_name} | risk_threshold={current_risk:.1f}% | "
+        f"[{segment}] Scenario {scenario_name} | risk_threshold={current_risk:.2f}% | "
         f"selected b2={selected_b2:.2f}% | production={selected_prod:,.0f}"
     )
 
