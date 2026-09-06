@@ -353,6 +353,56 @@ def merge_configs(base_config: dict[str, Any], segment_config: dict[str, Any]) -
     return merged
 
 
+def _segment_pins_bin_edges(segment_config: dict[str, Any], var_name: str) -> bool:
+    """True if the SEGMENT config explicitly pins ``bin_edges`` for *var_name*
+    (form ``[preprocessing.bins.<var>] bin_edges = [...]``, i.e. ``bins.<var>.bin_edges``)."""
+    bc = segment_config.get("bins", {}).get(var_name, {})
+    return isinstance(bc, dict) and bool(bc.get("bin_edges")) and len(bc["bin_edges"]) >= 2
+
+
+def _inject_learned_bin_edges(
+    merged_config: dict[str, Any],
+    segment_config: dict[str, Any],
+    segment_name: str,
+    global_bin_edges: dict[str, list[float]] | None,
+    supersegment_bin_edges: dict[str, dict[str, list[float]]] | None,
+) -> dict[str, Any]:
+    """Inject learned bin edges into ``merged_config['bins']`` — global first, then
+    reporting-supersegment edges override global — but NEVER clobber a variable whose edges the
+    SEGMENT explicitly pinned (#60). Precedence: segment pin > supersegment > global. Logs which
+    source won so a segment running on a different grid than configured is never silent."""
+    bins_section = merged_config.setdefault("bins", {})
+
+    if global_bin_edges:
+        for var_name, edges in global_bin_edges.items():
+            if var_name not in bins_section:
+                continue
+            if _segment_pins_bin_edges(segment_config, var_name):
+                logger.info(
+                    f"Segment '{segment_name}': keeping segment-pinned bin_edges for '{var_name}' "
+                    "(NOT injecting the global learned edges)."
+                )
+                continue
+            bins_section[var_name]["bin_edges"] = edges
+
+    if supersegment_bin_edges:
+        reporting_ss = resolve_reporting_supersegment(segment_config)
+        if reporting_ss and reporting_ss in supersegment_bin_edges:
+            for var_name, edges in supersegment_bin_edges[reporting_ss].items():
+                if var_name not in bins_section:
+                    continue
+                if _segment_pins_bin_edges(segment_config, var_name):
+                    logger.info(
+                        f"Segment '{segment_name}': keeping segment-pinned bin_edges for '{var_name}' "
+                        f"(NOT injecting supersegment '{reporting_ss}' edges)."
+                    )
+                    continue
+                bins_section[var_name]["bin_edges"] = edges
+                logger.info(f"Using supersegment '{reporting_ss}' bin edges for '{var_name}' (overriding global)")
+
+    return merged_config
+
+
 def run_segment_pipeline(
     segment_name: str,
     segment_config: dict[str, Any],
@@ -420,23 +470,11 @@ def run_segment_pipeline(
     # Merge configurations
     merged_config = merge_configs(base_config, segment_config)
 
-    # Inject learned bin edges: start with global, then override with
-    # supersegment-specific edges if this segment belongs to one.
-    if global_bin_edges:
-        bins_section = merged_config.setdefault("bins", {})
-        for var_name, edges in global_bin_edges.items():
-            if var_name in bins_section:
-                bins_section[var_name]["bin_edges"] = edges
-
-    if supersegment_bin_edges:
-        reporting_ss = resolve_reporting_supersegment(segment_config)
-        if reporting_ss and reporting_ss in supersegment_bin_edges:
-            ss_edges = supersegment_bin_edges[reporting_ss]
-            bins_section = merged_config.setdefault("bins", {})
-            for var_name, edges in ss_edges.items():
-                if var_name in bins_section:
-                    bins_section[var_name]["bin_edges"] = edges
-                    logger.info(f"Using supersegment '{reporting_ss}' bin edges for '{var_name}' (overriding global)")
+    # Inject learned bin edges: global first, then supersegment overrides — but a segment that
+    # explicitly pins bin_edges keeps them (#60). See _inject_learned_bin_edges for precedence.
+    merged_config = _inject_learned_bin_edges(
+        merged_config, segment_config, segment_name, global_bin_edges, supersegment_bin_edges
+    )
 
     logger.info(f"Segment filter: {merged_config.get('segment_filter')}")
     logger.info(f"Optimum risk: {merged_config.get('optimum_risk')}")
