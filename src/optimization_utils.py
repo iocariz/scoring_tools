@@ -1133,6 +1133,28 @@ def mask_to_cutoffs(
             cut_map[float(v0)] = float(max_v1)
 
         result[var0] = cut_map
+
+        # Consistency guard (#57): a 2-var cut_map is a THRESHOLD — it accepts every var1 ≤ cut(var0)
+        # (≥ for inverted), which includes phantom (unobserved) cells inside the accepted range that
+        # the mask leaves REJECTED (phantoms are forced x=0 in the MILP). classify_by_mask rejects
+        # them, so a consumer that reconstructs this cut_map from the persisted optimal_solution would
+        # classify those phantom cells differently from the mask — same policy, two behaviours on a new
+        # cohort. Every divergence is "cut_map accepts, mask rejects" (monotonicity makes observed cells
+        # threshold-representable). Surface it loudly; the mask / accepted_cells are authoritative.
+        divergent: list[tuple] = []
+        for (v0, v1), idx in grid.cell_index.items():
+            cut = cut_map[float(v0)]
+            accept_cut = (v1 >= cut) if var1 in inv_vars else (v1 <= cut)
+            if bool(accept_cut) != bool(mask[idx] == 1):
+                divergent.append((v0, v1))
+        if divergent:
+            sample = [tuple(np.asarray(c).tolist()) for c in divergent[:5]]  # native scalars, clean repr
+            logger.warning(
+                f"mask_to_cutoffs: the 2-var threshold cutoffs disagree with the mask on {len(divergent)} "
+                f"phantom cell(s) inside the accepted range (cut_map accepts, mask rejects), e.g. "
+                f"{sample}. The persisted optimal_solution cutoffs are a LOSSY summary — classify "
+                "new cohorts via the mask / accepted_cells for the exact policy (audit #57)."
+            )
     else:
         # N>2: lossless cell-level dict + conditional cutoffs for last dimension
         # 1) Cell-level dict: {(v0, v1, v2, ...): 0_or_1, ...}

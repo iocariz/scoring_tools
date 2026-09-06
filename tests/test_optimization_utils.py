@@ -1306,6 +1306,53 @@ class TestMaskToCutoffs:
         for v0 in grid.values_per_var["var0"]:
             assert cutoffs["var0"][float(v0)] == -np.inf
 
+    def test_warns_when_cutmap_diverges_from_mask_on_phantom(self):
+        """#57: a phantom cell inside the accepted range makes the threshold cut_map accept a cell
+        the mask rejects — the persisted 2-var cutoffs are lossy. mask_to_cutoffs must surface it."""
+        from io import StringIO
+
+        from loguru import logger
+
+        # Drop (1,2) -> phantom. Accept (1,1) and (1,3): cut_map[1]=3 accepts the phantom (1,2),
+        # but the mask leaves it 0. Monotonicity bridges (1,1)->(1,3) over the phantom gap.
+        df = _make_summary_2d(2, 3)
+        df = df[~((df["var0"] == 1) & (df["var1"] == 2))]
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        mask = np.zeros(grid.n_cells, dtype=int)
+        mask[grid.cell_index[(1, 1)]] = 1
+        mask[grid.cell_index[(1, 3)]] = 1
+
+        buf = StringIO()
+        hid = logger.add(buf, format="{message}", level="WARNING")
+        try:
+            cutoffs = mask_to_cutoffs(mask, grid, inv_vars=[])
+        finally:
+            logger.remove(hid)
+        logs = buf.getvalue()
+        assert cutoffs["var0"][1.0] == 3  # threshold spans the phantom
+        assert "disagree with the mask" in logs and "phantom" in logs
+        assert "(1, 2)" in logs  # the specific divergent phantom cell is named
+
+    def test_no_warning_when_cutmap_reproduces_mask(self):
+        """No phantom inside the accepted range → threshold reproduces the mask exactly, no warning."""
+        from io import StringIO
+
+        from loguru import logger
+
+        df = _make_summary_2d(2, 3)
+        df = df[~((df["var0"] == 1) & (df["var1"] == 2))]
+        grid = CellGrid.from_summary(df, ["var0", "var1"])
+        mask = np.zeros(grid.n_cells, dtype=int)
+        mask[grid.cell_index[(1, 1)]] = 1  # cut_map[1]=1: rejects the phantom (1,2) too → agrees
+
+        buf = StringIO()
+        hid = logger.add(buf, format="{message}", level="WARNING")
+        try:
+            mask_to_cutoffs(mask, grid, inv_vars=[])
+        finally:
+            logger.remove(hid)
+        assert "disagree with the mask" not in buf.getvalue()
+
 
 # =============================================================================
 # add_bin_columns Tests
