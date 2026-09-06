@@ -73,6 +73,27 @@ def test_learn_own_edges_skipped_without_data():
     assert result == {}
 
 
+def test_learn_own_edges_uses_exact_segment_not_substring():
+    """#39: "premium" is a SUBSTRING of "no_premium" — str.contains would pool the no_premium rows
+    into the supersegment's learned edges. isin matches only the exact segment. Premium income sits
+    in [500,900] and no_premium in [4000,5000]; a premium-only split lands ~700, a contaminated one
+    lands far higher, so the learned mid-edge distinguishes the two."""
+    rng = np.random.RandomState(0)
+    demand = pd.DataFrame(
+        {
+            "income": np.concatenate([rng.uniform(500, 900, 100), rng.uniform(4000, 5000, 100)]),
+            "segment_cut_off": ["premium"] * 100 + ["no_premium"] * 100,
+            "fuera_norma": ["n"] * 200,
+            "fraud_flag": ["n"] * 200,
+            "nature_holder": ["person"] * 200,
+        }
+    )
+    ss = {"pl": {"segment_filters": ["premium"], "learn_own_bin_edges": True}}
+    result = learn_supersegment_bin_edges(demand, BASE_CFG_LEARNABLE, ss)
+    edges = result["pl"]["income_bin"]
+    assert edges[1] < 1000  # premium-only median (~700); contamination would push the split far higher
+
+
 def test_learn_own_edges_still_works_with_data():
     ss = {"others": {"segment_filters": ["premium"], "learn_own_bin_edges": True}}
     result = learn_supersegment_bin_edges(_demand_frame(), BASE_CFG_LEARNABLE, ss)

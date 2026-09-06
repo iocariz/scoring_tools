@@ -139,9 +139,11 @@ def preprocess_data(
         # Apply segment filter - support both exact match and regex patterns
         # If segment_filter contains '|' (OR operator), treat as regex pattern
         if "|" in segment_filter:
-            # Regex pattern for multiple segments (e.g., supersegment combinations)
+            # Regex pattern for multiple segments (e.g., supersegment combinations). Use fullmatch,
+            # NOT match: str.match anchors only at the START, so `premium` would absorb `premium_plus`
+            # into shared-model training. fullmatch anchors both ends → exact per-alternative (#39).
             logger.info("Using regex pattern matching for segment_filter")
-            segment_mask = data_filtered["segment_cut_off"].astype(str).str.match(segment_filter, na=False)
+            segment_mask = data_filtered["segment_cut_off"].astype(str).str.fullmatch(segment_filter, na=False)
             data_filtered = data_filtered[segment_mask]
         else:
             # Exact match for single segment
