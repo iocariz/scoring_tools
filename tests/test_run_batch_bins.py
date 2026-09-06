@@ -9,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 import pandas as pd
 
-from run_batch import learn_supersegment_bin_edges
+from run_batch import _inject_learned_bin_edges, _segment_pins_bin_edges, learn_supersegment_bin_edges
 
 SS_FIXED = {
     "pl_known": {
@@ -79,3 +79,51 @@ def test_learn_own_edges_still_works_with_data():
     assert "others" in result
     assert "income_bin" in result["others"]
     assert len(result["others"]["income_bin"]) >= 2
+
+
+# =============================================================================
+# #60 — segment-pinned bin_edges must survive global/supersegment injection
+# =============================================================================
+
+_PINNED = [float("-inf"), 2000.0, float("inf")]
+_GLOBAL = [float("-inf"), 5000.0, float("inf")]
+_SS = [float("-inf"), 7000.0, float("inf")]
+
+
+def _merged_with(bin_edges=None):
+    """A merged_config whose income_bin either pins bin_edges (segment pin) or only has max_bins."""
+    bc = {"source_col": "income", "output_col": "income_bin", "max_bins": 2}
+    if bin_edges is not None:
+        bc["bin_edges"] = bin_edges
+    return {"bins": {"income_bin": bc}}
+
+
+class TestSegmentPinnedBinEdgesRespected:
+    def test_detects_segment_pin(self):
+        assert _segment_pins_bin_edges({"bins": {"income_bin": {"bin_edges": _PINNED}}}, "income_bin")
+        assert not _segment_pins_bin_edges({"bins": {"income_bin": {"max_bins": 2}}}, "income_bin")
+        assert not _segment_pins_bin_edges({}, "income_bin")
+
+    def test_global_injection_does_not_clobber_segment_pin(self):
+        seg = {"bins": {"income_bin": {"bin_edges": _PINNED}}}
+        merged = _merged_with(_PINNED)  # merge_configs already folded the pin in
+        out = _inject_learned_bin_edges(merged, seg, "seg", {"income_bin": _GLOBAL}, None)
+        assert out["bins"]["income_bin"]["bin_edges"] == _PINNED  # kept, NOT the global _GLOBAL
+
+    def test_supersegment_injection_does_not_clobber_segment_pin(self):
+        seg = {"bins": {"income_bin": {"bin_edges": _PINNED}}, "reporting_supersegment": "ss"}
+        merged = _merged_with(_PINNED)
+        out = _inject_learned_bin_edges(merged, seg, "seg", None, {"ss": {"income_bin": _SS}})
+        assert out["bins"]["income_bin"]["bin_edges"] == _PINNED  # kept, NOT the supersegment _SS
+
+    def test_global_injected_when_segment_does_not_pin(self):
+        seg = {"bins": {"income_bin": {"max_bins": 2}}}
+        merged = _merged_with(None)
+        out = _inject_learned_bin_edges(merged, seg, "seg", {"income_bin": _GLOBAL}, None)
+        assert out["bins"]["income_bin"]["bin_edges"] == _GLOBAL  # learned edges applied as before
+
+    def test_supersegment_overrides_global_when_no_pin(self):
+        seg = {"bins": {"income_bin": {"max_bins": 2}}, "reporting_supersegment": "ss"}
+        merged = _merged_with(None)
+        out = _inject_learned_bin_edges(merged, seg, "seg", {"income_bin": _GLOBAL}, {"ss": {"income_bin": _SS}})
+        assert out["bins"]["income_bin"]["bin_edges"] == _SS  # supersegment wins over global (unchanged behavior)
