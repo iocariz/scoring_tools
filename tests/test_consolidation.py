@@ -1546,13 +1546,21 @@ def test_impute_monotone_accept_fills_grey_by_monotone_side():
     assert out[1, 2] == 1.0 and out[0, 0] == 0.0  # observed cells unchanged
 
 
-def test_impute_monotone_accept_single_class_left_grey():
-    """With only one observed class there is nothing to separate, so grey stays NaN (no
-    spurious boundary)."""
+def test_impute_monotone_accept_single_class_fills_grey_with_that_class():
+    """With only one observed class there is no boundary on the grid, so grey cells join that
+    class: an all-accept grid keeps one outer frontier (no boxes around interior grey holes),
+    an all-reject grid draws no frontier at all."""
     import numpy as np
 
     from src.consolidation import _impute_monotone_accept
 
     nan = float("nan")
     out = _impute_monotone_accept(np.array([[1, 1], [1, nan]], dtype=float))
-    assert np.isnan(out[1, 1])
+    assert out[1, 1] == 1.0  # all-accept: grey hole joins the accept side
+
+    out = _impute_monotone_accept(np.array([[0, nan], [0, 0]], dtype=float))
+    assert out[0, 1] == 0.0  # all-reject: grey joins the reject side
+
+    # no observed cells at all → nothing to infer, grid stays NaN
+    out = _impute_monotone_accept(np.full((2, 2), nan))
+    assert np.isnan(out).all()

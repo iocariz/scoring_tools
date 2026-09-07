@@ -2986,6 +2986,11 @@ def _impute_monotone_accept(acc: np.ndarray) -> np.ndarray:
     inferred from the observed cells. A grey cell is treated as accept if it is at least as
     safe as some observed accepted cell, reject if it is at most as safe as some observed
     rejected cell, else left NaN (genuinely ambiguous — no monotone evidence either way).
+
+    When only ONE class is observed there is no accept/reject boundary on the grid at all,
+    so every grey cell takes that class: an all-accept grid gets one clean frontier around
+    the whole grid instead of boxes fencing off each interior grey hole; an all-reject grid
+    gets no frontier.
     """
     bnd = acc.astype(float).copy()
     if bnd.size == 0 or not np.isnan(bnd).any():
@@ -2997,7 +3002,11 @@ def _impute_monotone_accept(acc: np.ndarray) -> np.ndarray:
     a_r, a_c = rows[vals == 1], cols[vals == 1]
     j_r, j_c = rows[vals == 0], cols[vals == 0]
     if a_r.size == 0 or j_r.size == 0:
-        return bnd  # only one class observed → nothing to separate
+        # Only one class observed → no boundary exists; grey cells join that class so the
+        # frontier doesn't fragment around them (all-accept keeps one outer frontier,
+        # all-reject draws none).
+        bnd[np.isnan(bnd)] = 1.0 if j_r.size == 0 else 0.0
+        return bnd
     sr = 1.0 if a_r.mean() >= j_r.mean() else -1.0  # does accept sit at higher row index?
     sc = 1.0 if a_c.mean() >= j_c.mean() else -1.0  # ... higher col index?
     aR, aC, jR, jC = sr * a_r, sc * a_c, sr * j_r, sc * j_c
