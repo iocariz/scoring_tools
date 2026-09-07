@@ -435,3 +435,44 @@ class TestGenerateAuditSummary:
 
         swap_in_row = summary[summary["classification"] == "swap_in"]
         assert swap_in_row["total_oa_amt"].values[0] == 4000  # Uses oa_amt_h0
+
+
+def test_set_baseline_system_rejection_rate_populates_actual_and_optimum():
+    """Baseline mode skips reconcile, but the swap-invariant actual System Rejection Rate
+    (se_decision_id=='ko' / demand) must still be set on Actual + Optimum (= Actual) rows,
+    else it stays N/A and blanks the consolidated aggregate + TOTAL."""
+    from src.audit import set_baseline_system_rejection_rate
+
+    summary = pd.DataFrame(
+        {
+            "Metric": ["Actual", "Swap-in", "Swap-out", "Optimum selected", "Summary"],
+            "Production (€)": [1000.0, 0.0, 0.0, 1000.0, 0.0],
+            "Rejection Rate (%)": [60.0, None, None, 60.0, None],
+            "System Rejection Rate (%)": [None, None, None, None, None],
+        }
+    )
+    audit = pd.DataFrame(
+        {
+            "se_decision_id": ["ko", "ko", "ok", "rv"],
+            "oa_amt_demand": [100.0, 100.0, 100.0, 100.0],
+            "oa_amt_h0": [100.0, 100.0, 100.0, 100.0],
+        }
+    )
+    out = set_baseline_system_rejection_rate(summary, audit)
+    # ko demand 200 / total 400 = 50%; Optimum = Actual in baseline
+    assert out.loc[out["Metric"] == "Actual", "System Rejection Rate (%)"].iloc[0] == 50.0
+    assert out.loc[out["Metric"] == "Optimum selected", "System Rejection Rate (%)"].iloc[0] == 50.0
+    # other rows stay N/A; production + regular rejection untouched
+    assert pd.isna(out.loc[out["Metric"] == "Swap-in", "System Rejection Rate (%)"].iloc[0])
+    assert out.loc[out["Metric"] == "Actual", "Production (€)"].iloc[0] == 1000.0
+    assert out.loc[out["Metric"] == "Actual", "Rejection Rate (%)"].iloc[0] == 60.0
+
+
+def test_set_baseline_system_rejection_rate_noop_without_se_decision_id():
+    """No se_decision_id → stays N/A (graceful, matches the 'degrades to no value' contract)."""
+    from src.audit import set_baseline_system_rejection_rate
+
+    summary = pd.DataFrame({"Metric": ["Actual", "Optimum selected"], "System Rejection Rate (%)": [None, None]})
+    audit = pd.DataFrame({"oa_amt_demand": [100.0], "oa_amt_h0": [100.0]})  # no se_decision_id
+    out = set_baseline_system_rejection_rate(summary, audit)
+    assert pd.isna(out["System Rejection Rate (%)"]).all()
