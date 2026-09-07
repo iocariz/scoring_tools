@@ -503,6 +503,33 @@ def reconcile_risk_production_summary_with_audit(
     return st
 
 
+def set_baseline_system_rejection_rate(summary_table: pd.DataFrame, audit_df: pd.DataFrame) -> pd.DataFrame:
+    """Populate 'System Rejection Rate (%)' when the full reconcile is skipped (baseline mode).
+
+    ``baseline_mode`` deliberately skips ``reconcile_risk_production_summary_with_audit`` — its
+    accept-all mask mislabels swap-in/out and would corrupt the Optimum=Actual production. But the
+    ACTUAL system-rejection rate (through-the-door ``se_decision_id=='ko'`` / demand) is
+    swap-INVARIANT, and Optimum=Actual in baseline, so it is safe to set here. Without it the rate
+    stays N/A and also blanks the consolidated supersegment aggregate + TOTAL (which cannot sum a
+    missing component). Only 'System Rejection Rate (%)' is touched — production / swap /
+    regular-rejection columns are left exactly as constructed.
+    """
+    if summary_table is None or summary_table.empty:
+        return summary_table
+    if "System Rejection Rate (%)" not in summary_table.columns or "se_decision_id" not in audit_df.columns:
+        return summary_table
+    total_demand, actual_system, _ = _system_rejection_amounts_from_audit(audit_df, primary_amount_column(audit_df))
+    if not total_demand or total_demand <= 0:
+        return summary_table
+    rate = actual_system / total_demand * 100.0
+    m = summary_table["Metric"].astype(str).str.lower()
+    for label in ("actual", "optimum selected"):  # baseline: Optimum = Actual
+        mask = m == label
+        if mask.any():
+            summary_table.loc[mask, "System Rejection Rate (%)"] = rate
+    return summary_table
+
+
 def save_audit_tables(
     data_main: pd.DataFrame,
     data_mr: pd.DataFrame,

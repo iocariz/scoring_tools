@@ -16,6 +16,7 @@ from src.audit import (
     generate_audit_table,
     reconcile_risk_production_summary_with_audit,
     save_audit_tables,
+    set_baseline_system_rejection_rate,
     validate_audit_against_summary,
 )
 from src.config import OutputPaths, PreprocessingSettings
@@ -386,6 +387,11 @@ def run_scenario_analysis(
     if not settings.baseline_mode:
         summary_table = reconcile_risk_production_summary_with_audit(summary_table, audit_main)
         validate_audit_against_summary(audit_main, summary_table)
+    else:
+        # Baseline skips the full reconcile (accept-all mask would corrupt swap/production),
+        # but the swap-invariant System Rejection Rate would otherwise stay N/A and blank the
+        # consolidated aggregate + TOTAL — set it from the audit here.
+        summary_table = set_baseline_system_rejection_rate(summary_table, audit_main)
 
     # Add CI columns to summary table (only for Optimum selected row; others stay NaN).
     # risk_ci_* is on the blended booked+RI basis (matching the headline) when the
