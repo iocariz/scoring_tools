@@ -36,6 +36,38 @@ def run_inference_phase(
     t0 = time.perf_counter()
     segment = settings.segment_filter
 
+    # Restrict MODEL TRAINING by booking date (audit #1). data_clean is the FULL cleaned
+    # demand (all dates — the MR/holdout cohort is sliced from it downstream). The UPPER
+    # bound (mis_date <= date_fin_book_obs) is ALWAYS applied: rows after it are the
+    # immature MR/holdout cohort whose H6 is not yet realized, so training the risk AND
+    # exposure models on them leaks future/immature outcomes into the fit. The LOWER bound
+    # (drop applications booked before date_ini_book_obs) is opt-in via
+    # settings.train_from_date_ini — OFF by default so all MATURE past applications are used
+    # (more data; pre-window loans are older → their H6 is realized). The caller's data_clean
+    # is untouched: optimization and the MR check still use the full period.
+    train_data = data_clean
+    if settings.date_fin_book_obs:
+        if "mis_date" in data_clean.columns:
+            mis = pd.to_datetime(data_clean["mis_date"])
+            mask = mis <= pd.to_datetime(settings.date_fin_book_obs)
+            lower = (
+                settings.date_ini_book_obs if (settings.train_from_date_ini and settings.date_ini_book_obs) else None
+            )
+            if lower is not None:
+                mask &= mis >= pd.to_datetime(lower)
+            train_data = data_clean[mask]
+            n_excluded = len(data_clean) - len(train_data)
+            logger.info(
+                f"[{segment}] Model training restricted to booking window "
+                f"[{lower or '-inf'} .. {settings.date_fin_book_obs}]: "
+                f"{len(train_data)}/{len(data_clean)} rows kept ({n_excluded} out-of-window rows excluded)."
+            )
+        else:
+            logger.warning(
+                f"[{segment}] mis_date column absent — cannot restrict training by booking date; "
+                f"training on all supplied rows."
+            )
+
     if model_path:
         # Load pre-trained model from supersegment
         model, metadata, features = load_model_for_prediction(model_path)
@@ -75,7 +107,7 @@ def run_inference_phase(
             # Fallback: train todu model on current segment data
             logger.warning(f"[{segment}] Todu model not found at {todu_model_path}, training on current data")
             _, reg_todu_amt_pile, _ = todu_average_inference(
-                data=data_clean,
+                data=train_data,
                 variables=settings.variables,
                 indicators=settings.indicators,
                 feature_col="oa_amt",
@@ -108,7 +140,7 @@ def run_inference_phase(
 
         # Train new model with feature selection
         risk_inference = inference_pipeline(
-            data=data_clean,
+            data=train_data,
             bins=bins_tuple,
             variables=inference_vars,
             indicators=settings.indicators,
@@ -125,7 +157,7 @@ def run_inference_phase(
 
         # Todu Average Inference
         _, reg_todu_amt_pile, _ = todu_average_inference(
-            data=data_clean,
+            data=train_data,
             variables=settings.variables,
             indicators=settings.indicators,
             feature_col="oa_amt",

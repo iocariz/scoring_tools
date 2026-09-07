@@ -416,6 +416,15 @@ class PreprocessingSettings(BaseModel):
     fixed_cutoffs: dict[str, Any] | None = None
     baseline_mode: bool = False
     base_scenario_only: bool = False
+    # Model-training booking-date window (audit #1). The risk + exposure models train on data_clean,
+    # which is the FULL demand — rows AFTER date_fin_book_obs are the immature MR/holdout cohort, so the
+    # UPPER bound (mis_date <= date_fin_book_obs) is ALWAYS applied to avoid training on not-yet-realized
+    # H6 (leakage). `train_from_date_ini` controls the LOWER bound: when True, training also drops
+    # applications booked before date_ini_book_obs (both-bounds observation window); when False (default),
+    # all MATURE past applications up to date_fin_book_obs are used (more training data). Enable it only
+    # when a policy/population break at date_ini_book_obs means older applications no longer represent the
+    # current regime. Does not affect optimization / MR, which always use the full data_clean.
+    train_from_date_ini: bool = False
     cutoff_floor_segment: str | None = None
     # Per-variable minimum accepted bin thresholds.
     # Value can be a scalar (applies to all rows) or an income_bin-keyed map.
