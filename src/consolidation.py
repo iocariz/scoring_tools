@@ -1988,6 +1988,12 @@ _BORDER_GRID = Border(
     left=Side(style="medium", color=_CLR_WHITE),
     right=Side(style="medium", color=_CLR_WHITE),
 )
+# Accept/reject frontier: a thick deep-navy edge drawn on the sides of accepted cells
+# that face a non-accepted (R / — / off-grid) neighbor, so the acceptance region's
+# staircase boundary is easy to spot. _SIDE_GRID is the normal (white) separator used on
+# the accepted cell's interior edges so it still reads as a tiled grid.
+_SIDE_FRONTIER = Side(style="thick", color=_CLR_PRIMARY)
+_SIDE_GRID = Side(style="medium", color=_CLR_WHITE)
 
 # ----- Alignment -----
 _ALIGN_CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -2971,8 +2977,18 @@ def _empty_rp_skeleton(template_cols: list[str]) -> pd.DataFrame:
 
 
 def _write_single_pivot_grid(ws, pivot, col_var, row_var, start_row, col_offset=0):
-    """Draw one pivot grid at (start_row, col_offset+1). Returns bottom row used."""
+    """Draw one pivot grid at (start_row, col_offset+1). Returns bottom row used.
+
+    Accepted cells whose neighbour across an edge is NOT accepted (rejected, unobserved,
+    or off-grid) get a thick deep-navy border on that edge, so the accept/reject frontier
+    (a monotone staircase) is easy to spot against the green/red/grey tiles.
+    """
     c0 = col_offset + 1
+    _acc = pivot.to_numpy()
+    _nr, _nc = _acc.shape
+
+    def _is_acc(r, c):  # accepted iff in-bounds and value == 1 (NaN / 0 / off-grid → not)
+        return 0 <= r < _nr and 0 <= c < _nc and _acc[r, c] == 1
 
     # Corner label
     corner = ws.cell(row=start_row, column=c0)
@@ -3008,6 +3024,7 @@ def _write_single_pivot_grid(ws, pivot, col_var, row_var, start_row, col_offset=
         rh.border = _BORDER_GRID
         ws.row_dimensions[ri].height = 26
 
+        r = ri - (start_row + 1)  # 0-based row index into the accepted matrix
         for ci, col_val in enumerate(pivot.columns, c0 + 1):
             cell = ws.cell(row=ri, column=ci)
             val = pivot.loc[idx_val, col_val]
@@ -3024,7 +3041,18 @@ def _write_single_pivot_grid(ws, pivot, col_var, row_var, start_row, col_offset=
                 cell.value = "R"
                 cell.font = _FONT_GRID_CELL
             cell.alignment = _ALIGN_CENTER
-            cell.border = _BORDER_GRID
+            # Trace the accept/reject frontier: thick edge on an accepted cell wherever the
+            # neighbour across that edge is not accepted (or off-grid); normal separator else.
+            if val == 1:
+                c = ci - (c0 + 1)
+                cell.border = Border(
+                    top=_SIDE_FRONTIER if not _is_acc(r - 1, c) else _SIDE_GRID,
+                    bottom=_SIDE_FRONTIER if not _is_acc(r + 1, c) else _SIDE_GRID,
+                    left=_SIDE_FRONTIER if not _is_acc(r, c - 1) else _SIDE_GRID,
+                    right=_SIDE_FRONTIER if not _is_acc(r, c + 1) else _SIDE_GRID,
+                )
+            else:
+                cell.border = _BORDER_GRID
 
     return start_row + len(pivot.index)
 
@@ -3141,6 +3169,51 @@ def _write_acceptance_strip_1d(ws, cutoff_df, seg_name, start_row, scenario="bas
         c.border = _BORDER_GRID
 
     return start_row + 2
+
+
+def _mr_grid_matches_main(df_main: pd.DataFrame, df_mr: pd.DataFrame, scenario: str = "base") -> bool:
+    """True when the MR acceptance grid's accept/reject decision equals the main grid on every
+    commonly-observed cell — i.e. the MR mask is the frozen main mask (``mr_reoptimize_cutoffs=false``
+    or a fixed-cutoff segment). Drawing the MR grid then just duplicates main, so it is skipped.
+    """
+    if "accepted" not in df_main.columns or "accepted" not in df_mr.columns:
+        return False
+
+    def _base(d):
+        return d[d["scenario"] == scenario] if "scenario" in d.columns else d
+
+    a, b = _base(df_main), _base(df_mr)
+    keys = [c for c in a.columns if c not in _CUTOFF_FIXED_COLS and c in b.columns]
+    if not keys:
+        return False
+    m = a[keys + ["accepted"]].rename(columns={"accepted": "_am"})
+    r = b[keys + ["accepted"]].rename(columns={"accepted": "_rm"})
+    j = m.merge(r, on=keys, how="inner")
+    both = j["_am"].notna() & j["_rm"].notna()
+    if not both.any():
+        return False
+    return bool((j.loc[both, "_am"] == j.loc[both, "_rm"]).all())
+
+
+def _write_cutoff_grids_header(ws) -> int:
+    """Title + legend at the top of the dedicated Cutoff Grids sheet. Returns first free row."""
+    ws.merge_cells("A1:L1")
+    t = ws.cell(row=1, column=1)
+    t.value = "Score Cutoff Grids"
+    t.font = Font(bold=True, color=_CLR_WHITE, size=13, name=_FN)
+    t.fill = _FILL_HEADER
+    t.alignment = _ALIGN_LEFT
+    ws.row_dimensions[1].height = 26
+    leg = ws.cell(row=2, column=1)
+    leg.value = (
+        "Legend:   A = accept (green)     R = reject (red)     — = unobserved cell / no records (grey)"
+        "     •  thick navy outline = accept/reject boundary"
+    )
+    leg.font = Font(bold=False, color=_CLR_NEUTRAL_MID, size=10, name=_FN)
+    leg.alignment = _ALIGN_LEFT
+    ws.merge_cells("A2:L2")
+    ws.row_dimensions[2].height = 20
+    return 4
 
 
 def _write_acceptance_grid(ws, cutoff_df, seg_name, start_row, scenario="base"):
@@ -4601,7 +4674,7 @@ def export_consolidated_excel(
                 ws_exec, mr_top_movers, next_row, "Top Segment Opportunities — MR Base Scenario"
             )
 
-        # --- Acceptance grids per segment on Executive Summary ---
+        # --- Acceptance grids per segment on a dedicated "Cutoff Grids" sheet ---
         cutoff_data: dict[str, pd.DataFrame] = {}
         for seg_name in segments:
             csv_path = output_base / seg_name / "data" / "cutoff_summary_wide.csv"
@@ -4618,20 +4691,29 @@ def export_consolidated_excel(
             cutoff_data[seg_name] = df_cut
 
         if cutoff_data:
+            ws_grids = wb.create_sheet("Cutoff Grids")
+            grid_row = _write_cutoff_grids_header(ws_grids)
             for seg_name, df_cut in cutoff_data.items():
-                next_row = _write_acceptance_grid(ws_exec, df_cut, seg_name, next_row)
-                # MR-period acceptance grid (re-optimized/frozen MR mask), if present,
-                # so the Exec sheet shows the main grid and the MR grid per segment.
+                grid_row = _write_acceptance_grid(ws_grids, df_cut, seg_name, grid_row)
+                # MR-period grid ONLY when it differs from main. A frozen MR mask
+                # (mr_reoptimize_cutoffs=false or a fixed-cutoff segment) reproduces the
+                # main accept/reject, so drawing it would just duplicate the main grid.
                 mr_csv = output_base / seg_name / "data" / "cutoff_summary_wide_mr.csv"
                 if mr_csv.exists():
                     try:
                         df_mr = pd.read_csv(mr_csv)
                     except (pd.errors.ParserError, OSError, ValueError):
                         df_mr = pd.DataFrame()
-                    if not df_mr.empty and "accepted" in df_mr.columns:
+                    if not df_mr.empty and "accepted" in df_mr.columns and not _mr_grid_matches_main(df_cut, df_mr):
                         if "segment" not in df_mr.columns:
                             df_mr["segment"] = seg_name
-                        next_row = _write_acceptance_grid(ws_exec, df_mr, f"{seg_name}  —  MR period", next_row)
+                        grid_row = _write_acceptance_grid(
+                            ws_grids, df_mr, f"{seg_name}  —  MR period (re-optimized)", grid_row
+                        )
+            for c in range(1, 13):
+                cur = ws_grids.column_dimensions[get_column_letter(c)].width or 12
+                ws_grids.column_dimensions[get_column_letter(c)].width = max(cur, 12)
+            _apply_page_setup(ws_grids)
 
         # Ensure KPI columns are wide enough
         for c in range(1, 13):

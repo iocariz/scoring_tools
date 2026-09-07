@@ -1199,7 +1199,7 @@ class TestExportConsolidatedExcel:
         import openpyxl
 
         wb = openpyxl.load_workbook(xlsx_path)
-        ws = wb["Executive Summary"]  # acceptance grids are inlined here (Grid sheets removed)
+        ws = wb["Cutoff Grids"]  # acceptance grids live on their own dedicated sheet
         # Collect all cell values in the sheet
         all_values = []
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column, values_only=True):
@@ -1238,7 +1238,7 @@ class TestExportConsolidatedExcel:
         import openpyxl
 
         wb = openpyxl.load_workbook(xlsx_path)
-        ws = wb["Executive Summary"]  # acceptance grids are inlined here (Grid sheets removed)
+        ws = wb["Cutoff Grids"]  # acceptance grids live on their own dedicated sheet
         # Collect all values — should have slice labels like "income_bin=1"
         all_values = [
             str(ws.cell(row=r, column=c).value or "")
@@ -1491,3 +1491,32 @@ class TestGetTotalRowNoCrossScenarioFallback:
 
     def test_missing_period_returns_none(self):
         assert _get_total_row(self._df(), "mr", "pessimistic") is None
+
+
+def test_mr_grid_matches_main_skips_frozen_duplicate():
+    """MR grid whose accept/reject equals main on observed cells (frozen MR mask) is redundant
+    → _mr_grid_matches_main True (grid skipped). A divergent (re-optimized) MR grid → False."""
+    import pandas as pd
+
+    from src.consolidation import _mr_grid_matches_main
+
+    main = pd.DataFrame(
+        {
+            "new_efx_clus": [1, 1, 2, 2],
+            "sc_octroi_new_clus": [1, 2, 1, 2],
+            "accepted": [1.0, 0.0, 1.0, 0.0],
+            "observed": [True, True, True, True],
+        }
+    )
+    # frozen MR: same accept/reject; one cell unobserved (NaN) on the smaller cohort → still matches
+    mr_frozen = main.copy()
+    mr_frozen.loc[3, "accepted"] = float("nan")
+    assert _mr_grid_matches_main(main, mr_frozen) is True
+
+    # re-optimized MR: a cell flips accept↔reject → not redundant, must be drawn
+    mr_reopt = main.copy()
+    mr_reopt.loc[1, "accepted"] = 1.0  # was 0
+    assert _mr_grid_matches_main(main, mr_reopt) is False
+
+    # no accepted column → cannot compare → not redundant (drawn)
+    assert _mr_grid_matches_main(main.drop(columns=["accepted"]), mr_frozen) is False
