@@ -776,20 +776,11 @@ def _select_feature_set_cv(
             train_agg = process_dataset(
                 raw_train, bins, variables, indicators, target_var, multiplier, features, z_threshold
             )
-            # Compute outlier stats from training fold and apply to validation
-            # to prevent data leakage in cross-validation.
-            train_outlier_stats = compute_outlier_stats(train_agg, target_var) if len(train_agg) > 2 else None
-            val_agg = process_dataset(
-                raw_val,
-                bins,
-                variables,
-                indicators,
-                target_var,
-                multiplier,
-                features,
-                z_threshold,
-                outlier_stats=train_outlier_stats,
-            )
+            # Validation target scored on the REALIZED outcome (z_threshold=0 → no
+            # winsorization): clipping y_val biases feature-set selection toward
+            # under-prediction of the riskiest bins (audit #5, endpoint of #32a).
+            # Training stays winsorized (#56) to bound the fitted surface.
+            val_agg = process_dataset(raw_val, bins, variables, indicators, target_var, multiplier, features, 0.0)
 
             missing_train = [f for f in features if f not in train_agg.columns]
             if missing_train:
@@ -1249,18 +1240,10 @@ def evaluate_holdout_rmse(
         train_agg = process_dataset(
             train_raw, bins, variables, indicators, target_var, multiplier, features, z_threshold
         )
-        outlier_stats = compute_outlier_stats(train_agg, target_var) if len(train_agg) > 2 else None
-        test_agg = process_dataset(
-            test_raw,
-            bins,
-            variables,
-            indicators,
-            target_var,
-            multiplier,
-            features,
-            z_threshold,
-            outlier_stats=outlier_stats,
-        )
+        # Held-out RMSE (winner-only optimism report) is measured against the REALIZED
+        # target (z_threshold=0 → no winsorization); clipping the test target would
+        # understate error on the riskiest bins (audit #5). Training stays winsorized (#56).
+        test_agg = process_dataset(test_raw, bins, variables, indicators, target_var, multiplier, features, 0.0)
         if len(train_agg) < 3 or len(test_agg) < 3:
             return None
         m = clone(model_template)

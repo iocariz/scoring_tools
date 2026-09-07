@@ -85,7 +85,6 @@ def tune_tree_models(
         _get_regression_weights,
         _nadeau_bengio_cv_se,
         _stratified_cv_splitter,
-        compute_outlier_stats,
         process_dataset,
     )
 
@@ -96,23 +95,15 @@ def tune_tree_models(
             raw_train, raw_val = raw_eval.iloc[train_idx].copy(), raw_eval.iloc[val_idx].copy()
 
             # Aggregate train/val completely independently to prevent validation leakage.
-            # Outlier stats come from the TRAIN fold (audit #32a): filtering the val fold
-            # by its own target dropped exactly the riskiest val bins from scoring.
+            # The validation target is scored on the REALIZED outcome (z_threshold=0 → no
+            # winsorization): clipping y_val rewards models that under-predict the riskiest
+            # bins toward the clipped value and biases model selection anti-conservatively
+            # (audit #5, the endpoint of #32a which kept those bins by using train stats).
+            # Training stays winsorized (#56) to bound the fitted surface.
             train_agg = process_dataset(
                 raw_train, bins, variables, indicators, target_var, multiplier, variables, z_threshold
             )
-            train_outlier_stats = compute_outlier_stats(train_agg, target_var) if len(train_agg) > 2 else None
-            val_agg = process_dataset(
-                raw_val,
-                bins,
-                variables,
-                indicators,
-                target_var,
-                multiplier,
-                variables,
-                z_threshold,
-                outlier_stats=train_outlier_stats,
-            )
+            val_agg = process_dataset(raw_val, bins, variables, indicators, target_var, multiplier, variables, 0.0)
 
             # Skip fold if validation has too few bins for reliable R²
             if len(val_agg) < 3:
@@ -258,7 +249,6 @@ def tune_linear_models(
         _get_regression_weights,
         _nadeau_bengio_cv_se,
         _stratified_cv_splitter,
-        compute_outlier_stats,
         process_dataset,
     )
     from src.models import transform_variables
@@ -281,23 +271,14 @@ def tune_linear_models(
             raw_train, raw_val = raw_eval.iloc[train_idx].copy(), raw_eval.iloc[val_idx].copy()
 
             # Aggregate train/val completely independently to prevent validation leakage.
-            # Outlier stats come from the TRAIN fold (audit #32a): filtering the val fold
-            # by its own target dropped exactly the riskiest val bins from scoring.
+            # The validation target is scored on the REALIZED outcome (z_threshold=0 → no
+            # winsorization): clipping y_val rewards under-prediction of the riskiest bins
+            # and biases model selection anti-conservatively (audit #5, the endpoint of
+            # #32a). Training stays winsorized (#56) to bound the fitted surface.
             train_agg = process_dataset(
                 raw_train, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold
             )
-            train_outlier_stats = compute_outlier_stats(train_agg, target_var) if len(train_agg) > 2 else None
-            val_agg = process_dataset(
-                raw_val,
-                bins,
-                variables,
-                indicators,
-                target_var,
-                multiplier,
-                var_reg,
-                z_threshold,
-                outlier_stats=train_outlier_stats,
-            )
+            val_agg = process_dataset(raw_val, bins, variables, indicators, target_var, multiplier, var_reg, 0.0)
 
             # Skip fold if validation has too few bins for reliable R²
             if len(val_agg) < 3:

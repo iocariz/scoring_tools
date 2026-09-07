@@ -141,18 +141,22 @@ def test_selection_metric_reports_real_cv_se():
     assert (results_df["CV Std RMSE"] > 0).any()  # real k-fold SE, not the all-zero holdout placeholder
 
 
-def test_val_fold_outlier_stats_come_from_train_fold(monkeypatch):
-    """Audit #32a: the validation fold must be outlier-filtered with TRAIN-fold
-    stats — the old call sites omitted outlier_stats, so process_dataset
-    computed median/MAD from the val fold's own target and silently dropped
-    exactly the riskiest validation bins from scoring."""
+def test_val_fold_scored_on_realized_target_not_winsorized(monkeypatch):
+    """Audit #5 (endpoint of #32a): the validation fold is scored on the REALIZED
+    target — process_dataset is called with z_threshold=0 for val (no winsorization),
+    so the riskiest val bins keep their true value instead of being clipped, which
+    otherwise biases model selection toward under-prediction. The TRAIN fold stays
+    winsorized at the configured z_threshold (#56) to bound the fitted surface."""
     import src.inference_optimized as io_mod
 
     real_process_dataset = io_mod.process_dataset
-    calls = []
+    z_args = []
 
     def recording_process_dataset(*args, **kwargs):
-        calls.append(kwargs.get("outlier_stats"))
+        # z_threshold is the 8th positional arg (data, bins, variables, indicators,
+        # target_var, multiplier, features, z_threshold); both sites pass it positionally.
+        z = args[7] if len(args) > 7 else kwargs.get("z_threshold")
+        z_args.append(z)
         return real_process_dataset(*args, **kwargs)
 
     monkeypatch.setattr(io_mod, "process_dataset", recording_process_dataset)
@@ -180,11 +184,13 @@ def test_val_fold_outlier_stats_come_from_train_fold(monkeypatch):
         random_state=42,
     )
 
-    assert calls, "process_dataset was never invoked"
-    passed_stats = [c for c in calls if c is not None]
-    assert passed_stats, "no val-fold call received train-derived outlier_stats (audit #32a leak)"
-    # calls alternate train (None) / val (train stats): half of them carry stats
-    assert len(passed_stats) == len(calls) // 2
+    assert z_args, "process_dataset was never invoked"
+    # Each fold processes train (z=3.0, winsorized) then val (z=0.0, realized).
+    train_calls = [z for z in z_args if z == 3.0]
+    val_calls = [z for z in z_args if z == 0.0]
+    assert val_calls, "val fold was not processed with z_threshold=0 (audit #5)"
+    assert train_calls, "train fold was not winsorized at the configured z_threshold (#56)"
+    assert len(train_calls) == len(val_calls)  # one train + one val per fold
 
 
 def test_tree_leaf_bounds_scale_to_small_grid():
