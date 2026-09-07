@@ -465,8 +465,15 @@ def compare_policies(
     verdict = _risk_verdict(champ, chal, delta_ci)
 
     # --- Observability of the challenger's ADDED cells on this cohort ---
+    # A cell counts as "observed" only where the challenger's realized risk can
+    # actually be read — it has a booked loan with a COMPLETE H6 outcome (both
+    # todu fields present), the SAME completeness mask _realized_metrics and the
+    # paired bootstrap use for risk (audit #3). Counting a cell whose only booked
+    # loans have NaN H6 as observed understates the unobservable share and lets a
+    # BETTER verdict slip past the survivorship guard.
     added_set = set(added)
-    booked_in_added = apply_policy(cohort_booked, variables, added_set)
+    h6_complete = cohort_booked["todu_30ever_h6"].notna() & cohort_booked["todu_amt_pile_h6"].notna()
+    booked_in_added = apply_policy(cohort_booked, variables, added_set) & h6_complete
     observed_added = (
         {tuple(float(row[v]) for v in variables) for _, row in cohort_booked.loc[booked_in_added].iterrows()}
         if booked_in_added.any()

@@ -408,6 +408,37 @@ def test_better_blocked_when_added_cells_unobservable():
     assert "fail-closed" in cmp3.message
 
 
+def test_better_blocked_when_added_cell_has_only_incomplete_h6():
+    """Audit #3: an added cell whose only booked loans have NaN H6 is UNobservable
+    for the challenger's realized risk (dropped by _realized_metrics and the paired
+    bootstrap), so it must be treated exactly like a cell with no booked loans — not
+    counted as 'observed'. Before the fix the guard saw booked rows there, marked the
+    cell observed (unobserved=0), and let a BETTER verdict through."""
+    base = _shared_cohort()  # shared (1,10) + risky (9,10), all complete H6
+    # (5,10) HAS booked loans, but their H6 is incomplete (NaN) → risk unobservable there.
+    incomplete = pd.DataFrame(
+        {
+            "a": [5.0] * 25,
+            "b": [10.0] * 25,
+            "oa_amt_h0": 100.0,
+            "todu_30ever_h6": np.nan,
+            "todu_amt_pile_h6": np.nan,
+        }
+    )
+    cohort = pd.concat([base, incomplete], ignore_index=True)
+    champion = {(1.0, 10.0), (9.0, 10.0)}
+    challenger = {(1.0, 10.0), (5.0, 10.0)}  # drops risky (9,10), adds unobservable (5,10)
+
+    demand = pd.DataFrame({"a": [1.0] * 50 + [5.0] * 50, "b": 10.0, "oa_amt_h0": 100.0})
+    cmp = compare_policies(champion, challenger, cohort, ["a", "b"], 7.0, cohort_demand=demand)
+
+    # booked-but-incomplete must be treated as unobservable, exactly like no booked loans
+    assert cmp.n_added_cells_unobserved == 1
+    assert cmp.unobservable_added_share == pytest.approx(0.5)
+    assert cmp.verdict == "INCONCLUSIVE"
+    assert "BETTER blocked" in cmp.message
+
+
 def test_bin_edges_match_guard():
     from src.policy_registry import bin_edges_match
 
