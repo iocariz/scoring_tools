@@ -9,7 +9,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 import pandas as pd
 
-from run_batch import _inject_learned_bin_edges, _segment_pins_bin_edges, learn_supersegment_bin_edges
+from run_batch import (
+    _inject_learned_bin_edges,
+    _segment_pins_bin_edges,
+    learn_supersegment_bin_edges,
+    validate_supersegment_edge_consistency,
+)
 
 SS_FIXED = {
     "pl_known": {
@@ -148,3 +153,54 @@ class TestSegmentPinnedBinEdgesRespected:
         merged = _merged_with(None)
         out = _inject_learned_bin_edges(merged, seg, "seg", {"income_bin": _GLOBAL}, {"ss": {"income_bin": _SS}})
         assert out["bins"]["income_bin"]["bin_edges"] == _SS  # supersegment wins over global (unchanged behavior)
+
+
+# =============================================================================
+# #40c — batch-start supersegment/member inference-edge consistency
+# =============================================================================
+
+import pytest  # noqa: E402
+
+_INF = float("inf")
+_BASE_40C = {
+    "inference_variables": ["a", "b"],
+    "variables": ["a", "b", "income_bin"],
+    "bins": {
+        "a": {"source_col": "sa", "output_col": "a", "max_bins": 2},
+        "b": {"source_col": "sb", "output_col": "b", "max_bins": 2},
+        "income_bin": {"source_col": "inc", "output_col": "income_bin", "max_bins": 2},
+    },
+}
+_GLOBAL_40C = {"a": [-_INF, 1.0, _INF], "b": [-_INF, 2.0, _INF], "income_bin": [-_INF, 3000.0, _INF]}
+
+
+def test_40c_consistent_edges_pass():
+    segments = {"s": {"modelling_supersegment": "ms", "reporting_supersegment": "rs"}}
+    validate_supersegment_edge_consistency(_BASE_40C, segments, _GLOBAL_40C, {})  # no raise
+
+
+def test_40c_reporting_ss_overriding_inference_var_raises():
+    segments = {"s": {"modelling_supersegment": "ms", "reporting_supersegment": "rs"}}
+    ss_edges = {"rs": {"a": [-_INF, 999.0, _INF]}}  # override the INFERENCE var 'a'
+    with pytest.raises(ValueError, match="INFERENCE bin-edge inconsistency"):
+        validate_supersegment_edge_consistency(_BASE_40C, segments, _GLOBAL_40C, ss_edges)
+
+
+def test_40c_segment_pin_on_inference_var_raises():
+    segments = {"s": {"modelling_supersegment": "ms", "bins": {"a": {"bin_edges": [-_INF, 999.0, _INF]}}}}
+    with pytest.raises(ValueError, match="segment 's' inference variable 'a'"):
+        validate_supersegment_edge_consistency(_BASE_40C, segments, _GLOBAL_40C, {})
+
+
+def test_40c_grid_only_income_bin_override_is_exempt():
+    # income_bin is a GRID var (not an inference feature) → a per-supersegment income split is fine.
+    segments = {"s": {"modelling_supersegment": "ms", "reporting_supersegment": "rs"}}
+    ss_edges = {"rs": {"income_bin": [-_INF, 2000.0, _INF]}}
+    validate_supersegment_edge_consistency(_BASE_40C, segments, _GLOBAL_40C, ss_edges)  # no raise
+
+
+def test_40c_segment_with_own_model_is_exempt():
+    # No modelling_supersegment → trains its own model → different edges are legitimate.
+    segments = {"s": {"reporting_supersegment": "rs"}}
+    ss_edges = {"rs": {"a": [-_INF, 999.0, _INF]}}
+    validate_supersegment_edge_consistency(_BASE_40C, segments, _GLOBAL_40C, ss_edges)  # no raise

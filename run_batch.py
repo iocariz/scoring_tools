@@ -405,6 +405,61 @@ def _inject_learned_bin_edges(
     return merged_config
 
 
+def validate_supersegment_edge_consistency(
+    base_config: dict[str, Any],
+    segments: dict[str, dict[str, Any]],
+    global_bin_edges: dict[str, list[float]] | None,
+    supersegment_bin_edges: dict[str, dict[str, list[float]]] | None,
+) -> None:
+    """Batch-start pre-flight (#40c): a segment that REUSES a modelling-supersegment's shared risk
+    model must resolve its INFERENCE-variable bin edges to the SAME edges the shared model trains on
+    (the global learned / base-config fixed edges). A reporting-supersegment override or a
+    segment-level pin that moves an inference variable's edges would apply the shared model on a
+    different grid than it was trained on → wrong per-cell risk. Raise at batch start (fail fast)
+    rather than only surfacing it mid-run per member (the #40 a/b reuse validation catches it there).
+
+    GRID-only variables (e.g. ``income_bin``) are exempt: they are optimization dimensions, not risk-
+    model features, so a per-supersegment income split is legitimate and does not misapply the model.
+    """
+    inf_vars = base_config.get("inference_variables") or base_config.get("variables") or []
+    bins_cfg = base_config.get("bins", {})
+
+    def shared_edges(var: str) -> list[float] | None:
+        """The edges the shared model trains on: global learned, else the base config's fixed edges."""
+        if global_bin_edges and var in global_bin_edges:
+            return [float(e) for e in global_bin_edges[var]]
+        bc = bins_cfg.get(var, {})
+        return [float(e) for e in bc["bin_edges"]] if bc.get("bin_edges") else None
+
+    problems: list[str] = []
+    for name, seg_cfg in segments.items():
+        if not resolve_modelling_supersegment(seg_cfg):
+            continue  # trains its own model → no shared-model grid to match
+        reporting_ss = resolve_reporting_supersegment(seg_cfg)
+        for var in inf_vars:
+            base_edges = shared_edges(var)
+            member_edges = base_edges
+            if _segment_pins_bin_edges(seg_cfg, var):
+                member_edges = [float(e) for e in seg_cfg["bins"][var]["bin_edges"]]
+            elif reporting_ss and supersegment_bin_edges and reporting_ss in supersegment_bin_edges:
+                ov = supersegment_bin_edges[reporting_ss].get(var)
+                if ov is not None:
+                    member_edges = [float(e) for e in ov]
+            if base_edges is not None and member_edges is not None and member_edges != base_edges:
+                problems.append(
+                    f"segment '{name}' inference variable '{var}': edges {member_edges} != "
+                    f"shared-model edges {base_edges}"
+                )
+
+    if problems:
+        raise ValueError(
+            "Supersegment model/member INFERENCE bin-edge inconsistency (#40c) — a shared "
+            "modelling-supersegment model would be applied on a different grid than it was trained on:\n  "
+            + "\n  ".join(problems)
+            + "\nGive these segments their own model (remove modelling_supersegment) or align the edges."
+        )
+
+
 def run_segment_pipeline(
     segment_name: str,
     segment_config: dict[str, Any],
@@ -1718,6 +1773,12 @@ def main():
             )
             print("\nERROR: data preload failed while shared bin learning is configured — aborting (see log).")
             sys.exit(1)
+
+    # Batch-start pre-flight (#40c): fail FAST (before training/optimizing any segment) if a segment
+    # that reuses a modelling-supersegment's shared model would run on a different INFERENCE grid than
+    # the shared model trains on. The #40 a/b reuse validation also catches this per member, but here
+    # we surface it up front for the whole batch.
+    validate_supersegment_edge_consistency(base_config, segments, global_bin_edges, supersegment_bin_edges)
 
     # Resolve cutoff ordering mode: CLI flag overrides config.toml
     cutoff_ordering_mode = args.cutoff_ordering_mode or base_config.get("cutoff_ordering_mode", "bottom_up")
