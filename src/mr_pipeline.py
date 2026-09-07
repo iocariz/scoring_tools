@@ -1431,15 +1431,20 @@ def _write_mr_summary_table(
         total_demand=mr_total_demand,
     )
 
-    if (
-        mr_summary_table is not None
-        and audit_mr_df is not None
-        and not audit_mr_df.empty
-        and not settings.baseline_mode
-    ):
-        from src.audit import reconcile_risk_production_summary_with_audit
+    if mr_summary_table is not None and audit_mr_df is not None and not audit_mr_df.empty:
+        from src.audit import (
+            reconcile_risk_production_summary_with_audit,
+            set_baseline_system_rejection_rate,
+        )
 
-        mr_summary_table = reconcile_risk_production_summary_with_audit(mr_summary_table, audit_mr_df)
+        if not settings.baseline_mode:
+            mr_summary_table = reconcile_risk_production_summary_with_audit(mr_summary_table, audit_mr_df)
+        else:
+            # Baseline skips the MR reconcile (accept-all mask would corrupt swap/production),
+            # but the swap-invariant System Rejection Rate would otherwise stay N/A on the MR
+            # side too — blanking the MR consolidated aggregate. Set it from the MR audit,
+            # parallel to the main-period baseline fix in scenarios.py.
+            mr_summary_table = set_baseline_system_rejection_rate(mr_summary_table, audit_mr_df)
 
     # Save MR-period optimal solution so consolidated per-income-bin tables
     # use the correct (possibly re-optimized) mask, not the main-period one.
