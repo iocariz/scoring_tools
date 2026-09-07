@@ -85,6 +85,39 @@ def audit_production_kpis(audit_df: pd.DataFrame | None) -> dict[str, float | No
     }
 
 
+def _row_financing_rates(
+    audit_df: pd.DataFrame,
+    variables: list[str],
+    per_bin_tasa_fin: pd.DataFrame | None,
+    financing_rate: float,
+) -> np.ndarray:
+    """Per-row financing (tasa_fin) rate for the audit, mirroring the optimizer.
+
+    When ``per_bin_tasa_fin`` (grid-cell -> ``tasa_fin``) is given, each row gets its
+    OWN cell's rate; cells absent from the table — or with dtype-mismatched keys — fall
+    back to the scalar ``financing_rate``, the same ``.fillna(tasa_fin)`` contract the
+    optimizer uses (``run_optimization_pipeline``). Otherwise every row gets the scalar.
+    Returns a float array aligned POSITIONALLY to ``audit_df`` rows.
+    """
+    n = len(audit_df)
+    have_cols = (
+        per_bin_tasa_fin is not None
+        and not per_bin_tasa_fin.empty
+        and "tasa_fin" in per_bin_tasa_fin.columns
+        and all(v in audit_df.columns for v in variables)
+        and all(v in per_bin_tasa_fin.columns for v in variables)
+    )
+    if not have_cols:
+        return np.full(n, float(financing_rate), dtype="float64")
+    tf = per_bin_tasa_fin[[*variables, "tasa_fin"]].drop_duplicates(subset=list(variables))
+    # Positional left-merge on the cell coordinates: merge drops the index but
+    # preserves left row order when the right frame is unique on the keys.
+    keys = audit_df[list(variables)].reset_index(drop=True)
+    merged = keys.merge(tf, on=list(variables), how="left")
+    rate = merged["tasa_fin"].to_numpy(dtype="float64")
+    return np.where(np.isnan(rate), float(financing_rate), rate)
+
+
 def generate_audit_table(
     data: pd.DataFrame,
     optimal_solution_df: pd.DataFrame,
@@ -95,6 +128,7 @@ def generate_audit_table(
     n_months: int | None = None,
     mask: np.ndarray | None = None,
     grid: object | None = None,
+    per_bin_tasa_fin: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Generate an audit table with individual record classifications.
@@ -110,6 +144,9 @@ def generate_audit_table(
         n_months: Number of months in the period. Used to annualize amounts (12/n_months).
         mask: Optional binary acceptance mask for N-d classify_by_mask path.
         grid: Optional CellGrid for N-d classify_by_mask path.
+        per_bin_tasa_fin: Optional per-cell financing rates (grid variables + ``tasa_fin``).
+            When given, swap-in rows are discounted by their OWN cell's rate (falling back
+            to ``financing_rate`` for absent cells), matching the optimizer's per-cell basis.
 
     Returns:
         DataFrame with audit information for each record.
@@ -231,15 +268,27 @@ def generate_audit_table(
     # Vectorized adjusted amount (annualization + financing on swap-in); base = oa_amt_h0 when present
     base_amt = primary_amount_column(audit_df)
     if base_amt in audit_df.columns:
-        is_swap_in = audit_df["classification"] == "swap_in"
+        is_swap_in = (audit_df["classification"] == "swap_in").to_numpy()
         # Demand basis: annualized but WITHOUT the swap-in financing discount, so
         # rejection-rate denominators don't depend on the scenario's accepted set
         audit_df["oa_amt_demand"] = audit_df[base_amt] * annual_coef
         audit_df["oa_amt_adjusted"] = audit_df[base_amt] * annual_coef
-        audit_df.loc[is_swap_in, "oa_amt_adjusted"] *= financing_rate
+        # Financing (tasa_fin) discounts swap-in rows. Match the optimizer basis: when
+        # per_bin_tasa_fin is given, discount each swap-in row by its OWN cell's rate
+        # (audit #4 — previously always the scalar, so the audit-reconciled production
+        # diverged from the optimizer whenever tasa_fin varied by cell).
+        row_rate = _row_financing_rates(audit_df, variables, per_bin_tasa_fin, financing_rate)
+        swap_mult = np.where(is_swap_in, row_rate, 1.0)
+        audit_df["oa_amt_adjusted"] = audit_df["oa_amt_adjusted"].to_numpy() * swap_mult
+        if per_bin_tasa_fin is not None and not per_bin_tasa_fin.empty and is_swap_in.any():
+            n_percell = int((row_rate[is_swap_in] != financing_rate).sum())
+            logger.info(
+                f"Per-cell financing on swap-in: {n_percell}/{int(is_swap_in.sum())} swap-in row(s) used a "
+                f"cell-specific tasa_fin (rest fell back to scalar {financing_rate:.2%})."
+            )
 
     logger.info(f"Annualization: {n_months} months -> coefficient {annual_coef:.4f}")
-    logger.info(f"Financing rate applied to swap-in: {financing_rate:.2%}")
+    logger.info(f"Financing rate applied to swap-in (scalar fallback): {financing_rate:.2%}")
 
     return audit_df
 
@@ -469,6 +518,7 @@ def save_audit_tables(
     grid: object | None = None,
     audit_main: pd.DataFrame | None = None,
     audit_mr: pd.DataFrame | None = None,
+    per_bin_tasa_fin: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """
     Generate and save audit tables for main and MR periods.
@@ -504,6 +554,7 @@ def save_audit_tables(
             n_months=n_months_main,
             mask=mask,
             grid=grid,
+            per_bin_tasa_fin=per_bin_tasa_fin,
         )
     else:
         logger.debug(f"Using precomputed main audit table for {scenario_name}")
@@ -530,6 +581,7 @@ def save_audit_tables(
             n_months=n_months_mr,
             mask=mask,
             grid=grid,
+            per_bin_tasa_fin=per_bin_tasa_fin,
         )
     else:
         logger.debug(f"Using precomputed MR audit table for {scenario_name}")

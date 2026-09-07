@@ -2549,6 +2549,7 @@ def process_mr_period(
                         n_months=n_months_mr,
                         mask=mask,
                         grid=grid,
+                        per_bin_tasa_fin=per_bin_tasa_fin,
                     )
                     # Re-save over the stale main-mask audit on disk (written by
                     # save_audit_tables before re-optimization) so the persisted MR

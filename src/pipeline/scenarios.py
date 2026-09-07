@@ -338,6 +338,7 @@ def run_scenario_analysis(
         n_months=n_months_main,
         mask=selected_mask,
         grid=grid,
+        per_bin_tasa_fin=per_bin_tasa_fin,
     )
     if len(data_mr_period) > 0:
         audit_mr = generate_audit_table(
@@ -349,6 +350,7 @@ def run_scenario_analysis(
             n_months=n_months_mr,
             mask=selected_mask,
             grid=grid,
+            per_bin_tasa_fin=per_bin_tasa_fin,
         )
     else:
         audit_mr = pd.DataFrame()
@@ -373,6 +375,7 @@ def run_scenario_analysis(
             grid=grid,
             audit_main=audit_main,
             audit_mr=audit_mr if len(audit_mr) else None,
+            per_bin_tasa_fin=per_bin_tasa_fin,
         )
     except Exception as e:
         logger.error(f"[{segment}] Audit table generation failed for {scenario_name} (non-blocking): {e}")

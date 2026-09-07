@@ -103,6 +103,47 @@ class TestGenerateAuditTable:
         keep_row = audit[audit["classification"] == "keep"].iloc[0]
         assert keep_row["oa_amt_h0"] == keep_row["oa_amt_adjusted"]
 
+    def test_per_bin_tasa_fin_overrides_scalar_on_swap_in(self, sample_data, optimal_solution):
+        """audit #4: with per_bin_tasa_fin, a swap-in row is discounted by its OWN cell's
+        rate, matching the optimizer — not the scalar financing_rate."""
+        variables = ["sc_octroi_new_clus", "new_efx_clus"]
+        # Record 3 is the only swap_in, at cell (2.0, 4): give that cell a specific rate.
+        per_bin = pd.DataFrame({"sc_octroi_new_clus": [2.0], "new_efx_clus": [4], "tasa_fin": [0.7]})
+        audit = generate_audit_table(
+            sample_data, optimal_solution, variables, financing_rate=0.5, per_bin_tasa_fin=per_bin
+        )
+        swap_in_row = audit[audit["classification"] == "swap_in"].iloc[0]
+        assert swap_in_row["oa_amt_adjusted"] == 3000 * 0.7  # cell rate, NOT scalar 0.5
+
+    def test_per_bin_tasa_fin_falls_back_to_scalar_for_absent_cell(self, sample_data, optimal_solution):
+        """A swap-in cell absent from per_bin_tasa_fin uses the scalar financing_rate
+        (the optimizer's .fillna(tasa_fin) contract)."""
+        variables = ["sc_octroi_new_clus", "new_efx_clus"]
+        per_bin = pd.DataFrame({"sc_octroi_new_clus": [9.0], "new_efx_clus": [9], "tasa_fin": [0.7]})  # other cell
+        audit = generate_audit_table(
+            sample_data, optimal_solution, variables, financing_rate=0.5, per_bin_tasa_fin=per_bin
+        )
+        swap_in_row = audit[audit["classification"] == "swap_in"].iloc[0]
+        assert swap_in_row["oa_amt_adjusted"] == 3000 * 0.5  # fallback to scalar
+
+    def test_per_bin_tasa_fin_only_affects_swap_in(self, sample_data, optimal_solution):
+        """A cell-specific rate must NOT touch keep / swap_out / rejected rows."""
+        variables = ["sc_octroi_new_clus", "new_efx_clus"]
+        # Cover the keep (1.0,3) and swap_out (1.0,7) cells too — their rates must be ignored.
+        per_bin = pd.DataFrame(
+            {
+                "sc_octroi_new_clus": [1.0, 1.0, 2.0],
+                "new_efx_clus": [3, 7, 4],
+                "tasa_fin": [0.1, 0.1, 0.7],
+            }
+        )
+        audit = generate_audit_table(
+            sample_data, optimal_solution, variables, financing_rate=0.5, per_bin_tasa_fin=per_bin
+        )
+        assert audit[audit["classification"] == "keep"].iloc[0]["oa_amt_adjusted"] == 1000  # unaffected
+        assert audit[audit["classification"] == "swap_out"].iloc[0]["oa_amt_adjusted"] == 2000  # unaffected
+        assert audit[audit["classification"] == "swap_in"].iloc[0]["oa_amt_adjusted"] == 3000 * 0.7
+
     def test_n_months_annualization(self, sample_data, optimal_solution):
         """Test that n_months annualization is applied correctly."""
         variables = ["sc_octroi_new_clus", "new_efx_clus"]
