@@ -1105,8 +1105,14 @@ def _select_best_model_and_features(
         include_hurdle=include_hurdle,
     )
 
-    # Combine results to find the global winner
-    combined_results = pd.concat([tree_results_df, results_step1], ignore_index=True)
+    # Combine results to find the global winner. Tag PROVENANCE (is_tree) so the branch
+    # below routes on which tuner produced the row, not on a name substring: tuned GLMs are
+    # also named "... (Optuna Tuned ...)", so the old `"Optuna Tuned" in name` check sent a
+    # tuned Ridge/Lasso/Tweedie/ElasticNet winner down the tree branch and skipped Step-3
+    # feature selection (tree-branch misrouting).
+    combined_results = pd.concat(
+        [tree_results_df.assign(is_tree=True), results_step1.assign(is_tree=False)], ignore_index=True
+    )
     combined_results = combined_results.sort_values("CV Mean RMSE", ascending=True)
 
     logger.info("Combined Model CV results:")
@@ -1117,13 +1123,15 @@ def _select_best_model_and_features(
     combined_results["_complexity"] = combined_results["Model"].apply(_get_model_complexity)
     best_combined_idx = _apply_one_se_rule(combined_results, "_complexity")
     combined_results = combined_results.drop(columns=["_complexity"])
-    best_global_name = combined_results.loc[best_combined_idx, "Model"]
+    best_row = combined_results.loc[best_combined_idx]
+    best_global_name = best_row["Model"]
+    best_model_template = best_row["model_template"]
 
-    if "Optuna Tuned" in best_global_name:
-        # A tree model won. We do not need step 3 for feature sets,
-        # tree models inherently use "original" feature set.
-        best_row = combined_results.loc[best_combined_idx]
-        best_model_template = best_row["model_template"]
+    if best_row["is_tree"]:
+        # A TREE model (XGBoost/LightGBM) won. Trees use the "original" feature set
+        # natively — Step-3 feature-set expansion is linear-model engineering — so skip
+        # Step 3. Routed on provenance (is_tree), NOT the "Optuna Tuned" substring, which
+        # tuned GLMs also carry (they must keep feature selection).
         logger.info(f"Tree model '{best_global_name}' won overall! Skipping Step 3.")
 
         # Override the outputs to fast-path using "original" features
@@ -1166,9 +1174,7 @@ def _select_best_model_and_features(
         # a different linear model than the linear-only band selected. Re-derive from
         # the combined winner row so Step 3 (and the returned best_model_type) match
         # the model the 1-SE rule actually chose.
-        best_row = combined_results.loc[best_combined_idx]
         best_model_name = best_global_name
-        best_model_template = best_row["model_template"]
         best_model_type = {
             "model_template": best_model_template,
             "name": best_global_name,
@@ -1194,7 +1200,7 @@ def _select_best_model_and_features(
         )
 
     return (
-        combined_results.drop(columns=["model_template"], errors="ignore"),
+        combined_results.drop(columns=["model_template", "is_tree"], errors="ignore"),
         best_model_type,
         results_step2,
         best_feature_info,

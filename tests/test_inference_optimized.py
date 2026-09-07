@@ -241,6 +241,84 @@ def test_combined_selection_returns_combined_winner_not_linear_only(monkeypatch)
     assert isinstance(captured["model_template"], LinearRegression)
 
 
+def test_tuned_glm_winner_runs_step3_not_tree_branch(monkeypatch):
+    """Tree-branch misrouting: a tuned GLM winner is named '... (Optuna Tuned ...)' just like
+    the trees, but it must run Step-3 feature selection (linear branch), NOT skip it. Routing
+    is by PROVENANCE (is_tree = which tuner produced the row), not the 'Optuna Tuned'
+    substring. Previously the substring sent tuned Ridge/Lasso/Tweedie winners down the tree
+    branch and silently skipped feature selection."""
+    from sklearn.linear_model import LinearRegression
+
+    import src.inference_optimized as io
+
+    # XGBoost is a poor candidate; the tuned-GLM Tweedie wins the combined 1-SE.
+    tree_df = pd.DataFrame(
+        [
+            {
+                "Model": "XGBoost (Optuna Tuned)",
+                "CV Mean RMSE": 0.50,
+                "CV Std RMSE": 0.02,
+                "model_template": LinearRegression(),
+            }
+        ]
+    )
+    lin_df = pd.DataFrame(
+        [
+            {
+                "Model": "Tweedie (Optuna Tuned p=1.50, α=0.30)",
+                "CV Mean RMSE": 0.10,
+                "CV Std RMSE": 0.01,
+                "model_template": LinearRegression(),
+            },
+            {
+                "Model": "Linear Regression",
+                "CV Mean RMSE": 0.60,
+                "CV Std RMSE": 0.01,
+                "model_template": LinearRegression(),
+            },
+        ]
+    )
+    linear_only_winner = {
+        "name": "Tweedie (Optuna Tuned p=1.50, α=0.30)",
+        "model_template": LinearRegression(),
+        "cv_mean_rmse": 0.10,
+        "cv_std_rmse": 0.01,
+    }
+    monkeypatch.setattr(io, "tune_tree_models", lambda **kw: (tree_df, {}))
+    monkeypatch.setattr(io, "_select_model_type_cv", lambda **kw: (lin_df, linear_only_winner))
+
+    step3 = {"called": False}
+
+    def fake_feature_cv(**kw):
+        step3["called"] = True
+        return (
+            pd.DataFrame(
+                [{"Feature Set": "degree_1", "Num Features": 2, "Features": ["v0", "v1"], "CV Mean RMSE": 0.10}]
+            ),
+            {"feature_set_name": "degree_1", "features": ["v0", "v1"], "cv_mean_rmse": 0.10, "cv_std_rmse": 0.01},
+        )
+
+    monkeypatch.setattr(io, "_select_feature_set_cv", fake_feature_cv)
+
+    _, best_model_type, _, best_feature_info = io._select_best_model_and_features(
+        raw_data=pd.DataFrame(),
+        bins=(),
+        variables=["v0", "v1"],
+        indicators=[],
+        multiplier=7.0,
+        z_threshold=3.0,
+        var_reg=[],
+        feature_sets={},
+        target_var="t",
+        cv_folds=3,
+        include_hurdle=False,
+    )
+    # A tuned GLM winner must take the LINEAR branch → Step 3 runs (not skipped).
+    assert step3["called"], "tuned GLM winner must run Step-3 feature selection (not the tree branch)"
+    assert best_model_type["name"].startswith("Tweedie")
+    assert best_feature_info["feature_set_name"] == "degree_1"
+
+
 def _exposure_frame(n=30, seed=42):
     rng = np.random.RandomState(seed)
     return pd.DataFrame(
