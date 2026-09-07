@@ -3,10 +3,15 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import numpy as np
 import pandas as pd
 
-from src.constants import RejectReason, StatusName
-from src.inference_optimized import compute_pre_reject_inference_data, run_optimization_pipeline
+from src.constants import Columns, RejectReason, StatusName
+from src.inference_optimized import (
+    compute_pre_reject_inference_data,
+    run_optimization_pipeline,
+    todu_average_inference,
+)
 
 
 def test_compute_pre_reject_inference_collapses_duplicate_per_bin_stress(monkeypatch):
@@ -159,3 +164,45 @@ def test_tree_winner_cv_r2_is_nan_not_zero(monkeypatch):
     )
     assert np.isnan(best_feature_info["cv_mean_r2"]), "tree-winner CV R² must be NaN, not 0.0"
     assert np.isnan(best_feature_info["cv_std_r2"])
+
+
+def _exposure_frame(n=30, seed=42):
+    rng = np.random.RandomState(seed)
+    return pd.DataFrame(
+        {
+            "b1": rng.randint(0, 3, n),
+            "b2": rng.randint(0, 3, n),
+            "oa_amt": rng.uniform(1000, 5000, n),
+            "todu_amt_pile_h6": rng.uniform(10, 200, n),
+            Columns.STATUS_NAME: StatusName.BOOKED.value,
+        }
+    )
+
+
+def test_todu_average_inference_z_threshold_zero_disables_outlier_removal():
+    # z_threshold == 0 must DISABLE outlier removal (same contract as the risk fit
+    # in process_dataset), NOT empty the training set. Before the guard, the filter
+    # `z_scores < 0` dropped every bin -> None exposure model -> MR predict crash.
+    df = _exposure_frame()
+    variables = ["b1", "b2"]
+    indicators = ["oa_amt", "todu_amt_pile_h6"]
+
+    _, model_z0, r2_z0 = todu_average_inference(
+        df, variables, indicators, z_threshold=0.0, plot_output_path=None, model_output_path=None
+    )
+    assert model_z0 is not None, "z_threshold=0 must still fit an exposure model"
+    # the model is usable downstream (MR prediction path)
+    assert model_z0.predict(pd.DataFrame({"oa_amt": [1000.0]})).shape == (1,)
+    assert not np.isnan(r2_z0)
+
+
+def test_todu_average_inference_z_threshold_positive_still_fits():
+    # Behaviour for the live default (z_threshold=3.0) is unchanged: a model is fit.
+    df = _exposure_frame()
+    variables = ["b1", "b2"]
+    indicators = ["oa_amt", "todu_amt_pile_h6"]
+
+    _, model_z3, _ = todu_average_inference(
+        df, variables, indicators, z_threshold=3.0, plot_output_path=None, model_output_path=None
+    )
+    assert model_z3 is not None

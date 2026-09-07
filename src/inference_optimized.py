@@ -1873,19 +1873,26 @@ def todu_average_inference(
 
     # 3. Outlier Removal
     # ---------------------------------------------------------
-    # Use robust MAD-based z-score (consistent with process_dataset)
-    # Standard zscore is sensitive to the very outliers it's trying to detect
-    median_val = df_grouped[target_col].median()
-    mad = np.median(np.abs(df_grouped[target_col] - median_val))
-    if mad > 0:
-        z_scores = 0.6745 * np.abs(df_grouped[target_col] - median_val) / mad
-    else:
-        z_scores = np.abs(df_grouped[target_col] - median_val)
-    df_train = df_grouped[z_scores < z_threshold].copy()
+    # Use robust MAD-based z-score (consistent with process_dataset).
+    # Standard zscore is sensitive to the very outliers it's trying to detect.
+    # z_threshold == 0 disables outlier removal entirely (same contract as the
+    # risk fit in process_dataset). Guard on it: without the guard the filter
+    # `z_scores < 0` is never true, so df_train is emptied and the function
+    # returns a None exposure model — which later crashes the MR prediction.
+    if z_threshold > 0:
+        median_val = df_grouped[target_col].median()
+        mad = np.median(np.abs(df_grouped[target_col] - median_val))
+        if mad > 0:
+            z_scores = 0.6745 * np.abs(df_grouped[target_col] - median_val) / mad
+        else:
+            z_scores = np.abs(df_grouped[target_col] - median_val)
+        df_train = df_grouped[z_scores < z_threshold].copy()
 
-    n_dropped = len(df_grouped) - len(df_train)
-    if n_dropped > 0:
-        logger.info(f"Dropped {n_dropped} outliers based on Z-threshold {z_threshold}")
+        n_dropped = len(df_grouped) - len(df_train)
+        if n_dropped > 0:
+            logger.info(f"Dropped {n_dropped} outliers based on Z-threshold {z_threshold}")
+    else:
+        df_train = df_grouped.copy()
 
     if df_train.empty:
         logger.warning("All data points were removed as outliers.")
