@@ -546,6 +546,10 @@ class PreprocessingSettings(BaseModel):
     ri_calibration_gamma: float = Field(default=1.0, gt=0, le=1)
     ri_optimizer_method: Literal["grid", "optuna"] = "grid"
     ri_optuna_n_trials: int = Field(default=100, ge=10, le=10000)
+    # Optuna early stopping: stop the TPE search after this many consecutive trials with no
+    # improvement to the best calibration error (n_trials stays the hard ceiling). 0 = disabled
+    # (run all n_trials). Speeds up a converged search without changing the best-so-far.
+    ri_optuna_early_stopping_rounds: int = Field(default=0, ge=0, le=10000)
     ri_validation_split: float = Field(
         default=0.7,
         gt=0.0,

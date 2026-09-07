@@ -178,6 +178,7 @@ def run_ri_optimizer_phase(
                 uplift_range=tuple(settings.ri_uplift_range),
                 max_mult_range=tuple(settings.ri_max_mult_range),
                 n_trials=settings.ri_optuna_n_trials,
+                early_stopping_rounds=settings.ri_optuna_early_stopping_rounds,
             )
         else:
             results_df, best_params = run_reject_inference_optimization(

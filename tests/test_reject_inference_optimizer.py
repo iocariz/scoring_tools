@@ -11,6 +11,7 @@ from src.config import PreprocessingSettings
 from src.reject_inference_optimizer import (
     OptimizerInputs,
     _compute_calibration_error,
+    _make_early_stopping_callback,
     _select_best,
     evaluate_ri_params,
     run_reject_inference_optimization,
@@ -655,3 +656,42 @@ class TestCalibrationBasis:
         results_df.loc[3] = [3.0, 2.0, 800.0, 1.2, True, 0.9]
         _, best2 = _select_best(results_df.copy())
         assert best2["uplift_factor"] == 2.0
+
+
+# =============================================================================
+# Optuna early stopping (speedup)
+# =============================================================================
+
+
+class TestOptunaEarlyStopping:
+    def test_stops_after_no_improvement_plateau(self):
+        import optuna
+
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+        # Objective: best (0.0) is found immediately at x==0, then a flat plateau (never improves).
+        # With patience=5 the study should stop long before the 500-trial ceiling.
+        def objective(trial):
+            trial.suggest_float("x", 0.0, 1.0)
+            return 0.0 if trial.number == 0 else 1.0  # trial 0 sets the best; the rest never beat it
+
+        study = optuna.create_study(direction="minimize")
+        study.optimize(objective, n_trials=500, callbacks=[_make_early_stopping_callback(5)])
+        # trial 0 improves; ~5 stale trials later it stops. Far below the 500 ceiling.
+        assert len(study.trials) < 50
+        assert study.best_value == 0.0  # the best-so-far is preserved
+
+    def test_runs_full_budget_when_improving_every_trial(self):
+        import optuna
+
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        state = {"v": 100.0}
+
+        def objective(trial):
+            trial.suggest_float("x", 0.0, 1.0)
+            state["v"] -= 1.0  # strictly improves every trial → never stale → never early-stop
+            return state["v"]
+
+        study = optuna.create_study(direction="minimize")
+        study.optimize(objective, n_trials=20, callbacks=[_make_early_stopping_callback(5)])
+        assert len(study.trials) == 20  # no early stop while it keeps improving
