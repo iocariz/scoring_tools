@@ -795,6 +795,15 @@ class PreprocessingSettings(BaseModel):
         if "cz_config" in prep_config:
             prep_config["cz_config"] = {int(k): v for k, v in prep_config["cz_config"].items()}
 
+        # Accept the documented plural spelling `ri_optimizer_methods` as an alias for the model
+        # field `ri_optimizer_method` (config.toml + CLAUDE.md use the plural). Without this the
+        # plural key was silently dropped by `extra="ignore"`, so the RI optimizer always ran the
+        # default "grid" regardless of the configured value (surfaced by the #63 typo guard). Map it
+        # here so the config takes effect; prefer the singular if both are present.
+        if "ri_optimizer_methods" in prep_config:
+            plural = prep_config.pop("ri_optimizer_methods")
+            prep_config.setdefault("ri_optimizer_method", plural)
+
         # Convert new-style TOML bins section into BinConfig objects
         if "bins" in prep_config and isinstance(prep_config["bins"], dict):
             converted_bins: dict[str, BinConfig] = {}
