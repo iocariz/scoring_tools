@@ -2976,19 +2976,61 @@ def _empty_rp_skeleton(template_cols: list[str]) -> pd.DataFrame:
 # =============================================================================
 
 
+def _impute_monotone_accept(acc: np.ndarray) -> np.ndarray:
+    """Impute unobserved (NaN) cells' accept/reject side from the monotone structure of the
+    observed cells, so the accept-region frontier drawn on top is a CONTINUOUS staircase
+    rather than fragmenting around grey cells. Used for BORDER drawing ONLY — the displayed
+    value/fill of each cell stays original (grey `—` for unobserved).
+
+    Accept is a monotone region (an up-set in the "safer" order); orientation per axis is
+    inferred from the observed cells. A grey cell is treated as accept if it is at least as
+    safe as some observed accepted cell, reject if it is at most as safe as some observed
+    rejected cell, else left NaN (genuinely ambiguous — no monotone evidence either way).
+    """
+    bnd = acc.astype(float).copy()
+    if bnd.size == 0 or not np.isnan(bnd).any():
+        return bnd
+    rows, cols = np.where(~np.isnan(acc))
+    if rows.size == 0:
+        return bnd
+    vals = acc[rows, cols]
+    a_r, a_c = rows[vals == 1], cols[vals == 1]
+    j_r, j_c = rows[vals == 0], cols[vals == 0]
+    if a_r.size == 0 or j_r.size == 0:
+        return bnd  # only one class observed → nothing to separate
+    sr = 1.0 if a_r.mean() >= j_r.mean() else -1.0  # does accept sit at higher row index?
+    sc = 1.0 if a_c.mean() >= j_c.mean() else -1.0  # ... higher col index?
+    aR, aC, jR, jC = sr * a_r, sc * a_c, sr * j_r, sc * j_c
+    nr, nc = acc.shape
+    for r in range(nr):
+        for c in range(nc):
+            if not np.isnan(bnd[r, c]):
+                continue
+            gR, gC = sr * r, sc * c
+            is_acc = bool(np.any((aR <= gR) & (aC <= gC)))  # safer-or-equal than an accepted cell
+            is_rej = bool(np.any((jR >= gR) & (jC >= gC)))  # less-safe-or-equal than a rejected cell
+            if is_acc and not is_rej:
+                bnd[r, c] = 1.0
+            elif is_rej and not is_acc:
+                bnd[r, c] = 0.0
+    return bnd
+
+
 def _write_single_pivot_grid(ws, pivot, col_var, row_var, start_row, col_offset=0):
     """Draw one pivot grid at (start_row, col_offset+1). Returns bottom row used.
 
-    Accepted cells whose neighbour across an edge is NOT accepted (rejected, unobserved,
-    or off-grid) get a thick deep-navy border on that edge, so the accept/reject frontier
-    (a monotone staircase) is easy to spot against the green/red/grey tiles.
+    The accept-region frontier gets a thick deep-navy border so the accept/reject staircase
+    is easy to spot against the green/red/grey tiles. The frontier is traced on a monotone
+    imputation of the grid (`_impute_monotone_accept`) so unobserved (grey) cells on the
+    boundary don't fragment it; each cell still renders with its original A / R / — value.
     """
     c0 = col_offset + 1
     _acc = pivot.to_numpy()
     _nr, _nc = _acc.shape
+    _bnd = _impute_monotone_accept(_acc)  # boundary basis: grey filled where monotone-clear
 
-    def _is_acc(r, c):  # accepted iff in-bounds and value == 1 (NaN / 0 / off-grid → not)
-        return 0 <= r < _nr and 0 <= c < _nc and _acc[r, c] == 1
+    def _is_acc(r, c):  # ACCEPT side for boundary purposes (real or monotone-imputed)
+        return 0 <= r < _nr and 0 <= c < _nc and _bnd[r, c] == 1
 
     # Corner label
     corner = ws.cell(row=start_row, column=c0)
@@ -3041,10 +3083,13 @@ def _write_single_pivot_grid(ws, pivot, col_var, row_var, start_row, col_offset=
                 cell.value = "R"
                 cell.font = _FONT_GRID_CELL
             cell.alignment = _ALIGN_CENTER
-            # Trace the accept/reject frontier: thick edge on an accepted cell wherever the
-            # neighbour across that edge is not accepted (or off-grid); normal separator else.
-            if val == 1:
-                c = ci - (c0 + 1)
+            # Trace the accept/reject frontier on the monotone-imputed side (_is_acc): thick
+            # edge wherever an accept-side cell faces a non-accept-side (or off-grid) neighbour;
+            # normal separator elsewhere. Using the imputed side keeps the staircase continuous
+            # across grey cells (a grey cell inside the accept region carries the border too,
+            # while still rendering as `—`).
+            c = ci - (c0 + 1)
+            if _is_acc(r, c):
                 cell.border = Border(
                     top=_SIDE_FRONTIER if not _is_acc(r - 1, c) else _SIDE_GRID,
                     bottom=_SIDE_FRONTIER if not _is_acc(r + 1, c) else _SIDE_GRID,
