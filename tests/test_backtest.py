@@ -263,6 +263,22 @@ def test_write_reports_roundtrip(tmp_path):
     assert "RI+stress" in md  # the predicted-caveat note
 
 
+def test_write_backtest_report_sanitizes_slashed_segment(tmp_path):
+    """A segment filter containing '/' must not create nested directories in the backtest
+    output path (regression: OSError 'Cannot save file into a non-existent directory'). The
+    real segment name is still preserved inside the CSV."""
+    result = _result((0.6, 1.0), (0.7, 1.2), 12)
+    result.segment = "direct/consolidation/known/nopremium/a-f"
+    paths = write_backtest_report(result, tmp_path, suffix="_base")
+    agg = paths["aggregate"]
+    # flat file directly under out_dir — the '/' did not spawn nested dirs
+    assert agg.parent == tmp_path
+    assert agg.name == "backtest_direct_consolidation_known_nopremium_a-f_base.csv"
+    assert agg.exists()
+    # real (unsanitized) segment name preserved in the data
+    assert pd.read_csv(agg)["segment"].iloc[0] == "direct/consolidation/known/nopremium/a-f"
+
+
 def test_insufficient_result_reports_gracefully(tmp_path):
     result = BacktestResult(segment="seg_b", sufficient=False, message="no mature out-of-time cohort", window={})
     paths = write_backtest_report(result, tmp_path, suffix="_base")

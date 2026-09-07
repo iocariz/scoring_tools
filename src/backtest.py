@@ -496,11 +496,22 @@ def _load_training_summary(seg_data_dir: Path, suffix: str) -> pd.DataFrame | No
 # --------------------------------------------------------------------------- #
 
 
+def _safe_segment_name(seg: str) -> str:
+    """Filesystem-safe segment token for output filenames.
+
+    Segment filters contain '/' (e.g. ``direct/consolidation/known/nopremium/a-f``) and may
+    contain '\\'; used verbatim in ``backtest_<seg>.csv`` they create nested, non-existent
+    directories and the write raises OSError. Flatten path separators to '_' (the real segment
+    name is preserved inside the CSV via aggregate_row's ``segment`` field).
+    """
+    return str(seg).replace("/", "_").replace("\\", "_")
+
+
 def write_backtest_report(result: BacktestResult, out_dir: Path, suffix: str = "_base") -> dict[str, Path]:
     """Write the per-segment aggregate CSV + per-cell calibration CSV. Returns written paths."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    seg = result.segment
+    seg = _safe_segment_name(result.segment)
     paths: dict[str, Path] = {}
 
     agg_path = out_dir / f"backtest_{seg}{suffix}.csv"
