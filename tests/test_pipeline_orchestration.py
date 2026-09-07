@@ -362,6 +362,48 @@ class TestRunInferencePhase:
         assert captured["todu_average_inference"]["variables"] == settings.variables
         assert captured["todu_average_inference"]["model_output_path"] == output.todu_model_joblib
 
+    # window [2024-01-01 .. 2024-12-31]; 2 pre-window + 3 in-window + 2 post-window (MR-like)
+    _TRAIN_DATES = ["2023-06-01", "2023-12-31", "2024-03-01", "2024-06-01", "2024-12-31", "2025-02-01", "2025-06-01"]
+
+    def _capture_training_data(self, monkeypatch, tmp_path, settings):
+        output = OutputPaths(base_dir=tmp_path)
+        captured = {}
+        data_clean = pd.DataFrame({"mis_date": pd.to_datetime(self._TRAIN_DATES), "x": range(7)})
+
+        def fake_inference_pipeline(**kwargs):
+            captured["inference_pipeline"] = kwargs["data"]
+            return {"best_model_info": {"name": "Ridge", "model_type": "ridge", "cv_mean_r2": 0.6, "cv_std_r2": 0.03}}
+
+        def fake_todu_average_inference(**kwargs):
+            captured["todu_average_inference"] = kwargs["data"]
+            return None, "todu", None
+
+        monkeypatch.setattr(inference_module, "inference_pipeline", fake_inference_pipeline)
+        monkeypatch.setattr(inference_module, "todu_average_inference", fake_todu_average_inference)
+        inference_module.run_inference_phase(data_clean, settings, output=output)
+        return captured
+
+    def test_training_excludes_post_window_by_default(self, monkeypatch, tmp_path):
+        """Audit #1: by default the risk AND exposure models train on all MATURE applications
+        UP TO date_fin_book_obs — the mandatory upper bound drops the post-window MR/holdout
+        cohort (immature H6) but KEEPS pre-window applications (older → H6 realized)."""
+        captured = self._capture_training_data(monkeypatch, tmp_path, make_settings())
+        for key in ("inference_pipeline", "todu_average_inference"):
+            d = captured[key]
+            assert len(d) == 5, f"{key}: expected 5 rows (all up to 2024-12-31), got {len(d)}"
+            assert d["mis_date"].max() <= pd.Timestamp("2024-12-31")  # post-window excluded
+            assert d["mis_date"].min() < pd.Timestamp("2024-01-01")  # pre-window KEPT (mature)
+
+    def test_train_from_date_ini_applies_lower_bound(self, monkeypatch, tmp_path):
+        """train_from_date_ini=True adds the lower bound → training restricted to the full
+        observation window [date_ini_book_obs, date_fin_book_obs] (both bounds)."""
+        captured = self._capture_training_data(monkeypatch, tmp_path, make_settings(train_from_date_ini=True))
+        for key in ("inference_pipeline", "todu_average_inference"):
+            d = captured[key]
+            assert len(d) == 3, f"{key}: expected 3 in-window rows, got {len(d)}"
+            assert d["mis_date"].min() >= pd.Timestamp("2024-01-01")
+            assert d["mis_date"].max() <= pd.Timestamp("2024-12-31")
+
 
 class TestRunOptimizationPhase:
     def test_uses_fixed_cutoff_legacy_path(self, monkeypatch, tmp_path):
