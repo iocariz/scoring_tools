@@ -406,6 +406,29 @@ def run_reject_inference_optimization(
     return _select_best(results_df)
 
 
+def _make_early_stopping_callback(rounds: int):
+    """Optuna study callback that stops the search after *rounds* consecutive trials with no
+    improvement to the running best value (a plateau). Keeps the best-so-far — n_trials is still the
+    hard ceiling. Optuna has no built-in *early-stopping* (its pruning is for iterative objectives,
+    which this single-shot RI evaluation is not), so we track improvement ourselves (#speedup)."""
+    state = {"best": float("inf"), "stale": 0}
+
+    def _callback(study, _trial) -> None:  # noqa: ANN001 — optuna passes (study, frozen_trial)
+        try:
+            current_best = study.best_value
+        except ValueError:
+            return  # no completed trial with a value yet
+        if current_best < state["best"] - 1e-12:
+            state["best"] = current_best
+            state["stale"] = 0
+        else:
+            state["stale"] += 1
+            if state["stale"] >= rounds:
+                study.stop()
+
+    return _callback
+
+
 def run_reject_inference_optimization_optuna(
     inputs: OptimizerInputs,
     risk_target: float,
@@ -413,12 +436,16 @@ def run_reject_inference_optimization_optuna(
     uplift_range: tuple[float, float] = (0.0, 5.0),
     max_mult_range: tuple[float, float] = (1.0, 5.0),
     n_trials: int = 100,
+    early_stopping_rounds: int = 0,
 ) -> tuple[pd.DataFrame, dict]:
     """Optuna TPE-based optimization over (uplift_factor, max_risk_multiplier).
 
     Uses Tree-structured Parzen Estimator (TPE) sampler for efficient search.
     Same best-selection logic as grid search (min calibration error, 5% tolerance,
     conservative tie-break — see _select_best).
+
+    *early_stopping_rounds* > 0 stops the study after that many consecutive no-improvement trials
+    (n_trials remains the ceiling); 0 runs all n_trials.
 
     Returns:
         Tuple of (results_df with all trials, best_params dict).
@@ -442,9 +469,17 @@ def run_reject_inference_optimization_optuna(
 
     sampler = optuna.samplers.TPESampler(seed=DEFAULT_RANDOM_STATE)
     study = optuna.create_study(direction="minimize", sampler=sampler)
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+    callbacks = [_make_early_stopping_callback(early_stopping_rounds)] if early_stopping_rounds > 0 else None
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True, callbacks=callbacks)
 
-    logger.info(f"RI Optuna optimizer: {n_trials} trials completed")
+    n_ran = len(study.trials)
+    if early_stopping_rounds > 0 and n_ran < n_trials:
+        logger.info(
+            f"RI Optuna optimizer: stopped early at {n_ran}/{n_trials} trials "
+            f"({early_stopping_rounds} with no improvement)"
+        )
+    else:
+        logger.info(f"RI Optuna optimizer: {n_ran} trials completed")
 
     results_df = pd.DataFrame(results)
     return _select_best(results_df)
