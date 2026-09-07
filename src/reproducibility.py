@@ -169,13 +169,32 @@ def compare_headline(
     else:
         snapshot_match = True
 
+    # Config pin (#47): the reference numbers were pinned under a specific config. Reproducing under
+    # a DIFFERENT config (hash mismatch) is not a valid reproduction of THOSE numbers — the docstring
+    # claimed provenance was pinned but this was never actually compared. Fail-closed on a missing
+    # hash on either side, consistent with the snapshot pin above.
+    ref_cfg = reference.get("config_hash")
+    if not ref_cfg or not actual.config_hash:
+        config_match = False
+        missing_side = "reference" if not ref_cfg else "current run"
+        reasons.append(
+            f"CONFIG HASH UNAVAILABLE (no config_hash on the {missing_side} side) — fail-closed; "
+            "re-establish the reference with the current code/config"
+        )
+    elif ref_cfg != actual.config_hash:
+        config_match = False
+        reasons.append(f"CONFIG CHANGED (hash {actual.config_hash[:12]} != reference {ref_cfg[:12]}) — re-validate")
+    else:
+        config_match = True
+
     numbers_ok = risk_ok and prod_ok and cells_match and accepted_set_match
-    passed = numbers_ok and snapshot_match
+    passed = numbers_ok and snapshot_match and config_match
 
     return {
         "passed": passed,
         "numbers_ok": numbers_ok,
         "snapshot_match": snapshot_match,
+        "config_match": config_match,
         "risk_delta_pp": risk_delta_pp,
         "prod_delta_pct": prod_delta_pct,
         "cells_match": cells_match,
@@ -199,9 +218,11 @@ def render_report(result: dict, segment: str) -> str:
         f"| accepted cells | {r.get('n_accepted_cells')} | {a.get('n_accepted_cells')} | exact |",
         f"| accepted-set hash | {r.get('accepted_set_hash')} | {a.get('accepted_set_hash')} | exact |",
         f"| data SHA-256 | {str(r.get('data_sha256'))[:12]} | {str(a.get('data_sha256'))[:12]} | must match |",
+        f"| config hash | {str(r.get('config_hash'))[:12]} | {str(a.get('config_hash'))[:12]} | must match |",
         f"| git commit | {str(r.get('git_commit'))[:12]} | {str(a.get('git_commit'))[:12]} | (informational) |",
         "",
-        f"**snapshot_match:** {result['snapshot_match']} | **numbers_ok:** {result['numbers_ok']}",
+        f"**snapshot_match:** {result['snapshot_match']} | **config_match:** {result['config_match']} | "
+        f"**numbers_ok:** {result['numbers_ok']}",
     ]
     if result["reasons"]:
         lines.append("\n**Reasons:**")
