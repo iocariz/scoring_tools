@@ -27,6 +27,7 @@ def _ref(**over):
         "n_accepted_cells": 5,
         "accepted_set_hash": "abc123",
         "data_sha256": "deadbeef",
+        "config_hash": "cfg123",
     }
     base.update(over)
     return base
@@ -41,6 +42,7 @@ def _headline(**over):
         n_accepted_cells=5,
         accepted_set_hash="abc123",
         data_sha256="deadbeef",
+        config_hash="cfg123",
     )
     base.update(over)
     return Headline(**base)
@@ -171,3 +173,57 @@ def test_render_report_contains_status():
     assert "FAIL" in md and "seg_a" in md
     md_pass = render_report(compare_headline(_headline(), _ref()), "seg_a")
     assert "PASS" in md_pass
+
+
+# ------------------------- config-hash pin (#47) -------------------------------
+
+
+def test_config_hash_mismatch_fails_even_when_numbers_match():
+    # Identical numbers + data SHA, different config hash → the reference numbers were pinned under a
+    # different config, so this is not a valid reproduction of them. Fail-closed.
+    res = compare_headline(_headline(config_hash="DIFFERENT"), _ref(config_hash="cfg123"))
+    assert res["numbers_ok"] is True
+    assert res["snapshot_match"] is True
+    assert res["config_match"] is False
+    assert res["passed"] is False
+    assert any("CONFIG CHANGED" in r for r in res["reasons"])
+
+
+def test_missing_config_hash_fails_closed():
+    for actual_cfg, ref_cfg in [(None, None), (None, "REF"), ("ACT", None)]:
+        res = compare_headline(_headline(config_hash=actual_cfg), _ref(config_hash=ref_cfg))
+        assert res["config_match"] is False
+        assert res["passed"] is False
+        assert any("CONFIG HASH UNAVAILABLE" in r for r in res["reasons"])
+
+
+def test_config_hash_match_passes():
+    res = compare_headline(_headline(config_hash="cfg123"), _ref(config_hash="cfg123"))
+    assert res["config_match"] is True
+    assert res["passed"] is True
+
+
+# ------------------- segment-filter resolution (#47) ---------------------------
+
+
+def test_resolve_segment_filter_from_segments_toml(tmp_path):
+    from run_reproducibility import _resolve_segment_filter
+
+    cfg = tmp_path / "segments.toml"
+    cfg.write_text('[segments.direct-conso-known-premium]\nsegment_filter = "direct/consolidation/known/premium"\n')
+    assert _resolve_segment_filter("direct-conso-known-premium", str(cfg)) == "direct/consolidation/known/premium"
+
+
+def test_resolve_segment_filter_falls_back_to_raw_when_absent(tmp_path):
+    from run_reproducibility import _resolve_segment_filter
+
+    cfg = tmp_path / "segments.toml"
+    cfg.write_text('[segments.other]\nsegment_filter = "x/y"\n')
+    # Unknown segment → fall back to the raw value (with a warning), so a directly-passed filter works.
+    assert _resolve_segment_filter("not/there", str(cfg)) == "not/there"
+
+
+def test_resolve_segment_filter_missing_file_falls_back(tmp_path):
+    from run_reproducibility import _resolve_segment_filter
+
+    assert _resolve_segment_filter("seg", str(tmp_path / "nope.toml")) == "seg"
