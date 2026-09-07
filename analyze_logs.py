@@ -23,18 +23,6 @@ from typing import Any
 
 
 @dataclass
-class Signal:
-    """A single extracted signal from the log."""
-
-    category: str
-    key: str
-    value: Any
-    line_number: int
-    raw_line: str
-    segment: str = ""
-
-
-@dataclass
 class Recommendation:
     """A single configuration recommendation."""
 
@@ -160,10 +148,8 @@ class SegmentMetrics:
     n_anomalous_months: int = 0
     drift_alerts: list[str] = field(default_factory=list)
     outliers_dropped: int = 0
-    out_of_range_bins: int = 0
     nan_drop_pct: float | None = None
     n_bootstrap: int | None = None
-    monotonicity_directions: dict[str, int] = field(default_factory=dict)
     baseline_mode: bool = False
     # Timing
     elapsed_preprocessing: float | None = None
@@ -287,7 +273,8 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
         if m:
             s.n_booked = int(m.group(1).replace(",", ""))
 
-        m = re.search(r"Zero proportion[^:]*:\s+([\d.]+)%", msg)
+        # e.g. "Per-loan zero proportion (no-default loans): 97.4%"
+        m = re.search(r"[Zz]ero proportion[^:]*:\s+([\d.]+)%", msg)
         if m:
             s.zero_proportion = float(m.group(1))
 
@@ -303,11 +290,6 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
         m = re.search(r"Data ready.*?([\d,]+)\s+rows", msg)
         if m and s.n_demand is None:
             s.n_demand = int(m.group(1).replace(",", ""))
-
-        # --- Monotonicity ---
-        m = re.search(r"direction.*?(\w+)\s*=\s*(-?\d+)", msg)
-        if m:
-            s.monotonicity_directions[m.group(1)] = int(m.group(2))
 
         # --- Optimization ---
         m = re.search(
@@ -518,10 +500,6 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
         if m:
             s.outliers_dropped += int(m.group(1))
 
-        m = re.search(r"out-of-range.*?(\d+)", msg, re.IGNORECASE)
-        if m:
-            s.out_of_range_bins += int(m.group(1))
-
         m = re.search(r"dropped.*?NaN.*?([\d.]+)%", msg)
         if m:
             pct = float(m.group(1))
@@ -529,19 +507,23 @@ def extract_signals(entries: list[tuple[str, str, str, str, int, str]]) -> tuple
                 s.nan_drop_pct = pct
 
         # --- Timing (phase-level) ---
-        m = re.search(r"Preprocessing done.*?([\d.]+)s", msg)
+        # The "... done" lines all end with "| <elapsed>s"; anchoring to the trailing
+        # seconds avoids grabbing an earlier number (e.g. a model hyperparameter).
+        m = re.search(r"Preprocessing done.*?\|\s*([\d.]+)s\s*$", msg)
         if m:
             s.elapsed_preprocessing = float(m.group(1))
 
-        m = re.search(r"Inference done.*?([\d.]+)s", msg)
+        m = re.search(r"Inference done.*?\|\s*([\d.]+)s\s*$", msg)
         if m:
             s.elapsed_inference = float(m.group(1))
 
-        m = re.search(r"Optimization done.*?([\d.]+)s", msg)
+        m = re.search(r"Optimization done.*?\|\s*([\d.]+)s\s*$", msg)
         if m:
             s.elapsed_optimization = float(m.group(1))
 
-        m = re.search(r"Pipeline complete.*?([\d.]+)\s*(?:s|seconds)", msg)
+        # "Pipeline complete | 3 scenarios | 38.6s total" — the digits must be glued to
+        # the "s" ("38.6s"), else the lazy scan matches the "1" in "1 scenarios".
+        m = re.search(r"Pipeline complete.*?([\d.]+)s\s+total", msg)
         if m:
             s.elapsed_total = float(m.group(1))
 
@@ -676,14 +658,17 @@ def generate_recommendations(segments: dict[str, SegmentMetrics]) -> list[Recomm
                 )
             )
 
-        if s.zero_proportion is not None and s.zero_proportion > 95:
+        if s.zero_proportion is not None and 95 < s.zero_proportion <= 99.9:
             recs.append(
                 Recommendation(
                     priority="MEDIUM",
                     category="Data",
-                    message=f"{prefix}Extremely high zero proportion ({s.zero_proportion:.1f}%). Hurdle model recommended.",
-                    setting="Model selection",
-                    suggested="Ensure HurdleRegressor is available in the model candidates (it should be by default).",
+                    message=f"{prefix}Extremely high per-loan zero proportion ({s.zero_proportion:.1f}%).",
+                    setting="model_hurdle_per_loan",
+                    suggested=(
+                        "Consider model_hurdle_per_loan=true (Expert, default off) to offer a two-part "
+                        "hurdle model candidate — it can change cutoffs, validate on real data first."
+                    ),
                 )
             )
 
@@ -997,17 +982,6 @@ def generate_recommendations(segments: dict[str, SegmentMetrics]) -> list[Recomm
                 )
             )
 
-        if s.out_of_range_bins > 100:
-            recs.append(
-                Recommendation(
-                    priority="LOW",
-                    category="Binning",
-                    message=f"{prefix}{s.out_of_range_bins} records fell outside bin edges.",
-                    setting="bin_edges",
-                    suggested="Re-learn bin edges with method='quantile' or extend edge range to cover data.",
-                )
-            )
-
         # --- Anomalies ---
         if s.n_anomalous_months > 3:
             recs.append(
@@ -1019,6 +993,34 @@ def generate_recommendations(segments: dict[str, SegmentMetrics]) -> list[Recomm
                     suggested="Investigate anomalous months. Consider narrowing date_fin_book_obs.",
                 )
             )
+
+        # --- Analyzer coverage (pattern-drift guard) ---
+        # A core phase leaving no extracted signal means either the phase didn't run or
+        # the pipeline's log format drifted away from this analyzer's patterns. Surfacing
+        # it keeps drift visible instead of silently reporting "everything looks good".
+        # "default" is the catch-all for lines before the first segment header, not a run.
+        if not s.errors and name != "default":
+            missing_core = []
+            if s.n_booked is None and s.n_demand is None:
+                missing_core.append("preprocessing summary")
+            if not s.model_name and s.cv_r2_mean is None and s.train_r2 is None:
+                missing_core.append("model/inference summary")
+            if not s.grid_dims and s.pareto_n_solutions is None:
+                missing_core.append("optimization summary")
+            if not s.scenarios:
+                missing_core.append("scenario selection")
+            if missing_core:
+                recs.append(
+                    Recommendation(
+                        priority="LOW",
+                        category="Analyzer",
+                        message=(
+                            f"{prefix}No signal extracted for: {', '.join(missing_core)}. "
+                            f"Either the run skipped those phases, or the pipeline's log format "
+                            f"drifted — if the phases did run, update analyze_logs.py patterns."
+                        ),
+                    )
+                )
 
         # --- Performance ---
         if s.elapsed_total is not None and s.elapsed_total > 600:
@@ -1053,11 +1055,12 @@ def _round_down(value: float, step: float) -> float:
 def generate_alternative_segments_toml(
     segments: dict[str, SegmentMetrics],
     current_segments_path: Path | None = None,
-) -> str:
+) -> tuple[str, list[str]]:
     """Generate an alternative segments.toml based on log analysis.
 
     Reads the current segments.toml (if available) to preserve structure,
     then applies data-driven adjustments to optimum_risk, risk_step, etc.
+    Returns (toml_text, list of human-readable change descriptions).
     """
     import tomllib
 
@@ -1215,19 +1218,12 @@ def _toml_value(v: Any) -> str:
     if isinstance(v, str):
         return f'"{v}"'
     if isinstance(v, list):
-        parts = []
-        for item in v:
-            if isinstance(item, float) and math.isinf(item):
-                parts.append("-inf" if item < 0 else "inf")
-            elif isinstance(item, float):
-                parts.append(f"{item}" if item != int(item) else f"{item}")
-            elif isinstance(item, str):
-                parts.append(f'"{item}"')
-            else:
-                parts.append(str(item))
-        return f"[{', '.join(parts)}]"
-    if isinstance(v, float) and math.isinf(v):
-        return "-inf" if v < 0 else "inf"
+        return f"[{', '.join(_toml_value(item) for item in v)}]"
+    if isinstance(v, float):
+        if math.isinf(v):
+            return "-inf" if v < 0 else "inf"
+        if math.isnan(v):
+            return "nan"
     return str(v)
 
 
@@ -1243,7 +1239,6 @@ def format_report(
     segments: dict[str, SegmentMetrics],
     recommendations: list[Recommendation],
     verbose: bool = False,
-    alt_toml: str = "",
     alt_changes: list[str] | None = None,
 ) -> str:
     """Format analysis results as a text report."""
@@ -1358,9 +1353,8 @@ def format_report(
         mr = s.mr_decomposition
         if mr.actual_risk is not None:
             lines.append("  MR Decomposition:")
-            lines.append(
-                f"    Actual:   risk={mr.actual_risk:.2f}%  prod=€{mr.actual_prod:,.0f}" if mr.actual_prod else ""
-            )
+            prod_str = f"  prod=€{mr.actual_prod:,.0f}" if mr.actual_prod is not None else ""
+            lines.append(f"    Actual:   risk={mr.actual_risk:.2f}%{prod_str}")
             if mr.swap_out_risk is not None:
                 lines.append(
                     f"    Swap-out: risk={mr.swap_out_risk:.2f}%  prod=€{mr.swap_out_prod:,.0f} ({mr.swap_out_pct:.1f}%)"
@@ -1567,7 +1561,6 @@ Examples:
         segments,
         recommendations,
         verbose=args.verbose,
-        alt_toml=alt_toml,
         alt_changes=alt_changes,
     )
 
