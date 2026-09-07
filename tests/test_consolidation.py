@@ -1520,3 +1520,39 @@ def test_mr_grid_matches_main_skips_frozen_duplicate():
 
     # no accepted column → cannot compare → not redundant (drawn)
     assert _mr_grid_matches_main(main.drop(columns=["accepted"]), mr_frozen) is False
+
+
+def test_impute_monotone_accept_fills_grey_by_monotone_side():
+    """Grey (NaN) cells are imputed to the accept/reject side by the monotone structure so the
+    frontier stays continuous: a grey cell inside the accept region -> accept, one inside the
+    reject region -> reject; observed cells are untouched."""
+    import numpy as np
+
+    from src.consolidation import _impute_monotone_accept
+
+    nan = float("nan")
+    acc = np.array(
+        [
+            [0, nan, 0, 0],  # (0,1) grey in the reject corner -> R
+            [0, 0, 1, 1],
+            [0, 1, 1, 1],
+            [0, 1, nan, 1],  # (3,2) grey inside the accept region -> A
+        ],
+        dtype=float,
+    )
+    out = _impute_monotone_accept(acc)
+    assert out[0, 1] == 0.0  # reject-side grey filled R
+    assert out[3, 2] == 1.0  # accept-side grey filled A
+    assert out[1, 2] == 1.0 and out[0, 0] == 0.0  # observed cells unchanged
+
+
+def test_impute_monotone_accept_single_class_left_grey():
+    """With only one observed class there is nothing to separate, so grey stays NaN (no
+    spurious boundary)."""
+    import numpy as np
+
+    from src.consolidation import _impute_monotone_accept
+
+    nan = float("nan")
+    out = _impute_monotone_accept(np.array([[1, 1], [1, nan]], dtype=float))
+    assert np.isnan(out[1, 1])
