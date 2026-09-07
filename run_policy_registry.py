@@ -37,7 +37,7 @@ import pandas as pd
 from loguru import logger
 
 from run_backtest import _discover_segments, _scenario_suffix
-from src.backtest import BacktestError, derive_holdout_window, load_frozen_policy
+from src.backtest import BacktestError, build_holdout_window, load_frozen_policy
 from src.config import PreprocessingSettings
 from src.constants import StatusName
 from src.policy_registry import (
@@ -231,17 +231,11 @@ def compare_segment(
         )
 
     # Bin the full population with the frozen edges, then slice the matured out-of-time cohort.
+    # An explicit override is validated against the auto-path invariants (ordering /
+    # disjoint-from-training / H6-maturity) — a bad override raises BacktestError,
+    # caught per-segment by compare_all (audit #2).
     data_clean = _run_data_transformations(full_data, settings)
-    if holdout_start and holdout_end:
-        window = {
-            "start": pd.to_datetime(holdout_start),
-            "end": pd.to_datetime(holdout_end),
-            "reference_date": pd.to_datetime(data_clean["mis_date"]).max(),
-            "maturity_months": maturity_months,
-            "sufficient": True,
-        }
-    else:
-        window = derive_holdout_window(data_clean, settings, maturity_months)
+    window = build_holdout_window(data_clean, settings, maturity_months, holdout_start, holdout_end)
 
     if not window["sufficient"]:
         return PolicyComparison(

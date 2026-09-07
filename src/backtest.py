@@ -156,6 +156,63 @@ def derive_holdout_window(
     }
 
 
+def build_holdout_window(
+    data_clean: pd.DataFrame,
+    settings: PreprocessingSettings,
+    maturity_months: int,
+    holdout_start: str | None,
+    holdout_end: str | None,
+) -> dict:
+    """Resolve the out-of-time window, auto-derived or from an explicit override.
+
+    With neither bound, auto-derive (``derive_holdout_window``). With BOTH bounds,
+    build the explicit window but VALIDATE it against the same invariants the auto
+    path guarantees — an override must not silently bypass them (audit #2):
+
+      * ``start < end``                     — non-empty, non-inverted window
+      * ``start >= date_fin_book_obs``      — disjoint from training (genuinely
+        out-of-time; the OOT mask is ``mis > start``, so an earlier start would
+        pull training-period cohorts into the "held-out" set → leakage)
+      * ``end <= max(mis_date) − maturity`` — cohorts old enough to have a realized
+        H6 (the auto path's whole purpose; a later end evaluates immature loans and
+        understates realized risk)
+
+    A violated invariant is a user error → raise ``BacktestError`` (parity with the
+    one-sided-override guard). The one-sided case (exactly one bound) must be
+    rejected by the caller before calling this.
+    """
+    if not (holdout_start and holdout_end):
+        return derive_holdout_window(data_clean, settings, maturity_months)
+
+    start = pd.to_datetime(holdout_start)
+    end = pd.to_datetime(holdout_end)
+    reference_date = pd.to_datetime(data_clean["mis_date"]).max()
+    train_end = pd.to_datetime(settings.date_fin_book_obs)
+    mature_cutoff = reference_date - pd.DateOffset(months=maturity_months)
+
+    if start >= end:
+        raise BacktestError(f"holdout override is empty: start {start.date()} is not before end {end.date()}.")
+    if start < train_end:
+        raise BacktestError(
+            f"holdout override overlaps training: start {start.date()} is before training end "
+            f"{train_end.date()} — the out-of-time cohort must begin at or after training end "
+            f"(else it is not out-of-time). Use start >= {train_end.date()}."
+        )
+    if end > mature_cutoff:
+        raise BacktestError(
+            f"holdout override is not H6-mature: end {end.date()} is after the mature cutoff "
+            f"{mature_cutoff.date()} (data ends {reference_date.date()} − {maturity_months}mo); "
+            f"cohorts after the cutoff have no realized H6. Use end <= {mature_cutoff.date()}."
+        )
+    return {
+        "start": start,
+        "end": end,
+        "reference_date": reference_date,
+        "maturity_months": maturity_months,
+        "sufficient": True,
+    }
+
+
 def load_frozen_policy(
     seg_data_dir: Path,
     variables: list[str],
@@ -359,16 +416,9 @@ def backtest_segment(
 
     # Held-out window (auto-derived unless BOTH override bounds are given; the
     # one-sided case is rejected up front — see the guard at function entry).
-    if holdout_start and holdout_end:
-        window = {
-            "start": pd.to_datetime(holdout_start),
-            "end": pd.to_datetime(holdout_end),
-            "reference_date": pd.to_datetime(data_clean["mis_date"]).max(),
-            "maturity_months": maturity_months,
-            "sufficient": True,
-        }
-    else:
-        window = derive_holdout_window(data_clean, settings, maturity_months)
+    # An explicit override is validated against the auto-path invariants
+    # (ordering / disjoint-from-training / H6-maturity) — see build_holdout_window.
+    window = build_holdout_window(data_clean, settings, maturity_months, holdout_start, holdout_end)
 
     if not window["sufficient"]:
         msg = (

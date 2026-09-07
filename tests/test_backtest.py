@@ -16,6 +16,7 @@ from src.backtest import (
     _realized_metrics,
     apply_policy,
     backtest_segment,
+    build_holdout_window,
     derive_holdout_window,
     write_backtest_report,
     write_consolidated_report,
@@ -146,6 +147,41 @@ def test_derive_holdout_window_insufficient_when_no_mature_post_training():
     data = pd.DataFrame({"mis_date": pd.to_datetime(["2025-06-01", "2025-07-01"])})
     w = derive_holdout_window(data, _settings("2025-05-01"), maturity_months=6)
     assert w["sufficient"] is False  # cutoff 2025-01 is BEFORE training end 2025-05
+
+
+# --------------------------- build_holdout_window (audit #2) ----------------
+# Data extends to 2026-01-15; training ends 2025-05-01; maturity 6mo →
+# mature cutoff 2025-07-15. Valid override windows live in (2025-05-01, 2025-07-15].
+_OOT_DATA = pd.DataFrame({"mis_date": pd.to_datetime(["2025-06-15", "2025-10-15", "2026-01-15"])})
+
+
+def test_build_holdout_window_no_override_delegates_to_auto():
+    w = build_holdout_window(_OOT_DATA, _settings("2025-05-01"), 6, None, None)
+    assert w == derive_holdout_window(_OOT_DATA, _settings("2025-05-01"), 6)
+
+
+def test_build_holdout_window_valid_override_accepted():
+    w = build_holdout_window(_OOT_DATA, _settings("2025-05-01"), 6, "2025-06-01", "2025-07-01")
+    assert w["sufficient"] is True
+    assert w["start"] == pd.Timestamp("2025-06-01")
+    assert w["end"] == pd.Timestamp("2025-07-01")
+
+
+def test_build_holdout_window_rejects_inverted_window():
+    with pytest.raises(BacktestError, match="empty"):
+        build_holdout_window(_OOT_DATA, _settings("2025-05-01"), 6, "2025-07-01", "2025-06-01")
+
+
+def test_build_holdout_window_rejects_overlap_with_training():
+    # start before training end → the OOT cohort would include training-period loans (leakage).
+    with pytest.raises(BacktestError, match="overlaps training"):
+        build_holdout_window(_OOT_DATA, _settings("2025-05-01"), 6, "2025-04-01", "2025-07-01")
+
+
+def test_build_holdout_window_rejects_immature_tail():
+    # end after the mature cutoff (2025-07-15) → cohorts with no realized H6.
+    with pytest.raises(BacktestError, match="not H6-mature"):
+        build_holdout_window(_OOT_DATA, _settings("2025-05-01"), 6, "2025-06-01", "2025-09-01")
 
 
 # ------------------------------- reporting ----------------------------------
