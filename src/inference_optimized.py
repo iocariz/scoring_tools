@@ -1168,9 +1168,22 @@ def _select_best_model_and_features(
             "cv_std_r2": best_row.get("CV Std R2", float("nan")),
         }
     else:
-        # A linear/GLM model won. Proceed with Step 3.
-        best_model_name = best_model_type["name"]
-        best_model_template = best_model_type["model_template"]
+        # A linear/GLM model won the COMBINED 1-SE selection. Proceed with Step 3
+        # using THAT winner — not best_model_type, which is the linear-ONLY step-1
+        # winner and can differ (audit #7): the combined 1-SE band is anchored on the
+        # (lower) tree-min RMSE + its SE, so the simplest model within the band may be
+        # a different linear model than the linear-only band selected. Re-derive from
+        # the combined winner row so Step 3 (and the returned best_model_type) match
+        # the model the 1-SE rule actually chose.
+        best_row = combined_results.loc[best_combined_idx]
+        best_model_name = best_global_name
+        best_model_template = best_row["model_template"]
+        best_model_type = {
+            "model_template": best_model_template,
+            "name": best_global_name,
+            "cv_mean_rmse": best_row["CV Mean RMSE"],
+            "cv_std_rmse": best_row["CV Std RMSE"],
+        }
 
         logger.info("-" * 40)
         logger.info(f"STEP 3: FEATURE SET SELECTION ({best_model_name}, {cv_folds}-fold CV)")

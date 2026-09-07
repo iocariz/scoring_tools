@@ -166,6 +166,81 @@ def test_tree_winner_cv_r2_is_nan_not_zero(monkeypatch):
     assert np.isnan(best_feature_info["cv_std_r2"])
 
 
+def test_combined_selection_returns_combined_winner_not_linear_only(monkeypatch):
+    """audit #7: when the COMBINED (tree+linear) 1-SE winner is a different linear model
+    than the linear-ONLY step-1 winner, Step 3 and the returned model type must use the
+    COMBINED winner. The combined 1-SE band is anchored on the (lower) tree min RMSE + its
+    SE, so a simpler linear model can enter the band that the linear-only band excluded.
+    Previously the else-branch reused the linear-only winner, returning the wrong model."""
+    from sklearn.linear_model import LinearRegression, Ridge
+
+    import src.inference_optimized as io
+
+    # Tree anchors the combined band low with a WIDE SE: 0.30 ± 0.20 → band up to 0.50.
+    tree_df = pd.DataFrame(
+        [{"Model": "XGBoost (Optuna Tuned)", "CV Mean RMSE": 0.30, "CV Std RMSE": 0.20, "model_template": Ridge()}]
+    )
+    # Linear candidates: Ridge is the linear MIN (0.40 ± 0.02 → linear-only band up to 0.42),
+    # so 'Linear Regression' (0.48) is OUTSIDE the linear-only band but INSIDE the combined
+    # band (<= 0.50) and is simpler (complexity 1 < Ridge 2) → the combined winner.
+    lin_df = pd.DataFrame(
+        [
+            {
+                "Model": "Ridge (Optuna Tuned α=0.500)",
+                "CV Mean RMSE": 0.40,
+                "CV Std RMSE": 0.02,
+                "model_template": Ridge(),
+            },
+            {
+                "Model": "Linear Regression",
+                "CV Mean RMSE": 0.48,
+                "CV Std RMSE": 0.02,
+                "model_template": LinearRegression(),
+            },
+        ]
+    )
+    linear_only_winner = {
+        "name": "Ridge (Optuna Tuned α=0.500)",
+        "model_template": Ridge(),
+        "cv_mean_rmse": 0.40,
+        "cv_std_rmse": 0.02,
+    }
+    monkeypatch.setattr(io, "tune_tree_models", lambda **kw: (tree_df, {}))
+    monkeypatch.setattr(io, "_select_model_type_cv", lambda **kw: (lin_df, linear_only_winner))
+
+    captured = {}
+
+    def fake_feature_cv(**kw):
+        captured["model_template"] = kw["model_template"]
+        return (
+            pd.DataFrame(
+                [{"Feature Set": "original", "Num Features": 2, "Features": ["v0", "v1"], "CV Mean RMSE": 0.48}]
+            ),
+            {"feature_set_name": "original", "features": ["v0", "v1"], "cv_mean_rmse": 0.48, "cv_std_rmse": 0.02},
+        )
+
+    monkeypatch.setattr(io, "_select_feature_set_cv", fake_feature_cv)
+
+    _, best_model_type, _, _ = io._select_best_model_and_features(
+        raw_data=pd.DataFrame(),
+        bins=(),
+        variables=["v0", "v1"],
+        indicators=[],
+        multiplier=7.0,
+        z_threshold=3.0,
+        var_reg=[],
+        feature_sets={},
+        target_var="t",
+        cv_folds=3,
+        include_hurdle=False,
+    )
+    # The combined 1-SE winner is 'Linear Regression', NOT the linear-only winner 'Ridge...'.
+    assert best_model_type["name"] == "Linear Regression"
+    assert best_model_type["cv_mean_rmse"] == 0.48
+    # Step 3 must have run with the combined winner's template (a LinearRegression, not Ridge).
+    assert isinstance(captured["model_template"], LinearRegression)
+
+
 def _exposure_frame(n=30, seed=42):
     rng = np.random.RandomState(seed)
     return pd.DataFrame(
