@@ -105,7 +105,6 @@ def registry_grid_collision(root):
     )
     first = build_policy_entry(run, settings(edge=50))
     second = build_policy_entry(run, settings(edge=80))
-    assert first.bin_edges != second.bin_edges and first.policy_id == second.policy_id
     register_policy(first, registry_dir=root / "registry")
     reg = register_policy(second, make_champion=True, registry_dir=root / "registry")
     champion = get_champion("audit_segment", registry_dir=root / "registry")
@@ -115,7 +114,12 @@ def registry_grid_collision(root):
         "requested_edge": second.bin_edges["a"][1],
         "stored_champion_edge": champion.bin_edges["a"][1],
     }
-    assert champion.bin_edges["a"][1] == 50
+    # FIXED (F4): the policy id fingerprints the grid (axes, sources, cutpoints) with the
+    # accepted cells — changed edges give a NEW id, both entries register, and promotion
+    # lands on the requested grid (previously: same id, 1 entry, stale champion edge=50).
+    assert first.bin_edges != second.bin_edges and first.policy_id != second.policy_id
+    assert len(reg["policies"]) == 2
+    assert champion.bin_edges["a"][1] == 80
 
 
 def source_mapping_guard():

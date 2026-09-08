@@ -97,7 +97,8 @@ def test_build_policy_entry(tmp_path):
     entry = build_policy_entry(seg_dir, _settings("seg_a"), "_base", created="2026-06-06T00:00:00Z")
     assert entry.segment == "seg_a"
     assert entry.scenario == "base"
-    assert entry.policy_id.startswith("seg_a-") and len(entry.policy_id.split("-")[-1]) == 8
+    # audit F4: the id suffix is a 12-char GRID fingerprint (axes + sources + edges + cells)
+    assert entry.policy_id.startswith("seg_a-") and len(entry.policy_id.split("-")[-1]) == 12
     assert entry.accepted_set() == {(1.0, 10.0), (2.0, 10.0)}
     assert entry.headline == {"risk_pct": 1.5, "production_eur": 1000.0, "n_accepted_cells": 2}
     assert entry.provenance["data_sha256"] == "SHA123"
@@ -491,3 +492,53 @@ def test_positive_exposure_added_cell_still_counts_as_observed():
     cmp = compare_policies(champion, challenger, cohort, ["a", "b"], 7.0, cohort_demand=demand)
     assert cmp.n_added_cells_unobserved == 0
     assert cmp.unobservable_added_share == pytest.approx(0.0)
+
+
+def test_changed_bin_edges_produce_a_new_policy_id(tmp_path):
+    """Audit F4: the policy id fingerprints the GRID (axes, sources, cutpoints) together
+    with the accepted cells — identical integer coordinates on different edges are
+    different policies, so registration + promotion cannot land on a stale entry."""
+    seg_dir = _build_run_tree(tmp_path, "seg_a")
+    s1 = _settings("seg_a")
+    s2 = _settings("seg_a")
+    s2.bins["a"].bin_edges = [0.0, 1.5, 3.0]  # changed cutpoints, same cell coordinates
+    e1 = build_policy_entry(seg_dir, s1, "_base")
+    e2 = build_policy_entry(seg_dir, s2, "_base")
+    assert e1.accepted_set_hash == e2.accepted_set_hash  # same coordinates...
+    assert e1.policy_id != e2.policy_id  # ...different policies
+
+    reg_dir = tmp_path / "registry"
+    register_policy(e1, registry_dir=reg_dir)
+    reg = register_policy(e2, make_champion=True, registry_dir=reg_dir)
+    assert len(reg["policies"]) == 2  # no silent no-op
+    champ = get_champion("seg_a", registry_dir=reg_dir)
+    assert champ.policy_id == e2.policy_id
+    assert champ.bin_edges["a"] == [0.0, 1.5, 3.0]  # the NEW grid is champion, not the stale one
+
+
+def test_changed_source_col_produces_a_new_policy_id(tmp_path):
+    """Same output axis name + same edges but a DIFFERENT raw score is a different grid."""
+    seg_dir = _build_run_tree(tmp_path, "seg_a")
+    s1 = _settings("seg_a")
+    s2 = _settings("seg_a")
+    for var, bc in (s1.bins or {}).items():
+        bc.source_col = "old_score"
+    for var, bc in (s2.bins or {}).items():
+        bc.source_col = "new_score"
+    e1 = build_policy_entry(seg_dir, s1, "_base")
+    e2 = build_policy_entry(seg_dir, s2, "_base")
+    assert e1.policy_id != e2.policy_id
+    assert e1.bin_sources != e2.bin_sources  # sources persisted on the entry
+
+
+def test_legacy_registry_entries_without_bin_sources_still_load():
+    entry = PolicyEntry.from_dict(
+        {
+            "policy_id": "seg-old8char",
+            "segment": "seg",
+            "variables": ["a"],
+            "bin_edges": {"a": [0.0, 1.0]},
+            "accepted_cells": [[1.0]],
+        }
+    )
+    assert entry.bin_sources == {}
