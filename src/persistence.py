@@ -407,6 +407,17 @@ def validate_reused_model_config(metadata: dict, settings: "PreprocessingSetting
             if se != ce:
                 problems.append(f"bin_edges['{var}'] changed ({len(se)}→{len(ce)} edges / values differ)")
 
+    # Raw score sources (audit F5): the same output name + identical edges over a DIFFERENT
+    # raw score maps applications to different bins — edges alone don't identify the grid.
+    saved_sources = metadata.get("bin_sources")
+    if isinstance(saved_sources, dict) and getattr(settings, "bins", None):
+        for var in inf_vars:
+            if var not in saved_sources or var not in settings.bins:
+                continue
+            cur_src = str(getattr(settings.bins[var], "source_col", "") or "")
+            if cur_src and str(saved_sources[var]) != cur_src:
+                problems.append(f"bin source for '{var}' changed ('{saved_sources[var]}' → '{cur_src}')")
+
     if problems:
         raise ValueError(
             f"[{seg}] Reused model is INCOMPATIBLE with the current config (#40): "
@@ -415,7 +426,7 @@ def validate_reused_model_config(metadata: dict, settings: "PreprocessingSetting
             "for this config, or point --model-path at a model trained on it."
         )
 
-    absent = [k for k in ("multiplier", "model_variables", "bin_edges") if metadata.get(k) is None]
+    absent = [k for k in ("multiplier", "model_variables", "bin_edges", "bin_sources") if metadata.get(k) is None]
     if absent:
         logger.warning(
             f"[{seg}] Reused model predates metadata capture for {absent}; those cannot be validated "

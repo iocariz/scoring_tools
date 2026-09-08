@@ -123,15 +123,34 @@ def registry_grid_collision(root):
 
 
 def source_mapping_guard():
-    metadata = {"multiplier": 7, "model_variables": ["a"], "bin_edges": {"a": [-np.inf, 50, np.inf]}}
+    metadata = {
+        "multiplier": 7,
+        "model_variables": ["a"],
+        "bin_edges": {"a": [-np.inf, 50, np.inf]},
+        "bin_sources": {"a": "old_score"},
+    }
     original, changed = settings(), settings(source="new_score")
-    validate_reused_model_config(metadata, original)
-    validate_reused_model_config(metadata, changed)
     loan = pd.DataFrame({"old_score": [10.0], "new_score": [90.0]})
     old_bin = _apply_binning_from_config(loan, original.bins).a.iloc[0]
     new_bin = _apply_binning_from_config(loan, changed.bins).a.iloc[0]
+    # FIXED (F5): the model metadata now records the raw source column per bin variable
+    # and validate_reused_model_config refuses a changed source (same output name + same
+    # edges over a DIFFERENT raw score maps the same loan to a different bin: 1 -> 2).
+    validate_reused_model_config(metadata, original)  # matching source still passes
+    try:
+        validate_reused_model_config(metadata, changed)
+    except ValueError as exc:
+        source_error = str(exc)
+    else:
+        raise AssertionError("Expected the changed bin source to be refused")
+    assert "bin source" in source_error
+    # Legacy metadata WITHOUT bin_sources keeps the warn-and-proceed posture (same as
+    # models predating the bin_edges pin).
+    legacy = {k: v for k, v in metadata.items() if k != "bin_sources"}
+    validate_reused_model_config(legacy, changed)
     results["source_mapping_guard"] = {
-        "both_configurations_pass": True,
+        "changed_source_refused": True,
+        "legacy_metadata_warns_and_passes": True,
         "old_bin": int(old_bin),
         "new_bin": int(new_bin),
     }

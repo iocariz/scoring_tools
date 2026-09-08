@@ -70,6 +70,8 @@ Location: [src/policy_registry.py:146](/Users/inigo_ocariz_laptop/src/scoring_to
 
 ## F5 — P2: Model compatibility checks omit raw score sources
 
+> **Status: FIXED (2026-09-08).** Model metadata now persists `bin_sources` (bin variable → raw source column), threaded from the run config through `inference_pipeline` into `_save_model_to_disk`, and `validate_reused_model_config` refuses a reused model whose recorded source differs from the current config's `source_col` (same warn-and-proceed posture as pre-pin models for legacy metadata without the field). The V1 policy registry's matching gap was closed in F4 (`PolicyEntry.bin_sources` participates in the grid fingerprint). The reproduction below asserts the refusal and the legacy posture.
+
 Location: [src/persistence.py:400](/Users/inigo_ocariz_laptop/src/scoring_tools/src/persistence.py:400).
 
 **Trigger.** A BinConfig changes source_col while keeping its output name and bin_edges.

@@ -575,3 +575,38 @@ class TestValidateReusedModelConfig:
         loaded = json.loads(p.read_text())
         assert loaded["bin_edges"]["a"][0] == float("-inf")
         validate_reused_model_config(loaded, _settings_stub())  # no raise after round-trip
+
+
+class TestBinSourceValidation:
+    """Audit F5: edges alone don't identify the grid — the raw source column behind
+    each bin variable is persisted and validated on model reuse."""
+
+    @staticmethod
+    def _with_sources(metadata=None, sources=None):
+        md = metadata or _full_metadata()
+        md["bin_sources"] = sources or {"a": "old_score", "b": "score_b"}
+        return md
+
+    @staticmethod
+    def _settings_with_sources(sources=None):
+        s = _settings_stub()
+        sources = sources or {"a": "old_score", "b": "score_b"}
+        for var, src in sources.items():
+            s.bins[var].source_col = src
+        return s
+
+    def test_matching_sources_pass(self):
+        validate_reused_model_config(self._with_sources(), self._settings_with_sources())  # no raise
+
+    def test_changed_source_raises(self):
+        changed = self._settings_with_sources({"a": "new_score", "b": "score_b"})
+        with pytest.raises(ValueError, match="bin source"):
+            validate_reused_model_config(self._with_sources(), changed)
+
+    def test_legacy_metadata_without_sources_warns_and_passes(self):
+        # pre-F5 models carry no bin_sources — warn-and-proceed, same as the bin_edges pin
+        validate_reused_model_config(_full_metadata(), self._settings_with_sources())
+
+    def test_settings_without_source_col_skip_the_check(self):
+        # SimpleNamespace bins lacking source_col (older call sites) must not crash
+        validate_reused_model_config(self._with_sources(), _settings_stub())

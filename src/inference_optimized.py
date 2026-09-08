@@ -1422,6 +1422,7 @@ def _save_model_to_disk(
     model_base_path: str,
     model_variables: list[str] | None = None,
     bin_edges: tuple | None = None,
+    bin_sources: dict | None = None,
 ) -> str:
     """Build metadata, save model with metadata, return path."""
     model_metadata = {
@@ -1453,6 +1454,11 @@ def _save_model_to_disk(
     # the same cell indices onto different score regions. Stored per model_variable, aligned by order.
     if bin_edges is not None and model_variables is not None:
         model_metadata["bin_edges"] = {var: [float(e) for e in edges] for var, edges in zip(model_variables, bin_edges)}
+    # Raw score sources behind each bin variable (audit F5): edges alone don't identify the
+    # grid — the same output name + edges over a DIFFERENT raw score maps applications to
+    # different bins. Persisted so validate_reused_model_config can refuse the mismatch.
+    if bin_sources:
+        model_metadata["bin_sources"] = {str(k): str(v) for k, v in bin_sources.items()}
 
     if weights is not None:
         model_metadata["weight_stats"] = {
@@ -1515,6 +1521,7 @@ def inference_pipeline(
     create_visualizations: bool = True,
     directions: dict[str, int] | None = None,
     z_threshold: float = DEFAULT_Z_THRESHOLD,
+    bin_sources: dict | None = None,
 ):
     """
     Two-step inference pipeline using cross-validation throughout.
@@ -1719,6 +1726,7 @@ def inference_pipeline(
             model_base_path,
             model_variables=variables,
             bin_edges=bins,
+            bin_sources=bin_sources,
         )
 
     # SHAP interpretability (non-blocking)
