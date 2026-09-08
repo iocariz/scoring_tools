@@ -876,6 +876,24 @@ def trace_pareto_frontier(
     usable = grid.usable_risk_mask(risk_num_col, risk_den_col)
     conflicts = [idx for idx, val in (fixed_cells or {}).items() if val == 1 and not usable[idx]]
     if conflicts:
+        # VACUOUS floor cells: a must-accept cell that is entirely absent from THIS
+        # cohort (phantom, zero production) contributes nothing to either side of the
+        # risk ratio — forcing it in is a no-op, not the F8 hazard (production without
+        # risk evidence). This happens legitimately under sequential cutoff ordering:
+        # the floor segment's cohort populates cells this segment's cohort does not.
+        # Drop them from the pins with a warning; cells with REAL production and no
+        # usable risk still fail below.
+        observed = grid.observed if len(grid.observed) == grid.n_cells else np.ones(grid.n_cells, dtype=bool)
+        production_arr = grid.cell_data["oa_amt_h0"].to_numpy(dtype=float)
+        vacuous = [idx for idx in conflicts if not observed[idx] and production_arr[idx] == 0.0]
+        if vacuous:
+            logger.warning(
+                f"Dropping {len(vacuous)} vacuous must-accept cell(s) {vacuous}: unobserved in this "
+                "cohort with zero production (floor policy cells absent from this segment's population)."
+            )
+            fixed_cells = {idx: val for idx, val in fixed_cells.items() if idx not in vacuous}
+            conflicts = [idx for idx in conflicts if idx not in vacuous]
+    if conflicts:
         raise ValueError(
             f"Must-accept cells {conflicts} have no usable risk evidence for {risk_col} (audit F8). "
             "Supply validated risk estimates or revise the floor constraints."

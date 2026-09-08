@@ -111,3 +111,67 @@ def test_empty_frontier_cannot_reenter_unrestricted_legacy_enumeration(booked, m
     monkeypatch.setattr("src.optimization_utils._ga_pareto_fallback", lambda grid, *a, **kw: (pd.DataFrame(), grid, []))
     with pytest.raises(RuntimeError, match="Both MILP and GA produced no solutions"):
         _run_phase(booked, monkeypatch, tmp_path, ["a", "b"])
+
+
+def test_vacuous_phantom_floor_cells_are_dropped_not_fatal():
+    """Sequential cutoff ordering can pin must-accept cells that are entirely ABSENT
+    from this segment's cohort (phantom, zero production). Forcing an empty cell in is
+    a no-op — not the F8 hazard — so the pin is dropped with a warning instead of
+    failing the segment. A must-accept cell with REAL production and no usable risk
+    still fails (guarded by test_fixed_cutoffs_refuse_accepted_cells_with_unknown_risk
+    and the trace-time conflict raise)."""
+    from src.optimization_utils import trace_pareto_frontier
+
+    # 2x2 grid; combo (2,2) never occurs -> phantom cell (observed=False, all zeros)
+    summary = pd.DataFrame(
+        {
+            "a": [1, 1, 2],
+            "b": [1, 2, 1],
+            "oa_amt_h0": [100.0, 150.0, 200.0],
+            "todu_30ever_h6": [1.0, 1.5, 2.0],
+            "todu_amt_pile_h6": [700.0, 1000.0, 1400.0],
+        }
+    )
+    grid_probe = CellGrid.from_summary(summary, ["a", "b"])
+    phantom_idx = grid_probe.cell_index[(2.0, 2.0)]
+    assert not grid_probe.observed[phantom_idx]
+
+    df, grid, masks = trace_pareto_frontier(
+        summary,
+        ["a", "b"],
+        [],
+        multiplier=7.0,
+        indicators=["oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"],
+        n_points=5,
+        show_progress=False,
+        fixed_cells={phantom_idx: 1},  # vacuous must-accept: phantom + zero production
+    )
+    assert not df.empty  # segment survives instead of raising
+    # the phantom pin was dropped: no returned mask accepts the phantom cell
+    assert all(mask[phantom_idx] == 0 for mask in masks)
+
+
+def test_floor_cell_with_production_but_no_risk_still_fails():
+    from src.optimization_utils import trace_pareto_frontier
+
+    full = pd.DataFrame(
+        {
+            "a": [1, 2],
+            "oa_amt_h0": [100.0, 5000.0],
+            "todu_30ever_h6": [1.0, 0.0],
+            "todu_amt_pile_h6": [700.0, 0.0],  # cell 2: production, no usable risk
+        }
+    )
+    grid_probe = CellGrid.from_summary(full, ["a"])
+    bad_idx = grid_probe.cell_index[(2.0,)]
+    with pytest.raises(ValueError, match="no usable risk evidence"):
+        trace_pareto_frontier(
+            full,
+            ["a"],
+            [],
+            multiplier=7.0,
+            indicators=["oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"],
+            n_points=5,
+            show_progress=False,
+            fixed_cells={bad_idx: 1},
+        )
