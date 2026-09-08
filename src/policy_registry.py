@@ -472,7 +472,13 @@ def compare_policies(
     # loans have NaN H6 as observed understates the unobservable share and lets a
     # BETTER verdict slip past the survivorship guard.
     added_set = set(added)
-    h6_complete = cohort_booked["todu_30ever_h6"].notna() & cohort_booked["todu_amt_pile_h6"].notna()
+    # "Observed" requires POSITIVE, FINITE H6 exposure, not merely non-null fields
+    # (audit F2): a 0/0 row is an undefined rate and supplies no evidence about the
+    # cell's risk — counting it as observed let a BETTER verdict slip past the
+    # survivorship guard with ~all challenger demand sitting in evidence-free cells.
+    # 0/0 booked rows are real and prevalent (13% of booked on the current extract).
+    _den = pd.to_numeric(cohort_booked["todu_amt_pile_h6"], errors="coerce")
+    h6_complete = cohort_booked["todu_30ever_h6"].notna() & np.isfinite(_den) & (_den > 0)
     booked_in_added = apply_policy(cohort_booked, variables, added_set) & h6_complete
     observed_added = (
         {tuple(float(row[v]) for v in variables) for _, row in cohort_booked.loc[booked_in_added].iterrows()}

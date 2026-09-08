@@ -207,16 +207,22 @@ def zero_exposure_observability():
     booked = pd.concat([common, removed, zero], ignore_index=True)
     demand = pd.concat([booked, pd.DataFrame({"a": [2] * 1000, "oa_amt_h0": [100.0] * 1000})], ignore_index=True)
     comparison = compare_policies({(0.0,), (1.0,)}, {(0.0,), (2.0,)}, booked, ["a"], 7, cohort_demand=demand)
+    added_share = float(
+        demand.loc[demand.a.eq(2), "oa_amt_h0"].sum() / demand.loc[demand.a.isin([0, 2]), "oa_amt_h0"].sum()
+    )
     results["zero_exposure_observability"] = {
         "verdict": comparison.verdict,
         "reported_unobserved_added_cells": comparison.n_added_cells_unobserved,
         "reported_unobservable_share": comparison.unobservable_added_share,
         "added_cell_positive_h6_exposure": 0,
-        "added_demand_share": float(
-            demand.loc[demand.a.eq(2), "oa_amt_h0"].sum() / demand.loc[demand.a.isin([0, 2]), "oa_amt_h0"].sum()
-        ),
+        "added_demand_share": added_share,
     }
-    assert comparison.verdict == "BETTER" and comparison.unobservable_added_share == 0
+    # FIXED (F2): a 0/0 booked row no longer counts as an observed outcome — the added
+    # cell is unobservable, its ~91% demand share exceeds the survivorship threshold,
+    # and BETTER is blocked (previously verdict=BETTER with unobservable_share=0).
+    assert comparison.verdict == "INCONCLUSIVE"
+    assert comparison.n_added_cells_unobserved == 1
+    assert np.isclose(comparison.unobservable_added_share, added_share)
 
 
 with tempfile.TemporaryDirectory(prefix="scoring-audit-") as temp:

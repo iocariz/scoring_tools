@@ -22,6 +22,8 @@ Location: [src/inference_optimized.py:2094](/Users/inigo_ocariz_laptop/src/scori
 
 ## F2 — P1: Zero exposure defeats the champion/challenger observability guard
 
+> **Status: FIXED (2026-09-08).** The observability mask now requires positive, finite H6 exposure (`todu_amt_pile_h6 > 0`), not merely non-null fields — a 0/0 booked row no longer counts as an observed outcome. The reproduction below asserts the corrected behavior: the added cell is unobservable, its demand share is preserved, and the BETTER verdict is blocked (INCONCLUSIVE with the survivorship message). Trigger prevalence at fix time: 14,642 booked 0/0 rows (13%) in the current direct extract — this finding was live.
+
 Location: [src/policy_registry.py:475](/Users/inigo_ocariz_laptop/src/scoring_tools/src/policy_registry.py:475).
 
 **Trigger.** An added cell has a booked row with H6 numerator=0 and denominator=0, but no positive H6 exposure.
