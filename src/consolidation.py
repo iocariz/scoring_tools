@@ -1478,6 +1478,33 @@ def consolidate_segments(
         "production_ci_upper",
         "risk_ci_lower",
         "risk_ci_upper",
+        # HRI (Harmonized Risk Indicator) — present only when the run carried h_* columns.
+        # NOTE: this whitelist silently drops unknown to_dict keys (the H3 block never
+        # reached the CSV for the same reason), so new metric families must be added here.
+        "actual_hri_pct",
+        "actual_h_num_h6",
+        "actual_h_den_h6",
+        "optimum_hri_pct",
+        "optimum_h_num_h6",
+        "optimum_h_den_h6",
+        "swap_in_hri_pct",
+        "swap_in_h_num_h6",
+        "swap_in_h_den_h6",
+        "swap_out_hri_pct",
+        "swap_out_h_num_h6",
+        "swap_out_h_den_h6",
+        "actual_hri_h3_pct",
+        "actual_h_num_h3",
+        "actual_h_den_h3",
+        "optimum_hri_h3_pct",
+        "optimum_h_num_h3",
+        "optimum_h_den_h3",
+        "swap_in_hri_h3_pct",
+        "swap_in_h_num_h3",
+        "swap_in_h_den_h3",
+        "swap_out_hri_h3_pct",
+        "swap_out_h_num_h3",
+        "swap_out_h_den_h3",
     ]
     df = df[[c for c in column_order if c in df.columns]]
 

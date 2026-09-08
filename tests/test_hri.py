@@ -334,3 +334,24 @@ def test_schema_rejects_negative_hri_and_allows_absent():
     bad["h_num_h6"] = [-1.0]
     with pytest.raises(DataValidationError):
         validate_raw_data(bad, raise_on_error=True)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end consolidation (would have caught the column_order whitelist drop)
+# ---------------------------------------------------------------------------
+
+
+def test_consolidate_segments_carries_hri_to_final_csv(tmp_path):
+    """consolidate_segments ends with a hard-coded column whitelist that silently
+    drops unknown columns — the HRI family must survive it end to end."""
+    from src.consolidation import consolidate_segments
+
+    data_dir = tmp_path / "seg_a" / "data"
+    data_dir.mkdir(parents=True)
+    _summary_csv_df().to_csv(data_dir / "risk_production_summary_table_base.csv", index=False)
+
+    df = consolidate_segments(tmp_path, {"seg_a": {}}, {}, ["_base"], multiplier=7.0, multiplier_h3=4.0)
+    assert "actual_hri_pct" in df.columns
+    assert "optimum_h_den_h6" in df.columns
+    total = df[df["group"] == "TOTAL"].iloc[0]
+    assert total["actual_hri_pct"] == pytest.approx(100 * 4.0 / 400.0)
