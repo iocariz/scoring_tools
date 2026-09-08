@@ -448,3 +448,46 @@ def test_bin_edges_match_guard():
     assert not bin_edges_match(a, {"income_bin": [-inf, 1750.0, inf], "x": [0.0, 1.0]})  # value changed
     assert not bin_edges_match(a, {"income_bin": [-inf, 2000.0, inf]})  # key missing
     assert not bin_edges_match(a, {"income_bin": [-inf, 1000.0, 2000.0, inf], "x": [0.0, 1.0]})  # count changed
+
+
+def test_zero_exposure_added_cell_is_unobservable_and_blocks_better():
+    """Audit F2: a 0/0 booked row (numerator=0, denominator=0) is an undefined rate
+    and must NOT count as an observed outcome — previously it did, letting BETTER
+    slip past the survivorship guard with ~91% of challenger demand in an
+    evidence-free added cell. 0/0 booked rows are real (13% of the current extract)."""
+    common = pd.DataFrame(
+        {
+            "a": [0.0] * 100,
+            "b": 10.0,
+            "oa_amt_h0": 100.0,
+            "todu_30ever_h6": [1.0] * 20 + [0.0] * 80,
+            "todu_amt_pile_h6": 700.0,
+        }
+    )
+    removed = pd.DataFrame(
+        {"a": [1.0] * 100, "b": 10.0, "oa_amt_h0": 100.0, "todu_30ever_h6": 100.0, "todu_amt_pile_h6": 700.0}
+    )
+    zero = pd.DataFrame({"a": [2.0], "b": 10.0, "oa_amt_h0": 100.0, "todu_30ever_h6": 0.0, "todu_amt_pile_h6": 0.0})
+    booked = pd.concat([common, removed, zero], ignore_index=True)
+    demand = pd.concat([booked, pd.DataFrame({"a": [2.0] * 1000, "b": 10.0, "oa_amt_h0": 100.0})], ignore_index=True)
+
+    champion = {(0.0, 10.0), (1.0, 10.0)}
+    challenger = {(0.0, 10.0), (2.0, 10.0)}  # adds the 0/0 cell
+    cmp = compare_policies(champion, challenger, booked, ["a", "b"], 7.0, cohort_demand=demand)
+
+    assert cmp.n_added_cells_unobserved == 1  # 0/0 is not evidence
+    assert cmp.unobservable_added_share == pytest.approx(0.909, abs=0.01)
+    assert cmp.verdict == "INCONCLUSIVE"  # BETTER blocked by the survivorship guard
+    assert "unobservable" in cmp.message
+
+
+def test_positive_exposure_added_cell_still_counts_as_observed():
+    """Complement to the F2 fix: a booked row with REAL exposure (den > 0) in the
+    added cell keeps the cell observed — the guard must not over-block."""
+    cohort = _shared_cohort()
+    champion = {(1.0, 10.0)}
+    challenger = {(1.0, 10.0), (9.0, 10.0)}  # (9,10) HAS booked loans with exposure
+    demand = pd.DataFrame({"a": [1.0] * 50 + [9.0] * 50, "b": 10.0, "oa_amt_h0": 100.0})
+    cmp = compare_policies(champion, challenger, cohort, ["a", "b"], 7.0, cohort_demand=demand)
+    assert cmp.n_added_cells_unobserved == 0
+    assert cmp.unobservable_added_share == pytest.approx(0.0)
