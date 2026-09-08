@@ -54,6 +54,8 @@ Location: [src/pipeline/inference.py:106](/Users/inigo_ocariz_laptop/src/scoring
 
 ## F4 — P2: A changed grid can register under the old policy ID
 
+> **Status: FIXED (2026-09-08).** The policy id now carries a grid fingerprint (`grid_fingerprint`): ordered axis names, each axis's raw source column, its frozen cutpoints, and the accepted-cell set — genuinely different score regions get different ids, so `register_policy`'s idempotent no-op can no longer swallow a changed grid nor promote a stale entry. `PolicyEntry` also persists `bin_sources` (var → raw source column) for transparency, partially closing F5's registry-side gap; legacy entries without the field still load. The reproduction below asserts the corrected behavior. Note: the id scheme changed (12-char grid fingerprint vs 8-char cell hash); no committed registries existed at fix time, so there is no migration.
+
 Location: [src/policy_registry.py:146](/Users/inigo_ocariz_laptop/src/scoring_tools/src/policy_registry.py:146).
 
 **Trigger.** Bin edges change while the accepted integer-cell coordinates remain the same.

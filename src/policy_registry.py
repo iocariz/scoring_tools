@@ -75,6 +75,7 @@ class PolicyEntry:
     status: str = "challenger"  # champion | challenger
     effective_from: str | None = None
     signed_off_by: str | None = None
+    bin_sources: dict = field(default_factory=dict)  # var -> raw source column (grid identity, audit F4/F5)
 
     def accepted_set(self) -> set[Cell]:
         return {tuple(c) for c in self.accepted_cells}
@@ -94,6 +95,7 @@ class PolicyEntry:
             "status": self.status,
             "effective_from": self.effective_from,
             "signed_off_by": self.signed_off_by,
+            "bin_sources": dict(self.bin_sources),
         }
 
     @classmethod
@@ -112,7 +114,42 @@ class PolicyEntry:
             status=d.get("status", "challenger"),
             effective_from=d.get("effective_from"),
             signed_off_by=d.get("signed_off_by"),
+            bin_sources=dict(d.get("bin_sources") or {}),
         )
+
+
+def grid_fingerprint(
+    variables: list[str] | tuple[str, ...],
+    bin_edges: dict,
+    bin_sources: dict,
+    accepted_set_hash: str,
+) -> str:
+    """Fingerprint a policy TOGETHER WITH its grid definition (audit F4).
+
+    Hashing only the accepted integer coordinates let a changed grid (different
+    cutpoints, or a different raw score binned under the same output name) register
+    under the OLD policy id — ``register_policy`` then no-ops and can even promote
+    the stale entry. The id now covers: ordered axis names, each axis's raw source
+    column, its frozen cutpoints, and the accepted-cell set — genuinely different
+    score regions get different policy ids.
+    """
+    import hashlib
+
+    payload = json.dumps(
+        {
+            "variables": list(variables),
+            "axes": {
+                str(v): {
+                    "source": str(bin_sources.get(v, "")),
+                    "edges": [float(e) for e in bin_edges.get(v, [])],
+                }
+                for v in variables
+            },
+            "cells": accepted_set_hash,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def build_policy_entry(
@@ -142,12 +179,19 @@ def build_policy_entry(
     headline = extract_headline(seg_output_dir, settings, suffix)
     accepted_set, _ = load_frozen_policy(seg_data_dir, variables, suffix)
 
+    # Grid identity for the policy id (audit F4) + stored for transparency (F5's
+    # registry gap): the raw source column behind each output axis.
+    bin_sources = {var: str(getattr(bc, "source_col", "") or "") for var, bc in (settings.bins or {}).items()}
+    bin_sources = {var: src for var, src in bin_sources.items() if src}
+    fingerprint = grid_fingerprint(variables, bin_edges, bin_sources, headline.accepted_set_hash)
+
     return PolicyEntry(
-        policy_id=f"{headline.segment}-{headline.accepted_set_hash[:8]}",
+        policy_id=f"{headline.segment}-{fingerprint[:12]}",
         segment=headline.segment,
         scenario=headline.scenario,
         variables=tuple(variables),
         bin_edges=bin_edges,
+        bin_sources=bin_sources,
         accepted_cells=tuple(sorted(accepted_set)),
         accepted_set_hash=headline.accepted_set_hash,
         headline={
