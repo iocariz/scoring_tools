@@ -359,6 +359,34 @@ A complementary 3-month metric (**b2_ever_h3**) uses `multiplier_h3 = 4` and the
 
 Risk is always non-negative (clipped at 0). Division by zero exposure yields NaN, indicating cells with no volume.
 
+### Harmonized Risk Indicator (HRI)
+
+A second risk metric computed and reported **beside** b2 everywhere (summary tables Main + MR, segment HTML, consolidated CSV/Excel/HTML, backtest):
+
+```
+hri_h6 = h_num_h6 / h_den_h6        (no multiplier)
+hri_h3 = h_num_h3 / h_den_h3
+```
+
+The `h_*` source columns are **optional**: present in newer extracts, absent in older ones. When missing, they are stripped with one warning and HRI simply doesn't appear (registry + fail-soft gates in `src/risk_indicators.py`). Repesca/swap-in HRI shows "—" when no model fills it — rejected loans carry no HRI outcomes.
+
+#### Selecting the indicator to optimize
+
+By default the optimizer targets b2. To optimize on HRI instead:
+
+```toml
+[preprocessing]
+risk_indicator = "hri_h6"   # default: "b2_ever_h6"
+optimum_hri = 1.8           # target in HRI-% units — REQUIRED in hri mode
+```
+
+Key points:
+
+- `optimum_risk` (b2 units, ×7 multiplier) and `optimum_hri` (plain ratio) are **separate fields on different scales** — never reuse one as the other. `risk_step` and `--resimulate` targets follow the *selected* indicator's units.
+- In hri mode the MILP constraint, Pareto ordering and scenario selection run on `hri_h6`; an HRI model pair (rate + denominator) trains alongside the b2 models to fill repesca cells, and reject-inference uplift + stress apply to `h_num_h6` exactly as they do to the b2 numerator. Both indicators stay reported.
+- Hard guardrails (never silent degradation): missing `h_*` columns → load error; `--model-path`/`--reuse-models` refused; GA/legacy fallbacks refused; the MR period keeps the frozen main mask; b2-basis bootstrap/selection CIs are skipped with a warning (HRI has no CI yet).
+- Governance: the knob and target are recorded in run lineage and the workbook's assumptions registry; flipping `risk_indicator` changes cutoffs and requires validation like any Expert toggle.
+
 ### N-Dimensional Binning
 
 Each scoring variable is discretized into ordered bins. Two methods are available:

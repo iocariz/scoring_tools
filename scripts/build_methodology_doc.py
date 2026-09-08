@@ -153,7 +153,7 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
     aud_run.font.color.rgb = MUTED
 
     doc.add_paragraph()
-    meta_table = doc.add_table(rows=6, cols=2)
+    meta_table = doc.add_table(rows=7, cols=2)
     meta_table.style = "Light List Accent 1"
     meta_rows = [
         (
@@ -164,6 +164,11 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         ("Status", "For management and internal review"),
         ("Review cadence", "On material methodology change; annual otherwise"),
         ("Primary risk metric", "b2_ever_h6 — annualised, exposure-weighted 6-month vintage delinquency rate"),
+        (
+            "Harmonized Risk Indicator",
+            "hri_h6 = h_num_h6 / h_den_h6 (no multiplier) — reported beside b2 everywhere; "
+            "selectable as the optimisation target via risk_indicator/optimum_hri",
+        ),
         ("Decision artefact", "Pareto-efficient menu of cutoff policies with bootstrap CIs and out-of-time validation"),
     ]
     for i, (k, v) in enumerate(meta_rows):
@@ -506,6 +511,38 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         "as part of grid aggregation — the per-bin sums are multiplied by annual_coef (identical to "
         "scaling each row first) — so risk and production are comparable across runs of different "
         "lengths and across segments observed over different windows.",
+    )
+
+    _add_heading(doc, "5.4 The Harmonized Risk Indicator (HRI)", 2)
+    _add_paragraph(
+        doc,
+        "A second risk metric is computed and reported beside b2 across every surface (summary "
+        "tables, segment and consolidated reports, backtest): the Harmonized Risk Indicator, a "
+        "plain ratio with no annualisation multiplier:",
+    )
+    _add_formula(doc, "hri_h6 = h_num_h6 / h_den_h6        (hri_h3 analogously)")
+    _add_bullets(
+        doc,
+        [
+            "The h_* source columns are optional: extracts without them simply run without HRI (one warning, no other change).",
+            "Aggregation is identical to b2: numerators and denominators are summed and the ratio is recomputed — rates are never averaged.",
+            "Swap-in (repesca) HRI is shown as '—' unless HRI is the optimisation target: rejected applications carry no HRI outcomes, and no model invents them in display-only mode.",
+        ],
+    )
+    _add_paragraph(
+        doc,
+        "The optimisation target is selectable: risk_indicator = 'b2_ever_h6' (default) or 'hri_h6'. "
+        "In HRI mode the MILP risk budget, the efficient-frontier ordering and the scenario selection "
+        "all run on hri_h6 against a dedicated target (optimum_hri, expressed in HRI-% units — a "
+        "different scale from optimum_risk, which carries the x7 annualisation). A dedicated HRI "
+        "model pair (rate + denominator) is trained to price rejected applications, and the "
+        "reject-inference uplift and stress conservatism then apply to the HRI numerator exactly as "
+        "they do to b2. Both indicators remain reported side by side regardless of which is "
+        "targeted. Guardrails: the run fails loudly if the h_* columns are missing, pre-trained "
+        "model reuse is refused, the out-of-time (MR) check keeps the frozen main-period cutoffs, "
+        "and the b2-basis bootstrap confidence intervals are skipped with an explicit warning "
+        "(HRI confidence intervals are a documented pending item). Switching the target indicator "
+        "changes cutoffs and is governed like any material methodology change.",
     )
 
     # ====================================================================
