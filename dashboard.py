@@ -252,16 +252,24 @@ def load_table(csv_path: Path) -> html.Div:
     try:
         df = pd.read_csv(csv_path)
 
-        # Format numeric columns for better display.
-        # Risk (%) is already in percentage form (1.5 means 1.5%).
-        # Production (%) is a raw ratio (0.95 means 95%).
+        # Drop unnamed / fully-empty columns (some writers leave trailing commas).
+        df = df.loc[:, ~df.columns.str.startswith("Unnamed")]
+        df = df.dropna(axis=1, how="all")
+
+        # Format numeric columns for display. ALL "(%)" columns hold percentage
+        # points (the Actual row's Production (%) is literally 100.0), so they
+        # take a % suffix — never a `:%` format, which would multiply by 100 again.
         for col in df.select_dtypes(include=["float64"]).columns:
-            if "Risk" in col and "%" in col:
-                df[col] = df[col].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
-            elif "Production" in col and "%" in col:
-                df[col] = df[col].apply(lambda x: f"{x:.2%}" if pd.notna(x) else "")
-            elif "Production" in col and "€" in col:
+            if "€" in col or col.startswith("production_ci"):
                 df[col] = df[col].apply(lambda x: f"€{x:,.0f}" if pd.notna(x) else "")
+            elif "%" in col:
+                df[col] = df[col].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
+            elif col.startswith(("todu_30ever", "todu_amt_pile")):
+                df[col] = df[col].apply(lambda x: f"{x:,.0f}" if pd.notna(x) else "")
+            elif col.startswith("risk_ci"):
+                df[col] = df[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
+            else:
+                df[col] = df[col].apply(lambda x: f"{x:,.2f}" if pd.notna(x) else "")
 
         return dbc.Table.from_dataframe(df, striped=True, bordered=True, hover=True, size="sm", style=TABLE_STYLE)
     except Exception as e:
@@ -439,7 +447,7 @@ def create_comparison_charts(df_comp: pd.DataFrame) -> html.Div:
                 fig_production.add_annotation(
                     x=row["Scenario"],
                     y=y_pos,
-                    text=f"\u0394 {delta:+.1%}",
+                    text=f"\u0394 {delta:+.1f}pp",
                     showarrow=False,
                     yshift=15,
                     font=dict(size=10, color=color, weight="bold"),
@@ -452,18 +460,17 @@ def create_comparison_charts(df_comp: pd.DataFrame) -> html.Div:
 
     # Format display DataFrame
     display_df = df_comp.drop(columns=["Scenario_Order"], errors="ignore").copy()
+    # All values are percentage points (Production (%) reads 100.0 for the Actual
+    # portfolio) — use a % / pp suffix, never `:%` which multiplies by 100 again.
     for col in ["Main_Risk", "MR_Risk"]:
         if col in display_df.columns:
             display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "-")
     for col in ["Main_Prod_Pct", "MR_Prod_Pct"]:
         if col in display_df.columns:
-            display_df[col] = display_df[col].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "-")
-    for col in ["Risk_Delta"]:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "-")
+    for col in ["Risk_Delta", "Prod_Delta"]:
         if col in display_df.columns:
             display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}pp" if pd.notna(x) else "-")
-    for col in ["Prod_Delta"]:
-        if col in display_df.columns:
-            display_df[col] = display_df[col].apply(lambda x: f"{x:+.1%}" if pd.notna(x) else "-")
 
     return html.Div(
         [
@@ -918,15 +925,16 @@ def create_kpi_row(main_csv_path: Path, mr_csv_path: Path, comparison_label: str
     except Exception as e:
         logger.warning(f"Error loading KPI data: {e}")
 
-    # Build cards — risk is already in % form (1.5 = 1.5%), production is ratio (0.95 = 95%)
+    # Build cards — Risk (%) and Production (%) are both percentage points
+    # (the Actual row's Production (%) is 100.0), so format with a % suffix.
     risk_val = f"{main_risk:.2f}%" if main_risk is not None else "N/A"
     risk_delta = (
         f"{main_risk - mr_risk:+.2f}pp {comparison_label}" if main_risk is not None and mr_risk is not None else ""
     )
 
-    prod_pct_val = f"{main_prod_pct:.1%}" if main_prod_pct is not None else "N/A"
+    prod_pct_val = f"{main_prod_pct:.1f}%" if main_prod_pct is not None else "N/A"
     prod_pct_delta = (
-        f"{main_prod_pct - mr_prod_pct:+.1%} {comparison_label}"
+        f"{main_prod_pct - mr_prod_pct:+.1f}pp {comparison_label}"
         if main_prod_pct is not None and mr_prod_pct is not None
         else ""
     )
@@ -1857,6 +1865,54 @@ def _format_nd_prefix_label(prefix_values: tuple[Any, ...], prefix_vars: list[st
     )
 
 
+# Three-state acceptance colorscale: 0 = reject (red), 0.5 = unobserved (grey),
+# 1 = accept (green) — a cell with no records in the cohort is neither accepted
+# nor rejected, and rendering it red fragmented the staircase visual.
+_GRID_COLORSCALE = [
+    [0.0, "#ffcccc"],
+    [1 / 3, "#ffcccc"],
+    [1 / 3, "#e9ecef"],
+    [2 / 3, "#e9ecef"],
+    [2 / 3, "#ccffcc"],
+    [1.0, "#ccffcc"],
+]
+
+
+def _frontier_shapes(acc: np.ndarray, color: str = "#1B2A4A") -> list[dict[str, Any]]:
+    """Line shapes tracing the accept/reject staircase over a 2D acceptance array.
+
+    ``acc``: 1 accept / 0 reject / NaN unobserved, in display row/column order.
+    Grey (unobserved) cells are imputed to a side from the monotone structure —
+    the same rule as the consolidated workbook's cutoff grids — so the frontier
+    stays a CONTINUOUS staircase instead of fragmenting around them. An edge is
+    drawn wherever an accept-side cell faces a non-accept-side neighbour (or the
+    grid border). Coordinates are category indices, valid on categorical axes.
+    """
+    from src.consolidation import _impute_monotone_accept
+
+    bnd = _impute_monotone_accept(np.asarray(acc, dtype=float))
+    nr, nc = bnd.shape
+
+    def is_acc(r: int, c: int) -> bool:
+        return 0 <= r < nr and 0 <= c < nc and bnd[r, c] == 1
+
+    line = dict(color=color, width=3)
+    shapes: list[dict[str, Any]] = []
+    for r in range(nr):
+        for c in range(nc):
+            if not is_acc(r, c):
+                continue
+            if not is_acc(r - 1, c):
+                shapes.append(dict(type="line", x0=c - 0.5, x1=c + 0.5, y0=r - 0.5, y1=r - 0.5, line=line))
+            if not is_acc(r + 1, c):
+                shapes.append(dict(type="line", x0=c - 0.5, x1=c + 0.5, y0=r + 0.5, y1=r + 0.5, line=line))
+            if not is_acc(r, c - 1):
+                shapes.append(dict(type="line", x0=c - 0.5, x1=c - 0.5, y0=r - 0.5, y1=r + 0.5, line=line))
+            if not is_acc(r, c + 1):
+                shapes.append(dict(type="line", x0=c + 0.5, x1=c + 0.5, y0=r - 0.5, y1=r + 0.5, line=line))
+    return shapes
+
+
 def _build_nd_slice_grid_figure(
     summary_data: pd.DataFrame,
     variables: list[str],
@@ -1900,8 +1956,10 @@ def _build_nd_slice_grid_figure(
     pinned_reject_y: list[str] = []
     pinned_reject_keys: list[str] = []
 
+    acc_rows: list[list[float]] = []  # 1/0/NaN acceptance for frontier tracing (NaN = unobserved)
     for y_value, y_label in zip(y_values, y_labels, strict=False):
-        row_values: list[int] = []
+        row_values: list[float] = []
+        row_acc: list[float] = []
         row_customdata: list[list[Any]] = []
         for x_value, x_label in zip(x_values, x_labels, strict=False):
             # Build full combo tuple in variable order
@@ -1910,11 +1968,13 @@ def _build_nd_slice_grid_figure(
             )
             idx = grid.cell_index.get(combo)
             if idx is None:
-                row_values.append(0)
+                row_values.append(0.5)
+                row_acc.append(np.nan)
                 row_customdata.append(["?", "N/A", "N/A", "N/A", "N/A", 0, 0, 0])
                 continue
             cell_key = ",".join(str(int(value)) for value in combo)
             cell_row = grid.cell_data.iloc[idx]
+            cell_observed = bool(grid.observed[idx]) if len(grid.observed) > idx else True
             booked_prod = _coerce_float(cell_row.get("oa_amt_h0_boo"))
             rep_prod = _coerce_float(cell_row.get("oa_amt_h0_rep"))
             risk_num = _coerce_float(cell_row.get("todu_30ever_h6_boo"))
@@ -1931,11 +1991,14 @@ def _build_nd_slice_grid_figure(
             decision_delta = "Changed" if current_state != reference_state else "Reference"
             pin_state = _format_pin_state(pins.get(cell_key))
 
-            row_values.append(int(current_mask_arr[idx]))
+            # Unobserved (phantom) cells render grey — no records in the cohort, so
+            # neither accepted nor rejected — and stay out of the frontier tracing.
+            row_values.append(float(current_mask_arr[idx]) if cell_observed else 0.5)
+            row_acc.append(float(current_mask_arr[idx]) if cell_observed else np.nan)
             row_customdata.append(
                 [
                     cell_key,
-                    current_state,
+                    current_state if cell_observed else f"{current_state} (no records)",
                     reference_state,
                     decision_delta,
                     pin_state,
@@ -1959,6 +2022,7 @@ def _build_nd_slice_grid_figure(
                 pinned_reject_keys.append(cell_key)
 
         z_values.append(row_values)
+        acc_rows.append(row_acc)
         customdata.append(row_customdata)
 
     hover_fixed = f"<br>{fixed_label}" if fixed_label else ""
@@ -1969,7 +2033,7 @@ def _build_nd_slice_grid_figure(
             y=y_labels,
             zmin=0,
             zmax=1,
-            colorscale=[[0, "#ffcccc"], [1, "#ccffcc"]],
+            colorscale=_GRID_COLORSCALE,
             showscale=False,
             xgap=1,
             ygap=1,
@@ -2030,6 +2094,7 @@ def _build_nd_slice_grid_figure(
         margin=dict(l=45, r=10, t=10, b=40),
         clickmode="event+select",
         showlegend=False,
+        shapes=_frontier_shapes(np.array(acc_rows)),
     )
     apply_plotly_style(fig, height=250)
     return fig
@@ -3543,14 +3608,17 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
         pinned_accept_x, pinned_accept_y, pinned_accept_keys = [], [], []
         pinned_reject_x, pinned_reject_y, pinned_reject_keys = [], [], []
 
+        acc_rows = []  # 1/0/NaN acceptance for frontier tracing (NaN = unobserved)
         for prefix_combo, prefix_label in zip(prefix_combos, prefix_labels, strict=False):
             row_values = []
+            row_acc = []
             row_customdata = []
             for last_value, last_label in zip(last_values, last_labels, strict=False):
                 combo = prefix_combo + (last_value,)
                 idx = grid.cell_index[combo]
                 cell_key = ",".join(str(int(value)) for value in combo)
                 cell_row = grid.cell_data.iloc[idx]
+                cell_observed = bool(grid.observed[idx]) if len(grid.observed) > idx else True
                 booked_prod = _coerce_float(cell_row.get("oa_amt_h0_boo"))
                 rep_prod = _coerce_float(cell_row.get("oa_amt_h0_rep"))
                 risk_num = _coerce_float(cell_row.get("todu_30ever_h6_boo"))
@@ -3570,11 +3638,14 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
                     f"{var}: {_format_bin_label(value)}" for var, value in zip(variables, combo, strict=False)
                 )
 
-                row_values.append(int(mask_arr[idx]))
+                # Unobserved (phantom) cells render grey — no records in the cohort, so
+                # neither accepted nor rejected — and stay out of the frontier tracing.
+                row_values.append(float(mask_arr[idx]) if cell_observed else 0.5)
+                row_acc.append(float(mask_arr[idx]) if cell_observed else np.nan)
                 row_customdata.append(
                     [
                         combo_label,
-                        current_state,
+                        current_state if cell_observed else f"{current_state} (no records)",
                         reference_state,
                         decision_delta,
                         pin_state,
@@ -3599,6 +3670,7 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
                     pinned_reject_keys.append(cell_key)
 
             z_values.append(row_values)
+            acc_rows.append(row_acc)
             hover_customdata.append(row_customdata)
 
         fig_heatmap = go.Figure(
@@ -3608,7 +3680,7 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
                 y=prefix_labels,
                 zmin=0,
                 zmax=1,
-                colorscale=[[0, "#ffcccc"], [1, "#ccffcc"]],
+                colorscale=_GRID_COLORSCALE,
                 showscale=False,
                 xgap=1,
                 ygap=1,
@@ -3670,6 +3742,7 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
             margin=dict(l=80, r=20, t=30, b=60),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
             clickmode="event+select",
+            shapes=_frontier_shapes(np.array(acc_rows)),
         )
         apply_plotly_style(fig_heatmap, height=min(900, max(380, len(prefix_labels) * 28)))
 
