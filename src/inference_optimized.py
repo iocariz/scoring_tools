@@ -336,9 +336,14 @@ def process_dataset(
     processed_data = transform_variables(processed_data, variables)
 
     # ---- 3. Calculate target variable from aggregated indicators ----
-    processed_data[target_var] = calculate_target_metric(
-        processed_data, multiplier, "todu_30ever_h6", "todu_amt_pile_h6"
-    )
+    # The numerator/denominator pair follows the target indicator (registry-driven):
+    # b2_ever_h6 -> todu pair (default), hri_h6 -> h_num/h_den (multiplier=1 passed by caller).
+    from src.risk_indicators import RISK_INDICATORS
+
+    _spec = RISK_INDICATORS.get(target_var)
+    _num_col = _spec.num_col if _spec is not None else "todu_30ever_h6"
+    _den_col = _spec.den_col if _spec is not None else "todu_amt_pile_h6"
+    processed_data[target_var] = calculate_target_metric(processed_data, multiplier, _num_col, _den_col)
 
     # ---- 4. Filter missing targets ----
     processed_data = processed_data.dropna(subset=[target_var]).copy()
@@ -432,8 +437,13 @@ def compute_outlier_stats(processed_data: pd.DataFrame, target_var: str) -> tupl
     return (float(target_median), target_mad)
 
 
-def _get_regression_weights(processed_data: pd.DataFrame) -> pd.Series | None:
-    for col in ("todu_amt_pile_h6", "oa_amt_h0", "n_observations"):
+def _get_regression_weights(processed_data: pd.DataFrame, target_var: str = "b2_ever_h6") -> pd.Series | None:
+    # Exposure weights follow the target indicator's denominator (h_den_h6 for the HRI fit).
+    if target_var == "hri_h6":
+        priority = ("h_den_h6", "oa_amt_h0", "n_observations")
+    else:
+        priority = ("todu_amt_pile_h6", "oa_amt_h0", "n_observations")
+    for col in priority:
         if col in processed_data.columns:
             w = processed_data[col].copy()
             # Validate: non-negativity, clip extremes, normalize (#20)
@@ -795,8 +805,8 @@ def _select_feature_set_cv(
             X_val = prepare_model_input(val_agg, features, model_template)
             y_train, y_val = train_agg[target_var], val_agg[target_var]
 
-            w_train = _get_regression_weights(train_agg)
-            w_val = _get_regression_weights(val_agg)
+            w_train = _get_regression_weights(train_agg, target_var)
+            w_val = _get_regression_weights(val_agg, target_var)
 
             model_clone = clone(model_template)
             if isinstance(model_template, HurdleRegressor) and "_hurdle_r" in raw_train.columns:
@@ -969,7 +979,7 @@ def compute_cell_level_ci(
 
         X_train = prepare_model_input(train_agg, final_features, model_template)
         y_train = train_agg[target_var]
-        w_train = _get_regression_weights(train_agg)
+        w_train = _get_regression_weights(train_agg, target_var)
 
         model_clone = clone(model_template)
         model_clone.fit(X_train, y_train, sample_weight=w_train)
@@ -1027,8 +1037,14 @@ def _prepare_pipeline_data(
 
     booked_data = data[data[Columns.STATUS_NAME] == StatusName.BOOKED.value].copy()
 
-    # We remove records where the demographic variables or target indicators are null
-    req_cols = variables + indicators
+    # We remove records where the demographic variables or target indicators are null.
+    # The HRI source columns are EXCLUDED from this filter: they are sparse BY DESIGN
+    # (h_num_* only on defaulted loans, h_den_* only where accrued), so requiring them
+    # non-null collapsed training to the ~1.7k defaulted loans (78,723 -> 743 records)
+    # and silently poisoned the b2 model the moment the h_* columns joined `indicators`.
+    from src.constants import HRI_OPTIONAL_COLUMNS
+
+    req_cols = variables + [c for c in indicators if c not in HRI_OPTIONAL_COLUMNS]
     booked_data = booked_data.dropna(subset=req_cols)
 
     # Per-loan hurdle training targets (audit #6). `_hurdle_r` = per-loan b2 ratio (= 0 for
@@ -1265,11 +1281,15 @@ def evaluate_holdout_rmse(
             m.fit(
                 prepare_model_input(train_agg, features, m),
                 train_agg[target_var],
-                sample_weight=_get_regression_weights(train_agg),
+                sample_weight=_get_regression_weights(train_agg, target_var),
             )
         pred = m.predict(prepare_model_input(test_agg, features, m))
         return float(
-            np.sqrt(mean_squared_error(test_agg[target_var], pred, sample_weight=_get_regression_weights(test_agg)))
+            np.sqrt(
+                mean_squared_error(
+                    test_agg[target_var], pred, sample_weight=_get_regression_weights(test_agg, target_var)
+                )
+            )
         )
     except Exception:
         logger.debug("Winner held-out RMSE evaluation failed", exc_info=True)
@@ -1542,6 +1562,11 @@ def inference_pipeline(
         - model_path: Path to saved model (if save_model=True)
         - visualization: Plotly figure (if create_visualizations=True)
     """
+    if include_hurdle and target_var != "b2_ever_h6":
+        # The per-loan hurdle candidate hardcodes the todu default/exposure columns —
+        # it is not offered for non-b2 targets (e.g. the HRI fit).
+        logger.warning(f"include_hurdle disabled: the hurdle candidate only supports target b2_ever_h6 ({target_var}).")
+        include_hurdle = False
     logger.info("=" * 80)
     logger.info("INFERENCE PIPELINE (CV-based)")
     logger.info("=" * 80)
@@ -1558,7 +1583,7 @@ def inference_pipeline(
     final_agg = process_dataset(
         all_data, bins, variables, indicators, target_var, multiplier, var_reg, z_threshold=z_threshold
     )
-    weights_all = _get_regression_weights(final_agg)
+    weights_all = _get_regression_weights(final_agg, target_var)
     # Zero mass for the hurdle (#6): measured PER-LOAN on the default-amount numerator, where real
     # zeros exist (non-defaulting loans). The bin-aggregated target ratio is ~never exactly 0, so
     # the old post-aggregation diagnostic was misleading. This per-loan value is what makes (or
@@ -2077,11 +2102,50 @@ def compute_pre_reject_inference_data(
 
     repesca_summary = _aggregate(data_demand, StatusName.REJECTED.value, RejectReason.SCORE.value)
 
-    from src.models import calculate_risk_values
+    from src.models import calculate_hri_values, calculate_risk_values
 
     repesca_summary = calculate_risk_values(
         repesca_summary, final_model, reg_todu_amt_pile, risk_vars, stressor, final_features, multiplier=multiplier
-    )[variables + indicators]
+    )
+
+    # HRI repesca fill — only when the run trained the HRI model pair
+    # (risk_indicator='hri_h6'); display-only runs keep raw (NaN/0) repesca HRI.
+    hri_inference = risk_inference.get("hri_inference")
+    hri_den_model = risk_inference.get("hri_den_model")
+    if hri_inference is not None and hri_den_model is not None:
+        # Guard against a signal-free HRI fit: the HRI numerator is sparse (few default
+        # events), so the rate model can have CV R² <= 0 and extrapolate absurd rates
+        # onto repesca coordinates outside the booked range. With no signal, the honest
+        # repesca prior is the booked EXPOSURE-WEIGHTED MEAN rate (flat prior) — the RI
+        # uplift downstream then carries the rejected-are-worse assumption, exactly as
+        # it does for b2. With signal, use the model capped at the worst observed bin.
+        hri_cv = float(hri_inference["best_model_info"].get("cv_mean_r2", 0.0) or 0.0)
+        train_agg = hri_inference.get("all_data")
+        if hri_cv <= 0.0 and train_agg is not None and {"h_num_h6", "h_den_h6"} <= set(train_agg.columns):
+            flat_rate = float(train_agg["h_num_h6"].sum() / max(train_agg["h_den_h6"].sum(), 1e-9))
+            logger.warning(
+                f"HRI rate model has no predictive signal (CV R2={hri_cv:.4f}) — using the booked "
+                f"exposure-weighted mean rate ({flat_rate:.4%}) as a flat repesca prior instead of "
+                "model extrapolation. RI uplift still applies on top."
+            )
+            preds_den = np.clip(hri_den_model.predict(repesca_summary[["oa_amt"]]), 0, None)
+            repesca_summary["h_den_h6"] = preds_den
+            repesca_summary["hri_h6"] = stressor * flat_rate
+            repesca_summary["h_num_h6"] = repesca_summary["hri_h6"] * repesca_summary["h_den_h6"]
+        else:
+            hri_cap = None
+            if train_agg is not None and "hri_h6" in getattr(train_agg, "columns", []):
+                hri_cap = float(train_agg["hri_h6"].max())
+            repesca_summary = calculate_hri_values(
+                repesca_summary,
+                hri_inference["best_model_info"]["model"],
+                hri_den_model,
+                risk_vars,
+                stressor,
+                hri_inference["features"],
+                rate_cap=hri_cap,
+            )
+    repesca_summary = repesca_summary[[c for c in variables + indicators if c in repesca_summary.columns]]
 
     # Apply per-bin stress factors when provided (scalar stressor is 1.0 in this case)
     if per_bin_stress is not None and not per_bin_stress.empty:
@@ -2100,11 +2164,14 @@ def compute_pre_reject_inference_data(
         logger.info(
             f"Swap-in per-bin stress: min={sf.min():.4f}, avg={sf.mean():.4f}, max={sf.max():.4f}, bins={len(sf)}"
         )
-        # NOTE: h_num_h6/h_num_h3 (HRI numerators) are deliberately NOT stressed while HRI
-        # is display-only (see the matching note in reject_inference.py).
+        # h_num_h6 (HRI numerator) is stressed ONLY when the HRI model pair filled it
+        # (risk_indicator='hri_h6'); display-only runs keep realized HRI unstressed
+        # (see the matching note in reject_inference.py).
         repesca_summary["todu_30ever_h6"] *= sf
         if "todu_30ever_h3" in repesca_summary.columns:
             repesca_summary["todu_30ever_h3"] *= sf
+        if hri_inference is not None and "h_num_h6" in repesca_summary.columns:
+            repesca_summary["h_num_h6"] *= sf
         # Keep stress_factor_applied for downstream diagnostics
         repesca_summary = repesca_summary.rename(columns={"stress_factor": "stress_factor_applied"})
     else:
@@ -2245,6 +2312,9 @@ def run_optimization_pipeline(
             acceptance_decay_half_life_months=reject_acceptance_decay_half_life_months,
             acceptance_date_col=reject_acceptance_date_col,
             apply_h3_multiplier=reject_apply_h3_multiplier,
+            # HRI numerator uplifted only when the HRI model pair filled it
+            # (risk_indicator='hri_h6'); display-only runs keep realized HRI.
+            apply_hri_multiplier="hri_inference" in risk_inference,
             no_demand_anchor_percentile=reject_no_demand_anchor_percentile,
             confidence_scale=reject_confidence_scale,
         )

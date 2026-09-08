@@ -167,7 +167,15 @@ def run_scenario_analysis(
     # selection_risk_basis="ci_upper" (Phase C), the source of the
     # per-candidate CI the noise-margin selection rule consumes.
     sel_boot = None
-    if grid is not None and pareto_masks:
+    if settings.risk_indicator != "b2_ever_h6":
+        # The selection-aware bootstrap simulates re-selection on the b2 basis — with a
+        # different target indicator its diagnostics (and the ci_upper rule below) would
+        # describe the WRONG selection. Skip loudly rather than compute a wrong number.
+        logger.warning(
+            f"[{segment}] selection-aware bootstrap skipped: it operates on the b2 basis and "
+            f"risk_indicator={settings.risk_indicator} — selection CIs are unavailable in this mode."
+        )
+    elif grid is not None and pareto_masks:
         from src.selection_uncertainty import selection_aware_bootstrap
 
         sel_boot = selection_aware_bootstrap(
@@ -232,6 +240,7 @@ def run_scenario_analysis(
         multiplier=settings.multiplier,
         total_demand=total_demand,
         target_sol_fac=target_sol_fac,
+        risk_col=settings.selected_indicator.output_col,
     )
 
     suffix = f"_{scenario_name}"
@@ -246,9 +255,13 @@ def run_scenario_analysis(
         return pd.DataFrame()
     selected_b2 = opt_sol.iloc[0].get("b2_ever_h6", float("nan"))
     selected_prod = opt_sol.iloc[0].get("oa_amt_h0", float("nan"))
+    _target_note = ""
+    if settings.risk_indicator != "b2_ever_h6":
+        _sel_target = opt_sol.iloc[0].get(settings.selected_indicator.output_col, float("nan"))
+        _target_note = f" | selected {settings.risk_indicator}={_sel_target:.2f}%"
     logger.info(
         f"[{segment}] Scenario {scenario_name} | risk_threshold={current_risk:.2f}% | "
-        f"selected b2={selected_b2:.2f}% | production={selected_prod:,.0f}"
+        f"selected b2={selected_b2:.2f}% | production={selected_prod:,.0f}" + _target_note
     )
 
     inv_var1 = settings.variables[1] in settings.inv_vars if len(settings.variables) > 1 else False
@@ -550,8 +563,13 @@ def run_scenario_analysis(
 
 
 def build_scenario_list(settings: PreprocessingSettings, use_fixed_cutoffs: bool) -> list[tuple[float, str]]:
-    """Build the list of (risk_threshold, name) scenarios to run."""
-    base_optimum_risk = settings.optimum_risk
+    """Build the list of (risk_threshold, name) scenarios to run.
+
+    Thresholds (and risk_step) are expressed in the SELECTED indicator's units:
+    b2-% by default, HRI-% when risk_indicator='hri_h6' (then base = optimum_hri).
+    --resimulate targets are interpreted on the same basis.
+    """
+    base_optimum_risk = settings.selected_target
     scenario_step = settings.risk_step
     segment = settings.segment_filter
 

@@ -473,16 +473,24 @@ def milp_solve_cutoffs(
     monotonicity_relaxation_enabled: bool = False,
     monotonicity_uncertainty_min_exposure: float = 0.0,
     monotonicity_uncertainty_z_threshold: float = 0.0,
+    risk_num_col: str = "todu_30ever_h6",
+    risk_den_col: str = "todu_amt_pile_h6",
+    swapin_risk_multiplier: float | None = None,
 ) -> np.ndarray | None:
     """Solve single MILP: maximize production subject to risk budget + monotonicity.
 
     Args:
         grid: CellGrid with cell_data containing per-cell KPI columns.
-        target_risk: Max allowed risk (percentage, e.g. 1.5 means 1.5%).
+        target_risk: Max allowed risk (percentage, in the TARGET indicator's units).
         inv_vars: Variables with inverted risk ordering.
-        multiplier: Risk multiplier (typically 7).
+        multiplier: Risk multiplier for the target indicator (7 for b2, 1.0 for HRI).
         fixed_cells: Optional dict mapping flat cell index → value (0 or 1)
             to pin specific cells as accepted/rejected.
+        risk_num_col/risk_den_col: numerator/denominator columns of the TARGET
+            indicator (defaults keep the classic b2 basis; risk_indicator='hri_h6'
+            passes h_num_h6/h_den_h6 with multiplier=1.0). The optional swap-in
+            RISK cap below stays on the b2 basis regardless (max_swapin_risk is a
+            b2-unit config knob; out of scope to re-unit it).
 
     Returns:
         Binary mask array (1=accept, 0=reject) for each cell, or None if infeasible.
@@ -495,15 +503,15 @@ def milp_solve_cutoffs(
     c = -production
 
     # Risk budget constraint (linearized ratio):
-    #   multiplier * sum(todu_30ever_h6[i] * x[i]) / sum(todu_amt_pile_h6[i] * x[i]) <= target_risk/100
+    #   multiplier * sum(num[i] * x[i]) / sum(den[i] * x[i]) <= target_risk/100
     # Linearized:
-    #   sum((multiplier * todu_30ever_h6[i] - target_risk/100 * todu_amt_pile_h6[i]) * x[i]) <= 0
-    todu_30 = cell["todu_30ever_h6"].values.astype(float)
-    todu_amt = cell["todu_amt_pile_h6"].values.astype(float)
+    #   sum((multiplier * num[i] - target_risk/100 * den[i]) * x[i]) <= 0
+    todu_30 = cell[risk_num_col].values.astype(float)
+    todu_amt = cell[risk_den_col].values.astype(float)
 
     # Guard: if total exposure is zero, the risk constraint is vacuous
     if todu_amt.sum() == 0:
-        logger.warning("MILP: total todu_amt_pile_h6 is zero — risk constraint is vacuous.")
+        logger.warning(f"MILP: total {risk_den_col} is zero — risk constraint is vacuous.")
         return None
 
     risk_coeffs = multiplier * todu_30 - (target_risk / 100.0) * todu_amt
@@ -546,7 +554,11 @@ def milp_solve_cutoffs(
     if max_swapin_risk is not None and "todu_30ever_h6_rep" in cell.columns and "todu_amt_pile_h6_rep" in cell.columns:
         rep_t30 = cell["todu_30ever_h6_rep"].values.astype(float)
         rep_tamt = cell["todu_amt_pile_h6_rep"].values.astype(float)
-        swapin_risk_coeffs = multiplier * rep_t30 - (max_swapin_risk / 100.0) * rep_tamt
+        # Always the b2 basis: max_swapin_risk is a b2-unit knob, independent of the
+        # target indicator. Defaults to `multiplier` (identical to legacy behaviour
+        # for b2-target runs); an HRI-target caller passes the b2 multiplier here.
+        swapin_mult = multiplier if swapin_risk_multiplier is None else swapin_risk_multiplier
+        swapin_risk_coeffs = swapin_mult * rep_t30 - (max_swapin_risk / 100.0) * rep_tamt
         extra_rows.append(sparse.csc_matrix(swapin_risk_coeffs.reshape(1, -1)))
 
     rows: list[sparse.csc_matrix] = [risk_row, denom_row] + extra_rows
@@ -803,8 +815,17 @@ def trace_pareto_frontier(
     monotonicity_uncertainty_min_exposure: float = 0.0,
     monotonicity_uncertainty_z_threshold: float = 0.0,
     fixed_cells: dict[int, int] | None = None,
+    risk_num_col: str = "todu_30ever_h6",
+    risk_den_col: str = "todu_amt_pile_h6",
+    risk_col: str = "b2_ever_h6",
+    target_multiplier: float | None = None,
 ) -> tuple[pd.DataFrame, CellGrid, list[np.ndarray]]:
     """Sweep risk targets, solve MILP at each, filter to Pareto-optimal set.
+
+    The TARGET indicator (risk_num_col/risk_den_col/risk_col/target_multiplier, default
+    the classic b2 basis) drives the MILP constraint, the sweep bounds and the Pareto
+    ordering. `multiplier` keeps its b2 meaning throughout — evaluate_solution always
+    computes the b2 columns with it, so both indicators appear on every frontier row.
 
     Args:
         data_summary_desagregado: Aggregated data by variable combinations.
@@ -823,9 +844,11 @@ def trace_pareto_frontier(
         of binary acceptance masks (one per Pareto solution).
     """
     grid = CellGrid.from_summary(data_summary_desagregado, variables)
+    if target_multiplier is None:
+        target_multiplier = multiplier
 
     # Validate required columns exist in cell_data
-    required_cols = ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"]
+    required_cols = list(dict.fromkeys(["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0", risk_num_col, risk_den_col]))
     missing = [c for c in required_cols if c not in grid.cell_data.columns]
     if missing:
         logger.error(f"CellGrid missing required columns: {missing}. Cannot trace Pareto frontier.")
@@ -834,11 +857,11 @@ def trace_pareto_frontier(
     # One-time (per sweep) check — both the MILP and GA-fallback paths share this grid.
     _warn_unenforceable_swapin_caps(grid.cell_data.columns, max_swapin_production_pct, max_swapin_risk)
 
-    # Determine risk sweep range
+    # Determine risk sweep range (in the TARGET indicator's units)
     # Max risk = all cells accepted
-    all_t30 = grid.cell_data["todu_30ever_h6"].sum()
-    all_tamt = grid.cell_data["todu_amt_pile_h6"].sum()
-    max_risk = float(calculate_b2_ever_h6(all_t30, all_tamt, multiplier=multiplier, as_percentage=True))
+    all_t30 = grid.cell_data[risk_num_col].sum()
+    all_tamt = grid.cell_data[risk_den_col].sum()
+    max_risk = float(calculate_b2_ever_h6(all_t30, all_tamt, multiplier=target_multiplier, as_percentage=True))
     if np.isnan(max_risk) or max_risk <= 0:
         max_risk = 20.0  # fallback
 
@@ -851,9 +874,11 @@ def trace_pareto_frontier(
         for idx in fixed_cells:
             if fixed_cells[idx] == 1 and 0 <= idx < n_cells:
                 floor_mask_tmp[idx] = True
-        floor_t30 = grid.cell_data.loc[floor_mask_tmp, "todu_30ever_h6"].sum()
-        floor_tamt = grid.cell_data.loc[floor_mask_tmp, "todu_amt_pile_h6"].sum()
-        floor_risk = float(calculate_b2_ever_h6(floor_t30, floor_tamt, multiplier=multiplier, as_percentage=True))
+        floor_t30 = grid.cell_data.loc[floor_mask_tmp, risk_num_col].sum()
+        floor_tamt = grid.cell_data.loc[floor_mask_tmp, risk_den_col].sum()
+        floor_risk = float(
+            calculate_b2_ever_h6(floor_t30, floor_tamt, multiplier=target_multiplier, as_percentage=True)
+        )
         if np.isfinite(floor_risk) and floor_risk > sweep_min:
             sweep_min = floor_risk * 0.95  # start just below floor risk
             logger.info(f"Floor constraint minimum risk: {floor_risk:.2f}% — sweeping from {sweep_min:.2f}%")
@@ -873,7 +898,7 @@ def trace_pareto_frontier(
             grid,
             target,
             inv_vars,
-            multiplier,
+            target_multiplier,
             fixed_cells=fixed_cells,
             max_swapin_production_pct=max_swapin_production_pct,
             max_swapin_risk=max_swapin_risk,
@@ -881,6 +906,9 @@ def trace_pareto_frontier(
             monotonicity_relaxation_enabled=monotonicity_relaxation_enabled,
             monotonicity_uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
             monotonicity_uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
+            risk_num_col=risk_num_col,
+            risk_den_col=risk_den_col,
+            swapin_risk_multiplier=multiplier,
         )
         if mask is None:
             continue
@@ -907,7 +935,7 @@ def trace_pareto_frontier(
                     grid,
                     target,
                     inv_vars,
-                    multiplier,
+                    target_multiplier,
                     fixed_cells=fixed_cells,
                     max_swapin_production_pct=max_swapin_production_pct,
                     max_swapin_risk=max_swapin_risk,
@@ -915,6 +943,9 @@ def trace_pareto_frontier(
                     monotonicity_relaxation_enabled=monotonicity_relaxation_enabled,
                     monotonicity_uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
                     monotonicity_uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
+                    risk_num_col=risk_num_col,
+                    risk_den_col=risk_den_col,
+                    swapin_risk_multiplier=multiplier,
                 )
                 if mask is not None:
                     mask_key = tuple(mask.tolist())
@@ -954,6 +985,15 @@ def trace_pareto_frontier(
                         "the selected scenario against the caps before shipping it."
                     )
         else:
+            if risk_col != "b2_ever_h6":
+                # The GA fallback optimizes on the b2 basis only — falling back would
+                # silently optimize the WRONG metric for an HRI-target run.
+                logger.error(
+                    "No feasible MILP solutions and the GA fallback does not support "
+                    f"risk_col='{risk_col}' — returning an empty frontier instead of "
+                    "optimizing on the wrong indicator."
+                )
+                return pd.DataFrame(), grid, []
             logger.warning("No feasible MILP solutions found. Attempting GA fallback...")
             return _ga_pareto_fallback(
                 grid,
@@ -977,8 +1017,8 @@ def trace_pareto_frontier(
     # `evaluate_solution()` can yield NaN b2_ever_h6 when the accepted-cell
     # exposure denominator is zero; those should not participate in
     # sorting/dominance/scenario selection.
-    if "b2_ever_h6" in df.columns:
-        risk_arr = df["b2_ever_h6"].to_numpy(dtype=float, copy=False)
+    if risk_col in df.columns:
+        risk_arr = df[risk_col].to_numpy(dtype=float, copy=False)
         prod_arr = df["oa_amt_h0"].to_numpy(dtype=float, copy=False)
         valid = np.isfinite(risk_arr) & np.isfinite(prod_arr)
         if not valid.all():
@@ -994,7 +1034,7 @@ def trace_pareto_frontier(
     # Sort by (risk ASC, production DESC) so the highest-production point wins each risk tie; the
     # strict-`>` sweep below then drops the lower-production same-risk (dominated) points. A
     # risk-only sort left the within-tie order arbitrary, so a dominated point could survive.
-    sort_idx = np.lexsort((-df["oa_amt_h0"].to_numpy(), df["b2_ever_h6"].to_numpy()))
+    sort_idx = np.lexsort((-df["oa_amt_h0"].to_numpy(), df[risk_col].to_numpy()))
     df = df.iloc[sort_idx].reset_index(drop=True)
     all_masks = [all_masks[i] for i in sort_idx]
 
@@ -1025,7 +1065,7 @@ def trace_pareto_frontier(
 
     n_refined = 0
     for _round in range(MAX_REFINE_ROUNDS):
-        risk_vals = df["b2_ever_h6"].values
+        risk_vals = df[risk_col].values
         if len(risk_vals) < 2:
             break
         midpoints = []
@@ -1042,7 +1082,7 @@ def trace_pareto_frontier(
                 grid,
                 mid_target,
                 inv_vars,
-                multiplier,
+                target_multiplier,
                 fixed_cells=fixed_cells,
                 max_swapin_production_pct=max_swapin_production_pct,
                 max_swapin_risk=max_swapin_risk,
@@ -1050,6 +1090,9 @@ def trace_pareto_frontier(
                 monotonicity_relaxation_enabled=monotonicity_relaxation_enabled,
                 monotonicity_uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
                 monotonicity_uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
+                risk_num_col=risk_num_col,
+                risk_den_col=risk_den_col,
+                swapin_risk_multiplier=multiplier,
             )
             if mask is None:
                 continue
@@ -1058,7 +1101,7 @@ def trace_pareto_frontier(
                 continue
             seen_masks.add(mask_key)
             kpis = evaluate_solution(mask, grid, indicators, multiplier, multiplier_h3=multiplier_h3)
-            risk_v = kpis.get("b2_ever_h6")
+            risk_v = kpis.get(risk_col)
             prod_v = kpis.get("oa_amt_h0")
             if risk_v is None or prod_v is None or not np.isfinite(risk_v) or not np.isfinite(prod_v):
                 continue
@@ -1073,7 +1116,7 @@ def trace_pareto_frontier(
             break
 
         # Re-sort (risk ASC, production DESC) and re-filter after each refinement round
-        sort_idx = np.lexsort((-df["oa_amt_h0"].to_numpy(), df["b2_ever_h6"].to_numpy()))
+        sort_idx = np.lexsort((-df["oa_amt_h0"].to_numpy(), df[risk_col].to_numpy()))
         df = df.iloc[sort_idx].reset_index(drop=True)
         pareto_masks = [pareto_masks[i] for i in sort_idx]
         prev_max = float("-inf")

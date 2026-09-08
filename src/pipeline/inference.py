@@ -69,6 +69,15 @@ def run_inference_phase(
             )
 
     if model_path:
+        if getattr(settings, "risk_indicator", "b2_ever_h6") == "hri_h6":
+            # Persisted model dirs carry only the b2 pair — reusing them cannot supply the
+            # HRI rate/denominator models the hri_h6 target needs. Fail loudly (an
+            # optimization target never silently degrades to the wrong metric).
+            raise RuntimeError(
+                "risk_indicator='hri_h6' does not support --model-path / supersegment model reuse: "
+                "saved model directories only contain the b2 model pair. Train fresh models "
+                "(drop --reuse-models / --model-path) or set risk_indicator='b2_ever_h6'."
+            )
         # Load pre-trained model from supersegment
         model, metadata, features = load_model_for_prediction(model_path)
         # Fail loudly if the reused model was trained under an incompatible grid (#40): a different
@@ -166,6 +175,46 @@ def run_inference_phase(
             plot_output_path=output.todu_avg_inference_html,
             model_output_path=output.todu_model_joblib,
         )
+
+        # HRI model pair (risk_indicator='hri_h6' only): rate model on hri_h6
+        # (multiplier=1, h_num/h_den target pair via the registry) + h_den exposure
+        # model. Stashed on risk_inference so the repesca fill downstream
+        # (compute_pre_reject_inference_data) can invert rate x den -> h_num.
+        # The b2 pair above still trains — both indicators stay reported.
+        if getattr(settings, "risk_indicator", "b2_ever_h6") == "hri_h6":
+            logger.info(f"[{segment}] Training HRI model pair (risk_indicator='hri_h6')")
+            hri_inference = inference_pipeline(
+                data=train_data,
+                bins=bins_tuple,
+                variables=inference_vars,
+                indicators=settings.indicators,
+                target_var="hri_h6",
+                multiplier=1.0,
+                cv_folds=settings.cv_folds,
+                include_hurdle=False,
+                save_model=False,
+                model_base_path=output.model_base_path,
+                create_visualizations=False,
+                directions=settings.directions or None,
+                z_threshold=settings.z_threshold,
+            )
+            _, reg_hden, _ = todu_average_inference(
+                data=train_data,
+                variables=settings.variables,
+                indicators=settings.indicators,
+                feature_col="oa_amt",
+                target_col="h_den_h6",
+                z_threshold=settings.z_threshold,
+                plot_output_path=None,
+                model_output_path=None,
+            )
+            risk_inference["hri_inference"] = hri_inference
+            risk_inference["hri_den_model"] = reg_hden
+            hri_info = hri_inference["best_model_info"]
+            logger.info(
+                f"[{segment}] HRI models trained | rate: {hri_info['name']} "
+                f"(CV R2={hri_info.get('cv_mean_r2', 0):.4f}) | den: h_den_h6 exposure model"
+            )
 
         elapsed = time.perf_counter() - t0
         info = risk_inference["best_model_info"]

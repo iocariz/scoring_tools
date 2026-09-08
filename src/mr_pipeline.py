@@ -1780,9 +1780,25 @@ def _reoptimize_mr_mask_after_recalibration(
     # correctly on the recalibrated MR surface without a re-solve or remap.
     # ------------------------------------------------------------------
     use_fixed = bool(settings.fixed_cutoffs)
-    reoptimize = settings.mr_reoptimize_cutoffs and not use_fixed
+    hri_target = getattr(settings, "risk_indicator", "b2_ever_h6") == "hri_h6"
+    if hri_target and settings.mr_reoptimize_cutoffs and not use_fixed:
+        # The MR recalibration + re-optimization machinery (tiered reconstruction,
+        # H3→H6 extrapolation, MILP on the recalibrated surface) operates on the b2
+        # basis — re-optimizing there would drift the mask on the WRONG indicator.
+        # HRI-target runs therefore keep the frozen main mask in MR (the honest
+        # "how does my chosen policy do on the newer cohort" basis, same as M4);
+        # realized HRI is still reported via the phase-1 columns.
+        logger.warning(
+            "risk_indicator='hri_h6': MR re-optimization is b2-based and is DISABLED for this run — "
+            "the MR period keeps the frozen main mask (mr_reoptimize_cutoffs ignored)."
+        )
+    reoptimize = settings.mr_reoptimize_cutoffs and not use_fixed and not hri_target
     if recalibration_applied and not settings.baseline_mode and not reoptimize:
-        reason = "fixed_cutoffs" if use_fixed else "mr_reoptimize_cutoffs=False"
+        reason = (
+            "fixed_cutoffs"
+            if use_fixed
+            else ("risk_indicator='hri_h6'" if hri_target else "mr_reoptimize_cutoffs=False")
+        )
         logger.info(
             f"MR cutoffs frozen ({reason}): keeping the main acceptance mask "
             "(no MR re-optimization); risk/production recomputed on the frozen cells."

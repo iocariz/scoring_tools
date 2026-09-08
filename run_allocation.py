@@ -87,6 +87,29 @@ def _parse_target_list(target: float | None, what_if: str | None) -> list[float]
     return targets
 
 
+def _warn_if_hri_optimized(segment_dir: Path) -> None:
+    """Global allocation is b2-based; warn loudly when a segment was optimized on HRI.
+
+    Its frontier ordering/target basis differs, so allocating it by b2 contradicts the
+    segment's own policy basis.
+    """
+    try:
+        import tomllib
+
+        cfg_path = segment_dir / "config_segment.toml"
+        if cfg_path.exists():
+            cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+            prep = cfg.get("preprocessing", cfg)
+            if prep.get("risk_indicator") == "hri_h6":
+                logger.warning(
+                    f"Segment '{segment_dir.name}' was optimized with risk_indicator='hri_h6' but "
+                    "run_allocation operates on the b2 basis ONLY — its allocation result will not "
+                    "reflect the segment's HRI policy basis. Interpret with care (or exclude it)."
+                )
+    except Exception:
+        pass
+
+
 def _discover_segment_frontiers(output_base: Path, scenario: str) -> list[tuple[str, Path]]:
     """Resolve which efficient-frontier CSVs to load, as an ordered ``(name, path)`` list.
 
@@ -103,6 +126,7 @@ def _discover_segment_frontiers(output_base: Path, scenario: str) -> list[tuple[
         fp = segment_dir / "data" / f"efficient_frontier_{scenario}.csv"
         if fp.exists():
             found.append((segment_dir.name, fp))
+            _warn_if_hri_optimized(segment_dir)
     if found:
         return found
     single = output_base / "data" / f"efficient_frontier_{scenario}.csv"
