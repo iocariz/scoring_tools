@@ -276,3 +276,38 @@ def test_compare_headline_hri_fields_additive():
 
     ref_hri_drift = {**legacy_ref, "risk_indicator": "hri_h6", "hri_pct": 0.5}
     assert compare_headline(actual, ref_hri_drift)["passed"] is False
+
+
+# ---------------------------------------------------------------------------
+# Training-data regression: sparse HRI columns must not shrink the b2 fit
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_pipeline_data_does_not_drop_rows_on_sparse_hri_columns():
+    """The dropna(variables+indicators) filter collapsed training to defaulted-only
+    loans (78,723 -> 743 on real data) once h_* joined `indicators` — HRI source
+    columns are sparse BY DESIGN and must be exempt from the row filter."""
+    from src.inference_optimized import _prepare_pipeline_data
+
+    n = 100
+    df = pd.DataFrame(
+        {
+            "status_name": ["booked"] * n,
+            "v1": np.linspace(300, 500, n),
+            "v2": np.linspace(0.1, 0.9, n),
+            "todu_30ever_h6": np.zeros(n),
+            "todu_amt_pile_h6": np.full(n, 1000.0),
+            "h_num_h6": [np.nan] * (n - 2) + [50.0, 30.0],  # sparse: only 2 defaults
+            "h_den_h6": [np.nan] * 30 + [400.0] * 70,
+            "oa_amt_h0": np.full(n, 10.0),
+        }
+    )
+    booked, _, _ = _prepare_pipeline_data(
+        df,
+        bins=(None, None),
+        variables=["v1", "v2"],
+        indicators=["todu_30ever_h6", "todu_amt_pile_h6", "h_num_h6", "h_den_h6", "oa_amt_h0"],
+        target_var="b2_ever_h6",
+        multiplier=7.0,
+    )
+    assert len(booked) == n  # NaN h_* rows kept — only dense indicators gate rows

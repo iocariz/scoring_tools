@@ -1037,8 +1037,14 @@ def _prepare_pipeline_data(
 
     booked_data = data[data[Columns.STATUS_NAME] == StatusName.BOOKED.value].copy()
 
-    # We remove records where the demographic variables or target indicators are null
-    req_cols = variables + indicators
+    # We remove records where the demographic variables or target indicators are null.
+    # The HRI source columns are EXCLUDED from this filter: they are sparse BY DESIGN
+    # (h_num_* only on defaulted loans, h_den_* only where accrued), so requiring them
+    # non-null collapsed training to the ~1.7k defaulted loans (78,723 -> 743 records)
+    # and silently poisoned the b2 model the moment the h_* columns joined `indicators`.
+    from src.constants import HRI_OPTIONAL_COLUMNS
+
+    req_cols = variables + [c for c in indicators if c not in HRI_OPTIONAL_COLUMNS]
     booked_data = booked_data.dropna(subset=req_cols)
 
     # Per-loan hurdle training targets (audit #6). `_hurdle_r` = per-loan b2 ratio (= 0 for
@@ -2107,14 +2113,38 @@ def compute_pre_reject_inference_data(
     hri_inference = risk_inference.get("hri_inference")
     hri_den_model = risk_inference.get("hri_den_model")
     if hri_inference is not None and hri_den_model is not None:
-        repesca_summary = calculate_hri_values(
-            repesca_summary,
-            hri_inference["best_model_info"]["model"],
-            hri_den_model,
-            risk_vars,
-            stressor,
-            hri_inference["features"],
-        )
+        # Guard against a signal-free HRI fit: the HRI numerator is sparse (few default
+        # events), so the rate model can have CV R² <= 0 and extrapolate absurd rates
+        # onto repesca coordinates outside the booked range. With no signal, the honest
+        # repesca prior is the booked EXPOSURE-WEIGHTED MEAN rate (flat prior) — the RI
+        # uplift downstream then carries the rejected-are-worse assumption, exactly as
+        # it does for b2. With signal, use the model capped at the worst observed bin.
+        hri_cv = float(hri_inference["best_model_info"].get("cv_mean_r2", 0.0) or 0.0)
+        train_agg = hri_inference.get("all_data")
+        if hri_cv <= 0.0 and train_agg is not None and {"h_num_h6", "h_den_h6"} <= set(train_agg.columns):
+            flat_rate = float(train_agg["h_num_h6"].sum() / max(train_agg["h_den_h6"].sum(), 1e-9))
+            logger.warning(
+                f"HRI rate model has no predictive signal (CV R2={hri_cv:.4f}) — using the booked "
+                f"exposure-weighted mean rate ({flat_rate:.4%}) as a flat repesca prior instead of "
+                "model extrapolation. RI uplift still applies on top."
+            )
+            preds_den = np.clip(hri_den_model.predict(repesca_summary[["oa_amt"]]), 0, None)
+            repesca_summary["h_den_h6"] = preds_den
+            repesca_summary["hri_h6"] = stressor * flat_rate
+            repesca_summary["h_num_h6"] = repesca_summary["hri_h6"] * repesca_summary["h_den_h6"]
+        else:
+            hri_cap = None
+            if train_agg is not None and "hri_h6" in getattr(train_agg, "columns", []):
+                hri_cap = float(train_agg["hri_h6"].max())
+            repesca_summary = calculate_hri_values(
+                repesca_summary,
+                hri_inference["best_model_info"]["model"],
+                hri_den_model,
+                risk_vars,
+                stressor,
+                hri_inference["features"],
+                rate_cap=hri_cap,
+            )
     repesca_summary = repesca_summary[[c for c in variables + indicators if c in repesca_summary.columns]]
 
     # Apply per-bin stress factors when provided (scalar stressor is 1.0 in this case)

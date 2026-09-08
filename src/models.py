@@ -349,6 +349,7 @@ def calculate_hri_values(
     variables: list[str],
     stressor: float,
     var_reg: list[str],
+    rate_cap: float | None = None,
 ) -> pd.DataFrame:
     """Fill hri_h6 / h_den_h6 / h_num_h6 on repesca rows using the HRI model pair.
 
@@ -357,6 +358,13 @@ def calculate_hri_values(
     rate (stressed like b2 — same conservatism basis when HRI is the optimizer
     target), then invert rate x denominator into the additive numerator.
     Only used when ``risk_indicator='hri_h6'`` trained the HRI model pair.
+
+    ``rate_cap`` (fraction scale) clips the modeled rate from above — pass the
+    worst OBSERVED training-bin rate. The HRI numerator is sparse (few default
+    events), so a signal-free linear fit can extrapolate absurd rates (>100%)
+    onto repesca bins outside the booked coordinate range; capping at the
+    observed extreme mirrors reject_max_risk_multiplier's philosophy ("as bad
+    as the worst observed bin", never worse).
     """
     if stressor <= 0:
         logger.warning(f"HRI stressor value {stressor} is non-positive; clamping to 0.01")
@@ -367,6 +375,14 @@ def calculate_hri_values(
 
     data_out = transform_variables(df.copy(), variables)
     X = prepare_model_input(data_out, var_reg, model_hri)
-    data_out["hri_h6"] = np.clip(stressor * model_hri.predict(X), a_min=0, a_max=None)
+    raw_rate = stressor * model_hri.predict(X)
+    upper = rate_cap if rate_cap is not None and np.isfinite(rate_cap) and rate_cap > 0 else None
+    n_capped = int((raw_rate > upper).sum()) if upper is not None else 0
+    data_out["hri_h6"] = np.clip(raw_rate, a_min=0, a_max=upper)
+    if n_capped:
+        logger.warning(
+            f"calculate_hri_values: capped {n_capped}/{len(raw_rate)} modeled repesca HRI rates at the "
+            f"observed training maximum ({upper:.4f}) — the sparse HRI fit extrapolates beyond it."
+        )
     data_out["h_num_h6"] = calculate_todu_30ever_from_b2(data_out["hri_h6"], data_out["h_den_h6"], multiplier=1.0)
     return data_out
