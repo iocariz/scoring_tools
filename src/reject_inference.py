@@ -629,6 +629,18 @@ def _fix_partial_order_violations(
         raise RuntimeError(
             f"Isotonic least-squares projection failed: {solved.message}; max order violation={violation:.3g}"
         )
+    # Exact-feasibility snap: SLSQP satisfies the order constraints only to within its
+    # own tolerance, and the residual's SIGN is platform-dependent (macOS vs Linux BLAS
+    # — caught by CI). Downstream consumers compare multipliers exactly, so project the
+    # ≤ tol residuals onto the order: one forward pass suffices because ascending
+    # canonical lexsort places every dominated cell before its dominator, and each
+    # value moves at most `tol` (the raise above already excluded larger violations).
+    for i in range(n):
+        dom = dominates[i]
+        if dom.any():
+            floor_v = fitted[dom].max()
+            if fitted[i] < floor_v:
+                fitted[i] = floor_v
     restored = np.empty(n)
     restored[order] = fitted
     result["reject_risk_multiplier"] = restored
