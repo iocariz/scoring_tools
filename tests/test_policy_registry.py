@@ -521,9 +521,9 @@ def test_changed_source_col_produces_a_new_policy_id(tmp_path):
     seg_dir = _build_run_tree(tmp_path, "seg_a")
     s1 = _settings("seg_a")
     s2 = _settings("seg_a")
-    for var, bc in (s1.bins or {}).items():
+    for bc in (s1.bins or {}).values():
         bc.source_col = "old_score"
-    for var, bc in (s2.bins or {}).items():
+    for bc in (s2.bins or {}).values():
         bc.source_col = "new_score"
     e1 = build_policy_entry(seg_dir, s1, "_base")
     e2 = build_policy_entry(seg_dir, s2, "_base")
