@@ -183,6 +183,16 @@ def run_inference_phase(
                 f"optimization uses {len(settings.variables)} variables {settings.variables}"
             )
 
+        # Raw score sources behind each inference bin variable — persisted into the model
+        # metadata so a reused model is validated against the FULL input-to-bin mapping,
+        # not just edge values (audit F5).
+        bin_sources = {
+            var: str(getattr(settings.bins[var], "source_col", "") or "")
+            for var in inference_vars
+            if settings.bins and var in settings.bins
+        }
+        bin_sources = {k: v for k, v in bin_sources.items() if v}
+
         # Train new model with feature selection
         risk_inference = inference_pipeline(
             data=train_data,
@@ -198,6 +208,7 @@ def run_inference_phase(
             create_visualizations=True,
             directions=settings.directions or None,
             z_threshold=settings.z_threshold,
+            bin_sources=bin_sources,
         )
 
         # Todu Average Inference
