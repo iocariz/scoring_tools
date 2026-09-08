@@ -15,7 +15,14 @@ from loguru import logger
 from sklearn.metrics import roc_auc_score
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
-from src.constants import DEFAULT_RANDOM_STATE, Columns, RejectReason, StatusName, SystemDecision
+from src.constants import (
+    DEFAULT_RANDOM_STATE,
+    OPTIONAL_INDICATOR_COLUMNS,
+    Columns,
+    RejectReason,
+    StatusName,
+    SystemDecision,
+)
 
 if TYPE_CHECKING:
     from src.config import BinConfig, PreprocessingSettings
@@ -119,10 +126,9 @@ def preprocess_data(
     m_ct_columns = [col for col in df.columns if col.startswith("m_ct_")]
     logger.info(f"Found {len(m_ct_columns)} measure columns starting with 'm_ct_'")
 
-    # Validate that requested columns exist (H3 columns are optional)
-    h3_optional = {Columns.TODU_30EVER_H3, Columns.TODU_AMT_PILE_H3}
+    # Validate that requested columns exist (H3 and HRI source columns are optional)
     all_requested_columns = list(dict.fromkeys(keep_vars + indicators + m_ct_columns))
-    required_columns = [c for c in all_requested_columns if c not in h3_optional]
+    required_columns = [c for c in all_requested_columns if c not in OPTIONAL_INDICATOR_COLUMNS]
     validate_dataframe_columns(df, required_columns, "preprocess_data")
 
     # Apply filter conditions in a single query operation

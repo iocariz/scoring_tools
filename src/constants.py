@@ -71,6 +71,16 @@ class Columns:
     TODU_AMT_PILE_H3: Final[str] = "todu_amt_pile_h3"
     B2_EVER_H3: Final[str] = "b2_ever_h3"
 
+    # Harmonized Risk Indicator (HRI) columns — hri = h_num / h_den, NO multiplier.
+    # Source columns are optional (present in newer extracts only); everything HRI
+    # degrades gracefully when they are absent.
+    H_NUM_H6: Final[str] = "h_num_h6"
+    H_DEN_H6: Final[str] = "h_den_h6"
+    H_NUM_H3: Final[str] = "h_num_h3"
+    H_DEN_H3: Final[str] = "h_den_h3"
+    HRI_H6: Final[str] = "hri_h6"
+    HRI_H3: Final[str] = "hri_h3"
+
     # Grouping variables (default names)
     OCTROI_BINNED: Final[str] = "octroi_binned"
     EFX_BINNED: Final[str] = "efx_binned"
@@ -79,6 +89,18 @@ class Columns:
     SOL_FAC: Final[str] = "sol_fac"
     N_OBSERVATIONS: Final[str] = "n_observations"
     GROUP: Final[str] = "group"
+
+
+# Optional indicator source columns: present only in some data extracts. They are
+# stripped from settings (with one warning) when absent — see data_manager.py — and
+# every consumer degrades gracefully. Shared here so the set is defined ONCE
+# (previously the H3 literal was duplicated across data_manager/data_quality/
+# preprocess_improved).
+H3_OPTIONAL_COLUMNS: Final[frozenset] = frozenset({Columns.TODU_30EVER_H3, Columns.TODU_AMT_PILE_H3})
+HRI_OPTIONAL_COLUMNS: Final[frozenset] = frozenset(
+    {Columns.H_NUM_H6, Columns.H_DEN_H6, Columns.H_NUM_H3, Columns.H_DEN_H3}
+)
+OPTIONAL_INDICATOR_COLUMNS: Final[frozenset] = H3_OPTIONAL_COLUMNS | HRI_OPTIONAL_COLUMNS
 
 
 # Suffixes for aggregated data

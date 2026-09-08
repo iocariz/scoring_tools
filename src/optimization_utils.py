@@ -725,6 +725,17 @@ def evaluate_solution(
                     calculate_b2_ever_h6(result[t30_h3], result[tamt_h3], multiplier=multiplier_h3, as_percentage=True)
                 )
 
+    # Harmonized Risk Indicator (no multiplier) for each suffix, when sources present.
+    # NaN is preserved (0/0 on _rep cells — rejected loans carry no HRI outcomes).
+    for hri_col, num_base, den_base in (("hri_h6", "h_num_h6", "h_den_h6"), ("hri_h3", "h_num_h3", "h_den_h3")):
+        for suffix in ["", "_boo", "_rep", "_cut"]:
+            num = f"{num_base}{suffix}"
+            den = f"{den_base}{suffix}"
+            if num in result and den in result:
+                result[f"{hri_col}{suffix}"] = float(
+                    calculate_b2_ever_h6(result[num], result[den], multiplier=1.0, as_percentage=True)
+                )
+
     return result
 
 
@@ -2152,6 +2163,21 @@ def kpi_of_fact_sol(
                 final_result[f"b2_ever_h3{metric}"] = raw_b2_h3
             else:
                 final_result[f"b2_ever_h3{metric}"] = raw_b2_h3.fillna(0)
+
+    # Harmonized Risk Indicator (no multiplier) when source columns are present.
+    # Unlike b2, suffixed HRI keeps NaN too: 0/0 on _rep cells means "no HRI
+    # outcomes for rejected loans" and must render as "—", never as 0.00%.
+    for hri_col, num_base, den_base in (("hri_h6", "h_num_h6", "h_den_h6"), ("hri_h3", "h_num_h3", "h_den_h3")):
+        for metric in ["", "_cut", "_rep", "_boo"]:
+            num = f"{num_base}{metric}"
+            den = f"{den_base}{metric}"
+            if num in final_result.columns and den in final_result.columns:
+                final_result[f"{hri_col}{metric}"] = calculate_b2_ever_h6(
+                    final_result[num].astype(float),
+                    final_result[den].astype(float),
+                    multiplier=1.0,
+                    as_percentage=True,
+                )
 
     return final_result.sort_values(["b2_ever_h6", "oa_amt_h0"])
 

@@ -728,9 +728,12 @@ def _build_portfolio_metric_table(row: pd.Series, *, show_ci: bool = True) -> st
     Unpivots the wide columns (actual_*, optimum_*, swap_in_*, swap_out_*)
     into four rows with the user-requested columns.
     """
+    # HRI column only when the consolidated CSV carries it (zero visual change otherwise)
+    has_hri = pd.notna(row.get("actual_hri_pct")) or pd.notna(row.get("optimum_hri_pct"))
     columns = [
         ("Metric", False),
         ("Risk (%)", True),
+        *([("HRI (%)", True)] if has_hri else []),
         ("Production (\u20ac)", True),
         ("Production (%)", True),
         ("Rejection Rate (%)", True),
@@ -806,6 +809,9 @@ def _build_portfolio_metric_table(row: pd.Series, *, show_ci: bool = True) -> st
         lines.append(f'<tr class="{row_cls}">')
         lines.append(f"<td><strong>{label}</strong></td>")
         lines.append(f'<td class="num{kpi}">{_fmt_num(risk)}</td>')
+        if has_hri:
+            hri = row.get(f"{prefix}_hri_pct", float("nan"))
+            lines.append(f'<td class="num{kpi}">{_fmt_num(hri)}</td>')
         lines.append(f'<td class="num{kpi}">{_fmt_num(prod, ",.0f")}</td>')
         lines.append(f'<td class="num">{prod_pct_str}</td>')
         lines.append(f'<td class="num">{_fmt_num(rej_rate)}</td>')
@@ -1004,7 +1010,16 @@ def build_segment_report(
     exec_section.notes = config_notes
 
     # Add per-scenario summary tables
-    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)", "Feasible"]
+    _exclude_todu = [
+        "todu_30ever_h6",
+        "todu_amt_pile_h6",
+        "h_num_h6",
+        "h_den_h6",
+        "h_num_h3",
+        "h_den_h3",
+        "Total Demand (€)",
+        "Feasible",
+    ]
     for scenario in scenarios:
         suffix = f"_{scenario}" if scenario else ""
         csv_p = output_paths.risk_production_summary_csv(suffix)
@@ -1158,7 +1173,16 @@ def build_consolidated_report(
         sections.append(dash_section)
 
     # --- Segment Comparison ---
-    _exclude_todu = ["todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)", "Feasible"]
+    _exclude_todu = [
+        "todu_30ever_h6",
+        "todu_amt_pile_h6",
+        "h_num_h6",
+        "h_den_h6",
+        "h_num_h3",
+        "h_den_h3",
+        "Total Demand (€)",
+        "Feasible",
+    ]
     _exclude_todu_mr = _exclude_todu + ["todu_30ever_h3", "todu_amt_pile_h3"]
 
     # Main period

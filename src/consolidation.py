@@ -86,6 +86,25 @@ class ConsolidatedMetrics:
     swap_out_todu_30ever_h3: float = 0.0
     swap_out_todu_amt_pile_h3: float = 0.0
 
+    # Raw HRI components (Harmonized Risk Indicator: h_num / h_den, NO multiplier).
+    # Optional — 0.0 when the run's data lacks the h_* source columns.
+    actual_h_num_h6: float = 0.0
+    actual_h_den_h6: float = 0.0
+    optimum_h_num_h6: float = 0.0
+    optimum_h_den_h6: float = 0.0
+    swap_in_h_num_h6: float = 0.0
+    swap_in_h_den_h6: float = 0.0
+    swap_out_h_num_h6: float = 0.0
+    swap_out_h_den_h6: float = 0.0
+    actual_h_num_h3: float = 0.0
+    actual_h_den_h3: float = 0.0
+    optimum_h_num_h3: float = 0.0
+    optimum_h_den_h3: float = 0.0
+    swap_in_h_num_h3: float = 0.0
+    swap_in_h_den_h3: float = 0.0
+    swap_out_h_num_h3: float = 0.0
+    swap_out_h_den_h3: float = 0.0
+
     # Total demand (through the door: booked + rejected + canceled)
     total_demand: float = 0.0
 
@@ -219,6 +238,42 @@ class ConsolidatedMetrics:
             )
         )
 
+    # HRI properties (no multiplier)
+    def _hri_pct(self, num: float, den: float) -> float:
+        return float(np.nan_to_num(calculate_b2_ever_h6(num, den, multiplier=1.0, as_percentage=True, decimals=6)))
+
+    @cached_property
+    def actual_hri(self) -> float:
+        return self._hri_pct(self.actual_h_num_h6, self.actual_h_den_h6)
+
+    @cached_property
+    def optimum_hri(self) -> float:
+        return self._hri_pct(self.optimum_h_num_h6, self.optimum_h_den_h6)
+
+    @cached_property
+    def swap_in_hri(self) -> float:
+        return self._hri_pct(self.swap_in_h_num_h6, self.swap_in_h_den_h6)
+
+    @cached_property
+    def swap_out_hri(self) -> float:
+        return self._hri_pct(self.swap_out_h_num_h6, self.swap_out_h_den_h6)
+
+    @cached_property
+    def actual_hri_h3(self) -> float:
+        return self._hri_pct(self.actual_h_num_h3, self.actual_h_den_h3)
+
+    @cached_property
+    def optimum_hri_h3(self) -> float:
+        return self._hri_pct(self.optimum_h_num_h3, self.optimum_h_den_h3)
+
+    @cached_property
+    def swap_in_hri_h3(self) -> float:
+        return self._hri_pct(self.swap_in_h_num_h3, self.swap_in_h_den_h3)
+
+    @cached_property
+    def swap_out_hri_h3(self) -> float:
+        return self._hri_pct(self.swap_out_h_num_h3, self.swap_out_h_den_h3)
+
     @property
     def actual_rejection_rate(self) -> float:
         """Rejection rate under the actual (current) policy: rejected / total_demand."""
@@ -329,7 +384,69 @@ class ConsolidatedMetrics:
                     "swap_out_todu_amt_pile_h3": self.swap_out_todu_amt_pile_h3,
                 }
             )
+        # HRI (Harmonized Risk Indicator) — emitted only when the run carried the
+        # h_* source columns (same graceful-degradation pattern as H3 above).
+        has_hri = (
+            self.actual_h_den_h6 > 0
+            or self.optimum_h_den_h6 > 0
+            or self.swap_in_h_den_h6 > 0
+            or self.swap_out_h_den_h6 > 0
+        )
+        if has_hri:
+            d.update(
+                {
+                    "actual_hri_pct": self.actual_hri,
+                    "actual_h_num_h6": self.actual_h_num_h6,
+                    "actual_h_den_h6": self.actual_h_den_h6,
+                    "optimum_hri_pct": self.optimum_hri,
+                    "optimum_h_num_h6": self.optimum_h_num_h6,
+                    "optimum_h_den_h6": self.optimum_h_den_h6,
+                    "swap_in_hri_pct": self.swap_in_hri,
+                    "swap_in_h_num_h6": self.swap_in_h_num_h6,
+                    "swap_in_h_den_h6": self.swap_in_h_den_h6,
+                    "swap_out_hri_pct": self.swap_out_hri,
+                    "swap_out_h_num_h6": self.swap_out_h_num_h6,
+                    "swap_out_h_den_h6": self.swap_out_h_den_h6,
+                }
+            )
+        has_hri_h3 = (
+            self.actual_h_den_h3 > 0
+            or self.optimum_h_den_h3 > 0
+            or self.swap_in_h_den_h3 > 0
+            or self.swap_out_h_den_h3 > 0
+        )
+        if has_hri_h3:
+            d.update(
+                {
+                    "actual_hri_h3_pct": self.actual_hri_h3,
+                    "actual_h_num_h3": self.actual_h_num_h3,
+                    "actual_h_den_h3": self.actual_h_den_h3,
+                    "optimum_hri_h3_pct": self.optimum_hri_h3,
+                    "optimum_h_num_h3": self.optimum_h_num_h3,
+                    "optimum_h_den_h3": self.optimum_h_den_h3,
+                    "swap_in_hri_h3_pct": self.swap_in_hri_h3,
+                    "swap_in_h_num_h3": self.swap_in_h_num_h3,
+                    "swap_in_h_den_h3": self.swap_in_h_den_h3,
+                    "swap_out_hri_h3_pct": self.swap_out_hri_h3,
+                    "swap_out_h_num_h3": self.swap_out_h_num_h3,
+                    "swap_out_h_den_h3": self.swap_out_h_den_h3,
+                }
+            )
         return d
+
+
+def _hri_metric_kwargs(agg: dict) -> dict[str, float]:
+    """HRI raw-component kwargs for ConsolidatedMetrics from an aggregation dict.
+
+    One helper instead of 16 kwargs repeated at each of the three population
+    sites (supersegment / per-segment / TOTAL). Missing keys read as 0 (legacy
+    summary CSVs without HRI columns).
+    """
+    return {
+        f"{key}_{col}": agg[key].get(col, 0)
+        for key in ("actual", "optimum", "swap_in", "swap_out")
+        for col in ("h_num_h6", "h_den_h6", "h_num_h3", "h_den_h3")
+    }
 
 
 def find_scenario_suffix(filename: str) -> str:
@@ -493,6 +610,10 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
             "todu_amt_pile_h6": 0,
             "todu_30ever_h3": 0,
             "todu_amt_pile_h3": 0,
+            "h_num_h6": 0,
+            "h_den_h6": 0,
+            "h_num_h3": 0,
+            "h_den_h3": 0,
         },
         "optimum": {
             "production": 0,
@@ -500,6 +621,10 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
             "todu_amt_pile_h6": 0,
             "todu_30ever_h3": 0,
             "todu_amt_pile_h3": 0,
+            "h_num_h6": 0,
+            "h_den_h6": 0,
+            "h_num_h3": 0,
+            "h_den_h3": 0,
         },
         "swap_in": {
             "production": 0,
@@ -507,6 +632,10 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
             "todu_amt_pile_h6": 0,
             "todu_30ever_h3": 0,
             "todu_amt_pile_h3": 0,
+            "h_num_h6": 0,
+            "h_den_h6": 0,
+            "h_num_h3": 0,
+            "h_den_h3": 0,
         },
         "swap_out": {
             "production": 0,
@@ -514,6 +643,10 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
             "todu_amt_pile_h6": 0,
             "todu_30ever_h3": 0,
             "todu_amt_pile_h3": 0,
+            "h_num_h6": 0,
+            "h_den_h6": 0,
+            "h_num_h3": 0,
+            "h_den_h3": 0,
         },
     }
 
@@ -616,6 +749,14 @@ def extract_metrics_from_table(df: pd.DataFrame) -> dict[str, dict[str, float]]:
                 metrics[key]["todu_amt_pile_h3"] = float(row[todu_amt_h3_col]) if pd.notna(row[todu_amt_h3_col]) else 0
             except (ValueError, TypeError):
                 pass
+
+        # Extract HRI raw components (optional; exact lowercase column names)
+        for hri_col in ("h_num_h6", "h_den_h6", "h_num_h3", "h_den_h3"):
+            if hri_col in row.index:
+                try:
+                    metrics[key][hri_col] = float(row[hri_col]) if pd.notna(row[hri_col]) else 0
+                except (ValueError, TypeError):
+                    pass
 
         # Extract rejection rate (Actual / Optimum rows carry it; swaps are NaN)
         if key in ("actual", "optimum") and rejection_rate_col and rejection_rate_col in row.index:
@@ -888,6 +1029,10 @@ def aggregate_metrics(
             "todu_amt_pile_h6": 0,
             "todu_30ever_h3": 0,
             "todu_amt_pile_h3": 0,
+            "h_num_h6": 0,
+            "h_den_h6": 0,
+            "h_num_h3": 0,
+            "h_den_h3": 0,
         },
         "optimum": {
             "production": 0,
@@ -895,6 +1040,10 @@ def aggregate_metrics(
             "todu_amt_pile_h6": 0,
             "todu_30ever_h3": 0,
             "todu_amt_pile_h3": 0,
+            "h_num_h6": 0,
+            "h_den_h6": 0,
+            "h_num_h3": 0,
+            "h_den_h3": 0,
         },
         "swap_in": {
             "production": 0,
@@ -902,6 +1051,10 @@ def aggregate_metrics(
             "todu_amt_pile_h6": 0,
             "todu_30ever_h3": 0,
             "todu_amt_pile_h3": 0,
+            "h_num_h6": 0,
+            "h_den_h6": 0,
+            "h_num_h3": 0,
+            "h_den_h3": 0,
         },
         "swap_out": {
             "production": 0,
@@ -909,6 +1062,10 @@ def aggregate_metrics(
             "todu_amt_pile_h6": 0,
             "todu_30ever_h3": 0,
             "todu_amt_pile_h3": 0,
+            "h_num_h6": 0,
+            "h_den_h6": 0,
+            "h_num_h3": 0,
+            "h_den_h3": 0,
         },
     }
 
@@ -942,6 +1099,9 @@ def aggregate_metrics(
             aggregated[key]["todu_amt_pile_h6"] += metrics[key]["todu_amt_pile_h6"]
             aggregated[key]["todu_30ever_h3"] += metrics[key].get("todu_30ever_h3", 0)
             aggregated[key]["todu_amt_pile_h3"] += metrics[key].get("todu_amt_pile_h3", 0)
+            # HRI: sum numerators/denominators (never average rates)
+            for hri_col in ("h_num_h6", "h_den_h6", "h_num_h3", "h_den_h3"):
+                aggregated[key][hri_col] += metrics[key].get(hri_col, 0)
 
             # Aggregate CIs for optimum using variance addition (assumes independence)
             if key == "optimum":
@@ -1161,6 +1321,8 @@ def consolidate_segments(
                         swap_in_todu_amt_pile_h3=agg["swap_in"].get("todu_amt_pile_h3", 0),
                         swap_out_todu_30ever_h3=agg["swap_out"].get("todu_30ever_h3", 0),
                         swap_out_todu_amt_pile_h3=agg["swap_out"].get("todu_amt_pile_h3", 0),
+                        # HRI raw components (optional)
+                        **_hri_metric_kwargs(agg),
                         # Total demand for rejection rate
                         total_demand=agg.get("_total_demand", 0),
                         actual_rejections=agg.get("_actual_rejections"),
@@ -1214,6 +1376,8 @@ def consolidate_segments(
                     swap_in_todu_amt_pile_h3=agg["swap_in"].get("todu_amt_pile_h3", 0),
                     swap_out_todu_30ever_h3=agg["swap_out"].get("todu_30ever_h3", 0),
                     swap_out_todu_amt_pile_h3=agg["swap_out"].get("todu_amt_pile_h3", 0),
+                    # HRI raw components (optional)
+                    **_hri_metric_kwargs(agg),
                     # Total demand for rejection rate
                     total_demand=agg.get("_total_demand", 0),
                     actual_rejections=agg.get("_actual_rejections"),
@@ -1260,6 +1424,8 @@ def consolidate_segments(
                     swap_in_todu_amt_pile_h3=total_agg["swap_in"].get("todu_amt_pile_h3", 0),
                     swap_out_todu_30ever_h3=total_agg["swap_out"].get("todu_30ever_h3", 0),
                     swap_out_todu_amt_pile_h3=total_agg["swap_out"].get("todu_amt_pile_h3", 0),
+                    # HRI raw components (optional)
+                    **_hri_metric_kwargs(total_agg),
                     # Total demand for rejection rate
                     total_demand=total_agg.get("_total_demand", 0),
                     actual_rejections=total_agg.get("_actual_rejections"),
@@ -2033,8 +2199,18 @@ _PCT_COLS = {
     "optimum_risk_h3_pct",
     "swap_in_risk_h3_pct",
     "swap_out_risk_h3_pct",
+    "actual_hri_pct",
+    "optimum_hri_pct",
+    "swap_in_hri_pct",
+    "swap_out_hri_pct",
+    "actual_hri_h3_pct",
+    "optimum_hri_h3_pct",
+    "swap_in_hri_h3_pct",
+    "swap_out_hri_h3_pct",
     "Risk (%)",
     "Risk H3 (%)",
+    "HRI (%)",
+    "HRI H3 (%)",
     "Production (%)",
     "Rejection Rate (%)",
     "System Rejection Rate (%)",
@@ -2057,6 +2233,22 @@ _INTEGER_COLS = {
     "swap_in_todu_amt_pile_h3",
     "swap_out_todu_30ever_h3",
     "swap_out_todu_amt_pile_h3",
+    "actual_h_num_h6",
+    "actual_h_den_h6",
+    "optimum_h_num_h6",
+    "optimum_h_den_h6",
+    "swap_in_h_num_h6",
+    "swap_in_h_den_h6",
+    "swap_out_h_num_h6",
+    "swap_out_h_den_h6",
+    "actual_h_num_h3",
+    "actual_h_den_h3",
+    "optimum_h_num_h3",
+    "optimum_h_den_h3",
+    "swap_in_h_num_h3",
+    "swap_in_h_den_h3",
+    "swap_out_h_num_h3",
+    "swap_out_h_den_h3",
 }
 _TEXT_COLS = {"group", "period", "scenario", "segments", "Metric", "segment"}
 _DELTA_COLS = {"production_delta", "production_delta_pct", "risk_delta_pct"}
@@ -2101,6 +2293,14 @@ _COLUMN_LABELS = {
     "optimum_risk_h3_pct": "Optimum Risk H3 (%)",
     "swap_in_risk_h3_pct": "Swap-In Risk H3 (%)",
     "swap_out_risk_h3_pct": "Swap-Out Risk H3 (%)",
+    "actual_hri_pct": "Actual HRI (%)",
+    "optimum_hri_pct": "Optimum HRI (%)",
+    "swap_in_hri_pct": "Swap-In HRI (%)",
+    "swap_out_hri_pct": "Swap-Out HRI (%)",
+    "actual_hri_h3_pct": "Actual HRI H3 (%)",
+    "optimum_hri_h3_pct": "Optimum HRI H3 (%)",
+    "swap_in_hri_h3_pct": "Swap-In HRI H3 (%)",
+    "swap_out_hri_h3_pct": "Swap-Out HRI H3 (%)",
     "production_ci_lower": "Production CI Lower (€)",
     "production_ci_upper": "Production CI Upper (€)",
     "risk_ci_lower": "Risk CI Lower (%)",
@@ -3796,7 +3996,16 @@ def _write_per_segment_rp_sheets(
 
     Extracted from export_consolidated_excel body in R2b-iii step 14.
     """
-    _rp_exclude_cols = {"todu_30ever_h6", "todu_amt_pile_h6", "Total Demand (€)", "Feasible"}
+    _rp_exclude_cols = {
+        "todu_30ever_h6",
+        "todu_amt_pile_h6",
+        "h_num_h6",
+        "h_den_h6",
+        "h_num_h3",
+        "h_den_h3",
+        "Total Demand (€)",
+        "Feasible",
+    }
     _rp_exclude_cols_mr = _rp_exclude_cols | {"todu_30ever_h3", "todu_amt_pile_h3"}
 
     for seg_name in segments:
@@ -4877,9 +5086,51 @@ def export_consolidated_excel(
             ws_exec.cell(row=mr_row, column=1).value = "MR period data not available"
             ws_exec.cell(row=mr_row, column=1).font = Font(italic=True, color=_CLR_NEUTRAL_MID, size=10, name=_FN)
 
+        # --- HRI KPI cards (conditional third row pair — only when the run carries
+        # the Harmonized Risk Indicator; b2-only workbooks keep the exact old layout) ---
+        hri_row = 8
+        has_hri_main = tr_main is not None and pd.notna(tr_main.get("optimum_hri_pct"))
+        has_hri_mr = tr_mr is not None and pd.notna(tr_mr.get("optimum_hri_pct"))
+        if has_hri_main or has_hri_mr:
+            ws_exec.row_dimensions[hri_row].height = 38
+            ws_exec.row_dimensions[hri_row + 1].height = 22
+            if has_hri_main:
+                hri_d = tr_main.get("optimum_hri_pct", 0) - tr_main.get("actual_hri_pct", 0)
+                _write_kpi_card(ws_exec, hri_row, 1, "Actual HRI", f"{tr_main.get('actual_hri_pct', 0):.2f}%")
+                _write_kpi_card(
+                    ws_exec,
+                    hri_row,
+                    3,
+                    "Optimum HRI",
+                    f"{tr_main.get('optimum_hri_pct', 0):.2f}%",
+                    delta_str=f"{hri_d:+.2f} pp",
+                    delta_positive=hri_d <= 0,
+                )
+            if has_hri_mr:
+                mr_hri_d = tr_mr.get("optimum_hri_pct", 0) - tr_mr.get("actual_hri_pct", 0)
+                _write_kpi_card(ws_exec, hri_row, 5, "MR Actual HRI", f"{tr_mr.get('actual_hri_pct', 0):.2f}%")
+                _write_kpi_card(
+                    ws_exec,
+                    hri_row,
+                    7,
+                    "MR Optimum HRI",
+                    f"{tr_mr.get('optimum_hri_pct', 0):.2f}%",
+                    delta_str=f"{mr_hri_d:+.2f} pp",
+                    delta_positive=mr_hri_d <= 0,
+                )
+                for c in range(5, 9):
+                    for r in (hri_row, hri_row + 1):
+                        ws_exec.cell(row=r, column=c).fill = _FILL_MR
+            ws_exec.cell(row=hri_row, column=11).value = "HRI (no multiplier)"
+            ws_exec.cell(row=hri_row, column=11).font = Font(bold=True, color=_CLR_ACCENT, size=9, name=_FN)
+            ws_exec.cell(row=hri_row, column=11).alignment = _ALIGN_LEFT
+            spacer_row = hri_row + 2
+        else:
+            spacer_row = 8
+
         # --- Spacer ---
-        ws_exec.row_dimensions[8].height = 10
-        next_row = 9
+        ws_exec.row_dimensions[spacer_row].height = 10
+        next_row = spacer_row + 1
 
         # --- Recommendation & key risks (plain-language; dynamic row flow) ---
         try:
@@ -4897,6 +5148,9 @@ def export_consolidated_excel(
             "actual_risk_pct",
             "optimum_risk_pct",
             "risk_delta_pct",
+            # HRI columns are dropped by _prepare_export_df when the run lacks them
+            "actual_hri_pct",
+            "optimum_hri_pct",
         ]
         main_base_mask = (consolidated_df["period"] == "main") & (consolidated_df["scenario"] == "base")
         exec_main = _prepare_export_df(
@@ -4930,6 +5184,9 @@ def export_consolidated_excel(
             "optimum_rejection_rate_pct",
             "actual_system_rejection_rate_pct",
             "optimum_system_rejection_rate_pct",
+            # HRI columns are dropped by _prepare_export_df when the run lacks them
+            "actual_hri_pct",
+            "optimum_hri_pct",
         ]
         total_overview_df = _prepare_export_df(
             consolidated_df[consolidated_df["group"] == "TOTAL"],
@@ -4937,7 +5194,11 @@ def export_consolidated_excel(
         )
         if not total_overview_df.empty:
             next_row = _write_exec_table(
-                ws_exec, total_overview_df, next_row, "Scenario Overview — Total Portfolio", n_table_cols=14
+                ws_exec,
+                total_overview_df,
+                next_row,
+                "Scenario Overview — Total Portfolio",
+                n_table_cols=len(total_overview_df.columns),
             )
 
         main_top_movers = _build_top_movers_df(consolidated_df, period="main")

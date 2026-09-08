@@ -6,7 +6,8 @@ keep_vars = [
 ]
 indicators = [
     "acct_booked_h0", "oa_amt", "todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0",
-    "todu_30ever_h3", "todu_amt_pile_h3"
+    "todu_30ever_h3", "todu_amt_pile_h3",
+    "h_num_h6", "h_den_h6", "h_num_h3", "h_den_h3",  # HRI sources (optional; skipped if absent)
 ]
 
 octroi_bins = [-inf, 364.0, 370.0, 379.0, 382.0, 389.0, 397.0, 404.0, 416.0, 431.0, inf]

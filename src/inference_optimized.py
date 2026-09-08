@@ -2100,6 +2100,8 @@ def compute_pre_reject_inference_data(
         logger.info(
             f"Swap-in per-bin stress: min={sf.min():.4f}, avg={sf.mean():.4f}, max={sf.max():.4f}, bins={len(sf)}"
         )
+        # NOTE: h_num_h6/h_num_h3 (HRI numerators) are deliberately NOT stressed while HRI
+        # is display-only (see the matching note in reject_inference.py).
         repesca_summary["todu_30ever_h6"] *= sf
         if "todu_30ever_h3" in repesca_summary.columns:
             repesca_summary["todu_30ever_h3"] *= sf

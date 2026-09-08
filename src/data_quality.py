@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from src.constants import Columns
+from src.constants import HRI_OPTIONAL_COLUMNS, OPTIONAL_INDICATOR_COLUMNS
 
 if TYPE_CHECKING:
     from src.config import PreprocessingSettings
@@ -515,12 +515,19 @@ def run_data_quality_checks(
     date_ini = settings.date_ini_book_obs
     date_fin = settings.date_fin_book_obs
 
-    h3_optional = {Columns.TODU_30EVER_H3, Columns.TODU_AMT_PILE_H3}
     all_columns = list(dict.fromkeys(keep_vars + indicators + ["segment_cut_off", "status_name", "mis_date"]))
-    required_columns = [c for c in all_columns if c not in h3_optional]
+    required_columns = [c for c in all_columns if c not in OPTIONAL_INDICATOR_COLUMNS]
 
-    # Columns that naturally have missing values (only populated for booked records)
-    missing_exempt = {"reject_reason", "early_bad", "acct_booked_h0", "todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"}
+    # Columns that naturally have missing values (only populated for booked records).
+    # HRI source columns are booked-only outcomes, exactly like the todu pair.
+    missing_exempt = {
+        "reject_reason",
+        "early_bad",
+        "acct_booked_h0",
+        "todu_30ever_h6",
+        "todu_amt_pile_h6",
+        "oa_amt_h0",
+    } | HRI_OPTIONAL_COLUMNS
     missing_check_columns = [c for c in required_columns if c not in missing_exempt]
 
     logger.info("Running data quality checks...")

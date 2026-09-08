@@ -180,6 +180,9 @@ def generate_audit_table(
         for v in variables[2:]:
             if v not in audit_columns:
                 audit_columns.append(v)
+        # HRI source columns (optional) — appended only when present to keep the
+        # missing-columns warning below meaningful on older extracts.
+        audit_columns += [c for c in ("h_num_h6", "h_den_h6", "h_num_h3", "h_den_h3") if c in data.columns]
 
     # Filter to columns that exist in data
     available_columns = [col for col in audit_columns if col in data.columns]
