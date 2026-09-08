@@ -513,6 +513,346 @@ def create_empty_state() -> html.Div:
     )
 
 
+# --- "How We Got Here" tab (management story) ---
+# Mirrors the consolidated workbook's sheet 2: a plain-language derivation of the
+# headline numbers — step band, production bridge waterfall, efficient frontier with
+# the chosen operating point — scoped to the selected segment and scenario.
+
+_STORY_AMBER = "#F39C12"  # chosen-point marker (palette CVD-validated with the tokens above)
+
+
+def _load_story_data(scenario: str, segment: str | None = None) -> dict[str, Any]:
+    """Assemble everything the story tab needs; every read is best-effort."""
+    paths = get_scenario_paths(scenario, segment)
+    data_dir = get_data_dir(segment)
+    story: dict[str, Any] = {"rows": {}, "frontier": None, "chosen": None, "target": None, "n_cells": None}
+
+    try:
+        if paths["main_csv"].exists():
+            df = pd.read_csv(paths["main_csv"])
+            for metric in ["Actual", "Swap-in", "Swap-out", "Optimum selected"]:
+                r = df[df["Metric"] == metric]
+                if not r.empty:
+                    story["rows"][metric] = r.iloc[0]
+    except Exception as e:
+        logger.warning(f"Story tab: could not load main summary: {e}")
+
+    try:
+        if paths["mr_csv"].exists():
+            df_mr = pd.read_csv(paths["mr_csv"])
+            r = df_mr[df_mr["Metric"] == "Optimum selected"]
+            if not r.empty:
+                story["mr_risk"] = r.iloc[0].get("Risk (%)")
+    except Exception as e:
+        logger.warning(f"Story tab: could not load MR summary: {e}")
+
+    try:
+        if paths["summary_data"].exists():
+            story["n_cells"] = len(pd.read_csv(paths["summary_data"]))
+    except Exception as e:
+        logger.warning(f"Story tab: could not load cell summary: {e}")
+
+    for name in [f"efficient_frontier_{scenario}.csv", "efficient_frontier.csv"]:
+        fp = data_dir / name
+        if fp.exists():
+            try:
+                ef = pd.read_csv(fp).dropna(subset=["b2_ever_h6", "oa_amt_h0"])
+                if len(ef) >= 2:
+                    story["frontier"] = ef.sort_values("b2_ever_h6")
+                break
+            except Exception as e:
+                logger.warning(f"Story tab: could not load frontier from {fp}: {e}")
+
+    try:
+        if paths["cutoffs"].exists():
+            opt = pd.read_csv(paths["cutoffs"])
+            if not opt.empty and {"b2_ever_h6", "oa_amt_h0"}.issubset(opt.columns):
+                story["chosen"] = (float(opt.iloc[0]["b2_ever_h6"]), float(opt.iloc[0]["oa_amt_h0"]))
+    except Exception as e:
+        logger.warning(f"Story tab: could not load optimal solution: {e}")
+
+    try:
+        from src.config import PreprocessingSettings
+
+        config_candidates = []
+        if segment:
+            config_candidates.append(OUTPUT_BASE / segment / "config_segment.toml")
+        config_candidates.append(Path("config.toml"))
+        for config_path in config_candidates:
+            if config_path.exists():
+                story["target"] = float(PreprocessingSettings.from_toml(str(config_path)).optimum_risk)
+                break
+    except Exception as e:
+        logger.warning(f"Story tab: could not load risk target: {e}")
+
+    return story
+
+
+def _build_story_bridge_figure(rows: dict[str, Any]) -> go.Figure | None:
+    """Production bridge waterfall: today's portfolio → − swap-out → + swap-in → proposed."""
+    try:
+        actual = _coerce_float(rows["Actual"]["Production (€)"])
+        out = _coerce_float(rows["Swap-out"]["Production (€)"])
+        add = _coerce_float(rows["Swap-in"]["Production (€)"])
+        proposed = _coerce_float(rows["Optimum selected"]["Production (€)"])
+        risk_a = rows["Actual"].get("Risk (%)")
+        risk_p = rows["Optimum selected"].get("Risk (%)")
+    except (KeyError, TypeError):
+        return None
+
+    kept = actual - out
+
+    def _state(label: str, risk: Any) -> str:
+        return f"{label}<br>risk {risk:.2f}%" if pd.notna(risk) else label
+
+    cats = [
+        _state("Today's portfolio", risk_a),
+        "Stop lending here<br>(high-risk cells)",
+        "Newly approved<br>(safe cells)",
+        _state("Proposed portfolio", risk_p),
+    ]
+    bars = [
+        (cats[0], 0.0, actual, COLOR_PRIMARY, "Production booked under today's cutoffs"),
+        (cats[1], kept, out, COLOR_RISK, "Cells whose realized risk is too high — stop lending"),
+        (cats[2], kept, add, COLOR_PRODUCTION, "Safe cells we currently reject — newly approved"),
+        (cats[3], 0.0, proposed, COLOR_PRIMARY, "Production under the proposed cutoffs"),
+    ]
+    fig = go.Figure()
+    for cat, base, height, color, expl in bars:
+        fig.add_trace(
+            go.Bar(
+                x=[cat],
+                y=[height],
+                base=[base],
+                marker_color=color,
+                showlegend=False,
+                hovertemplate=f"{expl}<br>€%{{y:,.0f}}<extra></extra>",
+            )
+        )
+    for cat, base, height, sign in [
+        (cats[0], 0.0, actual, ""),
+        (cats[1], kept, out, "− "),
+        (cats[2], kept, add, "+ "),
+        (cats[3], 0.0, proposed, ""),
+    ]:
+        fig.add_annotation(
+            x=cat,
+            y=base + height,
+            text=f"<b>{sign}{_format_currency(height, compact=True)}</b>",
+            showarrow=False,
+            yshift=12,
+            font=dict(size=12, color=COLOR_PRIMARY),
+        )
+    fig.update_layout(bargap=0.35, yaxis_title="Production (€)")
+    fig.update_yaxes(range=[0, max(actual, kept + add, proposed) * 1.18])
+    apply_plotly_style(fig, title="From today's portfolio to the proposal", height=380)
+    return fig
+
+
+def _build_story_frontier_figure(
+    frontier: pd.DataFrame, chosen: tuple[float, float] | None, target: float | None
+) -> go.Figure:
+    """The efficient frontier with the risk budget and the chosen operating point."""
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=frontier["b2_ever_h6"],
+            y=frontier["oa_amt_h0"],
+            mode="lines+markers",
+            name="Efficient policies",
+            line=dict(color=COLOR_PRIMARY, width=2),
+            marker=dict(size=5, color=COLOR_PRIMARY),
+            hovertemplate="One complete cutoff policy<br>Risk %{x:.2f}%<br>Production €%{y:,.0f}<extra></extra>",
+        )
+    )
+    if target is not None and pd.notna(target):
+        fig.add_vline(
+            x=float(target),
+            line=dict(color=COLOR_NEUTRAL, dash="dash", width=2),
+            annotation_text=f"risk budget {float(target):.2g}%",
+            annotation_position="bottom right",
+        )
+    if chosen is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=[chosen[0]],
+                y=[chosen[1]],
+                mode="markers",
+                name="Chosen policy",
+                marker=dict(color=_STORY_AMBER, size=17, symbol="star", line=dict(color="white", width=1.5)),
+                hovertemplate="Chosen policy<br>Risk %{x:.2f}%<br>Production €%{y:,.0f}<extra></extra>",
+            )
+        )
+    fig.update_layout(
+        xaxis_title="Portfolio risk b2_ever_h6 (%)",
+        yaxis_title="Production (€)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        hovermode="closest",
+    )
+    apply_plotly_style(fig, title="Every viable cutoff policy — and the one we chose", height=380)
+    return fig
+
+
+def _story_step(number: int, title: str, description: str) -> html.Div:
+    return html.Div(
+        [
+            html.Div(
+                str(number),
+                className="text-white fw-bold text-center flex-shrink-0 me-3",
+                style={
+                    "backgroundColor": COLOR_PRIMARY,
+                    "width": "2.2rem",
+                    "height": "2.2rem",
+                    "lineHeight": "2.2rem",
+                    "borderRadius": "50%",
+                },
+            ),
+            html.Div(
+                [html.Div(title, className="fw-bold"), html.Div(description, className="text-muted small")],
+            ),
+        ],
+        className="d-flex align-items-start mb-3",
+    )
+
+
+def create_story_tab_content(scenario: str, segment: str | None = None) -> html.Div:
+    """Full "How We Got Here" tab: stat cards + six-step band + bridge + frontier."""
+    story = _load_story_data(scenario, segment)
+    rows = story["rows"]
+    if not rows:
+        return dbc.Alert(
+            [
+                html.H4("Story Not Available", className="alert-heading"),
+                html.P(f"No summary data found for scenario '{scenario}'. Run the pipeline first."),
+            ],
+            color="warning",
+        )
+
+    actual = rows.get("Actual")
+    optimum = rows.get("Optimum selected")
+    demand = _coerce_float(actual.get("Total Demand (€)")) if actual is not None else 0.0
+    actual_prod = _coerce_float(actual.get("Production (€)")) if actual is not None else 0.0
+    opt_prod = _coerce_float(optimum.get("Production (€)")) if optimum is not None else 0.0
+    opt_risk = optimum.get("Risk (%)") if optimum is not None else None
+    mr_risk = story.get("mr_risk")
+    target = story.get("target")
+    n_frontier = len(story["frontier"]) if story["frontier"] is not None else 0
+    chosen = story.get("chosen")
+
+    # Headline stat cards
+    prod_share = f"{opt_prod / actual_prod:.0%} of today's production" if actual_prod else ""
+    risk_sub = f"risk budget: {target:.2g}%" if target is not None else "risk budget: n/a"
+    if pd.notna(mr_risk) and pd.notna(opt_risk):
+        mr_val, mr_sub = f"{mr_risk:.2f}%", f"{mr_risk - opt_risk:+.2f}pp vs main period"
+    else:
+        mr_val, mr_sub = "n/a", "no MR data for this scenario"
+    cards = dbc.Row(
+        [
+            dbc.Col(
+                _build_cutoff_stat_card(
+                    "Proposed production", _format_currency(opt_prod, compact=True), prod_share, COLOR_PRODUCTION
+                ),
+                md=4,
+                className="mb-3",
+            ),
+            dbc.Col(
+                _build_cutoff_stat_card(
+                    "Proposed risk",
+                    f"{opt_risk:.2f}%" if pd.notna(opt_risk) else "n/a",
+                    risk_sub,
+                    COLOR_RISK,
+                ),
+                md=4,
+                className="mb-3",
+            ),
+            dbc.Col(
+                _build_cutoff_stat_card("Recent-cohort check (MR)", mr_val, mr_sub, COLOR_NEUTRAL),
+                md=4,
+                className="mb-3",
+            ),
+        ],
+        className="g-3",
+    )
+
+    n_cells_str = f"{story['n_cells']:,}" if story.get("n_cells") else "a grid of"
+    target_str = f"{target:.2g}%" if target is not None else "the segment's risk budget"
+    chosen_str = (
+        f"{_format_currency(chosen[1], compact=True)} of production at {chosen[0]:.2f}% risk"
+        if chosen
+        else "the starred point on the frontier"
+    )
+    steps = html.Div(
+        [
+            _story_step(
+                1,
+                "Start from every application",
+                f"All through-the-door demand for this segment — {_format_currency(demand, compact=True)} of "
+                "requested production — not just the loans we currently book.",
+            ),
+            _story_step(
+                2,
+                "Sort applications into score cells",
+                f"Each application lands on a grid by its risk scores: {n_cells_str} score cells, "
+                "each holding loans of similar quality.",
+            ),
+            _story_step(
+                3,
+                "Price the risk of every cell",
+                "Every cell gets an expected loss rate (b2_ever_h6): realized where history is deep, "
+                "model-smoothed where it is thin, and conservatively uplifted for profiles we currently "
+                "reject (reject inference).",
+            ),
+            _story_step(
+                4,
+                "Evaluate every sensible cutoff policy",
+                f"{n_frontier:,} efficient policies survive — monotone only (a better score is never "
+                "rejected while a worse one is accepted). Together they form the frontier on the right: "
+                "for each level of risk, the maximum attainable production.",
+            ),
+            _story_step(
+                5,
+                "Choose the point on the frontier",
+                f"The highest-production policy whose portfolio risk stays within {target_str}: "
+                f"{chosen_str}. The exact accepted cells are in the Cutoff Explorer tab.",
+            ),
+            _story_step(
+                6,
+                "Prove it holds up",
+                "The same cutoffs are re-checked on the newest cohort (MR Period tab) and backtested "
+                "out-of-time in the consolidated report — the recent-cohort risk is on the card above.",
+            ),
+        ],
+        className="p-3 border rounded bg-light mb-4",
+    )
+
+    charts: list[Any] = []
+    fig_bridge = _build_story_bridge_figure(rows)
+    if fig_bridge is not None:
+        charts.append(dbc.Col(dcc.Graph(figure=fig_bridge), md=6))
+    if story["frontier"] is not None:
+        charts.append(dbc.Col(dcc.Graph(figure=_build_story_frontier_figure(story["frontier"], chosen, target)), md=6))
+
+    segment_display = f" — {segment}" if segment else ""
+    return html.Div(
+        [
+            html.H4(f"How We Got Here{segment_display} ({scenario.capitalize()})", className="mb-1"),
+            html.P(
+                "From raw applications to the proposed cutoffs, in six steps — every number below is "
+                "this run's actual data.",
+                className="text-muted",
+            ),
+            cards,
+            dbc.Row(
+                [
+                    dbc.Col(steps, md=4),
+                    dbc.Col(dbc.Row(charts, className="g-3") if charts else html.Div(), md=8),
+                ],
+                className="g-3",
+            ),
+        ]
+    )
+
+
 # --- KPI & UI Helper Functions ---
 
 
@@ -2798,6 +3138,7 @@ def create_layout():
             # Tabs
             dbc.Tabs(
                 [
+                    dbc.Tab(label="How We Got Here", tab_id="tab-story", disabled=not has_data),
                     dbc.Tab(label="Scenario Comparison", tab_id="tab-comp"),
                     dbc.Tab(label="Main Period", tab_id="tab-main", disabled=not has_data),
                     dbc.Tab(label="MR Period (Recent)", tab_id="tab-mr", disabled=not has_data),
@@ -2809,7 +3150,7 @@ def create_layout():
                     dbc.Tab(label="Model Details", tab_id="tab-model", disabled=not has_data),
                 ],
                 id="tabs",
-                active_tab="tab-comp",
+                active_tab="tab-story" if has_data else "tab-comp",
                 className="mb-3",
             ),
             # Content area with loading spinner
@@ -2854,6 +3195,7 @@ def update_scenarios_on_segment_change(segment: str | None):
 
     # Rebuild tabs with correct disabled state
     tabs = [
+        dbc.Tab(label="How We Got Here", tab_id="tab-story", disabled=not has_data),
         dbc.Tab(label="Scenario Comparison", tab_id="tab-comp"),
         dbc.Tab(label="Main Period", tab_id="tab-main", disabled=not has_data),
         dbc.Tab(label="MR Period (Recent)", tab_id="tab-mr", disabled=not has_data),
@@ -2892,6 +3234,9 @@ def render_content(active_tab: str, scenario: str | None, segment: str | None) -
     # Other tabs require a scenario
     if not scenario:
         return create_empty_state()
+
+    if active_tab == "tab-story":
+        return create_story_tab_content(scenario, segment)
 
     paths = get_scenario_paths(scenario, segment)
     scenario_display = scenario.capitalize()
