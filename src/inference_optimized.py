@@ -982,7 +982,20 @@ def compute_cell_level_ci(
         w_train = _get_regression_weights(train_agg, target_var)
 
         model_clone = clone(model_template)
-        model_clone.fit(X_train, y_train, sample_weight=w_train)
+        if isinstance(model_template, HurdleRegressor) and "_hurdle_r" in raw_train.columns:
+            # Per-loan training — the SAME branch model selection and the final fit use
+            # (audit #6/F6). Refitting the hurdle on bin-level means either crashed
+            # ("at least 2 classes": aggregated rates are ~never exactly 0, so the
+            # classifier sees one class) or, when zeros were present, silently
+            # evaluated a different estimator than the selected per-loan hurdle.
+            raw_train_t = transform_variables(raw_train, variables)
+            model_clone.fit(
+                prepare_model_input(raw_train_t, final_features, model_clone),
+                raw_train["_hurdle_r"].to_numpy(),
+                sample_weight=np.asarray(raw_train["_hurdle_w"], dtype=float),
+            )
+        else:
+            model_clone.fit(X_train, y_train, sample_weight=w_train)
 
         X_val = prepare_model_input(val_agg, final_features, model_template)
         preds = model_clone.predict(X_val)

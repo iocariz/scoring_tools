@@ -271,6 +271,18 @@ def run_optimization_phase(
             )
             pareto_masks = [fixed_mask]
 
+        # A fixed policy must not silently count production whose target risk is
+        # unknown. Refuse the conflict rather than changing the prescribed mask.
+        target_ind = settings.selected_indicator
+        unsupported = (
+            fixed_mask.astype(bool) & grid.observed & ~grid.usable_risk_mask(target_ind.num_col, target_ind.den_col)
+        )
+        if unsupported.any():
+            raise ValueError(
+                f"[{segment}] Fixed cutoffs accept {unsupported.sum()} cells without usable risk evidence "
+                f"for {settings.risk_indicator} (audit F8). Supply validated estimates or revise the cutoffs."
+            )
+
         # Log acceptance rate preview for fixed cutoffs
         if len(data_summary) > 0:
             row = data_summary.iloc[0]
@@ -435,13 +447,15 @@ def run_optimization_phase(
             # cell pins + swap-in caps; the legacy 2-var enumeration CANNOT
             # express either, so it is only used when no such constraint is
             # active (audit #36 — fallbacks must not silently drop constraints).
-            has_side_constraints = bool(floor_fixed_cells) or any(
-                v is not None for v in (settings.max_swapin_production_pct, settings.max_swapin_risk)
+            has_side_constraints = (
+                bool(floor_fixed_cells)
+                or any(v is not None for v in (settings.max_swapin_production_pct, settings.max_swapin_risk))
+                or bool((grid.observed & ~grid.usable_risk_mask()).any())
             )
             if len(settings.variables) != 2 or has_side_constraints:
                 if len(settings.variables) == 2:
                     logger.warning(
-                        f"[{segment}] MILP produced no solutions; cell pins / swap-in caps are active, "
+                        f"[{segment}] MILP produced no solutions; risk-evidence exclusions / cell pins / swap-in caps apply, "
                         "so the constraint-blind legacy enumeration is skipped — trying GA fallback"
                     )
                 else:

@@ -86,6 +86,8 @@ Location: [src/persistence.py:400](/Users/inigo_ocariz_laptop/src/scoring_tools/
 
 ## F6 — P2: Cell confidence intervals refit the hurdle model on aggregated targets
 
+> **Status: FIXED (2026-09-08).** `compute_cell_level_ci`'s CV folds now use the same per-loan hurdle training branch as model selection and the final fit (fit on `_hurdle_r`/`_hurdle_w` per-loan rows when the template is a `HurdleRegressor`), so a hurdle winner gets real cell CIs instead of a silently-dropped result or a different aggregated-fit estimator. The reproduction below asserts the CI frame is produced.
+
 Location: [src/inference_optimized.py:980](/Users/inigo_ocariz_laptop/src/scoring_tools/src/inference_optimized.py:980).
 
 **Trigger.** The per-loan HurdleRegressor wins model selection.

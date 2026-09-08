@@ -899,6 +899,98 @@ def _install_dummy_pymoo(monkeypatch):
     monkeypatch.setitem(sys.modules, "pymoo.termination", termination_mod)
 
 
+class TestRiskEvidenceExclusions:
+    """F8: positive production must not make a 0/0 cell free to accept."""
+
+    @staticmethod
+    def summary():
+        return pd.DataFrame(
+            {
+                "a": [1, 2, 3],
+                "oa_amt_h0": [100.0, 200.0, 10000.0],
+                "todu_30ever_h6": [1.0, 0.0, 0.0],
+                "todu_amt_pile_h6": [700.0, 700.0, 0.0],
+            }
+        )
+
+    @pytest.mark.parametrize("unusable_den", [0.0, np.nan, np.inf, -1.0])
+    def test_milp_excludes_unmeasured_cell_but_accepts_measured_zero_defaults(self, unusable_den):
+        df = self.summary()
+        df.loc[2, "todu_amt_pile_h6"] = unusable_den
+        grid = CellGrid.from_summary(df, ["a"])
+        mask = milp_solve_cutoffs(grid, 2.0, [], 7.0)
+        assert mask.tolist() == [1, 1, 0]
+        # Presence and production accounting are retained, independent of risk support.
+        assert grid.observed.all()
+        assert grid.cell_data.oa_amt_h0.sum() == 10300.0
+
+    def test_support_uses_selected_indicator_and_allows_sparse_hri_numerator(self):
+        df = self.summary()
+        df["todu_amt_pile_h6"] = 700.0
+        df["h_num_h6"] = [np.nan, 1.0, 0.0]
+        df["h_den_h6"] = [100.0, 100.0, 0.0]
+        grid = CellGrid.from_summary(df, ["a"])
+        hri_mask = milp_solve_cutoffs(grid, 2.0, [], 1.0, risk_num_col="h_num_h6", risk_den_col="h_den_h6")
+        b2_mask = milp_solve_cutoffs(grid, 2.0, [], 7.0)
+        assert hri_mask.tolist() == [1, 1, 0]
+        assert b2_mask.tolist() == [1, 1, 1]
+
+    def test_must_accept_cannot_override_evidence_exclusion(self):
+        grid = CellGrid.from_summary(self.summary(), ["a"])
+        assert milp_solve_cutoffs(grid, 50.0, [], 7.0, fixed_cells={2: 1}) is None
+        with pytest.raises(ValueError, match="Must-accept cells.*no usable risk evidence"):
+            trace_pareto_frontier(
+                self.summary(),
+                ["a"],
+                [],
+                7.0,
+                ["oa_amt_h0"],
+                n_points=2,
+                fixed_cells={2: 1},
+                show_progress=False,
+            )
+
+    def test_last_resort_frontier_cannot_restore_unmeasured_production(self, monkeypatch):
+        monkeypatch.setattr("src.optimization_utils.milp_solve_cutoffs", lambda *args, **kwargs: None)
+        frontier, _, masks = trace_pareto_frontier(
+            self.summary(),
+            ["a"],
+            [],
+            7.0,
+            ["oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"],
+            n_points=2,
+            fixed_cells={0: 1},
+            show_progress=False,
+        )
+        assert not frontier.empty
+        assert frontier.oa_amt_h0.max() == 300.0
+        assert all(mask[2] == 0 and mask[0] == 1 for mask in masks)
+
+    def test_ga_fallback_respects_evidence_exclusions(self, monkeypatch):
+        _install_dummy_pymoo(monkeypatch)
+        grid = CellGrid.from_summary(self.summary(), ["a"])
+        frontier, _, masks = _ga_pareto_fallback(
+            grid,
+            [],
+            7.0,
+            ["oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"],
+            3,
+            show_progress=False,
+        )
+        assert not frontier.empty
+        assert all(mask.tolist() == [1, 1, 0] for mask in masks)
+        refused, _, refused_masks = _ga_pareto_fallback(
+            grid,
+            [],
+            7.0,
+            ["oa_amt_h0"],
+            3,
+            fixed_cells={2: 1},
+            show_progress=False,
+        )
+        assert refused.empty and not refused_masks
+
+
 class TestGAFallbackPhantomCells:
     def test_phantom_cells_not_accepted_in_ga_fallback(self, monkeypatch):
         """GA fallback must encode phantom/unobserved cells with xu=0.

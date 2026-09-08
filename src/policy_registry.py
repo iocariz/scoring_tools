@@ -181,8 +181,7 @@ def build_policy_entry(
 
     # Grid identity for the policy id (audit F4) + stored for transparency (F5's
     # registry gap): the raw source column behind each output axis.
-    bin_sources = {var: str(getattr(bc, "source_col", "") or "") for var, bc in (settings.bins or {}).items()}
-    bin_sources = {var: src for var, src in bin_sources.items() if src}
+    bin_sources = settings_bin_sources(settings)
     fingerprint = grid_fingerprint(variables, bin_edges, bin_sources, headline.accepted_set_hash)
 
     return PolicyEntry(
@@ -361,6 +360,12 @@ def settings_bin_edges(settings) -> dict:
     """The frozen bin edges a run's policy coordinates are defined on (same
     extraction as :func:`build_policy_entry`)."""
     return {var: list(bc.bin_edges) for var, bc in (settings.bins or {}).items() if bc.bin_edges}
+
+
+def settings_bin_sources(settings) -> dict[str, str]:
+    """Raw sources behind the frozen axes, shared by registration and comparison."""
+    sources = {var: str(getattr(bc, "source_col", "") or "") for var, bc in (settings.bins or {}).items()}
+    return {var: source for var, source in sources.items() if source}
 
 
 def unfrozen_bin_vars(settings) -> list[str]:

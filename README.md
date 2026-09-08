@@ -359,6 +359,8 @@ A complementary 3-month metric (**b2_ever_h3**) uses `multiplier_h3 = 4` and the
 
 Risk is always non-negative (clipped at 0). Division by zero exposure yields NaN, indicating cells with no volume.
 
+**Risk evidence gate (audit F8).** Optimization only accepts cells with a finite, non-negative numerator and positive, finite exposure for the selected risk indicator. A cell with production but no usable risk outcomes is forced to reject; its production remains in the source summaries. This applies to MILP, GA and frontier fallbacks. Conflicting must-accept floors and fixed cutoffs fail explicitly. Measured zero-default cells remain eligible. Baseline mode still reports the existing book as-is.
+
 ### Harmonized Risk Indicator (HRI)
 
 A second risk metric computed and reported **beside** b2 everywhere (summary tables Main + MR, segment HTML, consolidated CSV/Excel/HTML, backtest):
@@ -1069,6 +1071,8 @@ Maintains a committed, per-segment registry of deployed cutoff policies and comp
 A **policy** is a frozen base-scenario accepted-cell set plus the bin edges and provenance needed to apply and reproduce it. The registry (`reports/policy_registry/<segment>.json`, git-tracked and append-only) holds one **champion** per segment — the policy designated live. A **challenger** (the latest run's base policy) is scored against the champion on the same auto-derived matured out-of-time cohort the M4 backtest uses, reusing that machinery (apply the frozen set → realized risk + production with bootstrap CIs) and the M5 headline/provenance.
 
 The comparison reports a **cell-level diff** (cells the challenger newly accepts vs newly rejects) and a **noise-aware risk verdict**: `BETTER` / `WORSE` only when both policies have ≥ 10 realized defaults *and* their realized-risk CIs are fully separated; otherwise `INCONCLUSIVE`. The verdict is risk-only; production delta is reported alongside for the human trade-off.
+
+Before comparison, the champion's ordered grid variables, frozen cutpoints and raw score sources (`bin_sources`) must match the current configuration on every optimization axis. Changed or missing source mappings cause refusal before cohort binning. Legacy entries remain readable, but must be re-registered from their original frozen run with explicit sources before they can be compared (audit F9).
 
 ```bash
 # Freeze each segment's current base policy into the registry

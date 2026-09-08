@@ -647,7 +647,7 @@ class TestRunOptimizationPhase:
         )
 
         # Force Pareto sweep to return nothing → triggers legacy enumeration.
-        dummy_grid = object()
+        dummy_grid = optimization_module.CellGrid.from_summary(summary_desagregado, settings.variables)
         monkeypatch.setattr(
             optimization_module,
             "trace_pareto_frontier",

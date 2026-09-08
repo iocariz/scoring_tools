@@ -109,6 +109,23 @@ class CellGrid:
     def n_cells(self) -> int:
         return len(self.cell_index)
 
+    def usable_risk_mask(
+        self, risk_num_col: str = "todu_30ever_h6", risk_den_col: str = "todu_amt_pile_h6"
+    ) -> np.ndarray:
+        """Cells with a usable observed or modeled rate for the selected indicator.
+
+        Record presence (``observed``) is not outcome availability: all-missing
+        booked pairs aggregate to 0/0 while production remains positive (F8).
+        A zero numerator with positive exposure IS usable, including sparse HRI
+        numerators filled with zero by ``from_summary``.
+        """
+        num = self.cell_data[risk_num_col].to_numpy(dtype=float)
+        den = self.cell_data[risk_den_col].to_numpy(dtype=float)
+        usable = np.isfinite(num) & (num >= 0) & np.isfinite(den) & (den > 0)
+        if len(self.observed) == self.n_cells:
+            usable &= self.observed
+        return usable
+
 
 # =============================================================================
 # classify_by_mask — N-dimensional record classification
@@ -506,8 +523,13 @@ def milp_solve_cutoffs(
     #   multiplier * sum(num[i] * x[i]) / sum(den[i] * x[i]) <= target_risk/100
     # Linearized:
     #   sum((multiplier * num[i] - target_risk/100 * den[i]) * x[i]) <= 0
-    todu_30 = cell[risk_num_col].values.astype(float)
-    todu_amt = cell[risk_den_col].values.astype(float)
+    usable = grid.usable_risk_mask(risk_num_col, risk_den_col)
+    if fixed_cells and any(val == 1 and not usable[idx] for idx, val in fixed_cells.items()):
+        logger.warning("MILP: must-accept cell has no usable risk evidence — infeasible (audit F8).")
+        return None
+    # Excluded cells must also have finite coefficients: inf * 0 is still NaN.
+    todu_30 = np.where(usable, cell[risk_num_col].to_numpy(dtype=float), 0.0)
+    todu_amt = np.where(usable, cell[risk_den_col].to_numpy(dtype=float), 0.0)
 
     # Guard: if total exposure is zero, the risk constraint is vacuous
     if todu_amt.sum() == 0:
@@ -582,15 +604,9 @@ def milp_solve_cutoffs(
 
     from scipy.optimize import Bounds
 
-    bounds = Bounds(lb=np.zeros(n), ub=np.ones(n))
-
-    # Exclude phantom (unobserved) cells: force x=0 so MILP cannot accept them
-    if len(grid.observed) == n and not grid.observed.all():
-        lb = bounds.lb.copy()
-        ub = bounds.ub.copy()
-        phantom_mask = ~grid.observed
-        ub[phantom_mask] = 0
-        bounds = Bounds(lb=lb, ub=ub)
+    # Risk support is a hard bound, independent of the portfolio denominator
+    # guard. Fixed must-accept conflicts were rejected above; they cannot undo it.
+    bounds = Bounds(lb=np.zeros(n), ub=usable.astype(float))
 
     if fixed_cells:
         lb = bounds.lb.copy()
@@ -857,10 +873,26 @@ def trace_pareto_frontier(
     # One-time (per sweep) check — both the MILP and GA-fallback paths share this grid.
     _warn_unenforceable_swapin_caps(grid.cell_data.columns, max_swapin_production_pct, max_swapin_risk)
 
+    usable = grid.usable_risk_mask(risk_num_col, risk_den_col)
+    conflicts = [idx for idx, val in (fixed_cells or {}).items() if val == 1 and not usable[idx]]
+    if conflicts:
+        raise ValueError(
+            f"Must-accept cells {conflicts} have no usable risk evidence for {risk_col} (audit F8). "
+            "Supply validated risk estimates or revise the floor constraints."
+        )
+    if not usable.all():
+        excluded_production = grid.cell_data.loc[~usable, "oa_amt_h0"].sum()
+        logger.warning(
+            f"Excluding {(~usable).sum()} cells without usable {risk_col} evidence from optimization "
+            f"(production={excluded_production:,.2f}; source totals retained)."
+        )
+    if not usable.any():
+        return pd.DataFrame(), grid, []
+
     # Determine risk sweep range (in the TARGET indicator's units)
     # Max risk = all cells accepted
-    all_t30 = grid.cell_data[risk_num_col].sum()
-    all_tamt = grid.cell_data[risk_den_col].sum()
+    all_t30 = grid.cell_data.loc[usable, risk_num_col].sum()
+    all_tamt = grid.cell_data.loc[usable, risk_den_col].sum()
     max_risk = float(calculate_b2_ever_h6(all_t30, all_tamt, multiplier=target_multiplier, as_percentage=True))
     if np.isnan(max_risk) or max_risk <= 0:
         max_risk = 20.0  # fallback
@@ -970,9 +1002,7 @@ def trace_pareto_frontier(
                 # Upper bound: accept everything EXCEPT pinned rejects and
                 # phantoms — the old unconditional accept-all violated ceiling
                 # (must-reject) pins and accepted unobserved cells (audit #36).
-                all_mask = np.ones(n_cells, dtype=int)
-                if len(grid.observed) == n_cells:
-                    all_mask[~grid.observed] = 0
+                all_mask = usable.astype(int)
                 for idx, val in fixed_cells.items():
                     all_mask[idx] = val
                 kpis_all = evaluate_solution(all_mask, grid, indicators, multiplier, multiplier_h3=multiplier_h3)
@@ -1392,8 +1422,12 @@ def _ga_pareto_fallback(
         logger.error(f"CellGrid missing required columns for GA fallback: {missing}.")
         return pd.DataFrame(), grid, []
 
-    todu_30 = cell["todu_30ever_h6"].values.astype(float)
-    todu_amt = cell["todu_amt_pile_h6"].values.astype(float)
+    usable = grid.usable_risk_mask()
+    if not usable.any() or any(val == 1 and not usable[idx] for idx, val in (fixed_cells or {}).items()):
+        logger.warning("GA: no usable risk evidence or conflicting must-accept cells (audit F8).")
+        return pd.DataFrame(), grid, []
+    todu_30 = np.where(usable, cell["todu_30ever_h6"].to_numpy(dtype=float), 0.0)
+    todu_amt = np.where(usable, cell["todu_amt_pile_h6"].to_numpy(dtype=float), 0.0)
     production = cell["oa_amt_h0"].values.astype(float)
     A_mono = _build_monotonicity_constraints(
         grid,
@@ -1429,12 +1463,9 @@ def _ga_pareto_fallback(
     for target in _progress_iter(targets, desc="GA Pareto fallback", enabled=show_progress, total=len(targets)):
         risk_coeffs = multiplier * todu_30 - (target / 100.0) * todu_amt
 
-        # Bounds: phantom cells forced to 0; pinned cells frozen to their value
-        # (pins take precedence, mirroring milp_solve_cutoffs bound order).
+        # Same evidence guard as MILP; conflicting must-accept pins failed above.
         xl = np.zeros(grid.n_cells)
-        xu = np.ones(grid.n_cells)
-        if len(grid.observed) == grid.n_cells and not grid.observed.all():
-            xu[~grid.observed] = 0
+        xu = usable.astype(float)
         if fixed_cells:
             for idx, val in fixed_cells.items():
                 xl[idx] = val
@@ -1469,6 +1500,8 @@ def _ga_pareto_fallback(
 
         if res.X is not None:
             mask = np.round(res.X).astype(int)
+            if np.any(mask[~usable]):
+                continue
             # Post-hoc feasibility check: verify monotonicity constraints
             mono_violation = A_mono @ mask
             if np.any(mono_violation > 0):

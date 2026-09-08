@@ -50,6 +50,7 @@ from src.policy_registry import (
     load_registry,
     register_policy,
     settings_bin_edges,
+    settings_bin_sources,
     unfrozen_bin_vars,
     write_comparison_consolidated,
     write_comparison_report,
@@ -209,6 +210,32 @@ def compare_segment(
             basis="realized_oot",
             sufficient=False,
             message="grid variables changed since champion registration — re-register the champion",
+            champion_policy_id=champion.policy_id,
+            challenger_policy_id=challenger_id,
+        )
+
+    # F9: identical edges on a different raw score define a DIFFERENT policy.
+    # Legacy entries remain readable, but cannot be compared without evidence
+    # of their original source mapping. Never infer that mapping from today's config.
+    current_sources = settings_bin_sources(settings)
+    missing_sources = [v for v in variables if not champion.bin_sources.get(v) or not current_sources.get(v)]
+    source_mismatch = [
+        v for v in variables if v not in missing_sources and champion.bin_sources[v] != current_sources[v]
+    ]
+    if missing_sources or source_mismatch:
+        message = (
+            f"missing frozen score sources for {missing_sources} — verify the current sources and "
+            "re-register the champion from its original run with explicit sources before comparing"
+            if missing_sources
+            else f"score sources changed since champion registration for {source_mismatch} — "
+            "restore the original source mapping; comparing would score a different policy"
+        )
+        logger.error(f"[{segment}] {message} — refusing to compare.")
+        return PolicyComparison(
+            segment=segment,
+            basis="realized_oot",
+            sufficient=False,
+            message=message,
             champion_policy_id=champion.policy_id,
             challenger_policy_id=challenger_id,
         )

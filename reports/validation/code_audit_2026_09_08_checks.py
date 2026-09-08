@@ -211,24 +211,27 @@ def hurdle_ci():
     frame["_hurdle_r"] = 7 * frame.todu_30ever_h6 / frame.todu_amt_pile_h6
     frame["_hurdle_w"] = frame.todu_amt_pile_h6
     HurdleRegressor().fit(frame[["a"]], frame._hurdle_r, sample_weight=frame._hurdle_w)
-    try:
-        compute_cell_level_ci(
-            frame,
-            ([-np.inf, 0.5, 1.5, np.inf],),
-            ["a"],
-            ["oa_amt_h0", "todu_amt_pile_h6", "todu_30ever_h6"],
-            "b2_ever_h6",
-            7,
-            0,
-            ["a"],
-            HurdleRegressor(),
-            cv_folds=3,
-        )
-    except ValueError as exc:
-        results["hurdle_ci"] = {"per_loan_fit_succeeds": True, "cell_ci_error": str(exc)}
-        assert "at least 2 classes" in str(exc)
-    else:
-        raise AssertionError("Expected the bin-aggregated CI refit to fail")
+    ci_df = compute_cell_level_ci(
+        frame,
+        ([-np.inf, 0.5, 1.5, np.inf],),
+        ["a"],
+        ["oa_amt_h0", "todu_amt_pile_h6", "todu_30ever_h6"],
+        "b2_ever_h6",
+        7,
+        0,
+        ["a"],
+        HurdleRegressor(),
+        cv_folds=3,
+    )
+    # FIXED (F6): the CI folds now use the SAME per-loan hurdle training branch as model
+    # selection and the final fit (previously the bin-aggregated refit raised "at least
+    # 2 classes" and the non-blocking catch silently dropped the CI).
+    assert not ci_df.empty and ci_df["pred_mean"].notna().all()
+    results["hurdle_ci"] = {
+        "per_loan_fit_succeeds": True,
+        "cell_ci_rows": int(len(ci_df)),
+        "ci_computed_for_hurdle_winner": True,
+    }
 
 
 def zero_exposure_observability():
