@@ -103,18 +103,54 @@ def run_inference_phase(
             "model_variables": model_variables,
         }
 
-        # Load todu model from the models directory (sibling to model subdirectory)
-        todu_model_path = Path(model_path).parent / "todu_model.joblib"
-        if not todu_model_path.exists():
-            # Also check parent's parent (models/ directory)
-            todu_model_path = Path(model_path).parent.parent / "todu_model.joblib"
-        if todu_model_path.exists():
+        # Exposure-model pairing (audit F3): risk models are versioned per training run,
+        # but the exposure (todu) model used to be saved UNVERSIONED at the models root and
+        # overwritten by every run — selecting an older model_<ts> silently paired it with
+        # the NEWEST exposure model. Resolution order:
+        #   1. the copy saved INSIDE the versioned dir (trainings after this fix) — the
+        #      verified pair;
+        #   2. legacy shared copy at the root, allowed ONLY when the selected dir is the
+        #      newest model_* there (that same run wrote the root copy, so the pairing is
+        #      correct by construction) — with a warning;
+        #   3. selecting an OLDER dir with only a root copy fails loudly: the pairing is
+        #      known-mismatched.
+        model_dir = Path(model_path)
+        paired_todu = model_dir / "todu_model.joblib"
+        legacy_candidates = [
+            model_dir.parent / "todu_model.joblib",
+            model_dir.parent.parent / "todu_model.joblib",
+        ]
+        todu_model_path = None
+        if paired_todu.exists():
+            todu_model_path = paired_todu
+        else:
+            legacy = next((p for p in legacy_candidates if p.exists()), None)
+            if legacy is not None:
+                siblings = sorted(model_dir.parent.glob("model_*"))
+                latest = siblings[-1] if siblings else None
+                if latest is not None and latest.name != model_dir.name:
+                    raise RuntimeError(
+                        f"[{segment}] Exposure-model pairing cannot be verified (audit F3): the selected "
+                        f"risk model '{model_dir.name}' is not the newest in {model_dir.parent} "
+                        f"(newest: '{latest.name}'), and the shared {legacy.name} at the models root was "
+                        "overwritten by the newest training run. Retrain, or select the newest model "
+                        "directory (new trainings save the exposure model inside the versioned directory)."
+                    )
+                logger.warning(
+                    f"[{segment}] Using LEGACY shared exposure model {legacy} — pairing accepted because "
+                    f"'{model_dir.name}' is the newest model directory (that run wrote the shared copy). "
+                    "Newer trainings persist the pair inside the versioned directory."
+                )
+                todu_model_path = legacy
+        if todu_model_path is not None:
             # safe_joblib_load enforces SHA-256 sidecar + trusted-root allowlist (todo #44)
             reg_todu_amt_pile = safe_joblib_load(todu_model_path)
             logger.debug(f"[{segment}] Loaded todu model from {todu_model_path}")
         else:
             # Fallback: train todu model on current segment data
-            logger.warning(f"[{segment}] Todu model not found at {todu_model_path}, training on current data")
+            logger.warning(
+                f"[{segment}] No exposure (todu) model found beside {model_dir} — training one on current data"
+            )
             _, reg_todu_amt_pile, _ = todu_average_inference(
                 data=train_data,
                 variables=settings.variables,
@@ -175,6 +211,26 @@ def run_inference_phase(
             plot_output_path=output.todu_avg_inference_html,
             model_output_path=output.todu_model_joblib,
         )
+
+        # Persist the exposure model INSIDE the versioned risk-model directory too
+        # (audit F3): the root copy above is overwritten by every run, so the in-dir
+        # copy is what makes an older model_<ts> reusable as a VERIFIED pair.
+        saved_model_file = risk_inference.get("model_path")
+        if saved_model_file:
+            try:
+                import joblib
+
+                from src.persistence import write_integrity_sidecar
+
+                paired_path = Path(saved_model_file).parent / "todu_model.joblib"
+                joblib.dump(reg_todu_amt_pile, paired_path)
+                write_integrity_sidecar(paired_path)
+                logger.debug(f"[{segment}] Exposure model paired into {paired_path.parent}")
+            except OSError:
+                logger.warning(
+                    f"[{segment}] Could not pair the exposure model into the versioned model dir",
+                    exc_info=True,
+                )
 
         # HRI model pair (risk_indicator='hri_h6' only): rate model on hri_h6
         # (multiplier=1, h_num/h_den target pair via the registry) + h_den exposure

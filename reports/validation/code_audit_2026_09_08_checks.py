@@ -135,25 +135,42 @@ def source_mapping_guard():
 
 def model_pairing(root):
     output = OutputPaths(base_dir=root / "model_output")
-    old_dir = root / "model_output/models/model_old"
+    old_dir = root / "model_output/models/model_20240101_000000"
+    new_dir = root / "model_output/models/model_20240202_000000"
     old_dir.mkdir(parents=True)
+    new_dir.mkdir(parents=True)
     companion = old_dir.parent / "todu_model.joblib"
     companion.touch()
-    old_exposure = LinearRegression(fit_intercept=False).fit(pd.DataFrame({"oa_amt": [100.0, 200.0]}), [700, 1400])
     new_exposure = LinearRegression(fit_intercept=False).fit(pd.DataFrame({"oa_amt": [100.0, 200.0]}), [200, 400])
     metadata = {"multiplier": 7, "model_variables": ["a"], "bin_edges": {"a": [-np.inf, 50, np.inf]}}
-    with (
+    patches = (
         patch("src.pipeline.inference.load_model_for_prediction", return_value=(object(), metadata, ["a"])),
-        patch("src.pipeline.inference.safe_joblib_load", return_value=new_exposure) as loader,
-    ):
-        _, loaded = run_inference_phase(pd.DataFrame(), settings(), str(old_dir), output)
+        patch("src.pipeline.inference.safe_joblib_load", return_value=new_exposure),
+    )
+    # FIXED (F3a): selecting the OLDER dir with only a root companion now fails loudly —
+    # the root copy was overwritten by the newer run, so the pairing is known-mismatched.
+    with patches[0], patches[1]:
+        try:
+            run_inference_phase(pd.DataFrame(), settings(), str(old_dir), output)
+        except RuntimeError as exc:
+            older_dir_error = str(exc)
+        else:
+            raise AssertionError("Expected the mismatched exposure pairing to be refused")
+    assert "pairing cannot be verified" in older_dir_error
+    # FIXED (F3b): the NEWEST dir may use the root companion (that run wrote it).
+    with patches[0], patches[1] as loader:
+        run_inference_phase(pd.DataFrame(), settings(), str(new_dir), output)
+    assert loader.call_args.args[0] == companion
+    # FIXED (F3c): an IN-DIR companion is the verified pair and loads even for older dirs.
+    (old_dir / "todu_model.joblib").touch()
+    with patches[0], patches[1] as loader:
+        run_inference_phase(pd.DataFrame(), settings(), str(old_dir), output)
+    assert loader.call_args.args[0] == old_dir / "todu_model.joblib"
     results["model_pairing"] = {
-        "requested_risk_model": old_dir.name,
-        "loaded_exposure_path_relative_to_models": str(loader.call_args.args[0].relative_to(old_dir.parent)),
-        "original_exposure_per_euro": float(old_exposure.coef_[0]),
-        "loaded_exposure_per_euro": float(loaded.coef_[0]),
+        "older_dir_with_root_companion": "refused (RuntimeError)",
+        "newest_dir_with_root_companion": "allowed (legacy, warned)",
+        "in_dir_companion": "loaded as the verified pair",
     }
-    assert loader.call_args.args[0] == companion and np.isclose(loaded.coef_[0], 2.0)
 
 
 def hurdle_ci():

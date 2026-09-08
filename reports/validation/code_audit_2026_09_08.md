@@ -38,6 +38,8 @@ Location: [src/policy_registry.py:475](/Users/inigo_ocariz_laptop/src/scoring_to
 
 ## F3 — P1: Reusing an older risk model loads the latest exposure model
 
+> **Status: FIXED (2026-09-08).** New trainings persist the exposure model (+ SHA-256 sidecar) inside the versioned `model_<timestamp>/` directory — the verified pair, resolved first at load time. Legacy directories without an in-dir copy may still use the shared root copy ONLY when the selected directory is the newest `model_*` there (that same run wrote the root copy), with a warning; selecting an OLDER directory fails loudly instead of silently pairing with the newest exposure model. The reproduction below asserts all three behaviors.
+
 Location: [src/pipeline/inference.py:106](/Users/inigo_ocariz_laptop/src/scoring_tools/src/pipeline/inference.py:106).
 
 **Trigger.** Train twice into the same models directory, then use --model-path to select the older model_<timestamp> directory.
