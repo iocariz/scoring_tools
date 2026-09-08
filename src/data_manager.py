@@ -154,6 +154,16 @@ def load_and_prepare_data(
         if missing_h3:
             logger.warning(f"Optional H3 columns not found in data (will be skipped): {missing_h3}")
         if missing_hri:
+            # Hard guard: HRI columns are only OPTIONAL while HRI is display-only. When it is
+            # the OPTIMIZATION target, silently degrading would optimize on the wrong metric.
+            if getattr(settings, "risk_indicator", "b2_ever_h6") == "hri_h6" and any(
+                c in missing_hri for c in ("h_num_h6", "h_den_h6")
+            ):
+                raise DataValidationError(
+                    f"risk_indicator='hri_h6' but the HRI source columns are absent from the data: "
+                    f"{missing_hri}. An optimization target never silently degrades — use a dataset "
+                    "with h_num_h6/h_den_h6 or set risk_indicator='b2_ever_h6'."
+                )
             logger.warning(f"Optional HRI columns not found in data (HRI disabled for this run): {missing_hri}")
         # Remove missing optional columns from settings so all downstream code
         # receives a clean list without columns that don't exist in the data.

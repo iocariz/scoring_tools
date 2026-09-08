@@ -22,6 +22,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pandas as pd
+
 from src.backtest import load_frozen_policy
 
 if TYPE_CHECKING:
@@ -45,6 +47,11 @@ class Headline:
     data_sha256: str | None = None
     git_commit: str | None = None
     config_hash: str | None = None
+    # Additive (phase 2): risk_pct's meaning is FROZEN as b2_ever_h6 forever — committed golden
+    # references stay valid. The optimizer's target indicator and the HRI headline are pinned
+    # separately; legacy references without these fields compare as before.
+    risk_indicator: str = "b2_ever_h6"
+    hri_pct: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -78,6 +85,9 @@ def extract_headline(seg_output_dir: Path, settings: PreprocessingSettings, suff
     git = lineage.get("git", {}) or {}
     config = lineage.get("config", {}) or {}
 
+    hri_val = None
+    if "hri_h6" in opt_sol and pd.notna(opt_sol["hri_h6"].iloc[0]):
+        hri_val = float(opt_sol["hri_h6"].iloc[0])
     return Headline(
         segment=settings.segment_filter,
         scenario=suffix.lstrip("_") or "base",
@@ -88,6 +98,8 @@ def extract_headline(seg_output_dir: Path, settings: PreprocessingSettings, suff
         data_sha256=data.get("sha256"),
         git_commit=git.get("commit"),
         config_hash=config.get("hash"),
+        risk_indicator=getattr(settings, "risk_indicator", "b2_ever_h6"),
+        hri_pct=hri_val,
     )
 
 
@@ -187,7 +199,29 @@ def compare_headline(
     else:
         config_match = True
 
-    numbers_ok = risk_ok and prod_ok and cells_match and accepted_set_match
+    # Additive HRI checks (phase 2): only enforced when the reference pinned them —
+    # legacy references (no risk_indicator / hri_pct keys) compare exactly as before.
+    indicator_ok = True
+    ref_indicator = reference.get("risk_indicator")
+    if ref_indicator is not None and ref_indicator != actual.risk_indicator:
+        indicator_ok = False
+        reasons.append(
+            f"risk_indicator changed ({actual.risk_indicator} != reference {ref_indicator}) — "
+            "the headline was pinned under a different optimization target"
+        )
+    hri_ok = True
+    ref_hri = reference.get("hri_pct")
+    if ref_hri is not None:
+        if actual.hri_pct is None:
+            hri_ok = False
+            reasons.append("hri_pct pinned in reference but missing on current run — fail-closed")
+        else:
+            hri_delta = actual.hri_pct - ref_hri
+            hri_ok = abs(hri_delta) <= risk_tol_pp
+            if not hri_ok:
+                reasons.append(f"HRI drift {hri_delta:+.4f}pp > {risk_tol_pp}pp")
+
+    numbers_ok = risk_ok and prod_ok and cells_match and accepted_set_match and indicator_ok and hri_ok
     passed = numbers_ok and snapshot_match and config_match
 
     return {

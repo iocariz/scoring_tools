@@ -400,6 +400,16 @@ class PreprocessingSettings(BaseModel):
     # can change the selected risk model and therefore the cutoffs (M1 validation required).
     model_hurdle_per_loan: bool = Field(default=False)
     optimum_risk: float = Field(default=1.1, gt=0, le=100)
+    # Which risk indicator the OPTIMIZER targets (Expert / governance-relevant). Default keeps
+    # the classic b2 basis; "hri_h6" switches MILP coefficients, Pareto ordering, scenario
+    # selection, model target and bootstrap CIs to the Harmonized Risk Indicator
+    # (h_num_h6/h_den_h6, no multiplier). Both indicators are always REPORTED regardless.
+    # Requires `optimum_hri` (the target in HRI-% units — NOT comparable to optimum_risk's
+    # b2 scale) and the h_num_h6/h_den_h6 columns in `indicators` + the data (hard runtime
+    # guard in data_manager: an optimization target never silently degrades).
+    # Flipping this changes cutoffs (M1/M5-style validation required).
+    risk_indicator: Literal["b2_ever_h6", "hri_h6"] = "b2_ever_h6"
+    optimum_hri: float | None = Field(default=None, gt=0, le=100)
     risk_step: float = Field(default=0.1, gt=0, le=50)
     cz_config: dict[int, Any] = Field(default_factory=dict)
     log_level: str = "INFO"
@@ -795,6 +805,35 @@ class PreprocessingSettings(BaseModel):
                 f"{unknown}. Allowed: {self.variables}"
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_risk_indicator(self) -> "PreprocessingSettings":
+        if self.risk_indicator == "hri_h6":
+            if self.optimum_hri is None:
+                raise ValueError(
+                    "risk_indicator='hri_h6' requires `optimum_hri` (the target in HRI-% units). "
+                    "`optimum_risk` is on the b2 scale (x7 multiplier) and is NOT reused."
+                )
+            missing = [c for c in ("h_num_h6", "h_den_h6") if c not in self.indicators]
+            if missing:
+                raise ValueError(
+                    f"risk_indicator='hri_h6' requires the HRI source columns in `indicators`; missing: {missing}"
+                )
+        return self
+
+    @property
+    def selected_indicator(self):
+        """The RiskIndicator spec the optimizer targets (see src/risk_indicators.py)."""
+        from src.risk_indicators import RISK_INDICATORS
+
+        return RISK_INDICATORS[self.risk_indicator]
+
+    @property
+    def selected_target(self) -> float:
+        """The risk target in the SELECTED indicator's units."""
+        if self.risk_indicator == "hri_h6":
+            return float(self.optimum_hri)  # validator guarantees not None
+        return float(self.optimum_risk)
 
     @classmethod
     def from_toml(cls, config_path: str = "config.toml") -> "PreprocessingSettings":

@@ -397,7 +397,10 @@ def run_optimization_phase(
                 f"min_accepted_bin_by_variable={settings.min_accepted_bin_by_variable}"
             )
 
-        # MILP-based Pareto frontier optimization
+        # MILP-based Pareto frontier optimization on the SELECTED indicator (b2 by
+        # default; risk_indicator='hri_h6' switches the constraint/ordering basis while
+        # both indicators stay computed on every frontier row).
+        target_ind = settings.selected_indicator
         pareto_df, grid, pareto_masks = trace_pareto_frontier(
             data_summary_desagregado=data_summary_desagregado,
             variables=settings.variables,
@@ -413,7 +416,19 @@ def run_optimization_phase(
             monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
             monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
             fixed_cells=floor_fixed_cells,
+            risk_num_col=target_ind.num_col,
+            risk_den_col=target_ind.den_col,
+            risk_col=target_ind.output_col,
+            target_multiplier=target_ind.multiplier(settings),
         )
+
+        if pareto_df.empty and settings.risk_indicator != "b2_ever_h6":
+            # Neither the GA fallback nor the legacy 2-var enumeration can target a
+            # non-b2 indicator — failing loudly beats optimizing the wrong metric.
+            raise RuntimeError(
+                f"[{segment}] MILP produced no solutions and the fallback optimizers only "
+                f"support the b2 basis (risk_indicator={settings.risk_indicator})."
+            )
 
         if pareto_df.empty:
             # Fallback depending on number of variables. The GA fallback honors
@@ -563,7 +578,10 @@ def run_optimization_phase(
     logger.info(
         f"[{segment}] Optimization done | mode={mode} | "
         f"{len(data_summary)} solutions | {grid_desc} grid | "
-        f"b2 range: [{b2_min:.2f}%, {b2_max:.2f}%] | optimum_risk={settings.optimum_risk:.1f}% | {elapsed:.1f}s"
+        f"b2 range: [{b2_min:.2f}%, {b2_max:.2f}%] | optimum_risk={settings.optimum_risk:.1f}% | "
+        f"target={settings.risk_indicator}"
+        + (f"@{settings.optimum_hri:.2f}%" if settings.risk_indicator == "hri_h6" else "")
+        + f" | {elapsed:.1f}s"
     )
 
     return OptimizationResult(

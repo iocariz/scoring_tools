@@ -741,6 +741,7 @@ def apply_parceling_adjustment(
     enforce_monotonicity: bool = False,
     inv_vars: list[str] | None = None,
     apply_h3_multiplier: bool = False,
+    apply_hri_multiplier: bool = False,
     no_demand_anchor_percentile: float = 0.10,
     confidence_scale: float = 10.0,
     quiet: bool = False,
@@ -904,10 +905,16 @@ def apply_parceling_adjustment(
             f"near or at the cap ({max_risk_multiplier:.1f}x). Consider reviewing reject_uplift_factor."
         )
 
-    # NOTE: h_num_h6/h_num_h3 (HRI numerators) are deliberately NOT uplifted while HRI is
-    # display-only — HRI reports realized values honestly. This changes when a future
-    # risk_indicator="hri_h6" mode makes HRI the optimization target.
     result["todu_30ever_h6"] = result["todu_30ever_h6"] * result["reject_risk_multiplier"]
+
+    # HRI numerator: uplifted ONLY when HRI is the optimization target
+    # (risk_indicator='hri_h6' → apply_hri_multiplier=True, threaded from
+    # run_optimization_pipeline). Display-only runs keep realized HRI honest.
+    if "h_num_h6" in result.columns:
+        if apply_hri_multiplier:
+            result["h_num_h6"] = result["h_num_h6"] * result["reject_risk_multiplier"]
+        else:
+            logger.debug("Reject inference: HRI numerator NOT uplifted (HRI is display-only in this run).")
 
     # Optionally apply the same uplift to H3 risk numerator.
     # When True: preserves the observed H6/H3 ratio for downstream H3→H6
@@ -950,6 +957,7 @@ def apply_reject_inference(
     inv_vars: list[str] | None = None,
     include_all_rejections: bool = False,
     apply_h3_multiplier: bool = False,
+    apply_hri_multiplier: bool = False,
     acceptance_recent_months: int | None = None,
     acceptance_decay_half_life_months: float | None = None,
     acceptance_date_col: str = "mis_date",
@@ -1032,6 +1040,7 @@ def apply_reject_inference(
             enforce_monotonicity=enforce_monotonicity,
             inv_vars=inv_vars,
             apply_h3_multiplier=apply_h3_multiplier,
+            apply_hri_multiplier=apply_hri_multiplier,
             no_demand_anchor_percentile=no_demand_anchor_percentile,
             confidence_scale=confidence_scale,
         )

@@ -459,6 +459,7 @@ class RiskProductionVisualizer:
         grid: Any | None = None,
         multiplier: float = DEFAULT_RISK_MULTIPLIER,
         total_demand: float | None = None,
+        risk_col: str = "b2_ever_h6",
     ):
         """
         Initialize the RiskProductionVisualizer.
@@ -508,6 +509,9 @@ class RiskProductionVisualizer:
         self._selection_feasible = True
         self.multiplier = multiplier
         self._total_demand = total_demand
+        # The indicator column the target/selection operates on ("b2_ever_h6" default;
+        # "hri_h6" when risk_indicator='hri_h6' — optimum_risk is then in HRI units).
+        self.risk_col = risk_col
 
         # Calculate initial metrics
         self.calculate_initial_metrics()
@@ -803,28 +807,34 @@ class RiskProductionVisualizer:
                 # Fallback if sol_fac is not index/column (it really should be there)
                 pass
 
+        # Selection runs on the TARGET indicator's column (b2_ever_h6 default; hri_h6
+        # when risk_indicator='hri_h6' — optimum_risk then holds the HRI-unit target).
+        risk_col = getattr(self, "risk_col", "b2_ever_h6")
+        if risk_col not in self.data_summary.columns:
+            risk_col = "b2_ever_h6"
+
         # Exclude NaN-risk solutions (zero-exposure cells, not "zero risk")
-        valid = self.data_summary["b2_ever_h6"].notna()
+        valid = self.data_summary[risk_col].notna()
         candidates = self.data_summary[valid]
         if candidates.empty:
             candidates = self.data_summary
 
-        b2_col = candidates["b2_ever_h6"]
+        b2_col = candidates[risk_col]
         data_filtered = candidates[b2_col <= self.optimum_risk]
         if data_filtered.empty:
             self._selection_feasible = False
             min_b2 = b2_col.min()
             max_b2 = b2_col.max()
             logger.warning(
-                f"No Pareto solution with b2_ever_h6 <= {self.optimum_risk:.2f}%. "
-                f"Pareto b2 range: [{min_b2:.2f}%, {max_b2:.2f}%]. "
-                f"Falling back to minimum-risk solution (b2={min_b2:.2f}%). "
-                f"Consider increasing optimum_risk in config.toml."
+                f"No Pareto solution with {risk_col} <= {self.optimum_risk:.2f}%. "
+                f"Pareto {risk_col} range: [{min_b2:.2f}%, {max_b2:.2f}%]. "
+                f"Falling back to minimum-risk solution ({risk_col}={min_b2:.2f}%). "
+                f"Consider increasing the risk target in config.toml."
             )
-            data_filtered = candidates.sort_values("b2_ever_h6").head(1)
+            data_filtered = candidates.sort_values(risk_col).head(1)
         else:
             # Explicitly select max production under risk cap (#30)
-            data_filtered = data_filtered.sort_values(["b2_ever_h6", "oa_amt_h0"]).tail(1)
+            data_filtered = data_filtered.sort_values([risk_col, "oa_amt_h0"]).tail(1)
         return data_filtered
 
     def _apply_static_update(self):

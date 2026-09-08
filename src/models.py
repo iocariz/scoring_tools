@@ -340,3 +340,33 @@ def calculate_risk_values(
         df["b2_ever_h6"], df["todu_amt_pile_h6"], multiplier=multiplier
     )
     return df
+
+
+def calculate_hri_values(
+    df: pd.DataFrame,
+    model_hri,
+    model_hden,
+    variables: list[str],
+    stressor: float,
+    var_reg: list[str],
+) -> pd.DataFrame:
+    """Fill hri_h6 / h_den_h6 / h_num_h6 on repesca rows using the HRI model pair.
+
+    Mirror of :func:`calculate_risk_values` for the Harmonized Risk Indicator
+    (multiplier = 1): predict the HRI denominator from oa_amt, predict the HRI
+    rate (stressed like b2 — same conservatism basis when HRI is the optimizer
+    target), then invert rate x denominator into the additive numerator.
+    Only used when ``risk_indicator='hri_h6'`` trained the HRI model pair.
+    """
+    if stressor <= 0:
+        logger.warning(f"HRI stressor value {stressor} is non-positive; clamping to 0.01")
+        stressor = 0.01
+
+    preds_den = model_hden.predict(df[["oa_amt"]])
+    df["h_den_h6"] = np.clip(preds_den, 0, None)
+
+    data_out = transform_variables(df.copy(), variables)
+    X = prepare_model_input(data_out, var_reg, model_hri)
+    data_out["hri_h6"] = np.clip(stressor * model_hri.predict(X), a_min=0, a_max=None)
+    data_out["h_num_h6"] = calculate_todu_30ever_from_b2(data_out["hri_h6"], data_out["h_den_h6"], multiplier=1.0)
+    return data_out

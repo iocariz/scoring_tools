@@ -142,6 +142,8 @@ def build_lineage(
             "multiplier": settings.multiplier,
             "stress_mode": settings.stress_mode,
             "optimum_risk": settings.optimum_risk,
+            "risk_indicator": getattr(settings, "risk_indicator", "b2_ever_h6"),
+            "optimum_hri": getattr(settings, "optimum_hri", None),
             "risk_step": settings.risk_step,
             "use_mr_outcomes": settings.use_mr_outcomes,
             "reject_inference_method": settings.reject_inference_method,

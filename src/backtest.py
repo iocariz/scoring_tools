@@ -117,6 +117,10 @@ class BacktestResult:
             "in_sample_acceptance_rate": self.in_sample.get("acceptance_rate"),
             "oot_acceptance_rate": self.out_of_time.get("acceptance_rate"),
             "oot_production_eur": self.out_of_time.get("production"),
+            # HRI (additive; None when the dataset lacks h_* columns). The drift_flag
+            # above stays on the b2 basis regardless of the run's risk_indicator.
+            "in_sample_hri_pct": self.in_sample.get("hri_pct"),
+            "oot_realized_hri_pct": self.out_of_time.get("hri_pct"),
             "message": self.message,
         }
 
@@ -294,7 +298,7 @@ def _realized_metrics(booked: pd.DataFrame, accepted: pd.Series, multiplier: flo
     tamt = float(acc_risk["todu_amt_pile_h6"].sum())
     risk = float(calculate_b2_ever_h6(t30, tamt, multiplier=multiplier, as_percentage=True)) if tamt > 0 else None
     risk_ci_lo, risk_ci_hi = _bootstrap_risk_ci(acc_risk, multiplier)
-    return {
+    out = {
         "production": float(acc["oa_amt_h0"].sum()),
         "risk": risk,
         "risk_ci_lower": risk_ci_lo,
@@ -305,6 +309,15 @@ def _realized_metrics(booked: pd.DataFrame, accepted: pd.Series, multiplier: flo
         "todu_30ever_h6": t30,
         "todu_amt_pile_h6": tamt,
     }
+    # Realized HRI over the same accepted-booked subset (no multiplier; additive —
+    # the drift verdict stays on the b2 basis regardless of the run's risk_indicator).
+    if "h_num_h6" in acc.columns and "h_den_h6" in acc.columns:
+        h_num = float(acc["h_num_h6"].sum(skipna=True))
+        h_den = float(acc["h_den_h6"].sum(skipna=True))
+        out["hri_pct"] = (
+            float(calculate_b2_ever_h6(h_num, h_den, multiplier=1.0, as_percentage=True)) if h_den > 0 else None
+        )
+    return out
 
 
 def _acceptance_rate(demand: pd.DataFrame, accepted: pd.Series) -> float | None:

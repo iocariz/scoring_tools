@@ -4275,7 +4275,9 @@ def _batch_provenance_suffix(output_base: str | Path, segments: dict[str, dict[s
 _ASSUMPTION_TIERS: dict[str, tuple[str, str]] = {
     "multiplier": ("FIXED", "H0..H6 = 7 months; locked to the metric, never tune"),
     "multiplier_h3": ("FIXED", "H0..H3 = 4 months; locked"),
-    "optimum_risk": ("Core", "risk target the optimizer selects against"),
+    "optimum_risk": ("Core", "risk target the optimizer selects against (b2 units)"),
+    "risk_indicator": ("Core", "which indicator the optimizer targets (b2_ever_h6 | hri_h6)"),
+    "optimum_hri": ("Core", "HRI target when risk_indicator='hri_h6' (HRI-% units, no multiplier)"),
     "risk_step": ("Core", "Pareto-frontier resolution"),
     "stress_mode": ("Tuning", "material; segment-dependent (M3)"),
     "reject_inference_method": ("Tuning", "selection-bias correction"),
