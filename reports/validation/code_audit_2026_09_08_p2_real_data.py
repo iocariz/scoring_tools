@@ -190,7 +190,12 @@ def run():
                 record["same_target_limit"] = "No feasible solution returned with persisted predecessor floor"
         results.append(record)
         print(json.dumps(record), file=sys.stderr, flush=True)
-    return {"before_commit": BEFORE_COMMIT, "basis": __doc__, "segments": results, "inputs": input_fingerprints(results)}
+    return {
+        "before_commit": BEFORE_COMMIT,
+        "basis": __doc__,
+        "segments": results,
+        "inputs": input_fingerprints(results),
+    }
 
 
 if __name__ == "__main__":
