@@ -226,14 +226,14 @@ def run_inference_phase(
         # Persist the exposure model INSIDE the versioned risk-model directory too
         # (audit F3): the root copy above is overwritten by every run, so the in-dir
         # copy is what makes an older model_<ts> reusable as a VERIFIED pair.
-        saved_model_file = risk_inference.get("model_path")
-        if saved_model_file:
+        saved_model_dir = risk_inference.get("model_path")
+        if saved_model_dir:
             try:
                 import joblib
 
                 from src.persistence import write_integrity_sidecar
 
-                paired_path = Path(saved_model_file).parent / "todu_model.joblib"
+                paired_path = Path(saved_model_dir) / "todu_model.joblib"
                 joblib.dump(reg_todu_amt_pile, paired_path)
                 write_integrity_sidecar(paired_path)
                 logger.debug(f"[{segment}] Exposure model paired into {paired_path.parent}")

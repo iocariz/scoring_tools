@@ -43,6 +43,9 @@ def run_sensitivity_phase(
         from src.sensitivity import compute_cell_marginal_impact, run_sensitivity_analysis, sensitivity_cell_detail
 
         grid = CellGrid.from_summary(data_summary_desagregado, settings.variables)
+        indicator = settings.selected_indicator
+        target_multiplier = indicator.multiplier(settings)
+        risk_kwargs = {"risk_indicator": indicator, "target_multiplier": target_multiplier}
 
         # #38/#55: use the base scenario's ACTUALLY-SELECTED mask as the baseline
         # (persisted acceptance_mask in optimal_solution_base.csv), not a fresh
@@ -72,9 +75,12 @@ def run_sensitivity_phase(
         if baseline_mask is None:
             baseline_mask = milp_solve_cutoffs(
                 grid,
-                settings.optimum_risk,
+                settings.selected_target,
                 settings.inv_vars,
-                settings.multiplier,
+                target_multiplier,
+                risk_num_col=indicator.num_col,
+                risk_den_col=indicator.den_col,
+                swapin_risk_multiplier=settings.multiplier,
                 fixed_cells=fixed_cells,
                 max_swapin_production_pct=settings.max_swapin_production_pct,
                 max_swapin_risk=settings.max_swapin_risk,
@@ -95,12 +101,13 @@ def run_sensitivity_phase(
             settings.multiplier,
             settings.indicators,
             baseline_mask,
-            settings.optimum_risk,
+            settings.selected_target,
             perturbation_levels=settings.sensitivity_levels,
             max_swapin_production_pct=settings.max_swapin_production_pct,
             max_swapin_risk=settings.max_swapin_risk,
             milp_time_limit=settings.milp_time_limit,
             fixed_cells=fixed_cells,
+            **risk_kwargs,
         )
         sens_path = output.sensitivity_analysis_csv("_base")
         sens_df.to_csv(sens_path, index=False)
@@ -114,18 +121,21 @@ def run_sensitivity_phase(
             settings.multiplier,
             settings.indicators,
             baseline_mask,
-            settings.optimum_risk,
+            settings.selected_target,
             perturbation_levels=settings.sensitivity_levels,
             max_swapin_production_pct=settings.max_swapin_production_pct,
             max_swapin_risk=settings.max_swapin_risk,
             milp_time_limit=settings.milp_time_limit,
             fixed_cells=fixed_cells,
+            **risk_kwargs,
         )
         cell_detail_path = output.sensitivity_analysis_csv("_cell_detail")
         cell_detail.to_csv(cell_detail_path, index=False)
 
         # Marginal impact
-        marginal_df = compute_cell_marginal_impact(grid, baseline_mask, settings.indicators, settings.multiplier)
+        marginal_df = compute_cell_marginal_impact(
+            grid, baseline_mask, settings.indicators, settings.multiplier, **risk_kwargs
+        )
         marginal_path = output.cell_marginal_impact_csv("_base")
         marginal_df.to_csv(marginal_path, index=False)
         logger.info(f"[{segment}] Marginal impact saved to {marginal_path}")

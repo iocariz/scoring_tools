@@ -13,14 +13,17 @@ import pandas as pd
 
 from .constants import DEFAULT_SENSITIVITY_LEVELS
 from .optimization_utils import CellGrid, evaluate_solution, mask_to_cutoffs, milp_solve_cutoffs
+from .risk_indicators import B2_H6, RiskIndicator
 from .utils import calculate_b2_ever_h6
 
 
 def perturb_risk_summary(
     data_summary: pd.DataFrame,
     perturbation_pct: float,
+    *,
+    risk_indicator: RiskIndicator = B2_H6,
 ) -> pd.DataFrame:
-    """Scale the TOTAL risk numerator ``todu_30ever_h6`` by ``(1 + pct/100)``.
+    """Scale the selected indicator's TOTAL risk numerator (b2 by default) by ``(1 + pct/100)``.
 
     #55: the old version scaled only the reject-inference component
     (``todu_30ever_h6_rep``), so a cell whose accept/reject is driven by the
@@ -34,6 +37,7 @@ def perturb_risk_summary(
         data_summary: Aggregated summary (total ``todu_30ever_h6``; optional
             ``_boo`` / ``_rep`` components).
         perturbation_pct: Percentage change (e.g. 10 means +10%).
+        risk_indicator: Selected numerator to perturb; other risk measures stay unchanged.
 
     Returns:
         Copy of data_summary with the perturbed risk numerator (and components).
@@ -41,19 +45,17 @@ def perturb_risk_summary(
     df = data_summary.copy()
     factor = 1.0 + perturbation_pct / 100.0
 
-    has_boo = "todu_30ever_h6_boo" in df.columns
-    has_rep = "todu_30ever_h6_rep" in df.columns
-    if has_boo:
-        df["todu_30ever_h6_boo"] = df["todu_30ever_h6_boo"] * factor
-    if has_rep:
-        df["todu_30ever_h6_rep"] = df["todu_30ever_h6_rep"] * factor
-
+    num = risk_indicator.num_col
+    has_boo = f"{num}_boo" in df.columns
+    has_rep = f"{num}_rep" in df.columns
+    for suffix in ("_boo", "_rep"):
+        col = f"{num}{suffix}"
+        if col in df.columns:
+            df[col] *= factor
     if has_boo and has_rep:
-        # Keep the total consistent with its (now-scaled) components.
-        df["todu_30ever_h6"] = df["todu_30ever_h6_boo"] + df["todu_30ever_h6_rep"]
-    elif "todu_30ever_h6" in df.columns:
-        # No component split — scale the total risk numerator directly.
-        df["todu_30ever_h6"] = df["todu_30ever_h6"] * factor
+        df[num] = df[f"{num}_boo"] + df[f"{num}_rep"]
+    elif num in df.columns:
+        df[num] *= factor
 
     return df
 
@@ -71,6 +73,9 @@ def run_sensitivity_analysis(
     max_swapin_risk: float | None = None,
     milp_time_limit: float = 30.0,
     fixed_cells: dict[int, int] | None = None,
+    *,
+    risk_indicator: RiskIndicator = B2_H6,
+    target_multiplier: float | None = None,
 ) -> pd.DataFrame:
     """For each perturbation level, perturb risk, re-solve MILP, compare mask to baseline.
 
@@ -88,6 +93,8 @@ def run_sensitivity_analysis(
         DataFrame with columns: perturbation_pct, n_flipped, n_accept_to_reject,
         n_reject_to_accept, new_production, new_risk.
     """
+    if target_multiplier is None:
+        target_multiplier = multiplier if risk_indicator.multiplier_field else 1.0
     if perturbation_levels is None:
         perturbation_levels = list(DEFAULT_SENSITIVITY_LEVELS)
 
@@ -97,13 +104,16 @@ def run_sensitivity_analysis(
 
     results = []
     for pct in perturbation_levels:
-        perturbed = perturb_risk_summary(data_summary, pct)
+        perturbed = perturb_risk_summary(data_summary, pct, risk_indicator=risk_indicator)
         grid = CellGrid.from_summary(perturbed, variables)
         new_mask = milp_solve_cutoffs(
             grid,
             risk_target,
             inv_vars,
-            multiplier,
+            target_multiplier,
+            risk_num_col=risk_indicator.num_col,
+            risk_den_col=risk_indicator.den_col,
+            swapin_risk_multiplier=multiplier,
             fixed_cells=fixed_cells,
             max_swapin_production_pct=max_swapin_production_pct,
             max_swapin_risk=max_swapin_risk,
@@ -113,6 +123,7 @@ def run_sensitivity_analysis(
         if new_mask is None:
             row = {
                 "perturbation_pct": pct,
+                "risk_indicator": risk_indicator.key,
                 "n_flipped": None,
                 "n_accept_to_reject": None,
                 "n_reject_to_accept": None,
@@ -133,9 +144,9 @@ def run_sensitivity_analysis(
         # Recompute risk at higher precision from raw sums
         new_risk = float(
             calculate_b2_ever_h6(
-                kpis.get("todu_30ever_h6", 0.0),
-                kpis.get("todu_amt_pile_h6", 0.0),
-                multiplier=multiplier,
+                kpis.get(risk_indicator.num_col, 0.0),
+                kpis.get(risk_indicator.den_col, 0.0),
+                multiplier=target_multiplier,
                 as_percentage=True,
                 decimals=3,
             )
@@ -147,6 +158,7 @@ def run_sensitivity_analysis(
 
         row = {
             "perturbation_pct": pct,
+            "risk_indicator": risk_indicator.key,
             "n_flipped": int(flipped.sum()),
             "n_accept_to_reject": int(accept_to_reject),
             "n_reject_to_accept": int(reject_to_accept),
@@ -173,6 +185,9 @@ def sensitivity_cell_detail(
     max_swapin_risk: float | None = None,
     milp_time_limit: float = 30.0,
     fixed_cells: dict[int, int] | None = None,
+    *,
+    risk_indicator: RiskIndicator = B2_H6,
+    target_multiplier: float | None = None,
 ) -> pd.DataFrame:
     """Per-cell: minimum perturbation that flips its status.
 
@@ -190,6 +205,8 @@ def sensitivity_cell_detail(
         DataFrame with columns: var0, var1, ..., baseline_status, flip_threshold_pct,
         flip_direction.
     """
+    if target_multiplier is None:
+        target_multiplier = multiplier if risk_indicator.multiplier_field else 1.0
     if perturbation_levels is None:
         perturbation_levels = list(DEFAULT_SENSITIVITY_LEVELS)
 
@@ -202,13 +219,16 @@ def sensitivity_cell_detail(
     # Pre-compute masks for each perturbation level
     masks_by_level: dict[float, np.ndarray | None] = {}
     for pct in sorted_levels:
-        perturbed = perturb_risk_summary(data_summary, pct)
+        perturbed = perturb_risk_summary(data_summary, pct, risk_indicator=risk_indicator)
         grid = CellGrid.from_summary(perturbed, variables)
         masks_by_level[pct] = milp_solve_cutoffs(
             grid,
             risk_target,
             inv_vars,
-            multiplier,
+            target_multiplier,
+            risk_num_col=risk_indicator.num_col,
+            risk_den_col=risk_indicator.den_col,
+            swapin_risk_multiplier=multiplier,
             fixed_cells=fixed_cells,
             max_swapin_production_pct=max_swapin_production_pct,
             max_swapin_risk=max_swapin_risk,
@@ -232,6 +252,7 @@ def sensitivity_cell_detail(
                 break
 
         row = {variables[d]: combo[d] for d in range(len(variables))}
+        row["risk_indicator"] = risk_indicator.key
         row["baseline_status"] = baseline_status
         row["flip_threshold_pct"] = flip_threshold
         row["flip_direction"] = flip_direction
@@ -245,6 +266,9 @@ def compute_cell_marginal_impact(
     baseline_mask: np.ndarray,
     indicators: list[str],
     multiplier: float,
+    *,
+    risk_indicator: RiskIndicator = B2_H6,
+    target_multiplier: float | None = None,
 ) -> pd.DataFrame:
     """Marginal EUR/risk impact of flipping each cell.
 
@@ -261,22 +285,24 @@ def compute_cell_marginal_impact(
         DataFrame with columns: var0, var1, ..., status, delta_production,
         delta_risk_pct, cell_production, cell_risk.
     """
+    if target_multiplier is None:
+        target_multiplier = multiplier if risk_indicator.multiplier_field else 1.0
     cell = grid.cell_data
     accepted = baseline_mask.astype(bool)
 
     # Baseline sums (accepted cells only)
     base_prod = float(cell.loc[accepted, "oa_amt_h0"].sum())
-    base_t30 = float(cell.loc[accepted, "todu_30ever_h6"].sum())
-    base_tamt = float(cell.loc[accepted, "todu_amt_pile_h6"].sum())
-    base_risk = float(calculate_b2_ever_h6(base_t30, base_tamt, multiplier=multiplier, as_percentage=True))
+    base_t30 = float(cell.loc[accepted, risk_indicator.num_col].sum())
+    base_tamt = float(cell.loc[accepted, risk_indicator.den_col].sum())
+    base_risk = float(calculate_b2_ever_h6(base_t30, base_tamt, multiplier=target_multiplier, as_percentage=True))
 
     rows = []
     for combo, flat_idx in grid.cell_index.items():
         cell_row = cell.iloc[flat_idx]
         status = int(baseline_mask[flat_idx])
         cell_prod = float(cell_row["oa_amt_h0"])
-        cell_t30 = float(cell_row["todu_30ever_h6"])
-        cell_tamt = float(cell_row["todu_amt_pile_h6"])
+        cell_t30 = float(cell_row[risk_indicator.num_col])
+        cell_tamt = float(cell_row[risk_indicator.den_col])
 
         # Flip: if currently accepted, remove it; if rejected, add it
         if status == 1:
@@ -290,19 +316,20 @@ def compute_cell_marginal_impact(
             new_t30 = base_t30 + cell_t30
             new_tamt = base_tamt + cell_tamt
 
-        new_risk = float(calculate_b2_ever_h6(new_t30, new_tamt, multiplier=multiplier, as_percentage=True))
+        new_risk = float(calculate_b2_ever_h6(new_t30, new_tamt, multiplier=target_multiplier, as_percentage=True))
         safe_base_risk = base_risk
 
         delta_prod = new_prod - base_prod
         delta_risk = new_risk - safe_base_risk if np.isfinite(new_risk) and np.isfinite(safe_base_risk) else np.nan
 
         # Per-cell risk (for information)
-        cell_risk = float(calculate_b2_ever_h6(cell_t30, cell_tamt, multiplier=multiplier, as_percentage=True))
+        cell_risk = float(calculate_b2_ever_h6(cell_t30, cell_tamt, multiplier=target_multiplier, as_percentage=True))
 
         row = {grid.variables[d]: combo[d] for d in range(len(grid.variables))}
         row.update(
             {
                 "status": status,
+                "risk_indicator": risk_indicator.key,
                 "delta_production": delta_prod,
                 "delta_risk_pct": delta_risk,
                 "cell_production": cell_prod,

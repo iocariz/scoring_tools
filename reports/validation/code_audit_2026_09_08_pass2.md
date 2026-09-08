@@ -1,6 +1,6 @@
 # Code audit — second pass, 2026-09-08
 
-Five additional findings were confirmed by the review. **F8 and F9 (both P1) are now fixed in the working tree** at the user's request; the three P2 findings and the related policy-ID traceability defect remain open. The original review was read-only; the follow-up changed the relevant optimization and policy-comparison code.
+Five additional findings were confirmed by the review. **All F7–F11 findings, including the related policy-ID traceability defect, are now fixed.** P1 and the pending F6 hurdle-CI correction were merged and pushed to `main` at `c4fc4f9`; the P2 follow-up is on `fix/audit-p2`. The descriptions below preserve the original failing triggers; status notes and the verification section describe the corrected behavior.
 
 Reviewed the working tree at `6f719b1f2656f229e500db0f0dfe22128188a9cb`, including the local hurdle-CI change and uncommitted V2 files. Context: `CLAUDE.md`, `README.md`, `todo-list.md`, repository guidance, the earlier audit and its updated reproductions. Findings retain F7–F11 identifiers to distinguish them from F1–F6 in the earlier report. This report takes precedence over the earlier report's claims that exposure-model persistence and registry source compatibility are fully fixed.
 
@@ -20,7 +20,7 @@ Locations: [booked aggregation](/Users/inigo_ocariz_laptop/src/scoring_tools/src
 
 ## F9 — P1: Champion comparison ignores the champion's recorded score source
 
-> **FIXED, 2026-09-08.** Comparison validates `bin_sources` on every optimization axis before binning or scoring. Changed, missing and partial legacy source mappings are refused; matching mappings retain the correct frozen-policy results. Registration and comparison share source extraction. The related P2 challenger-ID mismatch below remains open.
+> **FIXED, 2026-09-08.** Comparison validates `bin_sources` on every optimization axis before binning or scoring. Changed, missing and partial legacy source mappings are refused; matching mappings retain the correct frozen-policy results. Registration and comparison now also share `policy_id_for_settings`, so challenger IDs match registration IDs, including when a comparison is refused for changed sources.
 
 Location: [compare_segment compatibility checks and binning](/Users/inigo_ocariz_laptop/src/scoring_tools/run_policy_registry.py:203).
 
@@ -32,9 +32,11 @@ Location: [compare_segment compatibility checks and binning](/Users/inigo_ocariz
 
 **Correction.** Validate the full frozen mapping, including `bin_sources`, before evaluating a champion; handle legacy entries lacking that evidence explicitly. Alternatively, bin each policy under its own frozen definition and compare loan-level accepted sets. Do not silently interpret old coordinates using a different score.
 
-**Related traceability defect (P2).** [The challenger ID](/Users/inigo_ocariz_laptop/src/scoring_tools/run_policy_registry.py:149) still uses the old 8-character accepted-cell hash. Registration now uses a 12-character grid fingerprint. The same current policy is called `audit_pass2-b42a73da` in the comparison and `audit_pass2-8309ca64581b` when registered. Comparison evidence therefore cannot be joined to the registry by its advertised challenger ID. Reuse the canonical identity builder.
+**Related traceability defect (P2, now fixed).** [The challenger ID](/Users/inigo_ocariz_laptop/src/scoring_tools/run_policy_registry.py:149) used the old 8-character accepted-cell hash while registration used a 12-character grid fingerprint. The reproduced policy was called `audit_pass2-b42a73da` in comparison and `audit_pass2-8309ca64581b` when registered. Both now use the latter canonical identity, allowing comparison evidence to join to the registry.
 
 ## F11 — P2: Reject-inference pooling is order-dependent and is not the claimed isotonic projection
+
+> **FIXED, 2026-09-08.** The original clipped multipliers are now the objective data in a demand-weighted convex least-squares solve over the full cell partial order. A transitive reduction retains all comparable-pair constraints, including sparse diagonal relations. Canonical coordinate ordering removes row-order dependence. SciPy SLSQP must converge and satisfy the order; failure raises instead of silently substituting a heuristic. The branching example now returns `[2.00, 2.50, 2.00]` in all six row permutations. Eight weighted five-cell problems agree with an independent exhaustive level-set reference.
 
 Location: [partial-order block merging](/Users/inigo_ocariz_laptop/src/scoring_tools/src/reject_inference.py:714).
 
@@ -48,6 +50,8 @@ Location: [partial-order block merging](/Users/inigo_ocariz_laptop/src/scoring_t
 
 ## F7 — P2: New training still saves the exposure model outside its versioned directory
 
+> **FIXED, 2026-09-08.** The exposure companion and SHA-256 sidecar are written inside the actual directory returned by persistence. A regression runs two saves with distinct exposure models, then deserializes the first version through the real trusted loader and verifies its original predictions. The shared root copy contains the newer exposure model without affecting the older pair.
+
 Location: [paired exposure save](/Users/inigo_ocariz_laptop/src/scoring_tools/src/pipeline/inference.py:236).
 
 **Trigger.** Train a new model and later select it after another training has saved a newer model directory.
@@ -59,6 +63,8 @@ Location: [paired exposure save](/Users/inigo_ocariz_laptop/src/scoring_tools/sr
 **Correction.** Write the exposure model and its integrity sidecar under the returned version directory. Add a two-training roundtrip that reuses the first model and verifies its original exposure model. Preserve the current refusal of unverifiable older legacy pairs.
 
 ## F10 — P2: HRI sensitivity silently re-optimizes b2
+
+> **FIXED, 2026-09-08.** Sensitivity uses the selected numerator, denominator, target and multiplier throughout baseline solving, perturbation solving, flip thresholds and marginal risks. CSVs identify `risk_indicator`; HRI uses multiplier 1. The independently configured swap-in risk cap retains its b2 basis. The original zero-perturbation example now has zero flips, €100 production and 0.5% HRI. Tests also exercise nonzero perturbations, the missing-frozen-mask fallback and b2 swap-in caps under HRI.
 
 Locations: [sensitivity orchestration](/Users/inigo_ocariz_laptop/src/scoring_tools/src/pipeline/sensitivity.py:91), [risk perturbation and re-solve](/Users/inigo_ocariz_laptop/src/scoring_tools/src/sensitivity.py:104).
 
@@ -72,14 +78,30 @@ Locations: [sensitivity orchestration](/Users/inigo_ocariz_laptop/src/scoring_to
 
 ## Verification, earlier findings and limits
 
-- Full suite after the P1 fixes: **1,740 passed, 2 skipped, 4 warnings**, including **22 added regression cases**. `uv run ruff check .`: **passed**. The initial review had 1,718 passing tests.
-- Run `uv run python reports/validation/code_audit_2026_09_08_pass2_checks.py`: F8/F9 now assert their corrected behavior; F7/F10/F11 still assert the open defects. The F9 reproduction also retains the related challenger-ID mismatch assertion.
+- Full suite after the P2 fixes: **1,760 passed, 2 skipped, 4 warnings**, including **20 new P2 regression cases** and strengthened policy-ID assertions. `uv run ruff check .`: **passed**. The P1 suite had 1,740 passing tests; the initial review had 1,718.
+- Run `uv run python reports/validation/code_audit_2026_09_08_pass2_checks.py`: every F7–F11 reproduction now asserts corrected behavior, including matching comparison/registration IDs.
 - The updated F1–F6 reproduction script passes. F1's joint masking, F2's positive-exposure observability guard, F4's registration fingerprint, F5's model-source guard and the local F6 hurdle-CI fix work for their reproduced triggers. F3's loader behavior is fixed, with the save-side omission documented in F7. F9 covers the remaining comparison-stage source mismatch.
 - F7 bypasses model fitting and deserialization, while exercising the actual persistence return value, exposure-file writes and reuse guard. F8 bypasses only prediction on an empty rejected-loan frame; aggregation, merging and MILP are real. F9 bypasses unrelated segment preprocessing while using real source binning, compatibility checks, matured holdout selection and risk bootstraps. F10 and F11 exercise their real public phase/functions without mocked calculations.
 - The broader review covered preprocessing, model fitting/uncertainty, optimization, reject inference, HRI integration, model reuse and policy governance, with the previous review of the local V2 implementation carried forward. This is not a proof that the remaining code is bug-free.
-- No fresh real-data impact measurement or model retraining was performed. Synthetic euros and rates demonstrate failure modes; they are not estimates for the current portfolio.
+- The P2 follow-up adds the read-only real-data impact check described below. Model predictions, bin edges, production, stress and transformation rates remain frozen during that check; it is not a full training/frontier/MR/batch rerun. Synthetic euros and rates in the original reproductions illustrate failure modes, not portfolio estimates.
 - Existing deferred MR maturity issue #52 and M5 reference re-pinning remain tracked separately. The documented production-weighted allocation convention and HRI sparse-by-design numerator semantics were respected. No additional V2 defect was confirmed; its development/validation status is unchanged.
 
 The earlier report and its user-edited fix annotations were preserved. The follow-up fixes add regression coverage for aggregation, optimizer/fallback exclusions, fixed-policy conflicts, source-map compatibility and legacy refusal.
 
 **Existing-output impact check (follow-up).** Inspected all seven current segment `data_summary_desagregado.csv` files and their accepted-cell sets without overwriting pipeline artifacts. All six optimizing segments have usable target-risk evidence in every observed cell, so the new evidence bounds leave their current optimization surfaces unchanged. The remaining segment (`direct-conso-known-premium`) runs in baseline mode: its 88 unsupported cells carry €0 production and its baseline behavior is preserved. This is a check of existing outputs, not a fresh SAS/model reproduction.
+
+## P2 real-data impact check
+
+Run `uv run python reports/validation/code_audit_2026_09_08_p2_real_data.py` from the repository root. Aggregate results and input SHA-256 fingerprints are saved in [code_audit_2026_09_08_p2_real_data.json](code_audit_2026_09_08_p2_real_data.json).
+
+The check reconstructs acceptance rates from the current SAS snapshot using each saved segment's frozen bins, period, status transformations, direction resolution, temporal weighting and Bayesian settings. On all six optimizing segments, the pre-fix projection from `c4fc4f9` reproduces the saved RI multipliers within `1e-7`. It then replaces only those multipliers in the frozen model surface, holding booked risk, denominators, production, stress and transformation rates fixed. All corrected projections are invariant to a seeded row permutation, and their weighted squared error falls by **2.90%–7.18%**. Measured projection time is **0.08–14.39 seconds** for 97–376 repesca cells.
+
+Frozen-policy risk changes are small but nonzero: **−0.000429 to +0.000821 percentage points** across the six segments. Frozen production and accepted sets are unchanged by construction. At the configured target, with the same MILP caps, uncertainty relaxation and persisted predecessor floors on both surfaces:
+
+- `direct-conso-known-no-premium`: 1 cell changes; production **−€2,813.81**.
+- `direct-known-no_premium-cd`: 4 cells change; production **+€9,352.14**.
+- `direct-pl-new`: 1 cell changes; production **−€44,048.78**.
+- `direct-known-no_premium-ef` and `direct-pl-known-premium-precon`: masks and production are unchanged.
+- `direct-known-no_premium-ab`: neither surface returns a feasible solution at 1.1% with the persisted predecessor floor. Its saved policy already has 1.132772% risk before this correction; the frozen-policy check remains valid, but no same-target cutoff comparison is available.
+
+The baseline-only `direct-conso-known-premium` segment is skipped. These same-target solves isolate the changed surface; they do not reproduce the full Pareto selection or propagate newly optimized floors through the batch. Existing pipeline artifacts were not overwritten, models were not retrained, and MR was not rerun. A fresh batch is needed to regenerate published results; deferred MR maturity work (#52) and M5 reference re-pinning remain outside this patch.

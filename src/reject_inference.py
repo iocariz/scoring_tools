@@ -524,123 +524,30 @@ def _shrink_acceptance_rate(
     return pd.Series(rate_eff, index=target.index), anchor, n_no_demand
 
 
-def _slice_weights(slice_df: pd.DataFrame, weight_col: str | None):
-    """``sample_weight`` for an isotonic slice: the evidence column if present and non-degenerate,
-    else ``None`` (unweighted). A slice whose weights are non-finite or sum to ~0 falls back to
-    unweighted so PAVA never sees an all-zero-weight input."""
-    if weight_col is None or weight_col not in slice_df.columns:
-        return None
-    w = slice_df[weight_col].to_numpy(dtype=float)
-    if not np.isfinite(w).all() or w.sum() <= 0:
-        return None
-    return w
-
-
 def _enforce_multiplier_monotonicity(
     result: pd.DataFrame,
     variables: list[str],
     inv_vars: list[str] | None = None,
     *,
     weight_col: str | None = None,
-    max_iterations: int = 10,
-    tol: float = 1e-6,
+    max_iterations: int = 1000,
+    tol: float = 1e-9,
     quiet: bool = False,
 ) -> pd.DataFrame:
-    """Enforce monotonicity on reject_risk_multiplier per variable axis.
+    """Weighted least-squares projection of ORIGINAL multipliers on the cell order.
 
-    Uses alternating isotonic regression passes until convergence to ensure
-    that multipliers are monotonic along each variable axis (marginal
-    monotonicity).  Iterating avoids the single-pass problem where the last
-    variable's projection overwrites earlier ones.
-
-    Parameters
-    ----------
-    result:
-        DataFrame with ``reject_risk_multiplier`` and *variables* columns.
-    variables:
-        Binning variable names.
-    inv_vars:
-        Variables whose higher bin values indicate *lower* risk. Isotonic
-        regression uses ``increasing=False`` for these.
-    weight_col:
-        Optional column of per-cell evidence weights (e.g. demand count). When set, PAVA
-        pools adjacent violators by the EXPOSURE-weighted mean instead of the unweighted mean,
-        so a high-evidence bin dominates a pooled block rather than being averaged 1:1 with a
-        thin one. A slice whose weights sum to ~0 falls back to unweighted for that slice.
-    max_iterations:
-        Maximum number of full passes over all variables.
-    tol:
-        Convergence tolerance on max absolute change between iterations.
-
-    Returns
-    -------
-    DataFrame with monotonicity-adjusted ``reject_risk_multiplier``.
+    Axis-wise projections followed by irreversible block pooling can produce a
+    feasible but non-optimal fit (F11). Solve the full convex quadratic problem
+    directly, with the same per-cell evidence weights used in parceling.
     """
-    from sklearn.isotonic import IsotonicRegression
-
     if result.empty or "reject_risk_multiplier" not in result.columns:
         return result
-
-    inv_set = set(inv_vars) if inv_vars else set()
-
-    for iteration in range(max_iterations):
-        prev_values = result["reject_risk_multiplier"].values.copy()
-
-        for var in variables:
-            increasing = var not in inv_set
-            other_vars = [v for v in variables if v != var]
-
-            if not other_vars:
-                # Single variable: apply isotonic on the whole column
-                sorted_df = result.sort_values(var)
-                if len(sorted_df) < 2:
-                    continue
-                iso = IsotonicRegression(increasing=increasing, out_of_bounds="clip")
-                iso_values = iso.fit_transform(
-                    sorted_df[var].values.astype(float),
-                    sorted_df["reject_risk_multiplier"].values,
-                    sample_weight=_slice_weights(sorted_df, weight_col),
-                )
-                result.loc[sorted_df.index, "reject_risk_multiplier"] = iso_values
-            else:
-                # Per-slice isotonic: for each unique combo of other vars,
-                # apply isotonic along the target variable axis.
-                # This preserves cross-dimensional variation.
-                for _, slice_idx in result.groupby(other_vars, observed=True).groups.items():
-                    slice_df = result.loc[slice_idx].sort_values(var)
-                    if len(slice_df) < 2:
-                        continue
-                    iso = IsotonicRegression(increasing=increasing, out_of_bounds="clip")
-                    iso_values = iso.fit_transform(
-                        slice_df[var].values.astype(float),
-                        slice_df["reject_risk_multiplier"].values,
-                        sample_weight=_slice_weights(slice_df, weight_col),
-                    )
-                    result.loc[slice_df.index, "reject_risk_multiplier"] = iso_values
-
-        max_change = np.abs(result["reject_risk_multiplier"].values - prev_values).max()
-        if max_change < tol:
-            logger.debug(
-                f"Isotonic monotonicity converged after {iteration + 1} iteration(s) (max_change={max_change:.2e})"
-            )
-            break
-    else:
-        logger.debug(
-            f"Isotonic monotonicity did not converge after {max_iterations} iterations (max_change={max_change:.2e})"
-        )
-
-    # Post-hoc: project onto monotonicity over the full cell poset (block-pooling PAVA, audit #17).
-    # A cell a dominates b if a[v] >= b[v] for all v (respecting direction) ⇒ multiplier[a] >= multiplier[b].
-    # Guarantees zero residual violations after the alternating axis-wise warm-start.
-    if len(variables) >= 2 and len(result) > 1:
-        n_merges = _fix_partial_order_violations(result, variables, inv_set, weight_col=weight_col)
-        if n_merges > 0:
-            log_fn = logger.debug if quiet else logger.warning
-            log_fn(
-                f"Isotonic post-hoc: pooled {n_merges} block(s) to clear partial-order violations "
-                f"remaining after the axis-wise warm-start."
-            )
-
+    n_violations = _fix_partial_order_violations(
+        result, variables, set(inv_vars or []), weight_col=weight_col, tol=tol, max_iterations=max_iterations
+    )
+    if n_violations:
+        log_fn = logger.debug if quiet else logger.info
+        log_fn(f"Isotonic least-squares projection corrected {n_violations} violated order pairs.")
     return result
 
 
@@ -651,83 +558,93 @@ def _fix_partial_order_violations(
     *,
     weight_col: str | None = None,
     tol: float = 1e-9,
+    max_iterations: int = 1000,
 ) -> int:
-    """Project the multiplier surface onto monotonicity over the cell poset (audit #17).
+    """Minimize sum(w * (fitted - original)**2) over the full cell partial order.
 
-    A generalized PAVA: whenever a dominating pair violates the order (cell ``i`` is riskier than
-    ``j`` in every dimension but ``mult[i] < mult[j]``), the two cells' **blocks** are pooled to the
-    unweighted mean of their members via union-find, and the scan repeats until no violation remains.
-    Pooling whole blocks (level sets) rather than averaging isolated pairs is what makes this a valid
-    isotonic projection — and because blocks only ever merge (≤ n−1 merges) it is guaranteed to
-    terminate with **zero** residual partial-order violations (the old pairwise-average + ``range(5)``
-    loop could re-break pairs and exit non-converged).
+    Constraints use the transitive reduction of coordinate-wise domination;
+    they are equivalent to all comparable pairs, including diagonal relations
+    across gaps in sparse grids. Canonical coordinate order makes solver inputs
+    independent of DataFrame row order. No heuristic fit is used as target data.
 
-    Returns the number of block merges performed.
+    Returns the number of initially violated order pairs, or zero for a no-op.
+    Failure to converge or satisfy the order raises rather than silently using
+    a different estimator. Equal/invalid total evidence falls back to unit
+    weights as before; individual zero weights retain the existing tiny floor.
     """
+    from scipy.optimize import LinearConstraint, minimize
+
     n = len(result)
     if n < 2:
         return 0
-
-    vals = result["reject_risk_multiplier"].to_numpy(dtype=float)
-    # Per-cell evidence weights (default 1 each → the original unweighted block mean). When set, a
-    # pooled block's value is the EXPOSURE-weighted mean of its members, so a high-evidence cell
-    # dominates a thin one instead of being averaged 1:1. Degenerate weights → fall back to unweighted.
+    values = result["reject_risk_multiplier"].to_numpy(dtype=float)
+    coords = result[variables].to_numpy(dtype=float)
+    if not np.isfinite(values).all() or not np.isfinite(coords).all():
+        raise ValueError("Isotonic regression requires finite coordinates and multipliers")
+    weights = np.ones(n)
     if weight_col is not None and weight_col in result.columns:
-        w = result[weight_col].to_numpy(dtype=float)
-        if not np.isfinite(w).all() or w.sum() <= 0:
-            w = np.ones(n)
-        else:
-            w = np.maximum(w, 1e-9)  # guard singleton blocks against a zero denominator
-    else:
-        w = np.ones(n)
-    # Orient coordinates so that higher = riskier in all dimensions.
-    signs = np.array([(-1 if v in inv_set else 1) for v in variables])
-    oriented = result[variables].to_numpy() * signs
+        supplied = result[weight_col].to_numpy(dtype=float)
+        if np.isfinite(supplied).all() and supplied.sum() > 0:
+            weights = np.maximum(supplied, 1e-9)
 
-    # Strictly-dominating ordered pairs: i dominates j ⇒ constraint mult[i] >= mult[j].
-    dom_pairs = []
-    for i in range(n):
-        for j in range(n):
-            if i == j:
-                continue
-            diff = oriented[i] - oriented[j]
-            if np.all(diff >= 0) and np.any(diff > 0):
-                dom_pairs.append((i, j))
-    if not dom_pairs:
+    oriented = coords * np.array([-1 if v in inv_set else 1 for v in variables])
+    order = np.lexsort(tuple(oriented[:, d] for d in reversed(range(len(variables)))))
+    oriented, values, weights = oriented[order], values[order], weights[order]
+    dominates = np.all(oriented[:, None, :] >= oriented[None, :, :], axis=2)
+    dominates &= np.any(oriented[:, None, :] > oriented[None, :, :], axis=2)
+    n_violations = int(np.count_nonzero(dominates & (values[:, None] < values[None, :] - tol)))
+    if n_violations == 0:
         return 0
 
-    # Union-find over cells; a block's value is the WEIGHTED mean of its members' multipliers:
-    # block_wsum = Σ(w·mult), block_wtot = Σw → value = block_wsum / block_wtot.
-    parent = list(range(n))
-    block_wsum = vals * w
-    block_wtot = w.copy()
+    # In this topological order, maximal predecessors are visited first. Once
+    # i -> j is kept, every predecessor of j is implied and can be removed.
+    edges = []
+    for i in range(n):
+        candidates = dominates[i].copy()
+        for j in np.flatnonzero(candidates)[::-1]:
+            if candidates[j]:
+                edges.append((i, j))
+                candidates[dominates[j]] = False
+    A = np.zeros((len(edges), n))
+    for row, (i, j) in enumerate(edges):
+        A[row, i], A[row, j] = 1.0, -1.0
 
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    merges = 0
-    while True:
-        changed = False
-        for i, j in dom_pairs:
-            ri, rj = find(i), find(j)
-            if ri == rj:
-                continue
-            if block_wsum[ri] / block_wtot[ri] < block_wsum[rj] / block_wtot[rj] - tol:
-                # i dominates j but block(i) is less risky than block(j): pool the two blocks.
-                parent[rj] = ri
-                block_wsum[ri] += block_wsum[rj]
-                block_wtot[ri] += block_wtot[rj]
-                merges += 1
-                changed = True
-        if not changed:
-            break
-
-    if merges:
-        result["reject_risk_multiplier"] = np.array([block_wsum[find(k)] / block_wtot[find(k)] for k in range(n)])
-    return merges
+    # Scaling leaves the minimizer unchanged and improves numerical conditioning.
+    low, high = float(values.min()), float(values.max())
+    scale = high - low
+    y = (values - low) / scale
+    w = weights / weights.mean()
+    solved = minimize(
+        fun=lambda x: float(np.dot(w, (x - y) ** 2)),
+        jac=lambda x: 2.0 * w * (x - y),
+        x0=np.full(n, np.average(y, weights=w)),
+        method="SLSQP",
+        bounds=[(0.0, 1.0)] * n,
+        constraints=[LinearConstraint(A, 0.0, np.inf)],
+        options={"ftol": 1e-12, "maxiter": max_iterations},
+    )
+    fitted = low + scale * solved.x
+    violation = np.max(np.where(dominates, fitted[None, :] - fitted[:, None], 0.0))
+    if not solved.success or not np.isfinite(fitted).all() or violation > tol:
+        raise RuntimeError(
+            f"Isotonic least-squares projection failed: {solved.message}; max order violation={violation:.3g}"
+        )
+    # Exact-feasibility snap: SLSQP satisfies the order constraints only to within its
+    # own tolerance, and the residual's SIGN is platform-dependent (macOS vs Linux BLAS
+    # — caught by CI). Downstream consumers compare multipliers exactly, so project the
+    # ≤ tol residuals onto the order: one forward pass suffices because ascending
+    # canonical lexsort places every dominated cell before its dominator, and each
+    # value moves at most `tol` (the raise above already excluded larger violations).
+    for i in range(n):
+        dom = dominates[i]
+        if dom.any():
+            floor_v = fitted[dom].max()
+            if fitted[i] < floor_v:
+                fitted[i] = floor_v
+    restored = np.empty(n)
+    restored[order] = fitted
+    result["reject_risk_multiplier"] = restored
+    return n_violations
 
 
 def apply_parceling_adjustment(

@@ -316,11 +316,11 @@ For each scenario (pessimistic / base / optimistic):
 
 When `run_sensitivity = true` in configuration, runs after optimization:
 
-1. **Risk perturbation**: Scales the `todu_30ever_h6_rep` column by +/-5%, 10%, 20% and re-solves the MILP at each level (respecting active swap-in constraints and MILP time limit).
+1. **Risk perturbation**: Scales the selected indicator's total numerator and its booked/rejected components by the configured percentages, then re-solves the MILP at that indicator's target. HRI uses `h_num_h6 / h_den_h6` with multiplier 1; b2 uses its configured multiplier. Active swap-in risk caps retain their b2 basis.
 2. **Cell flip thresholds**: For each cell, finds the minimum perturbation that would flip its accept/reject status.
 3. **Marginal impact**: Analytically computes the production and risk change from flipping each individual cell.
 
-Outputs are saved to `sensitivity_analysis_base.csv`, `sensitivity_analysis_cell_detail.csv`, and `cell_marginal_impact_base.csv`.
+Outputs are saved to `sensitivity_analysis_base.csv`, `sensitivity_analysis_cell_detail.csv`, and `cell_marginal_impact_base.csv`. Each output identifies its `risk_indicator`; cell flip thresholds and marginal risk impacts use the same selected basis.
 
 ### Phase 8: Trend Analysis
 
@@ -522,7 +522,7 @@ Smooth S-curve: gentle at the extremes, steep transition around 50%. Best when t
 
 All multipliers are floored at 1.0 and capped at `reject_max_risk_multiplier` (default 3.0).
 
-**Monotonicity Enforcement** (optional, `reject_enforce_monotonicity = true`): Post-processes multipliers using `sklearn.isotonic.IsotonicRegression` to ensure they are non-decreasing along each variable axis (marginal monotonicity). The direction of monotonicity respects each variable's risk ordering. Enforcement operates via alternating projections: for each variable, multipliers are averaged across the other axes, fit with isotonic regression along that variable's sorted bins, and mapped back. Iterates until convergence (max change < 1e-6) or 10 iterations.
+**Monotonicity Enforcement** (optional, `reject_enforce_monotonicity = true`): Projects the original clipped multipliers onto the full coordinate-wise cell order by minimizing demand-weighted squared error. The convex quadratic problem uses SciPy SLSQP, respects inverted score directions and sparse-grid diagonal relations, and preserves the multiplier bounds. Canonical coordinate ordering makes the fit independent of input row order. Solver failure or an order violation raises an error. This replaces alternating axis projections and greedy block merging, which could over-pool branching grids (audit F11). Because these multipliers affect optimized risk, existing runs need regeneration to use the correction.
 
 **Per-Bin Confidence Scores**: Each bin receives a confidence score `confidence = 1 - exp(-n_total_effective / reject_confidence_scale)`, tied to the same `reject_confidence_scale` (default **10.0**) used by the no/low-demand shrinkage:
 
@@ -1073,6 +1073,8 @@ A **policy** is a frozen base-scenario accepted-cell set plus the bin edges and 
 The comparison reports a **cell-level diff** (cells the challenger newly accepts vs newly rejects) and a **noise-aware risk verdict**: `BETTER` / `WORSE` only when both policies have ≥ 10 realized defaults *and* their realized-risk CIs are fully separated; otherwise `INCONCLUSIVE`. The verdict is risk-only; production delta is reported alongside for the human trade-off.
 
 Before comparison, the champion's ordered grid variables, frozen cutpoints and raw score sources (`bin_sources`) must match the current configuration on every optimization axis. Changed or missing source mappings cause refusal before cohort binning. Legacy entries remain readable, but must be re-registered from their original frozen run with explicit sources before they can be compared (audit F9).
+
+Registration and comparison use the same policy ID: segment name plus the first 12 characters of the full grid-and-accepted-set fingerprint. Comparison evidence can therefore be joined to the registry by challenger ID.
 
 ```bash
 # Freeze each segment's current base policy into the registry

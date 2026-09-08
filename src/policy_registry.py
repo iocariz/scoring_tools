@@ -182,10 +182,8 @@ def build_policy_entry(
     # Grid identity for the policy id (audit F4) + stored for transparency (F5's
     # registry gap): the raw source column behind each output axis.
     bin_sources = settings_bin_sources(settings)
-    fingerprint = grid_fingerprint(variables, bin_edges, bin_sources, headline.accepted_set_hash)
-
     return PolicyEntry(
-        policy_id=f"{headline.segment}-{fingerprint[:12]}",
+        policy_id=policy_id_for_settings(settings, headline.accepted_set_hash),
         segment=headline.segment,
         scenario=headline.scenario,
         variables=tuple(variables),
@@ -366,6 +364,14 @@ def settings_bin_sources(settings) -> dict[str, str]:
     """Raw sources behind the frozen axes, shared by registration and comparison."""
     sources = {var: str(getattr(bc, "source_col", "") or "") for var, bc in (settings.bins or {}).items()}
     return {var: source for var, source in sources.items() if source}
+
+
+def policy_id_for_settings(settings, accepted_set_hash: str) -> str:
+    """Canonical policy ID shared by registration and comparison evidence."""
+    fingerprint = grid_fingerprint(
+        settings.variables, settings_bin_edges(settings), settings_bin_sources(settings), accepted_set_hash
+    )
+    return f"{settings.segment_filter}-{fingerprint[:12]}"
 
 
 def unfrozen_bin_vars(settings) -> list[str]:
