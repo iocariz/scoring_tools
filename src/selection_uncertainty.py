@@ -148,10 +148,15 @@ def selection_aware_bootstrap(
     loan_cell = loan_cell[in_grid]
     prod_col = "oa_amt_h0" if "oa_amt_h0" in data_booked.columns else "oa_amt"
     # NaN→0 to match pandas .sum() semantics (loan-level todu_* carry NaNs;
-    # np.bincount would otherwise poison every cell sum).
+    # np.bincount would otherwise poison every cell sum). The risk pair is zeroed
+    # JOINTLY (audit F1 / #41 rule): a loan with a partial H6 outcome contributes to
+    # neither the numerator nor the denominator — production still counts it.
     loan_oa = np.nan_to_num(data_booked[prod_col].to_numpy(float)[in_grid])
-    loan_num = np.nan_to_num(data_booked["todu_30ever_h6"].to_numpy(float)[in_grid])
-    loan_den = np.nan_to_num(data_booked["todu_amt_pile_h6"].to_numpy(float)[in_grid])
+    _num_raw = data_booked["todu_30ever_h6"].to_numpy(float)[in_grid]
+    _den_raw = data_booked["todu_amt_pile_h6"].to_numpy(float)[in_grid]
+    _complete = ~np.isnan(_num_raw) & ~np.isnan(_den_raw)
+    loan_num = np.where(_complete, _num_raw, 0.0)
+    loan_den = np.where(_complete, _den_raw, 0.0)
     n_loans = len(loan_cell)
 
     # --- repesca component over ALL cells (selection varies per replicate) ---

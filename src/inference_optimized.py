@@ -2090,6 +2090,19 @@ def compute_pre_reject_inference_data(
         filtered_data = data[data[Columns.STATUS_NAME] == status]
         if reject_reason:
             filtered_data = filtered_data[filtered_data[Columns.REJECT_REASON] == reject_reason]
+        # Joint booked-completeness rule (audit F1, extends #41 upstream of the optimizer):
+        # a loan whose H6 (or H3) outcome pair is only PARTIALLY realized must contribute
+        # to NEITHER the numerator nor the denominator of that pair — NaN-skipping column
+        # sums otherwise admit its exposure with zero defaults, understating cell risk.
+        # Production/other indicators still count the loan.
+        from src.utils import mask_incomplete_outcome_pairs
+
+        filtered_data, n_masked = mask_incomplete_outcome_pairs(filtered_data)
+        if n_masked:
+            logger.warning(
+                f"Aggregation ({status}): excluded {n_masked} loan(s) with PARTIAL outcome pairs "
+                "from the risk sums (kept in production) — one completeness rule with the backtest (#41)."
+            )
         return (
             filtered_data.groupby(variables)
             .agg(dict.fromkeys(indicators, "sum"))
