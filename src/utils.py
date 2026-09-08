@@ -165,6 +165,45 @@ def calculate_todu_30ever_from_b2(
     return b2_ever_h6 * todu_amt_pile_h6 / multiplier
 
 
+# Outcome pairs subject to the joint booked-completeness rule (audit F1, extends #41):
+# a loan whose numerator OR denominator is unrealized (NaN) must contribute to NEITHER —
+# NaN-skipping column sums otherwise admit its exposure with zero defaults, diluting risk.
+# The HRI pairs (h_num_*/h_den_*) are deliberately NOT listed: their nulls are sparse by
+# design (no default event / no accrual), not unrealized outcomes.
+OUTCOME_COMPLETENESS_PAIRS: tuple[tuple[str, str], ...] = (
+    ("todu_30ever_h6", "todu_amt_pile_h6"),
+    ("todu_30ever_h3", "todu_amt_pile_h3"),
+)
+
+
+def mask_incomplete_outcome_pairs(
+    df: pd.DataFrame,
+    pairs: tuple[tuple[str, str], ...] = OUTCOME_COMPLETENESS_PAIRS,
+) -> tuple[pd.DataFrame, int]:
+    """Blank BOTH columns of each outcome pair where EITHER is NaN (joint completeness).
+
+    One completeness rule for risk sums (the backtest's #41 rule, applied upstream):
+    an incomplete outcome is excluded from that pair's numerator AND denominator, while
+    production and every other column keep the loan. Pairs are masked independently
+    (a partial H6 does not discard a complete H3). Returns ``(masked_copy, n_masked)``
+    where ``n_masked`` counts rows blanked in at least one pair; when nothing needs
+    masking the ORIGINAL frame is returned untouched (no copy).
+    """
+    masked_any = None
+    out = df
+    for num_col, den_col in pairs:
+        if num_col not in df.columns or den_col not in df.columns:
+            continue
+        incomplete = df[num_col].isna() != df[den_col].isna()
+        if not incomplete.any():
+            continue
+        if out is df:
+            out = df.copy()
+        out.loc[incomplete, [num_col, den_col]] = np.nan
+        masked_any = incomplete if masked_any is None else (masked_any | incomplete)
+    return out, int(masked_any.sum()) if masked_any is not None else 0
+
+
 def extrapolate_h3_to_h6(
     b2_h3: pd.Series | np.ndarray | float,
     h6_h3_ratio: pd.Series | np.ndarray | float,
@@ -780,8 +819,15 @@ def _bootstrap_worker(
     prod_col = "oa_amt_h0" if "oa_amt_h0" in passed_df.columns else "oa_amt"
     production_booked = passed_df[prod_col].sum() if not passed_df.empty else 0.0
 
-    risk_num = passed_df["todu_30ever_h6"].sum() if not passed_df.empty else 0.0
-    risk_den = passed_df["todu_amt_pile_h6"].sum() if not passed_df.empty else 0.0
+    # Joint completeness (audit F1 / #41 rule): a loan with a partial H6 outcome is
+    # excluded from BOTH risk sums — production above still counts it.
+    if not passed_df.empty:
+        complete = passed_df["todu_30ever_h6"].notna() & passed_df["todu_amt_pile_h6"].notna()
+        risk_num = passed_df.loc[complete, "todu_30ever_h6"].sum()
+        risk_den = passed_df.loc[complete, "todu_amt_pile_h6"].sum()
+    else:
+        risk_num = 0.0
+        risk_den = 0.0
 
     risk_booked = calculate_b2_ever_h6(risk_num, risk_den, multiplier=multiplier, as_percentage=False, decimals=6)
 
