@@ -4186,6 +4186,230 @@ def _infeasible_segments(output_base, segments: dict, suffix: str) -> list[str]:
     return out
 
 
+def _collect_frontier_specs(output_base: Path, segments: dict, suffix: str) -> tuple[list[dict], int, int]:
+    """Per-segment efficient-frontier data for the How-We-Got-Here panels.
+
+    Returns (specs, total_score_cells, total_frontier_points); every read is
+    best-effort so a missing artifact drops one panel, never the sheet.
+    """
+    specs: list[dict] = []
+    n_cells = 0
+    n_frontier = 0
+    for seg in segments:
+        data_dir = Path(output_base) / seg / "data"
+        try:
+            n_cells += len(pd.read_csv(data_dir / f"data_summary_desagregado{suffix}.csv"))
+        except Exception:
+            pass
+        try:
+            ef = pd.read_csv(data_dir / f"efficient_frontier{suffix}.csv")
+            ef = ef.dropna(subset=["b2_ever_h6", "oa_amt_h0"])
+            if len(ef) < 2:
+                continue
+        except Exception:
+            continue
+        n_frontier += len(ef)
+        chosen_risk = chosen_prod = None
+        try:
+            opt = pd.read_csv(data_dir / f"optimal_solution{suffix}.csv")
+            if not opt.empty:
+                chosen_risk = float(opt.iloc[0]["b2_ever_h6"])
+                chosen_prod = float(opt.iloc[0]["oa_amt_h0"])
+        except Exception:
+            pass
+        target = None
+        try:
+            import tomllib
+
+            cfg = tomllib.loads((Path(output_base) / seg / "config_segment.toml").read_text(encoding="utf-8"))
+            target = float(cfg.get("preprocessing", cfg).get("optimum_risk"))
+        except Exception:
+            pass
+        specs.append(
+            {
+                "name": seg,
+                "risk": ef["b2_ever_h6"].tolist(),
+                "production": ef["oa_amt_h0"].tolist(),
+                "chosen_risk": chosen_risk,
+                "chosen_production": chosen_prod,
+                "target": target,
+            }
+        )
+    return specs, n_cells, n_frontier
+
+
+def _add_sheet_image(ws, png_path: Path, anchor_row: int, display_width: int = 940) -> int:
+    """Embed a PNG at column B / *anchor_row*, scaled to *display_width* px.
+
+    Returns the number of sheet rows the image roughly occupies (at the default
+    20px row height) so the caller can advance past it.
+    """
+    from openpyxl.drawing.image import Image as XLImage
+    from PIL import Image as PILImage
+
+    with PILImage.open(png_path) as im:
+        w, h = im.size
+    img = XLImage(str(png_path))
+    img.width = display_width
+    img.height = int(h * display_width / w)
+    ws.add_image(img, f"B{anchor_row}")
+    return img.height // 20 + 2
+
+
+def _write_sheet_how_we_got_here(wb, output_base, segments: dict, consolidated_df: pd.DataFrame, suffix: str):
+    """Sheet 2 — the management story: how the headline numbers are derived.
+
+    A six-step plain-language method band carrying this run's actual numbers, then a
+    production bridge waterfall (today's portfolio → swap-out → swap-in → proposal) and
+    per-segment efficient-frontier panels showing the chosen operating point against the
+    risk target. Charts are rendered via src/consolidation_charts.py (matplotlib) into
+    ``<output>/consolidated_charts/``; every reader and the renderer degrade gracefully
+    (a note replaces a missing image, the workbook never crashes).
+    """
+    output_base = Path(output_base)
+    scenario_label = suffix.lstrip("_") or "base"
+    ws = wb.create_sheet("How We Got Here", 1)
+    ws.sheet_properties.tabColor = _CLR_TAB_EXEC
+    ws.sheet_view.showGridLines = False
+    _sheet_banner(
+        ws,
+        "How We Got Here — from loan applications to the proposed cutoffs",
+        f"Main period, {scenario_label} scenario. Independently reproducible — see Validation & Governance.",
+        ncols=12,
+    )
+    ws.column_dimensions["A"].width = 5
+    ws.column_dimensions["B"].width = 30
+    for col in "CDEFGHIJKL":
+        ws.column_dimensions[col].width = 12
+
+    # ---- gather this run's numbers (all best-effort) ----
+    tr_main = _get_total_row(consolidated_df, "main", scenario_label)
+    demand_str = (
+        f"€{tr_main['total_demand']:,.0f}" if tr_main is not None and pd.notna(tr_main.get("total_demand")) else "n/a"
+    )
+    specs, n_cells, n_frontier = _collect_frontier_specs(output_base, segments, suffix)
+    targets = sorted({s["target"] for s in specs if s.get("target") is not None})
+    if len(targets) > 1:
+        target_str = f"{targets[0]:.2g}%–{targets[-1]:.2g}% per segment"
+    elif targets:
+        target_str = f"{targets[0]:.2g}%"
+    else:
+        target_str = "per-segment risk budgets"
+    bt = _read_backtest_consolidated(output_base, suffix)
+    if bt is not None and not bt.empty and "drift_flag" in bt.columns:
+        counts = bt["drift_flag"].value_counts()
+        flags_str = ", ".join(f"{int(v)} {k}" for k, v in counts.items())
+    else:
+        flags_str = "see Out-of-time Validation"
+
+    steps = [
+        (
+            "Start from every application",
+            f"All through-the-door demand across {len(segments)} segment(s) — {demand_str} of requested "
+            "production — loaded from a snapshot whose fingerprint (SHA-256) is pinned on the "
+            "Validation & Governance sheet.",
+        ),
+        (
+            "Sort applications into score cells",
+            f"Each application is placed on a grid by its risk scores (and income where used): "
+            f"{n_cells:,} score cells in total, each holding loans of similar quality.",
+        ),
+        (
+            "Price the risk of every cell",
+            "Every cell gets an expected loss rate (b2_ever_h6): the realized rate where history is deep, "
+            "a model-smoothed rate where it is thin, and a conservative uplift for profiles we currently "
+            "reject (reject inference) — so the grid is priced wall-to-wall.",
+        ),
+        (
+            "Evaluate every sensible cutoff policy",
+            f"The optimizer scores {n_frontier:,} candidate accept/reject policies — only monotone ones "
+            "(a better score is never rejected while a worse one is accepted) — and keeps the efficient "
+            "frontier: for each level of risk, the maximum attainable production.",
+        ),
+        (
+            "Choose the point on the frontier",
+            f"Per segment we take the highest-production policy whose portfolio risk stays within the risk "
+            f"budget ({target_str}). The exact accepted cells are shown in the Cutoff Grids sheet.",
+        ),
+        (
+            "Prove it holds up",
+            f"The frozen cutoffs are re-applied to newer, held-out loans and realized risk is compared to "
+            f"the promise: {flags_str} (Out-of-time Validation sheet, with confidence intervals).",
+        ),
+    ]
+    row = 5
+    for i, (title, desc) in enumerate(steps, 1):
+        chip = ws.cell(row=row, column=1)
+        chip.value = i
+        chip.font = Font(bold=True, color=_CLR_WHITE, size=14, name=_FN)
+        chip.fill = _FILL_HEADER
+        chip.alignment = _ALIGN_CENTER
+        tc = ws.cell(row=row, column=2)
+        tc.value = title
+        tc.font = Font(bold=True, color=_CLR_PRIMARY, size=11, name=_FN)
+        tc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        ws.merge_cells(start_row=row, start_column=3, end_row=row, end_column=12)
+        dc = ws.cell(row=row, column=3)
+        dc.value = desc
+        dc.font = Font(color=_CLR_TEXT, size=10, name=_FN)
+        dc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        ws.row_dimensions[row].height = 46
+        ws.row_dimensions[row + 1].height = 6
+        row += 2
+
+    charts_dir = output_base / "consolidated_charts"
+
+    # ---- production bridge (TOTAL) ----
+    row = _section_title(ws, row + 1, "  From today's portfolio to the proposal — production bridge (TOTAL)", ncols=12)
+    bridge_png = None
+    if tr_main is not None:
+        try:
+            from src.consolidation_charts import render_production_bridge
+
+            bridge_png = render_production_bridge(tr_main.to_dict(), charts_dir / f"production_bridge{suffix}.png")
+        except Exception:
+            logger.warning("How We Got Here: production bridge rendering failed", exc_info=True)
+    if bridge_png is not None:
+        row += _add_sheet_image(ws, bridge_png, row + 1)
+        cap = ws.cell(row=row, column=2)
+        cap.value = (
+            "Reading: red = production we stop writing (cells whose realized risk is too high); "
+            "green = production we newly approve (safe cells currently rejected). "
+            "Portfolio risk is shown under the two end states."
+        )
+        cap.font = _FONT_SUBTITLE
+        ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=12)
+        row += 2
+    else:
+        row = _kv(ws, row, "Bridge chart", "not available for this run (missing TOTAL row or renderer)")
+
+    # ---- per-segment frontiers ----
+    row = _section_title(ws, row + 1, "  Why these cutoffs — each segment's risk/production trade-off", ncols=12)
+    frontier_png = None
+    if specs:
+        try:
+            from src.consolidation_charts import render_frontier_small_multiples
+
+            frontier_png = render_frontier_small_multiples(specs, charts_dir / f"frontiers{suffix}.png")
+        except Exception:
+            logger.warning("How We Got Here: frontier rendering failed", exc_info=True)
+    if frontier_png is not None:
+        row += _add_sheet_image(ws, frontier_png, row + 1)
+        cap = ws.cell(row=row, column=2)
+        cap.value = (
+            "Each curve is the segment's efficient frontier: every point is a complete cutoff policy, and "
+            "nothing above the curve is achievable. The dashed line is the risk budget; the star is the "
+            "chosen policy — the most production available without crossing it."
+        )
+        cap.font = _FONT_SUBTITLE
+        ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=12)
+        row += 2
+    else:
+        row = _kv(ws, row, "Frontier charts", "not available (efficient_frontier CSVs missing for this run)")
+
+    _apply_page_setup(ws)
+
+
 def _write_exec_recommendation(ws, start_row: int, consolidated_df, output_base, segments: dict, suffix: str) -> int:
     """Plain-language 'Recommendation & key risks' block on the Exec Summary. Returns next free row."""
     row = _section_title(ws, start_row, "Recommendation & key risks", ncols=12)
@@ -4787,6 +5011,12 @@ def export_consolidated_excel(
             _write_sheet_oot_validation(wb, output_base, "_base")
         except Exception:
             logger.warning("Could not write Out-of-time Validation sheet", exc_info=True)
+        # "How We Got Here" (@1, right after the Exec Summary — created last so the
+        # index-1 insert lands it ahead of the trust-layer sheets above).
+        try:
+            _write_sheet_how_we_got_here(wb, output_base, segments, consolidated_df, "_base")
+        except Exception:
+            logger.warning("Could not write How We Got Here sheet", exc_info=True)
 
         # Portfolio Summary / Segment Detail / Cutoff Comparison and the per-segment
         # acceptance-grid sheets were removed (redundant): the scenario/total tables live on
