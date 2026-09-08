@@ -904,6 +904,9 @@ def apply_parceling_adjustment(
             f"near or at the cap ({max_risk_multiplier:.1f}x). Consider reviewing reject_uplift_factor."
         )
 
+    # NOTE: h_num_h6/h_num_h3 (HRI numerators) are deliberately NOT uplifted while HRI is
+    # display-only — HRI reports realized values honestly. This changes when a future
+    # risk_indicator="hri_h6" mode makes HRI the optimization target.
     result["todu_30ever_h6"] = result["todu_30ever_h6"] * result["reject_risk_multiplier"]
 
     # Optionally apply the same uplift to H3 risk numerator.

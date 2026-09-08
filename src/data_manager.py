@@ -4,7 +4,11 @@ import pandas as pd
 from loguru import logger
 
 from src.config import PreprocessingSettings
-from src.constants import Columns
+from src.constants import (
+    H3_OPTIONAL_COLUMNS,
+    HRI_OPTIONAL_COLUMNS,
+    OPTIONAL_INDICATOR_COLUMNS,
+)
 
 
 class DataValidationError(Exception):
@@ -134,18 +138,23 @@ def load_and_prepare_data(
         logger.debug("Column names and categorical values standardized")
 
     # Validate required columns exist after standardization.
-    # H3 columns are optional — downstream code already handles their absence
-    # (e.g. mr_pipeline checks `"todu_30ever_h3_boo" in df.columns`).
-    h3_optional = {Columns.TODU_30EVER_H3, Columns.TODU_AMT_PILE_H3}
+    # H3 and HRI source columns are optional — downstream code already handles their
+    # absence (e.g. mr_pipeline checks `"todu_30ever_h3_boo" in df.columns`; HRI uses
+    # src.risk_indicators.hri_available).
     all_cols = list(dict.fromkeys(settings.keep_vars + settings.indicators))  # deduplicate, preserve order
-    required_cols = [c for c in all_cols if c not in h3_optional]
-    optional_cols = [c for c in all_cols if c in h3_optional]
+    required_cols = [c for c in all_cols if c not in OPTIONAL_INDICATOR_COLUMNS]
+    optional_cols = [c for c in all_cols if c in OPTIONAL_INDICATOR_COLUMNS]
 
     validate_data_columns(data, required_cols, "input data")
 
     missing_optional = [c for c in optional_cols if c not in data.columns]
     if missing_optional:
-        logger.warning(f"Optional H3 columns not found in data (will be skipped): {missing_optional}")
+        missing_h3 = [c for c in missing_optional if c in H3_OPTIONAL_COLUMNS]
+        missing_hri = [c for c in missing_optional if c in HRI_OPTIONAL_COLUMNS]
+        if missing_h3:
+            logger.warning(f"Optional H3 columns not found in data (will be skipped): {missing_h3}")
+        if missing_hri:
+            logger.warning(f"Optional HRI columns not found in data (HRI disabled for this run): {missing_hri}")
         # Remove missing optional columns from settings so all downstream code
         # receives a clean list without columns that don't exist in the data.
         # Use new lists to avoid mutating the caller's settings object in-place.

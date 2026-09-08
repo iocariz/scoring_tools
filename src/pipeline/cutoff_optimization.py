@@ -533,6 +533,23 @@ def run_optimization_phase(
             multiplier=settings.multiplier_h3,
             as_percentage=True,
         )
+    # Harmonized Risk Indicator (no multiplier) when source columns are available
+    from src.risk_indicators import hri_available, hri_h3_available
+
+    if hri_available(data_summary_desagregado):
+        data_summary_desagregado["hri_h6"] = calculate_b2_ever_h6(
+            data_summary_desagregado["h_num_h6"],
+            data_summary_desagregado["h_den_h6"],
+            multiplier=1.0,
+            as_percentage=True,
+        )
+    if hri_h3_available(data_summary_desagregado):
+        data_summary_desagregado["hri_h3"] = calculate_b2_ever_h6(
+            data_summary_desagregado["h_num_h3"],
+            data_summary_desagregado["h_den_h3"],
+            multiplier=1.0,
+            as_percentage=True,
+        )
     data_summary_desagregado["text"] = data_summary_desagregado.apply(
         lambda x: str("{:,.2f}M".format(x["oa_amt_h0"] / 1000000)) + " " + str("{:.2%}".format(x["b2_ever_h6"] / 100)),
         axis=1,

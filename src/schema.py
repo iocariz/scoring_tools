@@ -52,6 +52,31 @@ RAW_DATA_SCHEMA = pa.DataFrameSchema(
             nullable=True,
             required=False,
         ),
+        # HRI source columns (optional; booked-only, like the todu pair)
+        "h_num_h6": pa.Column(
+            dtype="float64",
+            checks=pa.Check.greater_than_or_equal_to(0),
+            nullable=True,
+            required=False,
+        ),
+        "h_den_h6": pa.Column(
+            dtype="float64",
+            checks=pa.Check.greater_than_or_equal_to(0),
+            nullable=True,
+            required=False,
+        ),
+        "h_num_h3": pa.Column(
+            dtype="float64",
+            checks=pa.Check.greater_than_or_equal_to(0),
+            nullable=True,
+            required=False,
+        ),
+        "h_den_h3": pa.Column(
+            dtype="float64",
+            checks=pa.Check.greater_than_or_equal_to(0),
+            nullable=True,
+            required=False,
+        ),
     },
     # Don't reject columns that aren't in the schema
     strict=False,

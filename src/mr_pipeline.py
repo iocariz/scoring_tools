@@ -74,6 +74,28 @@ def calculate_metrics_from_cuts(
         # Check if h3 columns are available
         has_h3 = multiplier_h3 is not None and "todu_30ever_h3_boo" in df.columns
 
+        # Harmonized Risk Indicator availability (no multiplier; optional columns)
+        from src.risk_indicators import hri_available, hri_h3_available
+
+        has_hri = hri_available(df, "_boo")
+        has_hri_h3 = hri_h3_available(df, "_boo")
+
+        def calc_hri(subset, suffix):
+            """HRI sums + rates for a subset; {} when the columns aren't in this run."""
+            out = {}
+            for gate, num_base, den_base, rate_key in (
+                (has_hri, "h_num_h6", "h_den_h6", "HRI (%)"),
+                (has_hri_h3, "h_num_h3", "h_den_h3", "HRI H3 (%)"),
+            ):
+                if not gate:
+                    continue
+                num_col, den_col = f"{num_base}{suffix}", f"{den_base}{suffix}"
+                n = subset[num_col].sum() if num_col in subset.columns else 0.0
+                d = subset[den_col].sum() if den_col in subset.columns else 0.0
+                r = calculate_b2_ever_h6(n, d, multiplier=1.0, as_percentage=True)
+                out[num_base], out[den_base], out[rate_key] = n, d, (float(r) if pd.notna(r) else None)
+            return out
+
         # Helper to calc metrics from a filtered subset
         def calc_metrics(subset, suffix):
             prod = subset[f"oa_amt_h0{suffix}"].sum()
@@ -137,6 +159,8 @@ def calculate_metrics_from_cuts(
             row_actual["Risk H3 (%)"] = actual_h3
             row_actual["todu_30ever_h3"] = actual_h3_rn
             row_actual["todu_amt_pile_h3"] = actual_h3_rd
+        hri_actual = calc_hri(df, "_boo")
+        row_actual.update(hri_actual)
         summary_data.append(row_actual)
 
         # Swap-in (Repesca that passes)
@@ -156,6 +180,8 @@ def calculate_metrics_from_cuts(
             row_si["Risk H3 (%)"] = si_h3
             row_si["todu_30ever_h3"] = si_h3_rn
             row_si["todu_amt_pile_h3"] = si_h3_rd
+        hri_si = calc_hri(swap_in_df, "_rep")
+        row_si.update(hri_si)
         summary_data.append(row_si)
 
         # Swap-out (Booked that fails)
@@ -175,6 +201,8 @@ def calculate_metrics_from_cuts(
             row_so["Risk H3 (%)"] = so_h3
             row_so["todu_30ever_h3"] = so_h3_rn
             row_so["todu_amt_pile_h3"] = so_h3_rd
+        hri_so = calc_hri(swap_out_df, "_boo")
+        row_so.update(hri_so)
         summary_data.append(row_so)
 
         # Optimum
@@ -232,6 +260,15 @@ def calculate_metrics_from_cuts(
             row_opt["Risk H3 (%)"] = opt_h3_risk
             row_opt["todu_30ever_h3"] = opt_h3_rn
             row_opt["todu_amt_pile_h3"] = opt_h3_rd
+        # HRI optimum: same additive num/den algebra (multiplier-independent)
+        for num_k, den_k, rate_k in (("h_num_h6", "h_den_h6", "HRI (%)"), ("h_num_h3", "h_den_h3", "HRI H3 (%)")):
+            if num_k in hri_actual:
+                opt_hn = (hri_actual[num_k] - hri_so.get(num_k, 0.0)) + hri_si.get(num_k, 0.0)
+                opt_hd = (hri_actual[den_k] - hri_so.get(den_k, 0.0)) + hri_si.get(den_k, 0.0)
+                opt_hri_raw = calculate_b2_ever_h6(opt_hn, opt_hd, multiplier=1.0, as_percentage=True)
+                row_opt[num_k] = opt_hn
+                row_opt[den_k] = opt_hd
+                row_opt[rate_k] = float(opt_hri_raw) if pd.notna(opt_hri_raw) else None
         summary_data.append(row_opt)
 
         # --- H3 floor enforcement on summary rows ---
@@ -2352,9 +2389,14 @@ def process_mr_period(
         indicators_mr = ["acct_booked_h0", "oa_amt", "oa_amt_h0"]
         if settings.use_mr_outcomes:
             indicators_mr += ["todu_30ever_h6", "todu_amt_pile_h6"]
+            # HRI H6 outcomes need the same maturity as todu H6 (realized-only basis)
+            if "h_num_h6" in settings.indicators:
+                indicators_mr += ["h_num_h6", "h_den_h6"]
         # Include h3 columns for complementary monitoring when configured
         if "todu_30ever_h3" in settings.indicators:
             indicators_mr += ["todu_30ever_h3", "todu_amt_pile_h3"]
+        if "h_num_h3" in settings.indicators:
+            indicators_mr += ["h_num_h3", "h_den_h3"]
         # Ensure merge keys (variables) are included.
         # Cap at 2 variables for MR bin-level comparison to avoid sparse bins
         # when N>2 (e.g., 3D grid splits observations too thinly for reliable

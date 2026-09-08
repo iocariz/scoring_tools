@@ -530,6 +530,26 @@ class RiskProductionVisualizer:
             tudu_30_ever, tudu_amt_pile, multiplier=self.multiplier, as_percentage=True, decimals=2
         )
 
+        # Actual HRI (Harmonized Risk Indicator — no multiplier), when sources present
+        from src.risk_indicators import hri_available, hri_h3_available
+
+        self.HRI_0 = None
+        self.HRI_H3_0 = None
+        self.actual_h_num_h6 = self.actual_h_den_h6 = None
+        self.actual_h_num_h3 = self.actual_h_den_h3 = None
+        if hri_available(self.data_summary_disaggregated, "_boo"):
+            self.actual_h_num_h6 = self.data_summary_disaggregated["h_num_h6_boo"].sum()
+            self.actual_h_den_h6 = self.data_summary_disaggregated["h_den_h6_boo"].sum()
+            self.HRI_0 = calculate_b2_ever_h6(
+                self.actual_h_num_h6, self.actual_h_den_h6, multiplier=1.0, as_percentage=True, decimals=2
+            )
+        if hri_h3_available(self.data_summary_disaggregated, "_boo"):
+            self.actual_h_num_h3 = self.data_summary_disaggregated["h_num_h3_boo"].sum()
+            self.actual_h_den_h3 = self.data_summary_disaggregated["h_den_h3_boo"].sum()
+            self.HRI_H3_0 = calculate_b2_ever_h6(
+                self.actual_h_num_h3, self.actual_h_den_h3, multiplier=1.0, as_percentage=True, decimals=2
+            )
+
         # Calculate OA_0
         self.OA_0 = self.data_summary_disaggregated["oa_amt_h0_boo"].sum()
 
@@ -1050,7 +1070,37 @@ class RiskProductionVisualizer:
             "Total Demand (€)": [total_demand, None, None, None, None],
         }
 
+        # Harmonized Risk Indicator columns (no multiplier), when the run carries them.
+        # NaN is preserved (Swap-in has no HRI: rejected loans carry no outcomes) and no
+        # 1e-6 floor is applied — downstream renders NaN as "—". Raw h_* sums are
+        # persisted like the todu pair so consolidation re-aggregates Σnum/Σden.
+        def _hri_rows(hri_actual, num_actual, den_actual, rate_col, num_col, den_col):
+            row = data_filtered.iloc[0]
+            rate_opt, rate_cut, rate_rep = (row.get(rate_col), row.get(f"{rate_col}_cut"), row.get(f"{rate_col}_rep"))
+            num_opt, num_cut, num_rep = (row.get(num_col), row.get(f"{num_col}_cut"), row.get(f"{num_col}_rep"))
+            den_opt, den_cut, den_rep = (row.get(den_col), row.get(f"{den_col}_cut"), row.get(f"{den_col}_rep"))
+            rate_delta = rate_opt - hri_actual if pd.notna(rate_opt) and pd.notna(hri_actual) else np.nan
+            summary_data[{"hri_h6": "HRI (%)", "hri_h3": "HRI H3 (%)"}[rate_col]] = [
+                hri_actual,
+                rate_rep,
+                rate_cut,
+                rate_opt,
+                rate_delta,
+            ]
+            summary_data[num_col] = [num_actual, num_rep, num_cut, num_opt, (num_opt or 0) - (num_actual or 0)]
+            summary_data[den_col] = [den_actual, den_rep, den_cut, den_opt, (den_opt or 0) - (den_actual or 0)]
+
+        if self.HRI_0 is not None and "hri_h6" in data_filtered.columns:
+            _hri_rows(self.HRI_0, self.actual_h_num_h6, self.actual_h_den_h6, "hri_h6", "h_num_h6", "h_den_h6")
+        if self.HRI_H3_0 is not None and "hri_h3" in data_filtered.columns:
+            _hri_rows(self.HRI_H3_0, self.actual_h_num_h3, self.actual_h_den_h3, "hri_h3", "h_num_h3", "h_den_h3")
+
         df_summary = pd.DataFrame(summary_data)
+
+        # Keep the rate columns adjacent: Risk (%), HRI (%), HRI H3 (%), then the rest.
+        if "HRI (%)" in df_summary.columns:
+            ordered = ["Metric", "Risk (%)"] + [c for c in ("HRI (%)", "HRI H3 (%)") if c in df_summary.columns]
+            df_summary = df_summary[ordered + [c for c in df_summary.columns if c not in ordered]]
 
         # Segment-level feasibility of the risk target (audit: the infeasible-threshold
         # fallback used to be shown as a plain "Optimum selected"). False when no Pareto point
