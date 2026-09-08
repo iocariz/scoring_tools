@@ -445,16 +445,18 @@ def slide_populations_risk(prs):
     )
 
     tf2 = _add_textbox(slide, Inches(0.8), Inches(4.5), Inches(5.5), Inches(0.5), "", font_size=13)
-    _section_heading(tf2, "Risk Metric: b2_ever_h6", font_size=18)
+    _section_heading(tf2, "Risk Metrics: b2_ever_h6 + HRI", font_size=18)
 
     _code_box(
         slide,
         Inches(0.8),
         Inches(5.1),
         Inches(7),
-        Inches(0.8),
+        Inches(1.1),
         "b2_ever_h6 = multiplier x todu_30ever_h6 / todu_amt_pile_h6\n"
-        "           (default multiplier = 7 for H6, 4 for H3)",
+        "           (default multiplier = 7 for H6, 4 for H3)\n"
+        "hri_h6     = h_num_h6 / h_den_h6   (Harmonized Risk Indicator, no\n"
+        "           multiplier; reported beside b2; selectable optimizer target)",
         font_size=12,
     )
 
