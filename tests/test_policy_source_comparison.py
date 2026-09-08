@@ -50,6 +50,8 @@ def test_changed_source_is_refused_even_outside_inference_variables(policy_run, 
     result = runner.compare_segment(pd.DataFrame(), settings, run, registry_dir=registry)
     assert not result.sufficient
     assert "score sources changed" in result.message
+    assert result.challenger_policy_id == build_policy_entry(run, settings).policy_id
+    assert result.challenger_policy_id != entry.policy_id
     assert axis in result.message
     assert result.champion_policy_id == entry.policy_id
     assert not result.champion and not result.challenger
@@ -96,3 +98,4 @@ def test_matching_sources_evaluate_the_frozen_champion(policy_run, monkeypatch):
     assert result.champion["risk"] == pytest.approx(1.0)
     assert result.champion["production"] == pytest.approx(2000.0)
     assert result.challenger["risk"] == result.champion["risk"]
+    assert result.challenger_policy_id == entry.policy_id

@@ -1,0 +1,235 @@
+{
+  "before_commit": "c4fc4f9",
+  "basis": "Read-only F11 impact check: frozen model predictions, fresh SAS acceptance rates.\n\nRebuilds pre-projection RI multipliers, verifies the old projection against the\nsaved run, and substitutes only the corrected projection into the saved surface.\nCompares frozen-policy risk and same-target MILP decisions (persisted predecessor\nfloors held fixed). This is not a full model/frontier/MR/batch reproduction.\nRun from the repository root; prints only aggregate diagnostics, never loan rows.\n",
+  "segments": [
+    {
+      "segment": "direct-conso-known-no-premium",
+      "rep_cells": 319,
+      "demand_rows": 19541,
+      "old_projection_matches_saved": true,
+      "permutation_invariant": true,
+      "new_projection_seconds": 3.94903170800535,
+      "old_weighted_sse": 14.972039952528782,
+      "new_weighted_sse": 14.00634916895562,
+      "changed_multipliers": 277,
+      "max_multiplier_change": 0.06121920906067713,
+      "frozen_before": {
+        "production": 28127768.46733451,
+        "risk_pct": 0.7887837676621321,
+        "accepted_cells": 77
+      },
+      "frozen_after": {
+        "production": 28127768.46733451,
+        "risk_pct": 0.7888716458866962,
+        "accepted_cells": 77
+      },
+      "target_pct": 0.8,
+      "persisted_floor_cells": 0,
+      "same_target_before": {
+        "production": 28290828.922637943,
+        "risk_pct": 0.7999946447884188,
+        "accepted_cells": 73
+      },
+      "same_target_after": {
+        "production": 28288015.109446075,
+        "risk_pct": 0.7998223323439341,
+        "accepted_cells": 72
+      },
+      "same_target_cells_flipped": 1
+    },
+    {
+      "segment": "direct-conso-known-premium",
+      "skipped": "baseline or RI monotonicity disabled"
+    },
+    {
+      "segment": "direct-known-no_premium-ab",
+      "rep_cells": 292,
+      "demand_rows": 28187,
+      "old_projection_matches_saved": true,
+      "permutation_invariant": true,
+      "new_projection_seconds": 3.1433652919949964,
+      "old_weighted_sse": 18.366061317263423,
+      "new_weighted_sse": 17.833646868181354,
+      "changed_multipliers": 242,
+      "max_multiplier_change": 0.032897912448693445,
+      "frozen_before": {
+        "production": 66388999.02928132,
+        "risk_pct": 1.1327719525809192,
+        "accepted_cells": 201
+      },
+      "frozen_after": {
+        "production": 66388999.02928132,
+        "risk_pct": 1.132762958103776,
+        "accepted_cells": 201
+      },
+      "target_pct": 1.1,
+      "persisted_floor_cells": 161,
+      "same_target_before": null,
+      "same_target_after": null,
+      "same_target_cells_flipped": null,
+      "same_target_limit": "No feasible solution returned with persisted predecessor floor"
+    },
+    {
+      "segment": "direct-known-no_premium-cd",
+      "rep_cells": 376,
+      "demand_rows": 43553,
+      "old_projection_matches_saved": true,
+      "permutation_invariant": true,
+      "new_projection_seconds": 7.762680750049185,
+      "old_weighted_sse": 43.57602901142234,
+      "new_weighted_sse": 41.50009734166879,
+      "changed_multipliers": 326,
+      "max_multiplier_change": 0.06649011610147881,
+      "frozen_before": {
+        "production": 57976102.90415461,
+        "risk_pct": 1.395811162029791,
+        "accepted_cells": 161
+      },
+      "frozen_after": {
+        "production": 57976102.90415461,
+        "risk_pct": 1.3953825250289886,
+        "accepted_cells": 161
+      },
+      "target_pct": 1.4,
+      "persisted_floor_cells": 33,
+      "same_target_before": {
+        "production": 58052576.0196293,
+        "risk_pct": 1.3999376915096593,
+        "accepted_cells": 159
+      },
+      "same_target_after": {
+        "production": 58061928.15743251,
+        "risk_pct": 1.3999893292417462,
+        "accepted_cells": 161
+      },
+      "same_target_cells_flipped": 4
+    },
+    {
+      "segment": "direct-known-no_premium-ef",
+      "rep_cells": 391,
+      "demand_rows": 41855,
+      "old_projection_matches_saved": true,
+      "permutation_invariant": true,
+      "new_projection_seconds": 8.341443833021913,
+      "old_weighted_sse": 13.67403640778172,
+      "new_weighted_sse": 12.691803507052455,
+      "changed_multipliers": 333,
+      "max_multiplier_change": 0.06047716879259912,
+      "frozen_before": {
+        "production": 4509479.984380705,
+        "risk_pct": 1.2786508790065299,
+        "accepted_cells": 33
+      },
+      "frozen_after": {
+        "production": 4509479.984380705,
+        "risk_pct": 1.2787722737645908,
+        "accepted_cells": 33
+      },
+      "target_pct": 1.4,
+      "persisted_floor_cells": 0,
+      "same_target_before": {
+        "production": 4817231.488142604,
+        "risk_pct": 1.3788801639053911,
+        "accepted_cells": 37
+      },
+      "same_target_after": {
+        "production": 4817231.488142604,
+        "risk_pct": 1.379120603884379,
+        "accepted_cells": 37
+      },
+      "same_target_cells_flipped": 0
+    },
+    {
+      "segment": "direct-pl-known-premium-precon",
+      "rep_cells": 97,
+      "demand_rows": 35552,
+      "old_projection_matches_saved": true,
+      "permutation_invariant": true,
+      "new_projection_seconds": 0.08453154203016311,
+      "old_weighted_sse": 12.400295636133567,
+      "new_weighted_sse": 11.672742540632063,
+      "changed_multipliers": 91,
+      "max_multiplier_change": 0.02787722640367396,
+      "frozen_before": {
+        "production": 93416888.58999512,
+        "risk_pct": 1.3937611801690457,
+        "accepted_cells": 223
+      },
+      "frozen_after": {
+        "production": 93416888.58999512,
+        "risk_pct": 1.394138440059527,
+        "accepted_cells": 223
+      },
+      "target_pct": 1.4,
+      "persisted_floor_cells": 0,
+      "same_target_before": {
+        "production": 93609811.90119377,
+        "risk_pct": 1.398790560502319,
+        "accepted_cells": 223
+      },
+      "same_target_after": {
+        "production": 93609811.90119377,
+        "risk_pct": 1.3989377279713568,
+        "accepted_cells": 223
+      },
+      "same_target_cells_flipped": 0
+    },
+    {
+      "segment": "direct-pl-new",
+      "rep_cells": 376,
+      "demand_rows": 229034,
+      "old_projection_matches_saved": true,
+      "permutation_invariant": true,
+      "new_projection_seconds": 14.389050624973606,
+      "old_weighted_sse": 9.68597221529646,
+      "new_weighted_sse": 9.297522654086178,
+      "changed_multipliers": 291,
+      "max_multiplier_change": 0.021306139295852677,
+      "frozen_before": {
+        "production": 13351738.257781291,
+        "risk_pct": 1.1843713451704927,
+        "accepted_cells": 42
+      },
+      "frozen_after": {
+        "production": 13351738.257781291,
+        "risk_pct": 1.1851927314390565,
+        "accepted_cells": 42
+      },
+      "target_pct": 1.2,
+      "persisted_floor_cells": 0,
+      "same_target_before": {
+        "production": 13606569.17911536,
+        "risk_pct": 1.1992001490039055,
+        "accepted_cells": 44
+      },
+      "same_target_after": {
+        "production": 13562520.395141399,
+        "risk_pct": 1.199594959673504,
+        "accepted_cells": 43
+      },
+      "same_target_cells_flipped": 1
+    }
+  ],
+  "inputs": {
+    "/Users/inigo_ocariz_laptop/src/scoring_tools/data/out_cutoffs_direct.sas7bdat": "4b5c3f489dccc732c83b8fbaf94adf51105b6b804d1a907ed63748e0dafbc14a",
+    "output/direct-conso-known-no-premium/config_segment.toml": "c1f0e2bae36e3484acfa7159d8c69093075e93f3b52b92a248ad5ee6e4bb460d",
+    "output/direct-conso-known-no-premium/data/accepted_cells_base.csv": "20701d7cde4d47dc2bf3166b245b1b1157a049081a622d538c5c955c408e62ad",
+    "output/direct-conso-known-no-premium/data/data_summary_desagregado.csv": "7058a779874a535adb948192eeff9c48d6e7d5112cc6dbc0cdd95754caf3b952",
+    "output/direct-known-no_premium-ab/config_segment.toml": "c4c4fbf8e6622aa20eb8c1175c981a3955a31b555e42ff43c181257ae8984102",
+    "output/direct-known-no_premium-ab/data/accepted_cells_base.csv": "899554f7c23e795f1462480b244d5842c591b4075efba2453d75e845b6cffb54",
+    "output/direct-known-no_premium-ab/data/data_summary_desagregado.csv": "bb55ef19b29f9a16782236ceb7a0f81129df42f6880459f72d697a709484286b",
+    "output/direct-known-no_premium-cd/config_segment.toml": "651f84495748d7cb85ab6fc78c8f564321ab1d7fbe6d7b21c2949ccf4500d90e",
+    "output/direct-known-no_premium-cd/data/accepted_cells_base.csv": "1dab55a265ad5d8278ac34e1e581e126897166d4e60d23b0a443283d80686a0c",
+    "output/direct-known-no_premium-cd/data/data_summary_desagregado.csv": "0af7b3059cf062531a3ed32128fbe07173e9f5051e7c7b6e63d059ab7935d361",
+    "output/direct-known-no_premium-ef/config_segment.toml": "7284b60a12ee26e58eba08c3f97c3d715304e8933cc682a1ec43ee83141e091f",
+    "output/direct-known-no_premium-ef/data/accepted_cells_base.csv": "84fc28c1576a994ad5c56e68222e45b20651ceae4f385a55eab3370fe5321afa",
+    "output/direct-known-no_premium-ef/data/data_summary_desagregado.csv": "883a9a0a3d996336f68ec8c2bd932549107600b317eadcc897c1412fa0839ff7",
+    "output/direct-pl-known-premium-precon/config_segment.toml": "3fb4bcf34c79d2aaa1edbc818fa2952c48fa60b6641ce28ea51ef706847c3cb9",
+    "output/direct-pl-known-premium-precon/data/accepted_cells_base.csv": "19eca0a39fed30c46b0a1a5e13ca6ec8a0c22cfa000602030ef77f78ee2ec197",
+    "output/direct-pl-known-premium-precon/data/data_summary_desagregado.csv": "a9c1a3fd553b08859f04aa0064f48ee2982ebcc49cfb78a1d0c9919354d843ed",
+    "output/direct-pl-new/config_segment.toml": "ba8191cef295bf417e9dcc8245db02e1120b854f379e35887f3e20354395c2e9",
+    "output/direct-pl-new/data/accepted_cells_base.csv": "1b0c196499bdd2e04b168810a78fa666ea5f56c23328b46020aebe678ba0ee1b",
+    "output/direct-pl-new/data/data_summary_desagregado.csv": "518f71f758613f5678ddbd9970293dfdba03b1d1e314c49af7b6115c6eb6d0a3"
+  },
+  "validation_date": "2026-09-08"
+}

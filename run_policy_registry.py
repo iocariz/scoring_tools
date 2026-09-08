@@ -48,6 +48,7 @@ from src.policy_registry import (
     compare_policies,
     get_champion,
     load_registry,
+    policy_id_for_settings,
     register_policy,
     settings_bin_edges,
     settings_bin_sources,
@@ -150,7 +151,7 @@ def compare_segment(
         )
 
     challenger_set, _ = load_frozen_policy(seg_data_dir, variables, suffix)
-    challenger_id = f"{segment}-{_accepted_set_hash(challenger_set)[:8]}"
+    challenger_id = policy_id_for_settings(settings, _accepted_set_hash(challenger_set))
     champion_set = champion.accepted_set()
 
     # Frozen edges are mandatory (same posture as backtest_segment): a bin
