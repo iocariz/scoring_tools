@@ -13,8 +13,12 @@ from run_apple_study import (
     apply_reject_inference,
     effective_months,
     estimate_risk_curve,
+    grid_fidelity,
     grid_swap_mask,
     imputed_risk,
+    policy_kpis,
+    stores_under_grid,
+    take_up_by_decision,
     warn_partial_rollout,
 )
 
@@ -210,3 +214,85 @@ class TestRejectInference:
         out = apply_reject_inference(self._curve(), self._demand())
         for b in (1.0, 2.0, 3.0):
             assert out.loc[b, "b2_pct"] <= out.loc[b, "b2_pct_ri"] <= out.loc[b, "b2_pct_rechazados"] + 1e-9
+
+
+def _channel(rows):
+    """Canal sintético con lo que necesitan la swap mask y el take-up."""
+    cols = ["grupo_parrilla", "risk_score_rf", "se_decision_id", "reject_reason", "oa_amt", "bin"]
+    cols += ["acct_booked_h0", "oa_amt_h0"]
+    return pd.DataFrame(rows, columns=cols)
+
+
+class TestTakeUp:
+    """El take-up va por decisión del motor. Medirlo solo sobre las 'ok' y aplicarlo también a
+    las 'rv' —que la swap mask acepta y convierten diez veces menos— hinchaba la producción."""
+
+    def _channel(self):
+        # 2 ok (1 contrata), 4 rv (1 contrata), 1 ko por score bajo el corte
+        return _channel(
+            [
+                ["New", 60.0, "ok", None, 100.0, 13.0, 1, 100.0],
+                ["New", 60.0, "ok", None, 100.0, 13.0, 0, 0.0],
+                ["New", 60.0, "rv", None, 100.0, 13.0, 1, 100.0],
+                ["New", 60.0, "rv", None, 100.0, 13.0, 0, 0.0],
+                ["New", 60.0, "rv", None, 100.0, 13.0, 0, 0.0],
+                ["New", 60.0, "rv", None, 100.0, 13.0, 0, 0.0],
+                ["New", 20.0, "ko", "09-score", 100.0, 5.0, 0, 0.0],
+            ]
+        )
+
+    def _curve(self):
+        return pd.DataFrame(
+            {"b2_pct": [5.0, 3.0], "b2_pct_contratados": [5.0, 3.0], "exposure_ratio": [1.0, 1.0]},
+            index=pd.Index([5.0, 13.0], name="bin"),
+        )
+
+    def test_rates_by_decision_and_score_swap_ins_convert_like_ok(self):
+        rates = take_up_by_decision(self._channel())
+        assert rates["ok"] == 0.5
+        assert rates["rv"] == 0.25
+        assert rates["ko"] == rates["ok"]
+
+    def test_missing_decision_falls_back(self):
+        channel = self._channel()
+        only_ok = channel[channel["se_decision_id"] != "rv"]
+        assert take_up_by_decision(only_ok, fallback={"ok": 0.9, "rv": 0.1})["rv"] == 0.1
+
+    def test_policy_production_reproduces_booked_under_the_real_policy(self):
+        # La parrilla calca al motor (ok/rv por encima del corte, ko-score por debajo): la
+        # producción modelada tiene que ser la contratada, euro a euro. Con un take-up
+        # medido solo sobre las ok (1,0) salían 600 en vez de 200.
+        channel = self._channel()
+        kpis = policy_kpis(channel, channel, self._curve(), {"New": 27.0}, 1.0, 1.0, 1.0)
+        assert kpis["produccion_mensual_eur"] == pytest.approx(2 * channel["oa_amt_h0"].sum())
+        assert kpis["ta_score_pct"] == pytest.approx(100 * 600 / 700)
+        assert kpis["ta_efectiva_pct"] == pytest.approx(100 * 200 / 700)
+
+    def test_stores_total_reproduces_booked_under_the_real_policy(self):
+        channel = self._channel()
+        grid = stores_under_grid(channel, self._curve(), {"New": 27.0}, 1.0)
+        total = grid[grid["segmento"] == "TOTAL"].iloc[0]
+        assert total["produccion_est_eur"] == pytest.approx(channel["oa_amt_h0"].sum())
+        assert total["ta_efectiva_pct"] == pytest.approx(100 * 200 / 700)
+
+
+class TestGridFidelity:
+    """Swap-in / swap-out en % de la demanda en €: lo que separa la parrilla del motor."""
+
+    def _channel(self):
+        return TestTakeUp()._channel()
+
+    def test_grid_that_matches_the_engine_has_no_swaps(self):
+        fid = grid_fidelity(self._channel(), {"New": 27.0})
+        assert fid["aprobado_real_pct"] == pytest.approx(100 * 600 / 700)
+        assert fid["parrilla_pct"] == pytest.approx(100 * 600 / 700)
+        assert fid["swap_in_pct"] == 0.0
+        assert fid["swap_out_pct"] == 0.0
+
+    def test_tightening_is_swap_out_and_loosening_is_swap_in(self):
+        tight = grid_fidelity(self._channel(), {"New": 70.0})
+        assert tight["swap_out_pct"] == pytest.approx(100 * 600 / 700)
+        assert tight["parrilla_pct"] == 0.0
+        loose = grid_fidelity(self._channel(), {"New": 10.0})
+        assert loose["swap_in_pct"] == pytest.approx(100 * 100 / 700)
+        assert loose["swap_out_pct"] == 0.0

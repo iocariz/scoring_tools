@@ -107,6 +107,10 @@ def study_outputs(tmp_path):
                 "factor_nivel_tienda": 0.9884,
                 "riesgo_tienda_realizado_pct": 3.74,
                 "riesgo_tienda_imputado_pct": 3.79,
+                "online_aprobado_real_pct": 51.9,
+                "online_parrilla_pct": 51.8,
+                "online_swap_in_pct": 0.6,
+                "online_swap_out_pct": 0.5,
             }
         ),
         encoding="utf-8",

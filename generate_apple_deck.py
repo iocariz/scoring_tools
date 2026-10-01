@@ -520,7 +520,7 @@ def slide_chart(prs, title: str, kicker: str, img: Path, caption: str = "", peri
         )
 
 
-def slide_frontier(prs, img: Path, picks: pd.DataFrame, period: str = "") -> None:
+def slide_frontier(prs, img: Path, picks: pd.DataFrame, meta: dict, period: str = "") -> None:
     """La frontera lleva las cifras al lado, no dentro del gráfico: cuatro globos con
     tres cifras cada uno chocaban entre sí y tapaban la curva."""
     slide = _blank(prs)
@@ -547,6 +547,8 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, period: str = "") -> Non
     # que de hecho se produjo.
     base_rows = picks[picks["escenario"].str.startswith("Parrilla Online")]
     base_prod = float(base_rows.iloc[0]["produccion_mensual_eur"]) if not base_rows.empty else float("nan")
+    today_rows = picks[picks["escenario"].str.startswith("Hoy")]
+    today_prod = float(today_rows.iloc[0]["produccion_mensual_eur"]) if not today_rows.empty else float("nan")
     # Debajo del gráfico, calculado desde su alto real: estimarlo a ojo lo hacía chocar
     # con la etiqueta del eje.
     note_y = y + chart_h + Inches(0.12)
@@ -567,12 +569,13 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, period: str = "") -> Non
         note_y + Inches(0.34),
         chart_w,
         Inches(1.1),
-        "La parrilla vigente aprueba el 51,8% de la demanda de Online, pero el motor aprobó el 46,4% en esa "
-        "misma ventana: es 1,12x más laxa, porque Online ha ido aflojando (40,7% de aprobación en 2025Q1, "
-        f"50,3% en 2025Q4). Así que los {ac.es(base_prod / 1e6, 1)} M€/mes no son solo el efecto de llevar la "
-        "parrilla a tienda — "
-        "parte es que la parrilla de hoy ya es más laxa que la política media del periodo sobre el que se "
-        "mide el riesgo.",
+        "La parrilla vigente calca las decisiones reales de Online (acepta el "
+        f"{ac.es(meta['online_parrilla_pct'], 1, '%')} de la demanda; el motor aprobó el "
+        f"{ac.es(meta['online_aprobado_real_pct'], 1, '%')}: swap-in {ac.es(meta['online_swap_in_pct'], 1, '%')}, "
+        f"swap-out {ac.es(meta['online_swap_out_pct'], 1, '%')}) y cada solicitud aceptada convierte a la tasa de "
+        f"su decisión real. La diferencia entre {ac.es(base_prod / 1e6, 1)} y {ac.es(today_prod / 1e6, 1)} M€/mes "
+        "es por tanto la ganancia de tienda, medida sobre agosto-2026 (único mes con EFX) frente a la ventana "
+        "completa de 'hoy'.",
         size=11,
         color=MUTED,
         spacing=1.2,
@@ -765,7 +768,7 @@ def build(data_dir: Path, out_path: Path) -> Path:
         "de tienda.",
         period=f"Tienda {p_tienda}",
     )
-    slide_frontier(prs, paths["frontera"], picks, p_mixto)
+    slide_frontier(prs, paths["frontera"], picks, meta, p_mixto)
     slide_grids(prs, grids, "Política — sin periodo")
     slide_method_risk(prs, meta, f"Online {p_online}  ·  tienda {p_tienda}")
     slide_method_seasonal(prs, meta, f"Años completos {p_estacional}")
@@ -784,7 +787,8 @@ def build(data_dir: Path, out_path: Path) -> Path:
         "Anexo · Desglose por segmento",
         paths["tienda_segmentos"],
         "'New' concentra el 82% de la demanda de tienda y es donde el riesgo baja. El take-up se mide por "
-        "segmento. '>=G' no aparece: se rechaza siempre, así que no tiene ni aceptación ni riesgo.",
+        "segmento y por decisión del motor (aprobada / en revisión). '>=G' no aparece: se rechaza siempre, así "
+        "que no tiene ni aceptación ni riesgo.",
         period=f"Tienda {p_tienda}",
     )
     slide_chart(
