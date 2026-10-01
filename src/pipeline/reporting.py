@@ -93,6 +93,17 @@ def generate_batch_reports(
     # artifacts into the consolidated HTML, indistinguishable from fresh numbers
     # (the Excel consolidation path already filters to successful segments).
     successful_segments = {name: cfg for name, cfg in segments.items() if segment_results.get(name, False)}
+    # ...and not at all when NOTHING succeeded. The supersegment/portfolio sections are
+    # built from whatever artifacts are on disk, so with an empty segment dict the report
+    # still renders — full of the PREVIOUS run's numbers, stamped as this run — and
+    # overwrites the last good consolidated_report.html. Leave that file untouched instead.
+    if not successful_segments:
+        logger.warning(
+            "No segment succeeded this run — skipping the consolidated HTML report. "
+            f"The existing {output_base_path / 'consolidated_report.html'} is left in place "
+            "(regenerating it here would republish the previous run's numbers as if they were fresh)."
+        )
+        return reports
     try:
         context = build_consolidated_report(output_base, successful_segments, supersegments)
         if context.sections:

@@ -15,6 +15,12 @@ and checks the invariants the grid writer is supposed to guarantee (#215/#219/#2
    run lengths monotone across rows. Grey (``—``) cells inside the accept region
    count as accept-side (border drawing imputes them), so holes fail loudly.
 
+Single-variable runs render a 1-D strip instead (``_write_acceptance_strip_1d``),
+which draws no frontier at all — with one score axis the boundary is a single
+threshold, so there is nothing to outline. Those are checked on values instead:
+acceptance may flip at most once along the axis. They are still *counted*, and a
+run that recognises no grids at all exits 1 rather than reporting a vacuous pass.
+
 Usage:
     uv run python scripts/check_cutoff_frontier.py
     uv run python scripts/check_cutoff_frontier.py path/to.xlsx --sheet "Cutoff Grids"
@@ -34,10 +40,23 @@ import openpyxl
 # separator (_SIDE_GRID / _BORDER_GRID) is medium white.
 FRONTIER_STYLE = "thick"
 CORNER_SEP = " \\ "  # corner label is "<row_var> \\ <col_var>"
+STRIP_ROW_LABEL = "Status"  # single-variable strips label their one data row "Status"
 
 
 def _is_corner(value) -> bool:
     return isinstance(value, str) and CORNER_SEP in value
+
+
+def _is_strip_anchor(ws, r: int, c: int, value) -> bool:
+    """A single-variable strip anchor (``_write_acceptance_strip_1d``).
+
+    A one-score-axis run has no "row_var \\ col_var" corner: the anchor is the bare
+    variable name with the bin headers to its right and the one ``Status`` row below.
+    """
+    if not isinstance(value, str) or _is_corner(value) or not value.strip():
+        return False
+    below = ws.cell(row=r + 1, column=c).value
+    return isinstance(below, str) and below.strip() == STRIP_ROW_LABEL
 
 
 def find_grids(ws) -> list[tuple[int, int, str, int, int]]:
@@ -45,12 +64,14 @@ def find_grids(ws) -> list[tuple[int, int, str, int, int]]:
 
     Returns (corner_row, corner_col, label, nrows, ncols) per grid; the corner
     cell holds the "row_var \\ col_var" label with headers to its right and below.
+    Single-variable strips are included as 1 x ncols grids — their label is the bare
+    variable name (no CORNER_SEP), which is how the caller tells the two apart.
     """
     grids = []
     for r in range(1, ws.max_row + 1):
         for c in range(1, ws.max_column + 1):
             v = ws.cell(row=r, column=c).value
-            if not _is_corner(v):
+            if not (_is_corner(v) or _is_strip_anchor(ws, r, c, v)):
                 continue
             ncols = 0
             while (h := ws.cell(row=r, column=c + 1 + ncols).value) is not None and not _is_corner(h):
@@ -164,6 +185,25 @@ def check_grid(vals, frontier) -> list[str]:
     return problems
 
 
+def check_strip(vals) -> list[str]:
+    """Monotonicity check for a single-variable strip; returns problems.
+
+    A 1-D layout draws no thick frontier: with one score axis the boundary is a single
+    threshold, so there is no staircase to outline and the border-based checks above do
+    not apply. What must still hold is the monotone accept region the optimizer
+    guarantees — reading along the score axis and ignoring unobserved cells, acceptance
+    may flip at most once (R..RA..A or A..AR..R). Two flips mean an accepted bin sits on
+    the far side of a rejected one.
+    """
+    seq = [v for v in np.asarray(vals).ravel().tolist() if v in ("A", "R")]
+    if "A" not in seq:
+        return []
+    flips = [i for i in range(1, len(seq)) if seq[i] != seq[i - 1]]
+    if len(flips) > 1:
+        return [f"accept region is not a single run: {len(flips)} flips at bin index {flips[:5]} in {''.join(seq)}"]
+    return []
+
+
 def check_workbook(path: str, sheet: str = "Cutoff Grids", verbose: bool = True) -> int:
     """Check every grid on *sheet*; returns the number of failing grids."""
     wb = openpyxl.load_workbook(path)
@@ -171,15 +211,23 @@ def check_workbook(path: str, sheet: str = "Cutoff Grids", verbose: bool = True)
     grids = find_grids(ws)
     if verbose:
         print(f"found {len(grids)} grids on {sheet!r}")
+    if not grids:
+        # A checker that verified nothing must never report green: either the sheet is
+        # empty or its layout changed and these invariants are silently unenforced.
+        if verbose:
+            print(f"\nNOTHING VERIFIED: no acceptance grids recognised on {sheet!r}.")
+        return 1
     failures = 0
     for r0, c0, label, nrows, ncols in grids:
         vals, frontier = read_grid(ws, r0, c0, nrows, ncols)
-        problems = check_grid(vals, frontier)
+        is_2d = _is_corner(label)
+        problems = check_grid(vals, frontier) if is_2d else check_strip(vals)
         failures += bool(problems)
         if verbose:
             counts = {k: int((vals == k).sum()) for k in ("A", "R", "—")}
             status = "FAIL" if problems else "OK "
-            print(f"[{status}] R{r0}C{c0} ({label}): {nrows}x{ncols}, {counts}")
+            shape = f"{nrows}x{ncols}" if is_2d else f"{ncols}-bin strip"
+            print(f"[{status}] R{r0}C{c0} ({label}): {shape}, {counts}")
             for p in problems:
                 print(f"       - {p}")
     if verbose:
