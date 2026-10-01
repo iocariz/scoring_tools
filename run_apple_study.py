@@ -166,6 +166,55 @@ def _booked(df: pd.DataFrame) -> pd.DataFrame:
     return df[df["acct_booked_h0"] > 0]
 
 
+def take_up_by_decision(channel: pd.DataFrame, fallback: dict[str, float] | None = None) -> dict[str, float]:
+    """Take-up (€ contratado / € solicitado) por decisión del motor.
+
+    Es la ``tasa_fin`` del pipeline (contratado / elegible ``ok``+``rv``) llevada a nivel
+    solicitud: una aprobada (``ok``) y una enviada a revisión (``rv``) convierten muy
+    distinto —en Online 44% frente a 5%— y la swap mask acepta las dos. Medir el take-up
+    solo sobre las ``ok`` y aplicarlo a todo lo aceptado hinchaba la producción de Online
+    un 12%, y hacía parecer que la parrilla vigente era más laxa que la política real,
+    cuando la calca (ver ``grid_fidelity``). Las que entran nuevas por score (``ko`` que
+    supera el corte) convierten como las ``ok``: serían aprobadas.
+    """
+    booked = _booked(channel)
+    rates: dict[str, float] = {}
+    for decision in (SystemDecision.OK, SystemDecision.RV):
+        requested = channel.loc[channel[Columns.SE_DECISION_ID] == decision, Columns.OA_AMT].sum()
+        financed = booked.loc[booked[Columns.SE_DECISION_ID] == decision, Columns.OA_AMT_H0].sum()
+        rates[decision.value] = financed / requested if requested > 0 else (fallback or {}).get(decision.value, 0.0)
+    rates[SystemDecision.KO.value] = rates[SystemDecision.OK.value]
+    return rates
+
+
+def _expected_production(accepted: pd.DataFrame, rates: dict[str, float]) -> pd.Series:
+    """€ que acabarían contratados, solicitud a solicitud: solicitado × take-up de su decisión."""
+    return accepted[Columns.OA_AMT] * accepted[Columns.SE_DECISION_ID].map(rates).fillna(rates["ok"])
+
+
+def grid_fidelity(channel: pd.DataFrame, cutoffs: dict[str, float | None]) -> dict[str, float]:
+    """Cuánto se parece la parrilla a lo que el motor decidió de verdad, en % de la demanda en €.
+
+    Si la parrilla calca las decisiones (swap-in y swap-out pequeños), la producción
+    modelada del canal coincide con la medida y cualquier diferencia entre el escenario
+    "parrilla vigente" y "hoy" viene del otro canal. Va a ``periodos.json`` para que el
+    deck lo rotule desde el dato.
+    """
+    mask = grid_swap_mask(channel, cutoffs)
+    approved = channel[Columns.SE_DECISION_ID].isin([SystemDecision.OK.value, SystemDecision.RV.value])
+    demand = channel[Columns.OA_AMT].sum()
+
+    def pct(selected: pd.Series) -> float:
+        return 100 * channel.loc[selected, Columns.OA_AMT].sum() / demand
+
+    return {
+        "aprobado_real_pct": pct(approved),
+        "parrilla_pct": pct(mask),
+        "swap_in_pct": pct(~approved & mask),
+        "swap_out_pct": pct(approved & ~mask),
+    }
+
+
 def estimate_risk_curve(ecom: pd.DataFrame, multiplier: float) -> pd.DataFrame:
     """Curva riesgo-por-tramo estimada sobre la cartera contratada de Online.
 
@@ -314,27 +363,28 @@ def stores_under_grid(
 ) -> pd.DataFrame:
     """Punto 2: TA y riesgo IMPUTADO de tienda bajo la parrilla de Online.
 
-    El take-up (qué parte de lo aprobado acaba contratado) se mide **por segmento**:
-    varía mucho entre ellos, y aplicar una tasa global hacía que algún segmento
-    apareciera perdiendo TA al cambiar de parrilla cuando en realidad solo tenía un
-    take-up por encima de la media. Los segmentos con poca contratación caen a la
-    tasa global, que es más estable que su propia proporción.
+    El take-up (qué parte de lo aceptado acaba contratado) va por decisión del motor
+    (``take_up_by_decision``) y, para las ``ok``, **por segmento**: varía mucho entre
+    ellos, y aplicar una tasa global hacía que algún segmento apareciera perdiendo TA al
+    cambiar de parrilla cuando en realidad solo tenía un take-up por encima de la media.
+    Los segmentos con poca contratación caen a la tasa del canal, que es más estable que
+    su propia proporción; la de ``rv`` va siempre con la del canal (son muy pocas).
     """
     accepted_all = grid_swap_mask(stores, cutoffs)
-    approved = stores[stores[Columns.SE_DECISION_ID] == SystemDecision.OK]
-    global_take_up = _booked(stores)[Columns.OA_AMT_H0].sum() / approved[Columns.OA_AMT].sum()
-    logger.info(f"Take-up global en tienda sobre aprobado: {100 * global_take_up:.1f}%")
+    channel_rates = take_up_by_decision(stores)
+    logger.info(
+        f"Take-up en tienda sobre solicitado: ok {100 * channel_rates['ok']:.1f}% | rv {100 * channel_rates['rv']:.1f}%"
+    )
 
-    def _take_up(group: pd.DataFrame, name: str) -> float:
-        booked = _booked(group)
-        ok_eur = group[group[Columns.SE_DECISION_ID] == SystemDecision.OK][Columns.OA_AMT].sum()
-        if len(booked) < MIN_BOOKED_FOR_TAKE_UP or ok_eur <= 0:
+    def _rates(group: pd.DataFrame, name: str) -> dict[str, float]:
+        n_booked = len(_booked(group))
+        if n_booked < MIN_BOOKED_FOR_TAKE_UP:
             logger.warning(
-                f"[{name}] solo {len(booked)} contratos: take-up propio poco fiable, se usa el global "
-                f"({100 * global_take_up:.1f}%)"
+                f"[{name}] solo {n_booked} contratos: take-up propio poco fiable, se usa el del canal "
+                f"({100 * channel_rates['ok']:.1f}%)"
             )
-            return global_take_up
-        return booked[Columns.OA_AMT_H0].sum() / ok_eur
+            return channel_rates
+        return {**take_up_by_decision(group, fallback=channel_rates), "rv": channel_rates["rv"]}
 
     rows = []
     groups = list(stores.groupby(SEGMENT_COL, observed=True)) + [("TOTAL", stores)]
@@ -342,22 +392,23 @@ def stores_under_grid(
         mask = accepted_all.loc[group.index]
         accepted, booked = group[mask], _booked(group)
         demand = group[Columns.OA_AMT].sum()
-        take_up = global_take_up if segment == "TOTAL" else _take_up(group, segment)
+        rates = channel_rates if segment == "TOTAL" else _rates(group, segment)
+        production = _expected_production(accepted, rates).sum()
         rows.append(
             {
                 "segmento": segment,
                 "corte_efx": cutoffs.get(segment) if segment != "TOTAL" else None,
                 "demanda_eur": demand,
                 "pct_demanda_aceptada": 100 * accepted[Columns.OA_AMT].sum() / demand,
-                "produccion_est_eur": accepted[Columns.OA_AMT].sum() * take_up,
-                "ta_efectiva_pct": 100 * accepted[Columns.OA_AMT].sum() * take_up / demand,
+                "produccion_est_eur": production,
+                "ta_efectiva_pct": 100 * production / demand,
                 "riesgo_imputado_pct": imputed_risk(accepted, curve, level_factor),
                 "ta_actual_pct": 100 * booked[Columns.OA_AMT_H0].sum() / demand,
                 # La cartera ya contratada ES la población seleccionada: valorarla con la
                 # curva corregida por selección sería corregir dos veces. Va con la de
                 # contratados; el uplift solo pesa sobre lo que entraría nuevo.
                 "riesgo_imputado_actual_pct": imputed_risk(booked, curve, level_factor, column=_BOOKED_COL),
-                "take_up_pct": 100 * take_up,
+                "take_up_pct": 100 * rates["ok"],
             }
         )
     frame = pd.DataFrame(rows)
@@ -399,18 +450,17 @@ def policy_kpis(
         # escalera suponía que TODO el que supera el corte entra — en contra de la premisa
         # del estudio— y además inflaba la población sobre la que se mide el riesgo.
         eligible = channel[grid_swap_mask(channel, cutoffs)]
-        # El take-up es CONDICIONAL a estar aprobado. Medido sobre la demanda total llevaría
-        # dentro el rechazo por score, y al aplicarlo al aceptado lo contaría dos veces:
-        # la producción de la política vigente salía un 16% por debajo de la real.
-        approved = channel[channel[Columns.SE_DECISION_ID] == SystemDecision.OK]
-        take_up = _booked(channel)[Columns.OA_AMT_H0].sum() / max(approved[Columns.OA_AMT].sum(), 1e-9)
-        accepted_rows = eligible
-        demand_by_bin = accepted_rows.groupby("bin")[Columns.OA_AMT].sum() / months
-        weight = (demand_by_bin * curve["exposure_ratio"] * take_up).fillna(0) * factor
+        # Cada solicitud aceptada convierte a la tasa de su decisión real (ok / rv), medida
+        # sobre lo solicitado de esa decisión: condicional a estar aprobada (medida sobre la
+        # demanda total contaría el rechazo por score dos veces) y sin aplicar la tasa de las
+        # ok a las rv, que convierten diez veces menos y la swap mask también acepta.
+        expected = _expected_production(eligible, take_up_by_decision(channel))
+        prod_by_bin = expected.groupby(eligible["bin"]).sum() / months
+        weight = (prod_by_bin * curve["exposure_ratio"]).fillna(0) * factor
         num += (weight * curve["b2_pct"]).sum()
         den += weight.sum()
-        accepted += accepted_rows[Columns.OA_AMT].sum() / months
-        production += accepted_rows[Columns.OA_AMT].sum() / months * take_up
+        accepted += eligible[Columns.OA_AMT].sum() / months
+        production += prod_by_bin.sum()
     return {
         "riesgo_total_pct": num / den if den else float("nan"),
         "ta_score_pct": 100 * accepted / total_demand,
@@ -471,9 +521,10 @@ def measured_status_quo(
     score interno sobre la ventana completa, mientras los escenarios la evalúan con la
     parrilla EFX sobre agosto, el único mes con score. Se publica precisamente para que
     esa diferencia se vea en lugar de sorprender: el modelo dice que la parrilla de
-    Online produciría más de lo que hoy se produce, y conviene saber cuánto de eso es
-    el cambio propuesto y cuánto es que la parrilla vigente es más laxa que la política
-    que de hecho estuvo en vigor durante la ventana.
+    Online produciría más de lo que hoy se produce, y conviene saber de dónde sale. Con
+    el take-up por decisión, Online modelado reproduce lo medido (la parrilla vigente
+    calca las decisiones reales, ver ``grid_fidelity``), así que la diferencia es la
+    ganancia de tienda — medida sobre una base distinta.
     """
     frames = [(ecom, months_ecom), (stores_window, months_ecom)]
     demand = sum(f[Columns.OA_AMT].sum() / m for f, m in frames)
@@ -501,9 +552,8 @@ def pick_targets(
     """
     # OJO con el nombre: esta fila NO es el statu quo. Es la parrilla de Online aplicada a
     # los DOS canales, que para tienda es justamente el cambio propuesto (hoy usa su score
-    # interno). Y para Online la parrilla vigente es ~1,12x más laxa que la política media
-    # de la ventana de observación, porque el canal ha ido aflojando. Llamarla "actual"
-    # invita a leerla como "lo que hacemos hoy", y no lo es.
+    # interno) y se evalúa sobre agosto, no sobre la ventana. Llamarla "actual" invita a
+    # leerla como "lo que hacemos hoy", y no lo es.
     rows = [
         {"escenario": "Hoy (medido)", "corte": "política vigente"} | measured,
         {"escenario": "Parrilla Online en ambos canales", "corte": "vigente"} | baseline,
@@ -742,6 +792,12 @@ def main(argv: list[str] | None = None) -> int:
     actuals = channel_actuals(ecom, args.multiplier)
     stores_actuals = channel_actuals(stores_window, args.multiplier)
     grid = stores_under_grid(stores, curve, cutoffs, level_factor)
+    fidelity = grid_fidelity(ecom, cutoffs)
+    logger.info(
+        "Fidelidad de la parrilla vigente en Online (% demanda): aprobado real "
+        f"{fidelity['aprobado_real_pct']:.1f} | parrilla {fidelity['parrilla_pct']:.1f} | "
+        f"swap-in {fidelity['swap_in_pct']:.1f} | swap-out {fidelity['swap_out_pct']:.1f}"
+    )
     ladder, ladder_grid = scenario_ladders(ecom, stores, curve, cutoffs, eff_ecom, eff_stores, level_factor)
     baseline = policy_kpis(ecom, stores, curve, cutoffs, eff_ecom, eff_stores, level_factor)
     measured = measured_status_quo(ecom, stores_window, eff_ecom, args.multiplier)
@@ -770,6 +826,7 @@ def main(argv: list[str] | None = None) -> int:
             "factor_nivel_tienda": round(level_factor, 4),
             "riesgo_tienda_realizado_pct": round(anchor["realizado_pct"], 4),
             "riesgo_tienda_imputado_pct": round(anchor["imputado_pct"], 4),
+            **{f"online_{k}": round(v, 2) for k, v in fidelity.items()},
         },
         (out / "periodos.json").open("w", encoding="utf-8"),
         indent=2,
