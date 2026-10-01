@@ -10,6 +10,7 @@ import pytest
 
 from run_apple_study import (
     ALWAYS_REJECT,
+    apply_reject_inference,
     effective_months,
     estimate_risk_curve,
     grid_swap_mask,
@@ -20,7 +21,7 @@ from run_apple_study import (
 
 def _stores(rows):
     return pd.DataFrame(
-        rows, columns=["segment_cut_off", "risk_score_rf", "se_decision_id", "reject_reason", "oa_amt", "bin"]
+        rows, columns=["grupo_parrilla", "risk_score_rf", "se_decision_id", "reject_reason", "oa_amt", "bin"]
     )
 
 
@@ -28,37 +29,37 @@ class TestGridSwapMask:
     """Aceptada iff supera el corte EFX Y no venía KO por un motivo distinto de score."""
 
     def test_below_cutoff_is_rejected_even_if_system_said_ok(self):
-        df = _stores([["new", 40.0, "ok", None, 100.0, 9.0]])
-        assert not grid_swap_mask(df, {"new": 47.0}).iloc[0]
+        df = _stores([["New", 20.0, "ok", None, 100.0, 5.0]])
+        assert not grid_swap_mask(df, {"New": 27.0}).iloc[0]
 
     def test_above_cutoff_recovers_a_score_rejection(self):
         # KO por score pero por encima del corte nuevo -> entra (es el swap-in)
-        df = _stores([["new", 60.0, "ko", "09-score", 100.0, 13.0]])
-        assert grid_swap_mask(df, {"new": 47.0}).iloc[0]
+        df = _stores([["New", 60.0, "ko", "09-score", 100.0, 13.0]])
+        assert grid_swap_mask(df, {"New": 27.0}).iloc[0]
 
     def test_above_cutoff_keeps_a_non_score_rejection(self):
         # las demás reglas no cambian: sigue rechazada aunque supere el corte
-        df = _stores([["new", 90.0, "ko", "04-customer_profile", 100.0, 19.0]])
-        assert not grid_swap_mask(df, {"new": 47.0}).iloc[0]
+        df = _stores([["New", 90.0, "ko", "04-customer_profile", 100.0, 19.0]])
+        assert not grid_swap_mask(df, {"New": 27.0}).iloc[0]
 
     def test_segment_without_cutoff_only_filters_other_rules(self):
         df = _stores(
             [
-                ["inactive", 1.0, "ok", None, 100.0, 1.0],
-                ["inactive", 1.0, "ko", "03-budget", 100.0, 1.0],
+                ["Inactive", 1.0, "ok", None, 100.0, 1.0],
+                ["Inactive", 1.0, "ko", "03-budget", 100.0, 1.0],
             ]
         )
-        assert grid_swap_mask(df, {"inactive": None}).tolist() == [True, False]
+        assert grid_swap_mask(df, {"Inactive": None}).tolist() == [True, False]
 
     def test_always_reject_segment_never_passes(self):
-        # known_g: decisión de negocio, se rechaza aunque puntúe 99 y el sistema dijera OK
-        df = _stores([["known_g", 99.0, "ok", None, 100.0, 20.0]])
-        assert not grid_swap_mask(df, {"known_g": ALWAYS_REJECT}).iloc[0]
+        # >=G: decisión de negocio, se rechaza aunque puntúe 99 y el sistema dijera OK
+        df = _stores([[">=G", 99.0, "ok", None, 100.0, 20.0]])
+        assert not grid_swap_mask(df, {">=G": ALWAYS_REJECT}).iloc[0]
 
     def test_review_above_cutoff_is_accepted(self):
         # 'rv' no es KO, así que por encima del corte entra
-        df = _stores([["new", 60.0, "rv", None, 100.0, 13.0]])
-        assert grid_swap_mask(df, {"new": 47.0}).iloc[0]
+        df = _stores([["New", 60.0, "rv", None, 100.0, 13.0]])
+        assert grid_swap_mask(df, {"New": 27.0}).iloc[0]
 
 
 class TestImputedRisk:
@@ -157,3 +158,55 @@ class TestWarnPartialRollout:
     def test_single_month_cannot_be_judged(self):
         one = pd.DataFrame({"mis_date": [pd.Timestamp("2026-08-15")], "oa_amt": [10.0]})
         assert warn_partial_rollout(one, _index()) == []
+
+
+class TestRejectInference:
+    """Corrección por selección: más uplift donde menos se acepta, y solo sobre lo nuevo."""
+
+    def _demand(self):
+        """Demanda sintética: el tramo 1 casi no se acepta, el 3 se acepta entero."""
+        rows = []
+        for bin_value, booked, rejected in ((1.0, 5, 95), (2.0, 50, 50), (3.0, 100, 0)):
+            rows += [{"bin": bin_value, "status_name": "booked", "reject_reason": None}] * booked
+            rows += [{"bin": bin_value, "status_name": "rejected", "reject_reason": "09-score"}] * rejected
+        return pd.DataFrame(rows)
+
+    def _curve(self):
+        return pd.DataFrame(
+            {"b2_pct": [9.0, 6.0, 3.0], "exposure_ratio": [1.0, 1.0, 1.0], "booked_eur": [1e5, 1e5, 1e5]},
+            index=pd.Index([1.0, 2.0, 3.0], name="bin"),
+        )
+
+    def test_uplift_is_larger_where_acceptance_is_lower(self):
+        out = apply_reject_inference(self._curve(), self._demand())
+        mult = out["b2_pct_rechazados"] / out["b2_pct"]
+        assert mult.loc[1.0] > mult.loc[2.0] > mult.loc[3.0]
+
+    def test_fully_accepted_bin_is_barely_uplifted(self):
+        """Si se acepta a todo el mundo, los contratados no son una muestra seleccionada.
+
+        No exactamente 1,00x: el suavizado bayesiano tira la tasa del tramo hacia la
+        global, así que queda un residuo. Lo que debe cumplirse es que sea pequeño frente
+        al del tramo que apenas se acepta.
+        """
+        out = apply_reject_inference(self._curve(), self._demand())
+        mult = out["b2_pct_rechazados"] / out["b2_pct"]
+        assert mult.loc[3.0] < 1.15
+        assert mult.loc[1.0] > 2.0
+
+    def test_monotonicity_does_not_flatten_the_multiplier(self):
+        """El tramo va de peor a mejor score, así que el multiplicador debe DECRECER.
+
+        Sin declarar la dirección (``inv_vars``), la isotónica del pipeline exige lo
+        contrario y aplana el multiplicador a una constante: un recargo plano disfrazado
+        de reject inference, y sin error que lo delate.
+        """
+        out = apply_reject_inference(self._curve(), self._demand())
+        mult = (out["b2_pct_rechazados"] / out["b2_pct"]).round(3)
+        assert mult.nunique() > 1, f"multiplicador aplanado a una constante: {mult.tolist()}"
+
+    def test_blend_sits_between_booked_and_uplifted(self):
+        """La curva aplicada mezcla contratados y nuevos según la tasa de aceptación."""
+        out = apply_reject_inference(self._curve(), self._demand())
+        for b in (1.0, 2.0, 3.0):
+            assert out.loc[b, "b2_pct"] <= out.loc[b, "b2_pct_ri"] <= out.loc[b, "b2_pct_rechazados"] + 1e-9

@@ -168,8 +168,11 @@ def chart_risk_curve(curve: pd.DataFrame, edges: list[float]) -> plt.Figure:
 # --------------------------------------------------------------------------- #
 # 2. Punto 1 — Apple Online medido
 # --------------------------------------------------------------------------- #
-def chart_online_actual(actuals: pd.DataFrame) -> plt.Figure:
-    """Riesgo real por segmento, con la TA como etiqueta directa (una sola magnitud por eje)."""
+def chart_channel_actual(actuals: pd.DataFrame, title: str) -> plt.Figure:
+    """Riesgo real por grupo, con la TA como etiqueta directa (una sola magnitud por eje).
+
+    Sirve para los dos canales: la situación actual de ambos está medida, no imputada.
+    """
     df = actuals[actuals["segmento"] != "TOTAL"].dropna(subset=["riesgo_real_pct"]).copy()
     df = df.sort_values("riesgo_real_pct")
     total = actuals[actuals["segmento"] == "TOTAL"].iloc[0]
@@ -196,7 +199,7 @@ def chart_online_actual(actuals: pd.DataFrame) -> plt.Figure:
     ax.set_xlim(0, xmax)
     ax.axvline(total["riesgo_real_pct"], color=INK, linewidth=1.4, linestyle=(0, (4, 3)), zorder=2)
     ax.annotate(
-        f"media Apple Online {es(total['riesgo_real_pct'], 2, '%')}",
+        f"media del canal {es(total['riesgo_real_pct'], 2, '%')}",
         (total["riesgo_real_pct"], len(df) - 0.5),
         xytext=(7, 4),
         textcoords="offset points",
@@ -204,7 +207,7 @@ def chart_online_actual(actuals: pd.DataFrame) -> plt.Figure:
         color=MUTED,
         annotation_clip=False,
     )
-    ax.set_title("El riesgo de e-commerce se concentra en 'new'", fontsize=13, fontweight="bold", loc="left", pad=18)
+    ax.set_title(title, fontsize=13, fontweight="bold", loc="left", pad=18)
     return fig
 
 
@@ -331,22 +334,28 @@ def chart_stores_by_segment(grid: pd.DataFrame) -> plt.Figure:
 # 4. Punto 3 — la frontera riesgo / aceptación
 # --------------------------------------------------------------------------- #
 def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Figure:
-    """Frontera riesgo-TA con los cuatro objetivos marcados.
+    """Frontera riesgo-aceptación, con la política actual marcada.
 
-    Una sola serie y un solo eje. Las etiquetas llevan **solo el objetivo**: el corte,
-    la TA y la producción van en la tabla de la slide. Meter las tres cifras en cada
-    globo los hacía chocar entre sí y tapar la curva.
+    La TA del eje es la **efectiva** (producción sobre demanda), que es la misma base
+    que la del punto 1. La otra tasa que maneja el estudio —demanda que supera el
+    corte— es mucho más alta y no es comparable con "hoy"; va en la tabla, no aquí.
+
+    El punto de la parrilla actual es lo que convierte la curva en una decisión: sin él
+    no se ve que los cuatro objetivos son endurecimientos.
     """
     df = ladder.sort_values("riesgo_total_pct")
     fig, ax = plt.subplots(figsize=(11, 5.4))
-    ax.plot(df["riesgo_total_pct"], df["ta_apple_pct"], color=PROPOSED, linewidth=2, solid_capstyle="round", zorder=3)
-    ax.scatter(
-        df["riesgo_total_pct"], df["ta_apple_pct"], s=24, color=PROPOSED, edgecolor=SURFACE, linewidth=1.6, zorder=4
+    ax.plot(
+        df["riesgo_total_pct"], df["ta_efectiva_pct"], color=PROPOSED, linewidth=2, solid_capstyle="round", zorder=3
     )
-    marks = picks.dropna(subset=["corte_tramo"])
     ax.scatter(
-        marks["riesgo_logrado_pct"],
-        marks["ta_apple_pct"],
+        df["riesgo_total_pct"], df["ta_efectiva_pct"], s=24, color=PROPOSED, edgecolor=SURFACE, linewidth=1.6, zorder=4
+    )
+
+    marks = picks[picks["escenario"].str.contains("corte único", na=False)].dropna(subset=["riesgo_total_pct"])
+    ax.scatter(
+        marks["riesgo_total_pct"],
+        marks["ta_efectiva_pct"],
         s=170,
         facecolor=SURFACE,
         edgecolor=INK,
@@ -354,10 +363,9 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
         zorder=5,
     )
     for row in marks.itertuples():
-        # etiqueta arriba-izquierda: la region sobre una curva concava creciente esta vacia
         ax.annotate(
-            f"objetivo {es(row.objetivo_pct, 1, '%')}",
-            (row.riesgo_logrado_pct, row.ta_apple_pct),
+            f"objetivo {row.escenario.split(' ·')[0]}",
+            (row.riesgo_total_pct, row.ta_efectiva_pct),
             textcoords="offset points",
             xytext=(-14, 13),
             ha="right",
@@ -365,10 +373,65 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
             fontweight="bold",
             color=INK,
         )
-    _style(ax, ylabel="Tasa de aceptación Apple (% demanda €)", xlabel="Riesgo global Apple (%)")
-    ax.set_ylim(0, 105)
+    medido = picks[picks["escenario"].str.startswith("Hoy")]
+    if not medido.empty:
+        m = medido.iloc[0]
+        ax.scatter(
+            [m["riesgo_total_pct"]],
+            [m["ta_efectiva_pct"]],
+            s=200,
+            color=CURRENT,
+            edgecolor=SURFACE,
+            linewidth=2.4,
+            zorder=6,
+        )
+        ax.annotate(
+            f"hoy, medido: {es(m['ta_efectiva_pct'], 1, '%')} de TA",
+            (m["riesgo_total_pct"], m["ta_efectiva_pct"]),
+            textcoords="offset points",
+            xytext=(14, -16),
+            ha="left",
+            fontsize=10.5,
+            fontweight="bold",
+            color=MUTED,
+        )
+    base = picks[picks["escenario"].str.startswith("Parrilla Online")]
+    if not base.empty:
+        b = base.iloc[0]
+        ax.scatter(
+            [b["riesgo_total_pct"]],
+            [b["ta_efectiva_pct"]],
+            s=200,
+            color=RISK,
+            edgecolor=SURFACE,
+            linewidth=2.4,
+            zorder=6,
+        )
+        ax.annotate(
+            f"parrilla Online en ambos: {es(b['ta_efectiva_pct'], 1, '%')} de TA",
+            (b["riesgo_total_pct"], b["ta_efectiva_pct"]),
+            textcoords="offset points",
+            xytext=(16, -5),
+            ha="left",
+            fontsize=11,
+            fontweight="bold",
+            color=RISK,
+        )
+    _style(ax, ylabel="Tasa de aceptación efectiva (producción / demanda, %)", xlabel="Riesgo global Apple (%)")
+    # El eje se recorta a la zona de decisión: aflojar más allá de la política actual
+    # no está sobre la mesa, y con la cola entera los cuatro objetivos se apelotonan.
+    if not base.empty:
+        ax.set_xlim(0, float(base.iloc[0]["riesgo_total_pct"]) * 1.45)
+        visible = df[df["riesgo_total_pct"] <= float(base.iloc[0]["riesgo_total_pct"]) * 1.45]
+        ax.set_ylim(0, max(visible["ta_efectiva_pct"].max(), 1) * 1.3)
+    else:
+        ax.set_ylim(0, max(df["ta_efectiva_pct"].max(), 1) * 1.25)
     ax.set_title(
-        "Cada punto de riesgo que se cede compra aceptación", fontsize=13, fontweight="bold", loc="left", pad=14
+        "El objetivo del 4% es prácticamente el punto de partida",
+        fontsize=13,
+        fontweight="bold",
+        loc="left",
+        pad=14,
     )
     return fig
 
@@ -380,51 +443,51 @@ _MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct",
 
 
 def chart_seasonality(index: pd.DataFrame) -> plt.Figure:
-    """Índice estacional con agosto destacado; el resto en gris recesivo.
+    """Los dos perfiles estacionales, que no se parecen.
 
-    Un único color de énfasis (azul en agosto, el mes que sostiene todo el dato de
-    tienda). Septiembre se etiqueta pero no se pinta de rojo: ese color está reservado
-    a riesgo en este deck y aquí no significa riesgo.
+    Dos series en el mismo eje —es la misma magnitud, un índice mes-del-año— así que
+    aquí sí comparten gráfico: lo que hay que leer es precisamente la divergencia.
+    Leyenda presente por ser dos series, y etiqueta directa solo en septiembre, que es
+    donde se separan.
     """
     df = index.sort_values("mes")
-    months, values = df["mes"].to_numpy(), df["indice"].to_numpy()
-    top = values.max()
-    fig, ax = plt.subplots(figsize=(10.5, 4.5))
-    ax.bar(months, values, 0.58, color=[PROPOSED if m == 8 else CURRENT for m in months], zorder=3)
-    ax.axhline(1.0, color=INK, linewidth=1.2, linestyle=(0, (4, 3)), zorder=2)
+    months = df["mes"].to_numpy()
+    has_stores = "indice_tienda" in df.columns
+    fig, ax = plt.subplots(figsize=(11, 4.6))
+    series = [("Online", df["indice"].to_numpy(), CURRENT)]
+    if has_stores:
+        series.append(("Tienda", df["indice_tienda"].to_numpy(), PROPOSED))
+    for label, values, color in series:
+        ax.plot(months, values, color=color, linewidth=2, solid_capstyle="round", zorder=3, label=label)
+        ax.scatter(months, values, s=46, color=color, edgecolor=SURFACE, linewidth=2, zorder=4)
+    ax.axhline(1.0, color=INK, linewidth=1.1, linestyle=(0, (4, 3)), zorder=2)
     ax.annotate(
-        "mes medio = 1,00", (5.5, 1.0), xytext=(0, 9), textcoords="offset points", ha="center", fontsize=9, color=MUTED
+        "mes medio = 1,00", (5.0, 1.0), xytext=(0, 9), textcoords="offset points", ha="center", fontsize=9, color=MUTED
     )
-    for m, v in zip(months, values, strict=True):
-        if m in (8, 9):
-            ax.annotate(
-                es(v, 2),
-                (m, v),
-                textcoords="offset points",
-                xytext=(0, 7),
-                ha="center",
-                fontsize=12.5,
-                fontweight="bold",
-                color=INK,
-            )
+    for _label, values, _color in series:
+        ax.annotate(
+            es(values[8], 2),
+            (9, values[8]),
+            xytext=(10, -4),
+            textcoords="offset points",
+            fontsize=11,
+            fontweight="bold",
+            color=INK,
+        )
+    top = max(v.max() for _, v, _ in series)
     ax.set_xticks(months)
     ax.set_xticklabels([_MONTHS[m - 1] for m in months], fontsize=9.5)
     _style(ax, ylabel="Índice estacional de demanda")
-    ax.set_ylim(0, top * 1.26)
-    ax.annotate(
-        # franja alta de la izquierda: debajo choca con la linea media y con la barra de septiembre
-        "agosto: único mes con dato de tienda, y el más bajo del año",
-        (0.6, top * 0.88),
-        ha="left",
-        fontsize=9,
-        color=MUTED,
-    )
-    ax.annotate("septiembre: lanzamiento de iPhone", (9.7, top * 1.05), ha="left", fontsize=9, color=MUTED)
-    ax.set_title(
-        "Apple concentra la demanda: agosto vale un tercio de septiembre",
-        fontsize=13,
-        fontweight="bold",
-        loc="left",
-        pad=14,
-    )
+    ax.set_ylim(0, top * 1.22)
+    legend = ax.legend(loc="upper left", frameon=False, fontsize=10.5, handletextpad=0.5)
+    for text in legend.get_texts():
+        text.set_color(MUTED)
+    if has_stores:
+        ax.annotate(
+            "septiembre: el lanzamiento de iPhone es un fenómeno de Online;\nen tienda es de los meses más flojos",
+            (1.5, top * 0.10),
+            fontsize=9.5,
+            color=MUTED,
+        )
+    ax.set_title("Los dos canales no comparten estacionalidad", fontsize=13, fontweight="bold", loc="left", pad=14)
     return fig
