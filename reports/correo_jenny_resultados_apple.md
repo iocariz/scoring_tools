@@ -15,7 +15,7 @@ Hola Jenny,
 
 Ya está el estudio. Te resumo primero la conclusión y debajo los tres puntos con el detalle.
 
-**En una línea: al mismo nivel de riesgo que hoy (3,99%), extender la parrilla de Equifax de Online a tienda nos daría +3,9 puntos de tasa de aceptación y unos +2,6 M€ de producción al mes.** Y el objetivo de riesgo del 4% ya lo cumplimos hoy: no requiere ningún cambio.
+**En una línea: al mismo nivel de riesgo que hoy (3,99%), extender la parrilla de Equifax de Online a tienda nos daría +4,0 puntos de tasa de aceptación y unos +2,6 M€ de producción al mes.** Y el objetivo de riesgo del 4% ya lo cumplimos hoy: no requiere ningún cambio.
 
 ---
 

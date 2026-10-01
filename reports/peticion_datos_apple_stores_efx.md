@@ -1,5 +1,24 @@
 # Petición de datos — Extensión del score Equifax a Apple Stores
 
+> **Estado a 01-10-2026 — leer antes que nada.** Este documento es la petición tal como se envió
+> el 30-09-2026, y se conserva así como registro. La extracción llegó el 01-10-2026 y **varias de
+> las cifras y supuestos de abajo quedaron superados** con el dato real:
+>
+> * El histórico de tienda sí llegó (Bloque C), y con él la **estacionalidad propia de tienda**: no se
+>   parece a la de Online (correlación 0,39; tienda pica en diciembre y tiene septiembre entre sus
+>   meses más flojos). El "supuesto pendiente" de A.6 quedó resuelto **en sentido contrario** al que
+>   se temía: aplicarle a tienda el índice de Online la sobreponderaba. Peso real de tienda: **25%**,
+>   no 31%.
+> * Julio-2026 no fue un rollout parcial: trae demanda completa pero **sin score**, porque EFX se
+>   activó en agosto. Se excluye igual, por otra razón.
+> * El nivel de riesgo de tienda se ancla a su morosidad real (3,74%); el riesgo imputado sin anclar
+>   (2,67%) y los cortes de A.6 son de la corrida con placeholders.
+> * La parrilla real va sobre la **letra** (`scrv_customer_init`, grupos A-C / D-F / >=G), no sobre
+>   `segment_cut_off`; `known_cd` queda partido entre dos reglas.
+>
+> Las cifras vigentes están en `output/apple_study/` y en `reports/correo_jenny_resultados_apple.md`.
+
+
 | | |
 |---|---|
 | **Solicitante** | Iñigo Lopez de Ocariz — Riesgos |
@@ -217,6 +236,6 @@ Apple es extremadamente estacional: índice de demanda de Online entre **0,53 en
 
 **Efecto en los resultados:** el peso de tienda en la demanda Apple pasa del 12% al **31%**, y como tienda es menos arriesgada y transforma mucho más, la producción de cada escenario casi se duplica y la TA sube entre 3 y 10 puntos.
 
-**Supuesto pendiente:** el índice se estima sobre **Online**. Si tienda es más estacional —plausible, porque las colas de lanzamiento son un fenómeno de tienda física— su peso real sería aún mayor que el 31%. El agregado mensual solicitado en el Bloque C lo cierra.
+**Supuesto pendiente** · **RESUELTO (01-10-2026), ver la nota de estado al principio.** ~~El índice se estima sobre **Online**.~~ Si tienda es más estacional —plausible, porque las colas de lanzamiento son un fenómeno de tienda física— su peso real sería aún mayor que el 31%. El agregado mensual solicitado en el Bloque C lo cierra.
 
 **Julio-2026 queda excluido** por rollout parcial (9% del volumen esperado). El script lo detecta comparando cada mes contra su perfil estacional, en vez de depender de que alguien recuerde excluirlo.
