@@ -107,6 +107,14 @@ uv run python generate_results_presentation.py --surface-segment premium --pdf  
 # Charts via src/presentation_charts.py (matplotlib + kaleido for 3D). Writes output/results_deck/Credit_Risk_Results_<scenario>.pptx
 # (+ images/). 3D snapshot needs kaleido==0.2.1 (degrades to 2D-only if absent).
 
+# Apple EFX study — extend the e-commerce Equifax grid to Apple Stores (standalone, does NOT run the pipeline)
+uv run python run_apple_study.py                      # writes output/apple_study/*.csv + periodos.json
+uv run python run_apple_study.py --cutoff New=27 --cutoff A-C=16   # override the grid (reject threshold; accept ABOVE)
+uv run python run_apple_study.py --no-reject-inference --stores-level-factor 1.0   # raw Online curve, no anchoring
+uv run python generate_apple_deck.py                  # 13-slide .pptx from those CSVs -> output/apple_deck/
+# Study outputs feed reports/correo_jenny_resultados_apple.md; the data request + decision log lives in
+# reports/peticion_datos_apple_stores_efx.md (historical: read its dated status note first).
+
 # Tests
 uv run pytest tests/                                    # all tests
 uv run pytest tests/test_models.py -v                   # single file
@@ -212,6 +220,8 @@ Two-tier config: `config.toml` (global defaults) overridden per-segment by `segm
 **Base scenario only:** `base_scenario_only` (bool, default false) — generate only the base scenario; skip pessimistic and optimistic. Config-only flag; no CLI equivalent (unlike `--baseline`). Distinct from `baseline_mode`: base-scenario-only still runs optimization, just with one risk target.
 
 **Sequential cutoff ordering:** `cutoff_floor_segment` (per-segment, in `segments.toml`) names the segment whose accepted cells constrain this segment, enforcing nested acceptance masks across segments (e.g., `mask_ef ⊆ mask_cd ⊆ mask_ab`). `cutoff_ordering_mode` (`"bottom_up"` / `"top_down"`, default `"bottom_up"`) controls the optimization direction: bottom-up optimizes the tightest segment first and propagates floor constraints (must-accept); top-down optimizes the least restrictive first and propagates ceiling constraints (must-reject). Segments are automatically topologically sorted by dependency. In parallel mode, constrained segments run sequentially after unconstrained ones complete.
+
+**Apple EFX study (`run_apple_study.py`, 2026-10).** Business question: TA + risk of Apple Online (measured), of Apple Stores under the Online EFX grid (TA measured, **risk imputed**), and global-risk scenarios (2.5/3/3.5/4%). Decisions that are NOT derivable from the code: the grid (`ecommerce_cutoff.xlsx`) is keyed on the **letter** `scrv_customer_init` (groups A-C / D-F / >=G / New / Inactive), not on `segment_cut_off` — `known_cd` is split between two rules; every value is a **reject** threshold (accept above); `>=G` is always rejected; only the score rule changes (other rules kept — modelled as a swap via `grid_swap_mask`); 12-month mature window. Stores has EFX **only in Aug-2026** (`risk_score_rf` is EFX forced for the simulation despite `rf_business_name` saying A-Score); its history has no score (internal octroi) but does have mature outcomes, so stores' *current* situation is measured and anchors the imputed level (`stores_level_anchor`, factor ≈0.99). Seasonality is estimated **per channel** on complete calendar years (`seasonal_index`) — stores peaks in December and has September among its weakest months, the opposite of Online; run-rates divide by *effective months* (sum of the index), not calendar months. Reject inference reuses the pipeline's parceling and MUST pass `inv_vars=["bin"]` (without it the isotonic step flattens the multiplier to a constant, silently). Known hand-written figures in the deck: the quarterly Online approval rates in the frontier note (`generate_apple_deck.py`, `slide_frontier`) — re-check if the window changes. The grid in force is ~1.12× looser than the policy actually applied during the window (Online loosened 40.7%→50.3% approval), which is why the modelled baseline (17.9 M€/mo) exceeds the measured one (15.3 M€/mo); the 4% target is already met today.
 
 ## Testing
 
