@@ -2,6 +2,8 @@
 salidas de ``run_apple_study.py`` sin romper. Protege el generador de cambios en las
 columnas de los CSV, que es como se rompería en la práctica."""
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -33,6 +35,17 @@ def study_outputs(tmp_path):
     ).to_csv(tmp_path / "p1_online_actual.csv", index=False)
     pd.DataFrame(
         {
+            "segmento": ["New", "A-C", "TOTAL"],
+            "demanda_n": [100, 50, 150],
+            "demanda_eur": [1e6, 5e5, 1.5e6],
+            "booked_n": [60, 30, 90],
+            "produccion_eur": [6e5, 3e5, 9e5],
+            "ta_pct": [60.0, 60.0, 60.0],
+            "riesgo_real_pct": [4.5, 0.6, 3.7],
+        }
+    ).to_csv(tmp_path / "p1b_tienda_actual.csv", index=False)
+    pd.DataFrame(
+        {
             "segmento": ["new", "TOTAL"],
             "corte_efx": [47.0, np.nan],
             "demanda_eur": [1e6, 1e6],
@@ -49,23 +62,53 @@ def study_outputs(tmp_path):
             "corte_tramo": bins.astype(int),
             "corte_score": [BIN_EDGES[int(b) - 1] for b in bins],
             "riesgo_total_pct": np.linspace(8, 1.3, 20),
-            "ta_apple_pct": np.linspace(100, 6, 20),
+            "ta_score_pct": np.linspace(100, 6, 20),
+            "ta_efectiva_pct": np.linspace(26, 2, 20),
             "produccion_mensual_eur": np.linspace(1.6e7, 8e5, 20),
-            "ta_online_pct": np.linspace(100, 5, 20),
-            "ta_tienda_pct": np.linspace(100, 11, 20),
         }
-    ).to_csv(tmp_path / "p3_escalera_escenarios.csv", index=False)
+    ).to_csv(tmp_path / "p3_escalera_corte_unico.csv", index=False)
     pd.DataFrame(
         {
-            "objetivo_pct": [2.5, 3.0],
-            "corte_tramo": [15, 13],
-            "corte_score": [68.0, 56.0],
-            "riesgo_logrado_pct": [2.3, 2.8],
-            "ta_apple_pct": [42.6, 63.7],
-            "produccion_mensual_eur": [8.7e6, 1.27e7],
-            "nota": ["", ""],
+            "desplazamiento": range(0, 10),
+            "riesgo_total_pct": np.linspace(4.2, 2.0, 10),
+            "ta_score_pct": np.linspace(82, 40, 10),
+            "ta_efectiva_pct": np.linspace(24, 12, 10),
+            "produccion_mensual_eur": np.linspace(1.3e7, 6e6, 10),
+        }
+    ).to_csv(tmp_path / "p3_escalera_parrilla_desplazada.csv", index=False)
+    pd.DataFrame(
+        {
+            # la primera fila es la parrilla actual: el deck la marca como punto de partida
+            "escenario": ["Parrilla actual", "2.5% · corte único", "2.5% · parrilla desplazada"],
+            "corte": ["vigente", "> 68", "+39 puntos"],
+            "riesgo_total_pct": [4.18, 2.35, 2.48],
+            "ta_score_pct": [81.8, 42.0, 46.2],
+            "ta_efectiva_pct": [24.1, 12.8, 14.0],
+            "produccion_mensual_eur": [1.29e7, 6.9e6, 7.5e6],
         }
     ).to_csv(tmp_path / "p3_escenarios_objetivo.csv", index=False)
+    pd.DataFrame(
+        {
+            "grupo": ["New", "Inactive", "A-C", "D-F", ">=G"],
+            "Parrilla actual": ["> 27", "> 22", "> 16", "> 22", "rechazo"],
+            "2.5% · único": ["> 68", "> 68", "> 68", "> 68", "rechazo"],
+            "2.5% · parrilla": ["> 66", "> 61", "> 55", "> 61", "rechazo"],
+        }
+    ).to_csv(tmp_path / "p4_parrillas_escenarios.csv", index=False)
+    (tmp_path / "periodos.json").write_text(
+        json.dumps(
+            {
+                "online_desde": "2025-03-01",
+                "online_hasta": "2026-03-01",
+                "tienda_desde": "2026-08-01",
+                "tienda_hasta": "2026-09-01",
+                "estacionalidad_anios": [2024, 2025],
+                "reject_inference": True,
+                "factor_nivel_tienda": 0.9884,
+            }
+        ),
+        encoding="utf-8",
+    )
     pd.DataFrame(
         {"mes": range(1, 13), "indice": [0.94, 0.81, 0.86, 0.74, 0.71, 0.63, 0.67, 0.53, 1.94, 1.68, 1.21, 1.28]}
     ).to_csv(tmp_path / "indice_estacional.csv", index=False)
@@ -77,9 +120,9 @@ def test_deck_builds_from_study_outputs(study_outputs, tmp_path):
     assert out.exists() and out.stat().st_size > 0
     from pptx import Presentation
 
-    assert len(Presentation(str(out)).slides._sldIdLst) == 9
-    # 5 gráficos de slide + la variante compacta de tienda y el desglose por segmento
-    assert len(list((tmp_path / "deck" / "images").glob("*.png"))) == 7
+    assert len(Presentation(str(out)).slides._sldIdLst) == 13
+    # 6 gráficos de slide + la variante compacta de tienda y el desglose por segmento
+    assert len(list((tmp_path / "deck" / "images").glob("*.png"))) == 8
 
 
 def test_spanish_decimal_format():
