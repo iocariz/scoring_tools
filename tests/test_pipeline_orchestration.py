@@ -994,6 +994,35 @@ efx_bins = [0.0, 1.0]
         assert "seg_ok" in captured["consolidated_segments"]
         assert "seg_fail" not in captured["consolidated_segments"]
 
+    def test_consolidated_report_not_rewritten_when_every_segment_failed(self, monkeypatch, tmp_path):
+        # The supersegment/portfolio sections are built from whatever artifacts are on
+        # disk, so with an EMPTY successful-segment dict the report still renders — full
+        # of the previous run's numbers — and clobbers the last good file. A run where
+        # nothing succeeded must leave consolidated_report.html untouched.
+        output_base = tmp_path / "output"
+        output_base.mkdir(parents=True)
+        previous = output_base / "consolidated_report.html"
+        previous.write_text("<html>previous good run</html>", encoding="utf-8")
+
+        def fail_build(*args, **kwargs):
+            raise AssertionError("consolidated report must not be built when nothing succeeded")
+
+        def fail_render(*args, **kwargs):
+            raise AssertionError("consolidated report must not be rendered when nothing succeeded")
+
+        monkeypatch.setattr(reporting_module, "build_consolidated_report", fail_build)
+        monkeypatch.setattr(reporting_module, "render_report", fail_render)
+
+        reports = reporting_module.generate_batch_reports(
+            output_base=str(output_base),
+            segments={"seg_a": {}, "seg_b": {}},
+            supersegments={"shared": {}},
+            segment_results={"seg_a": False, "seg_b": False},
+        )
+
+        assert reports == {}
+        assert previous.read_text(encoding="utf-8") == "<html>previous good run</html>"
+
 
 class TestResimulationNoStaleData:
     """#48: resimulation raises on missing artifacts (not silent return) and

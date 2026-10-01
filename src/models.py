@@ -177,6 +177,18 @@ def _transform_variables_nd(df: pd.DataFrame, variables: list[str], degree: int 
     X = result[input_cols].values
 
     poly = PolynomialFeatures(degree=degree, include_bias=False, interaction_only=False)
+
+    # A 0-row frame is a legitimate input (e.g. an MR cohort with no score-rejected
+    # demand, so the repesca aggregate is empty), but PolynomialFeatures refuses to
+    # fit on 0 samples. Derive the feature NAMES from a dummy row and emit the same
+    # columns with no rows, so an empty frame flows through with the same schema.
+    if len(result) == 0:
+        poly.fit(np.zeros((1, len(input_cols))))
+        for fname in poly.get_feature_names_out(input_cols):
+            if fname not in result.columns:
+                result[fname] = np.zeros(0, dtype=float)
+        return result
+
     X_poly = poly.fit_transform(X)
     feature_names = poly.get_feature_names_out(input_cols)
 
@@ -274,7 +286,10 @@ def calculate_B2(
 
     data_out = transform_variables(df.copy(), variables)
     X = prepare_model_input(data_out, var_reg, model_risk)
-    data_out["b2_ever_h6"] = np.clip(stressor * model_risk.predict(X), a_min=0, a_max=None)
+    # sklearn refuses to predict on 0 samples; an empty input means "no rows to score",
+    # not an error — return the column empty rather than aborting the caller.
+    preds = np.zeros(0, dtype=float) if len(data_out) == 0 else stressor * model_risk.predict(X)
+    data_out["b2_ever_h6"] = np.clip(preds, a_min=0, a_max=None)
     return data_out
 
 
@@ -292,7 +307,8 @@ def calculate_RV(df: pd.DataFrame, model_rv) -> pd.DataFrame:
     Returns:
         DataFrame with 'todu_amt_pile_h6' predictions added.
     """
-    preds = model_rv.predict(df[["oa_amt"]])
+    # Empty input = no rows to score (see calculate_B2).
+    preds = np.zeros(0, dtype=float) if len(df) == 0 else model_rv.predict(df[["oa_amt"]])
     n_neg = (preds < 0).sum()
     if n_neg > 0:
         from loguru import logger
@@ -370,12 +386,14 @@ def calculate_hri_values(
         logger.warning(f"HRI stressor value {stressor} is non-positive; clamping to 0.01")
         stressor = 0.01
 
-    preds_den = model_hden.predict(df[["oa_amt"]])
+    # Empty input = no rows to score (see calculate_B2).
+    is_empty = len(df) == 0
+    preds_den = np.zeros(0, dtype=float) if is_empty else model_hden.predict(df[["oa_amt"]])
     df["h_den_h6"] = np.clip(preds_den, 0, None)
 
     data_out = transform_variables(df.copy(), variables)
     X = prepare_model_input(data_out, var_reg, model_hri)
-    raw_rate = stressor * model_hri.predict(X)
+    raw_rate = np.zeros(0, dtype=float) if is_empty else stressor * model_hri.predict(X)
     upper = rate_cap if rate_cap is not None and np.isfinite(rate_cap) and rate_cap > 0 else None
     n_capped = int((raw_rate > upper).sum()) if upper is not None else 0
     data_out["hri_h6"] = np.clip(raw_rate, a_min=0, a_max=upper)

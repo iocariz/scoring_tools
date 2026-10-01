@@ -126,3 +126,55 @@ def test_check_workbook_end_to_end(tmp_path):
     path = tmp_path / "wb.xlsx"
     wb.save(path)
     assert checker.check_workbook(str(path), verbose=False) == 0
+
+
+def _render_strip(accepted: list):
+    """Write *accepted* through the real 1-D strip writer, re-read it with the checker."""
+    from src.consolidation import _write_acceptance_strip_1d
+
+    df = pd.DataFrame({"new_efx_clus": range(1, len(accepted) + 1), "accepted": accepted})
+    ws = openpyxl.Workbook().active
+    _write_acceptance_strip_1d(ws, df, "seg", start_row=1)
+    grids = checker.find_grids(ws)
+    assert len(grids) == 1, "the 1-D strip layout must be recognised as a grid"
+    r0, c0, label, nrows, ncols = grids[0]
+    assert not checker._is_corner(label), "a strip label is the bare variable name"
+    assert (nrows, ncols) == (1, len(accepted))
+    vals, _ = checker.read_grid(ws, r0, c0, nrows, ncols)
+    return vals, checker.check_strip(vals)
+
+
+def test_strip_single_threshold_passes():
+    """A 1-D strip draws no frontier; the invariant is one accept run along the axis."""
+    _, problems = _render_strip([0, 0, 0, 1, 1, 1])
+    assert problems == []
+
+
+def test_strip_flags_non_monotone_acceptance():
+    _, problems = _render_strip([0, 1, 0, 1, 1, 1])
+    assert problems and "not a single run" in problems[0]
+
+
+def test_strip_ignores_unobserved_cells():
+    """N/A cells are neither accepted nor rejected — they must not split the run."""
+    _, problems = _render_strip([0, 0, nan, 1, 1, 1])
+    assert problems == []
+
+
+def test_strip_one_class_grids_have_no_boundary():
+    assert _render_strip([1, 1, 1, 1])[1] == []
+    assert _render_strip([0, 0, 0, 0])[1] == []
+
+
+def test_recognising_no_grids_is_a_failure_not_a_pass(tmp_path):
+    """A checker that verified nothing must never report green.
+
+    Single-variable runs render strips, which the 2-D corner scan could not see: the
+    script printed "found 0 grids ... All grids pass." and exited 0, so the invariants
+    were unenforced while CI stayed green.
+    """
+    path = tmp_path / "empty.xlsx"
+    wb = openpyxl.Workbook()
+    wb.active.title = "Cutoff Grids"
+    wb.save(path)
+    assert checker.check_workbook(str(path), verbose=False) == 1

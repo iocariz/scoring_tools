@@ -234,6 +234,33 @@ class TestCalculateRiskValues:
         assert "b2_ever_h6" in result.columns
         assert "todu_30ever_h6" in result.columns
 
+    def test_empty_input_returns_empty_frame_not_error(self):
+        """A 0-row frame is a legitimate input, not a failure.
+
+        An MR cohort can contain no score-rejected demand at all (e.g. a segment that
+        accepts every cell), which makes the repesca aggregate empty. sklearn refuses to
+        predict on 0 samples, so this used to raise ValueError deep inside the MR run —
+        swallowed by process_mr_period, leaving the segment silently without MR,
+        stability or drift artifacts while still reporting success.
+        """
+        variables = ["v0", "v1"]
+        model_rv = LinearRegression()
+        model_rv.fit(pd.DataFrame({"oa_amt": [100.0, 200.0, 300.0]}), np.array([1000.0, 2000.0, 3000.0]))
+
+        from src.models import transform_variables as tv
+
+        train_df = tv(pd.DataFrame({"v0": [0, 1, 2], "v1": [0, 1, 2]}), variables)
+        var_reg = [c for c in train_df.columns if c not in ["v0", "v1"]]
+        model_risk = Ridge(fit_intercept=False)
+        model_risk.fit(train_df[var_reg], np.array([0.1, 0.2, 0.3]))
+
+        empty = pd.DataFrame({c: pd.Series(dtype=float) for c in ["oa_amt", "v0", "v1"]})
+        result = calculate_risk_values(empty, model_risk, model_rv, variables, stressor=1.0, var_reg=var_reg)
+
+        assert len(result) == 0
+        for col in ("todu_amt_pile_h6", "b2_ever_h6", "todu_30ever_h6"):
+            assert col in result.columns
+
 
 # =============================================================================
 # transform_variables Edge Case Tests
