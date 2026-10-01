@@ -105,6 +105,8 @@ def study_outputs(tmp_path):
                 "estacionalidad_anios": [2024, 2025],
                 "reject_inference": True,
                 "factor_nivel_tienda": 0.9884,
+                "riesgo_tienda_realizado_pct": 3.74,
+                "riesgo_tienda_imputado_pct": 3.79,
             }
         ),
         encoding="utf-8",

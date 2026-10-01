@@ -226,9 +226,12 @@ def chart_stores_swap(grid: pd.DataFrame, compact: bool = False) -> plt.Figure:
     proyección. Escalar la versión grande achicaría las fuentes a la mitad.
     """
     total = grid[grid["segmento"] == "TOTAL"].iloc[0]
+    ta0, ta1 = total["ta_actual_pct"], total["ta_efectiva_pct"]
+    r0, r1 = total["riesgo_imputado_actual_pct"], total["riesgo_imputado_pct"]
+    # Los veredictos se calculan: un texto fijo mentiría en cuanto el dato cambiara de signo.
     panels = [
-        ("Tasa de aceptación (% demanda €)", total["ta_actual_pct"], total["ta_efectiva_pct"], "más aceptación"),
-        ("Riesgo imputado (%)", total["riesgo_imputado_actual_pct"], total["riesgo_imputado_pct"], "menos riesgo"),
+        ("Tasa de aceptación (% demanda €)", ta0, ta1, "más aceptación" if ta1 >= ta0 else "menos aceptación"),
+        ("Riesgo imputado (%)", r0, r1, "menos riesgo" if r1 <= r0 else "más riesgo"),
     ]
     figsize = (6.8, 3.2) if compact else (10.5, 4.4)
     fig, axes = plt.subplots(1, 2, figsize=figsize)
@@ -317,8 +320,18 @@ def chart_stores_by_segment(grid: pd.DataFrame) -> plt.Figure:
     legend = axes[0].legend(loc="lower right", frameon=False, fontsize=10, handletextpad=0.4)
     for text in legend.get_texts():
         text.set_color(MUTED)
+    # El titular se calcula: un grupo puede perder décimas de TA (A-C lo hace) y entonces
+    # "todos ganan" sería falso. Y "donde más pesa" se refiere al grupo con más demanda.
+    gain = int((df["ta_efectiva_pct"] > df["ta_actual_pct"]).sum())
+    biggest = df.iloc[-1]  # df está ordenado por demanda ascendente
+    head = "Todos los grupos ganan aceptación" if gain == len(df) else f"{gain} de {len(df)} grupos ganan aceptación"
+    tail = (
+        "el riesgo baja donde más pesa"
+        if biggest["riesgo_imputado_pct"] < biggest["riesgo_imputado_actual_pct"]
+        else "el riesgo sube donde más pesa"
+    )
     fig.suptitle(
-        "Todos los segmentos ganan aceptación; el riesgo baja donde más pesa",
+        f"{head}; {tail}",
         fontsize=13,
         fontweight="bold",
         x=0.075,
