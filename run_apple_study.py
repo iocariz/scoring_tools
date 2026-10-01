@@ -131,7 +131,7 @@ def load_study_data(data_path: str) -> pd.DataFrame:
     return data
 
 
-def stores_level_anchor(all_stores: pd.DataFrame, scored_booked: pd.DataFrame, curve: pd.DataFrame) -> float:
+def stores_level_anchor(all_stores: pd.DataFrame, scored_booked: pd.DataFrame, curve: pd.DataFrame) -> dict[str, float]:
     """Factor que reescala la curva de Online para reproducir la morosidad real de tienda.
 
     El supuesto del estudio tiene dos componentes: la **forma** de la curva —cuánto
@@ -146,12 +146,12 @@ def stores_level_anchor(all_stores: pd.DataFrame, scored_booked: pd.DataFrame, c
     mature = all_stores[(all_stores["acct_booked_h0"] > 0) & (all_stores["todu_amt_pile_h6"] > 0)]
     if mature.empty:
         logger.warning("Sin cartera madura en tienda: no se puede anclar el nivel, se usa la curva de Online tal cual")
-        return 1.0
+        return {"factor": 1.0, "realizado_pct": float("nan"), "imputado_pct": float("nan")}
     realized = DEFAULT_RISK_MULTIPLIER * 100 * mature["todu_30ever_h6"].sum() / mature["todu_amt_pile_h6"].sum()
     imputed = imputed_risk(scored_booked, curve)
     if not np.isfinite(imputed) or imputed <= 0:
         logger.warning("Riesgo imputado no calculable: no se ancla el nivel")
-        return 1.0
+        return {"factor": 1.0, "realizado_pct": realized, "imputado_pct": float("nan")}
     factor = realized / imputed
     logger.info(
         f"Ancla de nivel de tienda: realizado {realized:.2f}% ({len(mature):,} contratos maduros) frente a "
@@ -159,7 +159,7 @@ def stores_level_anchor(all_stores: pd.DataFrame, scored_booked: pd.DataFrame, c
         f"(la curva de Online {'sobreestima' if factor < 1 else 'subestima'} el riesgo de tienda "
         f"un {abs(100 * (1 / factor - 1)):.1f}%)"
     )
-    return factor
+    return {"factor": factor, "realizado_pct": realized, "imputado_pct": imputed}
 
 
 def _booked(df: pd.DataFrame) -> pd.DataFrame:
@@ -724,11 +724,8 @@ def main(argv: list[str] | None = None) -> int:
     # El ancla va ANTES del reject inference: compara contra la morosidad realizada de
     # tienda, que es base contratados. Con la curva ya corregida por selección se estaría
     # corrigiendo dos veces y el factor saldría artificialmente bajo.
-    level_factor = (
-        args.stores_level_factor
-        if args.stores_level_factor is not None
-        else stores_level_anchor(stores_window, _booked(stores), curve)
-    )
+    anchor = stores_level_anchor(stores_window, _booked(stores), curve)  # siempre, para dejar constancia
+    level_factor = args.stores_level_factor if args.stores_level_factor is not None else anchor["factor"]
     if not args.no_reject_inference:
         curve = apply_reject_inference(
             curve,
@@ -771,6 +768,8 @@ def main(argv: list[str] | None = None) -> int:
             "estacionalidad_anios": seasonal_years,
             "reject_inference": not args.no_reject_inference,
             "factor_nivel_tienda": round(level_factor, 4),
+            "riesgo_tienda_realizado_pct": round(anchor["realizado_pct"], 4),
+            "riesgo_tienda_imputado_pct": round(anchor["imputado_pct"], 4),
         },
         (out / "periodos.json").open("w", encoding="utf-8"),
         indent=2,

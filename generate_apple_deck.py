@@ -396,6 +396,8 @@ def slide_method_risk(prs, meta: dict, period: str) -> None:
     slide = _blank(prs)
     y = _header(slide, "Cómo se estima el riesgo de tienda", "Metodología · Riesgo", period)
     factor = meta.get("factor_nivel_tienda", 1.0)
+    realizado = meta.get("riesgo_tienda_realizado_pct", float("nan"))
+    imputado = meta.get("riesgo_tienda_imputado_pct", float("nan"))
     _chain(
         slide,
         MARGIN,
@@ -427,9 +429,9 @@ def slide_method_risk(prs, meta: dict, period: str) -> None:
             (
                 "4",
                 "El nivel se ancla a la morosidad real de tienda",
-                f"La curva de Online predice un 3,79% sobre la cartera contratada de tienda; lo realmente observado "
-                f"es 3,74%. Se reescala por {ac.es(factor, 3)} para que reproduzca el dato. El nivel deja de ser un "
-                "supuesto: solo queda asumido el poder discriminante.",
+                f"La curva de Online predice un {ac.es(imputado, 2, '%')} sobre la cartera contratada de tienda; "
+                f"lo realmente observado es {ac.es(realizado, 2, '%')}. Se reescala por {ac.es(factor, 3)} para que "
+                "reproduzca el dato. El nivel deja de ser un supuesto: solo queda asumido el poder discriminante.",
                 "MEDIDO",
             ),
         ],
@@ -543,6 +545,8 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, period: str = "") -> Non
     # El aviso va bajo el gráfico, que es donde queda sitio y donde lo verá quien mire la
     # curva. Es la pregunta que va a salir en comité: por qué el modelo produce más que lo
     # que de hecho se produjo.
+    base_rows = picks[picks["escenario"].str.startswith("Parrilla Online")]
+    base_prod = float(base_rows.iloc[0]["produccion_mensual_eur"]) if not base_rows.empty else float("nan")
     # Debajo del gráfico, calculado desde su alto real: estimarlo a ojo lo hacía chocar
     # con la etiqueta del eje.
     note_y = y + chart_h + Inches(0.12)
@@ -565,7 +569,8 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, period: str = "") -> Non
         Inches(1.1),
         "La parrilla vigente aprueba el 51,8% de la demanda de Online, pero el motor aprobó el 46,4% en esa "
         "misma ventana: es 1,12x más laxa, porque Online ha ido aflojando (40,7% de aprobación en 2025Q1, "
-        "50,3% en 2025Q4). Así que los 17,9 M€/mes no son solo el efecto de llevar la parrilla a tienda — "
+        f"50,3% en 2025Q4). Así que los {ac.es(base_prod / 1e6, 1)} M€/mes no son solo el efecto de llevar la "
+        "parrilla a tienda — "
         "parte es que la parrilla de hoy ya es más laxa que la política media del periodo sobre el que se "
         "mide el riesgo.",
         size=11,
