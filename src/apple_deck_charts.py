@@ -439,8 +439,16 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
         ax.set_ylim(0, max(visible["ta_efectiva_pct"].max(), 1) * 1.3)
     else:
         ax.set_ylim(0, max(df["ta_efectiva_pct"].max(), 1) * 1.25)
+    # El título es una lectura del dato, así que se decide con el dato: solo vale si la
+    # parrilla vigente ya está (a 0,1 pp) sobre el objetivo más alto que se pide.
+    targets = picks["escenario"].str.extract(r"^(\d+(?:\.\d+)?)%")[0].dropna().astype(float)
+    top = float(targets.max()) if not targets.empty else float("nan")
+    base_risk = float(base.iloc[0]["riesgo_total_pct"]) if not base.empty else float("nan")
+    already_there = np.isfinite(top) and np.isfinite(base_risk) and abs(base_risk - top) <= 0.1
     ax.set_title(
-        "El objetivo del 4% es prácticamente el punto de partida",
+        f"El objetivo del {top:g}% es prácticamente el punto de partida"
+        if already_there
+        else "Cada objetivo de riesgo tiene su precio en aceptación",
         fontsize=13,
         fontweight="bold",
         loc="left",

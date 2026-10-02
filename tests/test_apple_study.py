@@ -16,6 +16,7 @@ from run_apple_study import (
     grid_fidelity,
     grid_swap_mask,
     imputed_risk,
+    measured_status_quo,
     policy_kpis,
     stores_under_grid,
     take_up_by_decision,
@@ -296,3 +297,15 @@ class TestGridFidelity:
         loose = grid_fidelity(self._channel(), {"New": 10.0})
         assert loose["swap_in_pct"] == pytest.approx(100 * 100 / 700)
         assert loose["swap_out_pct"] == 0.0
+
+
+class TestMeasuredStatusQuo:
+    def test_each_channel_is_normalised_by_its_own_effective_months(self):
+        # Online y tienda tienen perfiles estacionales distintos: el 'hoy' medido debe
+        # dividir cada canal por sus propios meses efectivos, no por los de Online.
+        cols = ["oa_amt", "acct_booked_h0", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"]
+        ecom = pd.DataFrame([[100.0, 1, 100.0, 1.0, 100.0]], columns=cols)
+        stores = pd.DataFrame([[100.0, 1, 100.0, 1.0, 100.0]], columns=cols)
+        kpis = measured_status_quo(ecom, stores, months_ecom=1.0, months_stores=2.0, multiplier=7.0)
+        assert kpis["produccion_mensual_eur"] == pytest.approx(100.0 + 50.0)
+        assert kpis["ta_efectiva_pct"] == pytest.approx(100.0)

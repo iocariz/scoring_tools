@@ -75,7 +75,7 @@ Las parrillas concretas (umbral de rechazo por grupo, se acepta por encima):
 
 **La ganancia es toda de tienda.** La parrilla vigente calca lo que el motor decide hoy en Online (acepta el 51,8% de la demanda; el motor aprobó el 51,9%), y cada solicitud aceptada convierte a la tasa de su decisión real —la misma tasa de financiación que usamos en el proceso general—, así que Online modelado y medido coinciden. Los 16,8 frente a 15,3 M€/mes son tienda, con un matiz de base: tienda se modela sobre agosto-2026, el único mes con score, y el "hoy" sobre la ventana completa.
 
-**Tienda lleva un año endureciendo por su cuenta**: su TA ha pasado del 59% en 2025 al 47,6% en agosto-2026. La base contra la que comparamos se está moviendo.
+**Tienda lleva un año endureciendo por su cuenta**: su TA ha pasado del 58,7% (marzo-2025 a febrero-2026) al 47,6% en agosto-2026. La base contra la que comparamos se está moviendo.
 
 **El perímetro es Apple Propio**, una sola cadena, sin APRS.
 
