@@ -21,7 +21,6 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from loguru import logger
 from pptx import Presentation
@@ -29,6 +28,7 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Emu, Inches, Pt
 
+from run_apple_study import BIN_EDGES  # una sola definición de los tramos, la del estudio
 from src import apple_deck_charts as ac
 
 W, H = Inches(13.333), Inches(7.5)
@@ -41,7 +41,7 @@ RULE = RGBColor(0xE5, 0xE7, 0xEB)
 TILE_BG = RGBColor(0xF6, 0xF7, 0xF9)
 FONT = "Arial"
 
-BIN_EDGES = [-np.inf, 2, 7, 11, 16, 22, 27, 33, 38, 43, 47, 51, 56, 62, 68, 73, 78, 83, 89, 94, np.inf]
+MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 
 
 # --------------------------------------------------------------------------- #
@@ -253,7 +253,7 @@ def slide_title(prs, online, stores, today: str) -> None:
     )
 
 
-def slide_exec(prs, online, stores, picks, stores_img: Path, period: str = "") -> None:
+def slide_exec(prs, online, stores, picks, stores_img: Path, meta: dict, facts: dict, period: str = "") -> None:
     """Resumen ejecutivo en dos columnas: los números a la izquierda, el hallazgo a la derecha."""
     slide = _blank(prs)
     y = _header(slide, "Lo que dice el estudio", "Resumen ejecutivo", period)
@@ -305,14 +305,20 @@ def slide_exec(prs, online, stores, picks, stores_img: Path, period: str = "") -
         [
             (
                 "Riesgo de tienda:",
-                "forma de la curva tomada de e-commerce; el nivel, anclado al 3,74% realizado de tienda. "
-                "No es una medición.",
+                "forma de la curva tomada de e-commerce; el nivel, anclado al "
+                f"{ac.es(meta['riesgo_tienda_realizado_pct'], 2, '%')} realizado de tienda. No es una medición.",
             ),
-            ("Ventana:", "12 meses de originación madura (4,18% frente a 3,87% con 21 meses)."),
+            (
+                "Ventana:",
+                f"{facts['online_meses']} meses de originación madura ({ac.es(online['riesgo_real_pct'], 2, '%')} "
+                f"frente a {ac.es(meta['riesgo_online_historico_pct'], 2, '%')} con "
+                f"{meta['online_historico_meses']} meses).",
+            ),
             (
                 "Con reject inference:",
-                "los tramos poco aceptados llevan uplift (hasta 2,4x). No mueve los cortes: donde se "
-                "decide, Online ya acepta al 84-98%.",
+                f"los tramos poco aceptados llevan uplift (hasta {ac.es(facts['max_uplift'], 1)}x). Apenas mueve "
+                f"los cortes: donde se decide, Online ya acepta al {ac.es(facts['zone_lo_pct'], 0)}-"
+                f"{ac.es(facts['zone_hi_pct'], 0)}%.",
             ),
         ],
         size=11.5,
@@ -391,7 +397,7 @@ def _chain(slide, x, y, w, steps: list[tuple[str, str, str, str]]) -> None:
         )
 
 
-def slide_method_risk(prs, meta: dict, period: str) -> None:
+def slide_method_risk(prs, meta: dict, facts: dict, period: str) -> None:
     """Cómo se estima el riesgo: la cadena completa, con lo medido y lo asumido separado."""
     slide = _blank(prs)
     y = _header(slide, "Cómo se estima el riesgo de tienda", "Metodología · Riesgo", period)
@@ -416,7 +422,8 @@ def slide_method_risk(prs, meta: dict, period: str) -> None:
                 "Corrección por selección (reject inference)",
                 "Los contratados de un tramo pasaron además el resto de reglas: son una muestra seleccionada y su "
                 "morosidad subestima la de quien hoy se deniega. Se aplica el parceling del pipeline, con uplift "
-                "según la tasa de aceptación: 2,4x donde solo entra el 3%, 1,0x donde entra el 100%.",
+                f"según la tasa de aceptación: {ac.es(facts['max_uplift'], 1)}x donde solo entra el "
+                f"{ac.es(facts['min_acc_pct'], 0)}%, 1,0x donde entra el {ac.es(facts['max_acc_pct'], 0)}%.",
                 "CORREGIDO",
             ),
             (
@@ -451,7 +458,7 @@ def slide_method_risk(prs, meta: dict, period: str) -> None:
     )
 
 
-def slide_method_seasonal(prs, meta: dict, period: str) -> None:
+def slide_method_seasonal(prs, meta: dict, facts: dict, period: str) -> None:
     """Cómo se anualiza: por qué un mes no es un mes y qué se hace al respecto."""
     slide = _blank(prs)
     y = _header(slide, "Cómo se anualiza", "Metodología · Estacionalidad", period)
@@ -464,16 +471,18 @@ def slide_method_seasonal(prs, meta: dict, period: str) -> None:
             (
                 "1",
                 "El problema: tienda solo tiene un mes con score, y es agosto",
-                "El score EFX se activó en tienda en ago-2026. Comparar un mes suelto contra una media de doce "
+                f"El score EFX se activó en tienda en {facts['stores_month']}. Comparar un mes suelto contra una media de doce "
                 "exige saber cuánto vale ese mes.",
                 "MEDIDO",
             ),
             (
                 "2",
                 "Agosto no es un mes medio, y cada canal tiene el suyo",
-                "Índice de agosto: 0,49 en Online y 0,76 en tienda. Online concentra la demanda en el lanzamiento "
-                "de iPhone (septiembre 2,03) y tienda en Navidad (diciembre 1,70). La correlación entre ambos "
-                "perfiles es 0,39: no son el mismo patrón.",
+                f"Índice de agosto: {ac.es(facts['aug_online'], 2)} en Online y {ac.es(facts['aug_stores'], 2)} en "
+                f"tienda. Online concentra la demanda en el lanzamiento de iPhone ({facts['peak_online'][0]} "
+                f"{ac.es(facts['peak_online'][1], 2)}) y tienda en Navidad ({facts['peak_stores'][0]} "
+                f"{ac.es(facts['peak_stores'][1], 2)}). La correlación entre ambos perfiles es "
+                f"{ac.es(facts['index_corr'], 2)}: no son el mismo patrón.",
                 "MEDIDO",
             ),
             (
@@ -481,15 +490,17 @@ def slide_method_seasonal(prs, meta: dict, period: str) -> None:
                 "Meses efectivos en vez de meses de calendario",
                 "El run-rate no se divide por el número de meses sino por la suma del índice estacional de los "
                 "meses cubiertos. Una ventana natural completa suma 12,00 y no altera nada; el agosto de tienda "
-                "suma 0,76 y corrige por ser un mes flojo.",
+                f"suma {ac.es(facts['aug_stores'], 2)} y corrige por ser un mes flojo.",
                 "CORREGIDO",
             ),
             (
                 "4",
                 "Efecto sobre el peso de tienda en Apple Total",
-                "Sin corregir, tienda parecía pesar el 20% de la demanda. Con su estacionalidad propia pesa el 25%. "
-                "Si se le hubiera aplicado la de Online —lo único posible antes de tener su histórico— habríamos "
-                "dicho 34%, y todos los escenarios saldrían con más producción de la real.",
+                f"Sin corregir, tienda parecía pesar el {ac.es(meta['peso_tienda_calendario_pct'], 0)}% de la "
+                f"demanda. Con su estacionalidad propia pesa el {ac.es(meta['peso_tienda_propio_pct'], 0)}%. Si se le "
+                "hubiera aplicado la de Online —lo único posible antes de tener su histórico— habríamos dicho "
+                f"{ac.es(meta['peso_tienda_indice_online_pct'], 0)}%, y todos los escenarios saldrían con más "
+                "producción de la real.",
                 "MEDIDO",
             ),
         ],
@@ -574,7 +585,8 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, meta: dict, period: str 
         f"{ac.es(meta['online_aprobado_real_pct'], 1, '%')}: swap-in {ac.es(meta['online_swap_in_pct'], 1, '%')}, "
         f"swap-out {ac.es(meta['online_swap_out_pct'], 1, '%')}) y cada solicitud aceptada convierte a la tasa de "
         f"su decisión real. La diferencia entre {ac.es(base_prod / 1e6, 1)} y {ac.es(today_prod / 1e6, 1)} M€/mes "
-        "es por tanto la ganancia de tienda, medida sobre agosto-2026 (único mes con EFX) frente a la ventana "
+        f"es por tanto la ganancia de tienda, medida sobre {periodo(meta['tienda_desde'], meta['tienda_hasta'])} "
+        "(único mes con EFX) frente a la ventana "
         "completa de 'hoy'.",
         size=11,
         color=MUTED,
@@ -640,7 +652,7 @@ def slide_grids(prs, grids: pd.DataFrame, period: str = "") -> None:
     )
 
 
-def slide_closing(prs) -> None:
+def slide_closing(prs, facts: dict) -> None:
     slide = _blank(prs)
     y = _header(slide, "Qué falta y qué haría falta decidir", "Limitaciones y siguientes pasos")
     _text(slide, MARGIN, y, Inches(5.9), Inches(0.4), "Limitaciones del estudio", size=15, bold=True, color=RISK)
@@ -653,7 +665,7 @@ def slide_closing(prs) -> None:
             (
                 "Riesgo de tienda estimado.",
                 "Las operaciones de tienda con EFX tienen 0-2 meses y no tienen "
-                "comportamiento observable. H3 hacia nov-2026, H6 hacia feb-2027.",
+                f"comportamiento observable. H3 hacia {facts['h3_month']}, H6 hacia {facts['h6_month']}.",
             ),
             (
                 "Comparación condicional.",
@@ -662,12 +674,12 @@ def slide_closing(prs) -> None:
             ),
             (
                 "Tramos bajos débiles.",
-                "Los tramos 1-5 apenas tienen producción, y es donde más pesa el uplift por selección "
-                "(2,4x). Son los que abren el escenario más laxo.",
+                f"Los tramos 1-{facts['low_bins']} apenas tienen producción, y es donde más pesa el uplift por "
+                f"selección ({ac.es(facts['max_uplift'], 1)}x). Son los que abren el escenario más laxo.",
             ),
             (
                 "Un solo mes de tienda.",
-                "La foto sale de agosto-2026. Su estacionalidad propia ya está medida, pero el mix de un "
+                f"La foto sale de {facts['stores_month']}. Su estacionalidad propia ya está medida, pero el mix de un "
                 "único mes puede no ser representativo.",
             ),
         ],
@@ -685,7 +697,7 @@ def slide_closing(prs) -> None:
         [
             (
                 "Extracción.",
-                "Refresco de Online a ago-2026, score EFX en tienda y su histórico de comportamiento "
+                f"Refresco de Online a {facts['stores_month']}, score EFX en tienda y su histórico de comportamiento "
                 "para anclar el nivel de riesgo.",
             ),
             ("Decisión de negocio.", "Objetivo de riesgo global y si el corte es único o por segmento."),
@@ -694,10 +706,53 @@ def slide_closing(prs) -> None:
                 "Repetir con el pipeline completo: reject inference, intervalos de confianza y "
                 "auditoría swap-in / swap-out.",
             ),
-            ("Medición.", "Revisar en nov-2026 con H3 y en feb-2027 con H6 reales de tienda."),
+            ("Medición.", f"Revisar en {facts['h3_month']} con H3 y en {facts['h6_month']} con H6 reales de tienda."),
         ],
         size=12,
     )
+
+
+def deck_facts(curve, p2, stores_actuals, grids, index, meta) -> dict:
+    """Las cifras que los textos del deck citan, calculadas desde las salidas del estudio.
+
+    Escritas en las slides se desincronizan en la primera corrida que cambie algo; aquí
+    cada una tiene su fuente. Lo único que queda literal en el deck es estructural (20
+    tramos, un año natural suma 12,00).
+    """
+    uplift = curve["b2_pct_rechazados"] / curve["b2_pct_contratados"]
+    acceptance = 100 * curve["tasa_aceptacion"]
+    # "donde se decide": los tramos donde caen los cortes únicos de los escenarios
+    cuts = [int(v.strip("> ")) for col in grids.columns if "único" in col for v in grids[col] if str(v).startswith(">")]
+    lower_edge = curve["bin"].map(lambda b: BIN_EDGES[int(b) - 1])
+    zone = acceptance[(lower_edge >= min(cuts)) & (lower_edge <= max(cuts))]
+    stores_total = p2[p2["segmento"] == "TOTAL"].iloc[0]
+    new = p2[p2["segmento"].str.lower() == "new"]
+    last_stores_month = pd.Timestamp(meta["tienda_hasta"]) - pd.Timedelta(days=1)
+
+    def mes(ts: pd.Timestamp) -> str:
+        return f"{MESES[ts.month - 1]}-{ts.year}"
+
+    peak_online, peak_stores = int(index["indice"].idxmax()), int(index["indice_tienda"].idxmax())
+    return {
+        "max_uplift": float(uplift.max()),
+        "min_acc_pct": float(acceptance.min()),
+        "max_acc_pct": float(acceptance.max()),
+        "zone_lo_pct": float(zone.min()),
+        "zone_hi_pct": float(zone.max()),
+        "low_bins": int((curve["tasa_aceptacion"] < 0.5).sum()),
+        "new_share_pct": 100 * float(new["demanda_eur"].sum()) / float(stores_total["demanda_eur"]),
+        "ta_stores_window_pct": float(stores_actuals.set_index("segmento").loc["TOTAL", "ta_pct"]),
+        "ta_stores_aug_pct": float(stores_total["ta_actual_pct"]),
+        "online_meses": (pd.Period(meta["online_hasta"], "M") - pd.Period(meta["online_desde"], "M")).n,
+        "aug_online": float(index.loc[index["mes"] == 8, "indice"].iloc[0]),
+        "aug_stores": float(index.loc[index["mes"] == 8, "indice_tienda"].iloc[0]),
+        "peak_online": (MESES[int(index.loc[peak_online, "mes"]) - 1], float(index.loc[peak_online, "indice"])),
+        "peak_stores": (MESES[int(index.loc[peak_stores, "mes"]) - 1], float(index.loc[peak_stores, "indice_tienda"])),
+        "index_corr": float(index["indice"].corr(index["indice_tienda"])),
+        "stores_month": mes(last_stores_month),
+        "h3_month": mes(last_stores_month + pd.DateOffset(months=3)),
+        "h6_month": mes(last_stores_month + pd.DateOffset(months=6)),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -714,6 +769,7 @@ def build(data_dir: Path, out_path: Path) -> Path:
     grids = read("p4_parrillas_escenarios")
     online = p1[p1["segmento"] == "TOTAL"].iloc[0]
     stores = p2[p2["segmento"] == "TOTAL"].iloc[0]
+    facts = deck_facts(curve, p2, stores_actuals, grids, index, meta)
 
     img_dir = out_path.parent / "images"
     charts = {
@@ -738,7 +794,7 @@ def build(data_dir: Path, out_path: Path) -> Path:
     # Orden del relato: resumen, los dos puntos medidos, los escenarios, la parrilla que
     # implican y cómo se ha calculado. Lo que sostiene las cifras va detrás, como anexo.
     slide_title(prs, online, stores, today)
-    slide_exec(prs, online, stores, picks, paths["tienda_compacto"], p_mixto)
+    slide_exec(prs, online, stores, picks, paths["tienda_compacto"], meta, facts, p_mixto)
     slide_chart(
         prs,
         "Situación actual de Apple Online",
@@ -754,7 +810,8 @@ def build(data_dir: Path, out_path: Path) -> Path:
         paths["tienda_actual"],
         "Medido sobre el histórico propio de tienda, misma ventana que Online: para describir dónde está hoy "
         "no hace falta imputar nada. Acepta casi el triple que Online y arriesga menos. Aviso: su TA viene "
-        "cayendo (59% en 2025, 47,6% en ago-2026), así que la base se está moviendo.",
+        f"cayendo ({ac.es(facts['ta_stores_window_pct'], 1, '%')} de {p_online}, "
+        f"{ac.es(facts['ta_stores_aug_pct'], 1, '%')} en {p_tienda}), así que la base se está moviendo.",
         period=f"Originación {p_online}",
     )
     slide_chart(
@@ -763,15 +820,16 @@ def build(data_dir: Path, out_path: Path) -> Path:
         "Punto 2 · Riesgo estimado",
         paths["tienda"],
         "Las dos columnas miden la misma población —el único mes con score EFX—, por eso aquí el 'hoy' es "
-        "47,6% y en la slide anterior 58,7%. Sustitución de la regla de score; las demás reglas de tienda "
+        f"{ac.es(facts['ta_stores_aug_pct'], 1, '%')} y en la slide anterior "
+        f"{ac.es(facts['ta_stores_window_pct'], 1, '%')}. Sustitución de la regla de score; las demás reglas de tienda "
         "se mantienen. El riesgo va imputado desde la curva de Online, con el nivel anclado al realizado "
         "de tienda.",
         period=f"Tienda {p_tienda}",
     )
     slide_frontier(prs, paths["frontera"], picks, meta, p_mixto)
     slide_grids(prs, grids, "Política — sin periodo")
-    slide_method_risk(prs, meta, f"Online {p_online}  ·  tienda {p_tienda}")
-    slide_method_seasonal(prs, meta, f"Años completos {p_estacional}")
+    slide_method_risk(prs, meta, facts, f"Online {p_online}  ·  tienda {p_tienda}")
+    slide_method_seasonal(prs, meta, facts, f"Años completos {p_estacional}")
     slide_chart(
         prs,
         "El score EFX ordena el riesgo en e-commerce",
@@ -786,7 +844,8 @@ def build(data_dir: Path, out_path: Path) -> Path:
         "De dónde sale la mejora en tienda",
         "Anexo · Desglose por segmento",
         paths["tienda_segmentos"],
-        "'New' concentra el 82% de la demanda de tienda y es donde el riesgo baja. El take-up se mide por "
+        f"'New' concentra el {ac.es(facts['new_share_pct'], 0)}% de la demanda de tienda y es donde el riesgo baja. "
+        "El take-up se mide por "
         "segmento y por decisión del motor (aprobada / en revisión). '>=G' no aparece: se rechaza siempre, así "
         "que no tiene ni aceptación ni riesgo.",
         period=f"Tienda {p_tienda}",
@@ -798,10 +857,11 @@ def build(data_dir: Path, out_path: Path) -> Path:
         paths["estacional"],
         "El único mes con score en tienda es agosto, así que su peso en Apple depende de cómo se anualice. "
         "Tienda tiene su pico en diciembre y septiembre entre sus meses más flojos: usar la curva de Online "
-        "le habría inflado el peso al 34% cuando con su propia estacionalidad es el 25%.",
+        f"le habría inflado el peso al {ac.es(meta['peso_tienda_indice_online_pct'], 0)}% cuando con su propia "
+        f"estacionalidad es el {ac.es(meta['peso_tienda_propio_pct'], 0)}%.",
         period=f"Años completos {p_estacional}",
     )
-    slide_closing(prs)
+    slide_closing(prs, facts)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(out_path))

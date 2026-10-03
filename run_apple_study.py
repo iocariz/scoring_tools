@@ -140,8 +140,10 @@ def stores_level_anchor(all_stores: pd.DataFrame, scored_booked: pd.DataFrame, c
     sobre la cartera contratada de tienda con lo que tienda realmente ha tenido, y se
     reescala. Así el único supuesto que queda es el poder discriminante.
 
-    El realizado usa TODO el histórico de tienda, que no lleva EFX (no hace falta: es un
-    nivel agregado); el imputado usa la cartera que sí tiene score.
+    El realizado usa la cartera madura de tienda sobre la misma ventana que Online (no
+    lleva EFX; no hace falta: es un nivel agregado); el imputado, la cartera de agosto que
+    sí tiene score. Son cohortes distintas: si tienda ha ido endureciendo, la de agosto es
+    mejor que la de la ventana y el factor queda algo alto. Conservador, y asumido.
     """
     mature = all_stores[(all_stores["acct_booked_h0"] > 0) & (all_stores["todu_amt_pile_h6"] > 0)]
     if mature.empty:
@@ -513,7 +515,7 @@ def scenario_ladders(
 
 
 def measured_status_quo(
-    ecom: pd.DataFrame, stores_window: pd.DataFrame, months_ecom: float, multiplier: float
+    ecom: pd.DataFrame, stores_window: pd.DataFrame, months_ecom: float, months_stores: float, multiplier: float
 ) -> dict[str, float]:
     """El statu quo MEDIDO: lo que los dos canales hacen hoy, cada uno con su política.
 
@@ -526,7 +528,7 @@ def measured_status_quo(
     calca las decisiones reales, ver ``grid_fidelity``), así que la diferencia es la
     ganancia de tienda — medida sobre una base distinta.
     """
-    frames = [(ecom, months_ecom), (stores_window, months_ecom)]
+    frames = [(ecom, months_ecom), (stores_window, months_stores)]
     demand = sum(f[Columns.OA_AMT].sum() / m for f, m in frames)
     production = sum(_booked(f)[Columns.OA_AMT_H0].sum() / m for f, m in frames)
     mature = pd.concat([_booked(f)[_booked(f)["todu_amt_pile_h6"] > 0] for f, _ in frames])
@@ -643,7 +645,8 @@ def effective_months(start: str, end: str, index: pd.Series | None) -> float:
 
     Sustituye al conteo crudo de meses como divisor del run-rate. Una ventana de 12 meses
     naturales suma ~12 (el índice tiene media 1), así que para Online no cambia nada; una
-    ventana de un solo agosto suma ~0,53 y el run-rate se corrige por ser el mes más flojo.
+    ventana de un solo agosto suma lo que pese agosto en el perfil de ese canal (bastante menos
+    de 1) y el run-rate se corrige por ser un mes flojo.
     Los meses parcialmente cubiertos se prorratean por días.
     """
     start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
@@ -747,6 +750,7 @@ def main(argv: list[str] | None = None) -> int:
     logger.info(f"Online {len(ecom):,} solicitudes ({args.main_from} a {args.main_to}) | tienda {len(stores):,}")
 
     all_stores = data[data[CHANNEL_COL] == CHANNEL_STORES]
+    all_ecom = data[data[CHANNEL_COL] == CHANNEL_ECOM]
     if args.no_seasonal_adjust:
         logger.warning("Ajuste estacional DESACTIVADO: el run-rate de un canal con pocos meses no es comparable")
         idx_ecom = idx_stores = None
@@ -793,6 +797,27 @@ def main(argv: list[str] | None = None) -> int:
     stores_actuals = channel_actuals(stores_window, args.multiplier)
     grid = stores_under_grid(stores, curve, cutoffs, level_factor)
     fidelity = grid_fidelity(ecom, cutoffs)
+    # Cifras que el deck rotula y que antes iban escritas a mano: el riesgo de Online sobre
+    # todo su histórico maduro (robustez de la ventana) y cuánto pesa tienda en Apple según
+    # cómo se anualice su agosto (calendario / su índice / el índice de Online).
+    ecom_history = all_ecom[all_ecom[Columns.MIS_DATE] < args.main_to]
+    history_from = ecom_history[Columns.MIS_DATE].min().strftime("%Y-%m-01")
+    history_total = channel_actuals(ecom_history, args.multiplier).set_index("segmento").loc["TOTAL"]
+    online_rate = ecom[Columns.OA_AMT].sum() / eff_ecom
+    stores_demand = stores[Columns.OA_AMT].sum()
+
+    def stores_weight(months: float) -> float:
+        return 100 * (stores_demand / months) / (stores_demand / months + online_rate)
+
+    weights = {
+        "peso_tienda_calendario_pct": stores_weight(effective_months(args.stores_from, args.stores_to, None)),
+        "peso_tienda_propio_pct": stores_weight(eff_stores),
+        "peso_tienda_indice_online_pct": stores_weight(effective_months(args.stores_from, args.stores_to, idx_ecom)),
+    }
+    logger.info(
+        f"Riesgo Online sobre todo el histórico maduro desde {history_from}: {history_total['riesgo_real_pct']:.2f}% | "
+        + " | ".join(f"{k.removeprefix('peso_tienda_').removesuffix('_pct')} {v:.1f}%" for k, v in weights.items())
+    )
     logger.info(
         "Fidelidad de la parrilla vigente en Online (% demanda): aprobado real "
         f"{fidelity['aprobado_real_pct']:.1f} | parrilla {fidelity['parrilla_pct']:.1f} | "
@@ -800,7 +825,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     ladder, ladder_grid = scenario_ladders(ecom, stores, curve, cutoffs, eff_ecom, eff_stores, level_factor)
     baseline = policy_kpis(ecom, stores, curve, cutoffs, eff_ecom, eff_stores, level_factor)
-    measured = measured_status_quo(ecom, stores_window, eff_ecom, args.multiplier)
+    measured = measured_status_quo(
+        ecom, stores_window, eff_ecom, effective_months(args.main_from, args.main_to, idx_stores), args.multiplier
+    )
     picks = pick_targets(ladder, ladder_grid, baseline, measured, args.targets)
     grids = scenario_grids(ladder, ladder_grid, cutoffs, args.targets)
 
@@ -827,6 +854,10 @@ def main(argv: list[str] | None = None) -> int:
             "riesgo_tienda_realizado_pct": round(anchor["realizado_pct"], 4),
             "riesgo_tienda_imputado_pct": round(anchor["imputado_pct"], 4),
             **{f"online_{k}": round(v, 2) for k, v in fidelity.items()},
+            "online_historico_desde": history_from,
+            "online_historico_meses": round(effective_months(history_from, args.main_to, None)),
+            "riesgo_online_historico_pct": round(float(history_total["riesgo_real_pct"]), 4),
+            **{k: round(v, 2) for k, v in weights.items()},
         },
         (out / "periodos.json").open("w", encoding="utf-8"),
         indent=2,

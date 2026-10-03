@@ -20,7 +20,16 @@ def study_outputs(tmp_path):
     """Salidas mínimas del estudio, con las mismas columnas que escribe run_apple_study."""
     bins = np.arange(1.0, 21.0)
     pd.DataFrame(
-        {"bin": bins, "b2_pct": np.linspace(40, 1, 20), "exposure_ratio": 6.5, "booked_eur": np.linspace(1e4, 9e6, 20)}
+        {
+            "bin": bins,
+            "b2_pct": np.linspace(40, 1, 20),
+            "exposure_ratio": 6.5,
+            "booked_eur": np.linspace(1e4, 9e6, 20),
+            "b2_pct_rechazados": np.linspace(60, 1, 20),
+            "tasa_aceptacion": np.linspace(0.03, 0.99, 20),
+            "b2_pct_ri": np.linspace(40, 1, 20),
+            "b2_pct_contratados": np.linspace(30, 1, 20),
+        }
     ).to_csv(tmp_path / "curva_riesgo_online.csv", index=False)
     pd.DataFrame(
         {
@@ -46,7 +55,7 @@ def study_outputs(tmp_path):
     ).to_csv(tmp_path / "p1b_tienda_actual.csv", index=False)
     pd.DataFrame(
         {
-            "segmento": ["new", "TOTAL"],
+            "segmento": ["New", "TOTAL"],
             "corte_efx": [47.0, np.nan],
             "demanda_eur": [1e6, 1e6],
             "pct_demanda_aceptada": [70.0, 70.0],
@@ -111,12 +120,22 @@ def study_outputs(tmp_path):
                 "online_parrilla_pct": 51.8,
                 "online_swap_in_pct": 0.6,
                 "online_swap_out_pct": 0.5,
+                "online_historico_desde": "2024-01-01",
+                "online_historico_meses": 26,
+                "riesgo_online_historico_pct": 3.92,
+                "peso_tienda_calendario_pct": 20.4,
+                "peso_tienda_propio_pct": 25.2,
+                "peso_tienda_indice_online_pct": 34.4,
             }
         ),
         encoding="utf-8",
     )
     pd.DataFrame(
-        {"mes": range(1, 13), "indice": [0.94, 0.81, 0.86, 0.74, 0.71, 0.63, 0.67, 0.53, 1.94, 1.68, 1.21, 1.28]}
+        {
+            "mes": range(1, 13),
+            "indice": [0.94, 0.81, 0.86, 0.74, 0.71, 0.63, 0.67, 0.53, 1.94, 1.68, 1.21, 1.28],
+            "indice_tienda": [1.17, 0.86, 0.9, 0.87, 0.88, 0.83, 0.83, 0.76, 0.69, 1.14, 1.37, 1.7],
+        }
     ).to_csv(tmp_path / "indice_estacional.csv", index=False)
     return tmp_path
 
