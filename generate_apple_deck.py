@@ -69,7 +69,7 @@ _SWAP = dict(
             "kept: approved today, above the cutoff",
             "swap-in: rejected by score, above cutoff",
             "swap-out: approved today, below cutoff",
-            "stays out: rejected by score, below cutoff",
+            "rejected by both scores (today, and by EFX)",
             "untouched: rejected by other rules",
         ],
         strict=True,

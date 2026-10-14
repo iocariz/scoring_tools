@@ -100,7 +100,7 @@ Qué hace la parrilla con cada euro:
 | se mantiene: aprobada hoy y por encima del corte EFX | 56,8% | 10,9 M€ | 3,3% |
 | **swap-in**: rechazada hoy por el score interno, por encima del corte EFX | 19,3% | 3,7 M€ | 4,1% |
 | **swap-out**: aprobada hoy, por debajo del corte EFX | 2,0% | 0,4 M€ | 47,6% |
-| sigue fuera: rechazada hoy por score y por debajo del corte | 1,8% | 0,4 M€ | 41,6% |
+| **rechazada por los dos scores**: hoy por el score interno y por debajo del corte EFX | 1,8% | 0,4 M€ | 41,6% |
 | intacta: rechazada por otras reglas (no se tocan) | 20,1% | 3,9 M€ | 8,0% |
 | **aceptado por la parrilla** (las dos primeras) | **76,0%** | **14,6 M€** | **3,51%** |
 | la cartera contratada hoy, valorada igual | 47,2% | 11,3 M€ | 3,74% |
