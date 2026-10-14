@@ -18,6 +18,7 @@ from run_apple_study import (
     imputed_risk,
     measured_status_quo,
     policy_kpis,
+    same_base_status_quo,
     stores_under_grid,
     take_up_by_decision,
     warn_partial_rollout,
@@ -309,3 +310,44 @@ class TestMeasuredStatusQuo:
         kpis = measured_status_quo(ecom, stores, months_ecom=1.0, months_stores=2.0, multiplier=7.0)
         assert kpis["produccion_mensual_eur"] == pytest.approx(100.0 + 50.0)
         assert kpis["ta_efectiva_pct"] == pytest.approx(100.0)
+
+
+class TestSameBaseStatusQuo:
+    def test_grid_that_matches_the_engine_has_zero_policy_effect(self):
+        # Misma base, política de hoy: con una parrilla que calca al motor, la producción
+        # modelada tiene que ser exactamente la contratada; la diferencia entre ambas filas
+        # es el efecto de la parrilla y nada más.
+        channel = TestTakeUp()._channel()
+        curve = TestTakeUp()._curve()
+        same = same_base_status_quo(channel, channel, curve, 1.0, 2.0, 1.0)
+        modelled = policy_kpis(channel, channel, curve, {"New": 27.0}, 1.0, 2.0, 1.0)
+        assert same["produccion_mensual_eur"] == pytest.approx(modelled["produccion_mensual_eur"])
+        assert same["produccion_mensual_eur"] == pytest.approx(200.0 + 100.0)
+        assert same["ta_efectiva_pct"] == pytest.approx(modelled["ta_efectiva_pct"])
+        assert np.isnan(same["ta_score_pct"])
+
+    def test_risk_is_the_booked_curve_weighted_by_booked_exposure(self):
+        channel = TestTakeUp()._channel()
+        curve = TestTakeUp()._curve()
+        # todos los contratados caen en el tramo 13 (b2 contratados 3,0); el ancla reescala el
+        # riesgo de tienda, no su peso: media simple de 3,0 (Online) y 3,0 x 1,5 (tienda)
+        same = same_base_status_quo(channel, channel, curve, 1.0, 1.0, 1.5)
+        assert same["riesgo_total_pct"] == pytest.approx((3.0 + 3.0 * 1.5) / 2)
+
+
+class TestLevelAnchorInPolicyKpis:
+    """El factor de ancla multiplica el riesgo de tienda. Aplicado al peso se cancelaba
+    dentro del canal y los escenarios llevaban a tienda sin anclar."""
+
+    def test_stores_alone_is_rescaled_by_the_factor(self):
+        channel = TestTakeUp()._channel()
+        curve = TestTakeUp()._curve()
+        empty = channel.iloc[0:0]
+        alone = policy_kpis(empty, channel, curve, {"New": 27.0}, 1.0, 1.0, 1.5)
+        assert alone["riesgo_total_pct"] == pytest.approx(1.5 * 3.0)
+
+    def test_two_channels_blend_online_raw_with_stores_anchored(self):
+        channel = TestTakeUp()._channel()
+        curve = TestTakeUp()._curve()
+        both = policy_kpis(channel, channel, curve, {"New": 27.0}, 1.0, 1.0, 1.5)
+        assert both["riesgo_total_pct"] == pytest.approx((3.0 + 3.0 * 1.5) / 2)

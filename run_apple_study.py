@@ -141,9 +141,9 @@ def stores_level_anchor(all_stores: pd.DataFrame, scored_booked: pd.DataFrame, c
     reescala. Así el único supuesto que queda es el poder discriminante.
 
     El realizado usa la cartera madura de tienda sobre la misma ventana que Online (no
-    lleva EFX; no hace falta: es un nivel agregado); el imputado, la cartera de agosto que
-    sí tiene score. Son cohortes distintas: si tienda ha ido endureciendo, la de agosto es
-    mejor que la de la ventana y el factor queda algo alto. Conservador, y asumido.
+    lleva EFX; no hace falta: es un nivel agregado); el imputado, la cartera de los meses
+    que sí tienen score. Son cohortes distintas: si tienda ha ido endureciendo, la reciente
+    es mejor que la de la ventana y el factor queda algo alto. Conservador, y asumido.
     """
     mature = all_stores[(all_stores["acct_booked_h0"] > 0) & (all_stores["todu_amt_pile_h6"] > 0)]
     if mature.empty:
@@ -458,8 +458,11 @@ def policy_kpis(
         # ok a las rv, que convierten diez veces menos y la swap mask también acepta.
         expected = _expected_production(eligible, take_up_by_decision(channel))
         prod_by_bin = expected.groupby(eligible["bin"]).sum() / months
-        weight = (prod_by_bin * curve["exposure_ratio"]).fillna(0) * factor
-        num += (weight * curve["b2_pct"]).sum()
+        weight = (prod_by_bin * curve["exposure_ratio"]).fillna(0)
+        # El ancla reescala el NIVEL de riesgo de tienda, igual que en imputed_risk. Aplicada
+        # al peso se cancelaba dentro del canal y tienda entraba en los escenarios sin anclar
+        # (invisible con el factor 0,99 de agosto; 0,09 pp de riesgo total con el 0,95 de ago-sep).
+        num += (weight * curve["b2_pct"] * factor).sum()
         den += weight.sum()
         accepted += eligible[Columns.OA_AMT].sum() / months
         production += prod_by_bin.sum()
@@ -521,12 +524,13 @@ def measured_status_quo(
 
     No es comparable columna a columna con las filas modeladas: aquí tienda va con su
     score interno sobre la ventana completa, mientras los escenarios la evalúan con la
-    parrilla EFX sobre agosto, el único mes con score. Se publica precisamente para que
+    parrilla EFX sobre los meses con score. Se publica precisamente para que
     esa diferencia se vea en lugar de sorprender: el modelo dice que la parrilla de
     Online produciría más de lo que hoy se produce, y conviene saber de dónde sale. Con
     el take-up por decisión, Online modelado reproduce lo medido (la parrilla vigente
     calca las decisiones reales, ver ``grid_fidelity``), así que la diferencia es la
-    ganancia de tienda — medida sobre una base distinta.
+    ganancia de tienda — medida sobre una base distinta. ``same_base_status_quo`` quita
+    esa diferencia de base.
     """
     frames = [(ecom, months_ecom), (stores_window, months_stores)]
     demand = sum(f[Columns.OA_AMT].sum() / m for f, m in frames)
@@ -540,11 +544,52 @@ def measured_status_quo(
     }
 
 
+SAME_BASE_LABEL = "Política de hoy, base de los escenarios"
+
+
+def same_base_status_quo(
+    ecom: pd.DataFrame,
+    stores: pd.DataFrame,
+    curve: pd.DataFrame,
+    months_ecom: float,
+    months_stores: float,
+    level_factor: float,
+) -> dict[str, float]:
+    """La política de hoy sobre LA MISMA base que los escenarios.
+
+    ``measured_status_quo`` mide tienda sobre la ventana completa; los escenarios la
+    evalúan sobre los meses con score, donde la demanda es otra (en ago-sep 2026 va muy
+    por encima de la media de la ventana). Comparar una fila con la otra mezcla el efecto
+    de la parrilla con el del volumen. Esta fila quita el volumen: misma demanda que los
+    escenarios, cada canal con lo que de hecho contrató. Su diferencia con "Parrilla
+    Online en ambos canales" es el efecto puro de la parrilla; su diferencia con "Hoy
+    (medido)" es base, no política.
+
+    El riesgo va con la curva de contratados sobre la cartera contratada: en Online
+    reproduce su realizado por construcción; en tienda, el ancla hace lo mismo.
+    """
+    total_demand = ecom[Columns.OA_AMT].sum() / months_ecom + stores[Columns.OA_AMT].sum() / months_stores
+    num = den = production = 0.0
+    for channel, months, factor in ((ecom, months_ecom, 1.0), (stores, months_stores, level_factor)):
+        by_bin = _booked(channel).groupby("bin")[Columns.OA_AMT_H0].sum() / months
+        weight = (by_bin * curve["exposure_ratio"]).fillna(0)
+        num += (weight * curve[_BOOKED_COL] * factor).sum()
+        den += weight.sum()
+        production += by_bin.sum()
+    return {
+        "riesgo_total_pct": num / den if den else float("nan"),
+        "ta_score_pct": float("nan"),
+        "ta_efectiva_pct": 100 * production / total_demand,
+        "produccion_mensual_eur": production,
+    }
+
+
 def pick_targets(
     uniform: pd.DataFrame,
     shifted: pd.DataFrame,
     baseline: dict[str, float],
     measured: dict[str, float],
+    same_base: dict[str, float],
     targets: list[float],
 ) -> pd.DataFrame:
     """Para cada objetivo, la política más laxa que lo cumple con cada instrumento.
@@ -554,10 +599,12 @@ def pick_targets(
     """
     # OJO con el nombre: esta fila NO es el statu quo. Es la parrilla de Online aplicada a
     # los DOS canales, que para tienda es justamente el cambio propuesto (hoy usa su score
-    # interno) y se evalúa sobre agosto, no sobre la ventana. Llamarla "actual" invita a
-    # leerla como "lo que hacemos hoy", y no lo es.
+    # interno) y se evalúa sobre los meses con score, no sobre la ventana. Llamarla
+    # "actual" invita a leerla como "lo que hacemos hoy", y no lo es. Entre las dos va la
+    # política de hoy sobre la base de los escenarios: separa política de volumen.
     rows = [
         {"escenario": "Hoy (medido)", "corte": "política vigente"} | measured,
+        {"escenario": SAME_BASE_LABEL, "corte": "política vigente"} | same_base,
         {"escenario": "Parrilla Online en ambos canales", "corte": "vigente"} | baseline,
     ]
     for target in targets:
@@ -688,9 +735,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--stores-from",
         default="2026-08-01",
-        help="Inicio ventana tienda. Default agosto: julio fue rollout parcial (~9% del volumen esperado)",
+        help="Inicio ventana tienda. Default agosto-2026: primer mes con score EFX en tienda",
     )
-    p.add_argument("--stores-to", default="2026-09-01")
+    p.add_argument("--stores-to", default="2026-10-01", help="Fin exclusivo. Default: hasta septiembre-2026 incluido")
     p.add_argument(
         "--cutoff",
         action="append",
@@ -828,7 +875,19 @@ def main(argv: list[str] | None = None) -> int:
     measured = measured_status_quo(
         ecom, stores_window, eff_ecom, effective_months(args.main_from, args.main_to, idx_stores), args.multiplier
     )
-    picks = pick_targets(ladder, ladder_grid, baseline, measured, args.targets)
+    same_base = same_base_status_quo(ecom, stores, curve, eff_ecom, eff_stores, level_factor)
+    # Cuánto más demanda trae tienda en los meses con score que en la ventana de "hoy":
+    # es la parte de la diferencia entre ambas filas que es volumen y no política.
+    stores_window_months = effective_months(args.main_from, args.main_to, idx_stores)
+    stores_volume_vs_window_pct = 100 * (
+        (stores_demand / eff_stores) / (stores_window[Columns.OA_AMT].sum() / stores_window_months) - 1
+    )
+    logger.info(
+        f"Política de hoy sobre la base de los escenarios: TA {same_base['ta_efectiva_pct']:.2f}% | "
+        f"{same_base['produccion_mensual_eur'] / 1e6:.2f} M€/mes | riesgo {same_base['riesgo_total_pct']:.2f}% "
+        f"(demanda de tienda {stores_volume_vs_window_pct:+.1f}% frente a la ventana)"
+    )
+    picks = pick_targets(ladder, ladder_grid, baseline, measured, same_base, args.targets)
     grids = scenario_grids(ladder, ladder_grid, cutoffs, args.targets)
 
     out = Path(args.output)
@@ -858,6 +917,7 @@ def main(argv: list[str] | None = None) -> int:
             "online_historico_meses": round(effective_months(history_from, args.main_to, None)),
             "riesgo_online_historico_pct": round(float(history_total["riesgo_real_pct"]), 4),
             **{k: round(v, 2) for k, v in weights.items()},
+            "demanda_tienda_vs_ventana_pct": round(stores_volume_vs_window_pct, 2),
         },
         (out / "periodos.json").open("w", encoding="utf-8"),
         indent=2,
