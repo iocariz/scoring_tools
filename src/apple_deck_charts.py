@@ -1,23 +1,22 @@
-"""Gráficos del deck Apple — extensión del score Equifax de e-commerce a tienda.
+"""Charts for the Apple deck — extending the Equifax score from e-commerce to stores.
 
-Lee las salidas de ``run_apple_study.py`` y devuelve figuras matplotlib listas para PNG.
+Reads the outputs of ``run_apple_study.py`` and returns matplotlib figures ready for PNG.
 
-Decisiones de diseño (skill dataviz), por si alguien las revisa:
+Design decisions (dataviz skill), in case someone reviews them:
 
-* **Un solo eje por panel, nunca eje doble.** Riesgo y producción/TA son magnitudes de
-  escala distinta, así que van en paneles apilados que comparten el eje x en vez de
-  compartir un gráfico con dos escalas —la alineación entre dos escalas es arbitraria
-  e inventa correlaciones que no están en el dato.
-* **Paleta validada**, no elegida a ojo: se portaron los seis checks del skill
-  (banda de luminosidad OKLCH, suelo de croma, separación CVD Machado-2009,
-  suelo de visión normal, contraste WCAG). El gris de la paleta del proyecto
-  (``#BDC3C7``) **falla** como marca de datos sobre blanco —L=0,814 fuera de banda
-  y 1,78:1 de contraste—, así que la serie "hoy" usa ``#7F8C8D`` (L=0,630, 3,48:1,
-  dE CVD frente al azul 11,7). Rojo y verde de la paleta pasan el gate CVD, pero
-  no se usan juntos porque riesgo y producción nunca comparten panel.
-* **Etiquetas directas selectivas**, nunca un número en cada punto; leyenda solo
-  cuando hay dos o más series; rejilla fina y recesiva; el texto lleva tinta de
-  texto, nunca el color de la serie.
+* **One axis per panel, never a dual axis.** Risk and production/acceptance are
+  magnitudes of different scale, so they go in stacked panels sharing the x axis
+  instead of one chart with two scales — the alignment between two scales is
+  arbitrary and invents correlations that are not in the data.
+* **Validated palette**, not picked by eye: the six checks of the skill were ported
+  (OKLCH lightness band, chroma floor, Machado-2009 CVD separation, normal-vision
+  floor, WCAG contrast). The project palette's grey (``#BDC3C7``) **fails** as a data
+  mark on white — L=0.814 out of band and 1.78:1 contrast — so the "today" series
+  uses ``#7F8C8D`` (L=0.630, 3.48:1, CVD dE vs the blue 11.7). The palette's red and
+  green pass the CVD gate but are never used together: risk and production never
+  share a panel.
+* **Selective direct labels**, never a number on every point; a legend only with two
+  or more series; thin recessive grid; text wears text ink, never the series colour.
 """
 
 from __future__ import annotations
@@ -26,32 +25,40 @@ from pathlib import Path
 
 import matplotlib
 
-matplotlib.use("Agg")  # headless, determinista
+matplotlib.use("Agg")  # headless, deterministic
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# --- paleta (validada; ver docstring) --------------------------------------- #
-INK = "#2C3E50"  # texto primario
-MUTED = "#5D6D7E"  # texto secundario (5,31:1 sobre blanco)
-GRID = "#E5E7EB"  # rejilla, un paso sobre la superficie
-CURRENT = "#7F8C8D"  # serie "hoy" / actual
-PROPOSED = "#3498DB"  # serie "propuesto" / accent
-RISK = "#E74C3C"  # magnitud de riesgo
+# --- palette (validated; see docstring) ------------------------------------- #
+INK = "#2C3E50"  # primary text
+MUTED = "#5D6D7E"  # secondary text (5.31:1 on white)
+GRID = "#E5E7EB"  # grid, one step above the surface
+CURRENT = "#7F8C8D"  # "today" / current series
+PROPOSED = "#3498DB"  # "proposed" series / accent
+RISK = "#E74C3C"  # risk magnitude
 SURFACE = "#FFFFFF"
 
 BAR_MAX_PX = 24
 
+# Scenario labels as the deck renders them (the study writes Spanish labels; the deck
+# translates them once, on load, and every chart matches on these).
+TODAY_MEASURED = "Today (measured)"
+TODAY_SAME_BASE = "Today, at current store demand"
+CURRENT_GRID = "Online grid in both channels"
+SINGLE_CUTOFF = "single cutoff"
+SHIFTED_GRID = "shifted grid"
 
-def es(value: float, decimals: int = 2, suffix: str = "") -> str:
-    """Formato español: coma decimal. El deck se presenta en español."""
-    return f"{value:,.{decimals}f}".replace(",", "\u00a0").replace(".", ",") + suffix
+
+def num(value: float, decimals: int = 2, suffix: str = "") -> str:
+    """English number format: decimal point, thousands comma. The deck is in English."""
+    return f"{value:,.{decimals}f}{suffix}"
 
 
 plt.rcParams.update(
     {
-        # Arial para igualar la tipografía de las slides; DejaVu es el respaldo que
-        # matplotlib siempre trae, para que el deck se regenere en Docker/CI sin Arial.
+        # Arial to match the slide typography; DejaVu is matplotlib's bundled fallback so
+        # the deck regenerates in Docker/CI without Arial.
         "font.family": "sans-serif",
         "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
         "text.color": INK,
@@ -76,7 +83,7 @@ def save_chart(fig: plt.Figure, path: str | Path, dpi: int = 200) -> Path:
 
 
 def _style(ax, *, ylabel: str = "", xlabel: str = "", hgrid: bool = True) -> None:
-    """Ejes recesivos: sin marco, rejilla horizontal fina y por debajo de los datos."""
+    """Recessive axes: no frame, thin horizontal grid drawn below the data."""
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
     ax.spines["bottom"].set_color(GRID)
@@ -91,21 +98,21 @@ def _style(ax, *, ylabel: str = "", xlabel: str = "", hgrid: bool = True) -> Non
 
 
 def _bar_width(n_slots: int, fig_width_in: float, dpi: int = 100) -> float:
-    """Ancho de barra en unidades de dato, capado a 24 px para que la banda respire."""
+    """Bar width in data units, capped at 24 px so the band breathes."""
     px_per_slot = fig_width_in * dpi / max(n_slots, 1)
     return min(0.82, BAR_MAX_PX / px_per_slot)
 
 
 # --------------------------------------------------------------------------- #
-# 1. La curva de riesgo: el motor de todo el estudio
+# 1. The risk curve: the engine of the whole study
 # --------------------------------------------------------------------------- #
 def chart_risk_curve(curve: pd.DataFrame, edges: list[float]) -> plt.Figure:
-    """Riesgo realizado por tramo EFX y producción que sostiene cada estimación.
+    """Realized risk by EFX bin and the production behind each estimate.
 
-    Dos paneles con eje x compartido en vez de un eje doble: el de arriba responde
-    "cuánto discrimina el score", el de abajo "cuánto me puedo fiar de cada punto".
-    La zona de tramos con producción residual se sombrea en ambos paneles —es donde
-    la estimación es más débil y justo la que abren los escenarios más laxos.
+    Two panels sharing the x axis instead of a dual axis: the top one answers "how
+    much does the score discriminate", the bottom one "how much can I trust each
+    point". The bins with residual production are shaded in both panels — that is
+    where the estimate is weakest and exactly what the loosest scenarios open.
     """
     df = curve.dropna(subset=["b2_pct"]).sort_values("bin")
     bins = df["bin"].to_numpy()
@@ -121,15 +128,15 @@ def chart_risk_curve(curve: pd.DataFrame, edges: list[float]) -> plt.Figure:
 
     ax1.plot(bins, df["b2_pct"], color=RISK, linewidth=2, solid_capstyle="round", zorder=3)
     ax1.scatter(bins, df["b2_pct"], s=34, color=RISK, edgecolor=SURFACE, linewidth=2, zorder=4)
-    _style(ax1, ylabel="Riesgo b2 realizado (%)")
+    _style(ax1, ylabel="Realized b2 risk (%)")
     ax1.set_ylim(0, df["b2_pct"].max() * 1.18)
-    # etiquetas donde se decide el corte, no en todos los puntos
+    # labels where the cutoff is decided, not on every point
     for b in (bins[0], 8.0, 12.0, 16.0, bins[-1]):
         row = df[df["bin"] == b]
         if row.empty:
             continue
         ax1.annotate(
-            es(float(row["b2_pct"].iloc[0]), 1, "%"),
+            num(float(row["b2_pct"].iloc[0]), 1, "%"),
             (b, float(row["b2_pct"].iloc[0])),
             textcoords="offset points",
             xytext=(0, 11),
@@ -140,14 +147,14 @@ def chart_risk_curve(curve: pd.DataFrame, edges: list[float]) -> plt.Figure:
         )
     if not thin.empty:
         ax1.annotate(
-            f"tramos {int(thin['bin'].min())}-{int(thin['bin'].max())}\nproducción residual:\nriesgo poco fiable",
+            f"bins {int(thin['bin'].min())}-{int(thin['bin'].max())}\nresidual production:\nunreliable risk",
             (thin["bin"].max() + 0.25, df["b2_pct"].max() * 0.60),
             ha="left",
             fontsize=8.5,
             color=MUTED,
         )
     ax1.set_title(
-        "El score EFX ordena el riesgo de principio a fin en e-commerce",
+        "The EFX score ranks risk end to end in e-commerce",
         fontsize=13,
         fontweight="bold",
         loc="left",
@@ -155,23 +162,23 @@ def chart_risk_curve(curve: pd.DataFrame, edges: list[float]) -> plt.Figure:
     )
 
     ax2.bar(bins, df["booked_eur"] / 1e6, 0.6, color=CURRENT, zorder=3)
-    _style(ax2, ylabel="Producción (M€)", xlabel="Tramo EFX  ·  umbral de score")
+    _style(ax2, ylabel="Production (€M)", xlabel="EFX bin  ·  score threshold")
     ax2.set_xticks(bins[::2])
     labels = []
     for b in bins[::2]:
         edge = edges[int(b) - 1]
-        labels.append(f"{int(b)}\n{'≤' + es(edges[1], 0) if not np.isfinite(edge) else '>' + es(edge, 0)}")
+        labels.append(f"{int(b)}\n{'≤' + num(edges[1], 0) if not np.isfinite(edge) else '>' + num(edge, 0)}")
     ax2.set_xticklabels(labels, fontsize=8.5)
     return fig
 
 
 # --------------------------------------------------------------------------- #
-# 2. Punto 1 — Apple Online medido
+# 2. Point 1 — Apple Online, measured
 # --------------------------------------------------------------------------- #
 def chart_channel_actual(actuals: pd.DataFrame, title: str) -> plt.Figure:
-    """Riesgo real por grupo, con la TA como etiqueta directa (una sola magnitud por eje).
+    """Realized risk by group, with the acceptance rate as a direct label (one magnitude per axis).
 
-    Sirve para los dos canales: la situación actual de ambos está medida, no imputada.
+    Works for both channels: their current situation is measured, not imputed.
     """
     df = actuals[actuals["segmento"] != "TOTAL"].dropna(subset=["riesgo_real_pct"]).copy()
     df = df.sort_values("riesgo_real_pct")
@@ -181,25 +188,27 @@ def chart_channel_actual(actuals: pd.DataFrame, title: str) -> plt.Figure:
     ax.barh(y, df["riesgo_real_pct"], height=0.42, color=RISK, zorder=3)
     xmax = df["riesgo_real_pct"].max() * 1.42
     for i, row in enumerate(df.itertuples()):
-        # ambos valores fuera de la barra: una barra corta no puede alojar texto sin recortarlo
+        # both values outside the bar: a short bar cannot hold text without clipping it
         ax.annotate(
-            f"  {es(row.riesgo_real_pct, 2, '%')}",
+            f"  {num(row.riesgo_real_pct, 2, '%')}",
             (row.riesgo_real_pct, i),
             va="center",
             fontsize=11,
             fontweight="bold",
             color=INK,
         )
-        ax.annotate(f"TA {es(row.ta_pct, 1, '%')}", (xmax, i), ha="right", va="center", fontsize=9.5, color=MUTED)
+        ax.annotate(
+            f"acceptance {num(row.ta_pct, 1, '%')}", (xmax, i), ha="right", va="center", fontsize=9.5, color=MUTED
+        )
     ax.set_yticks(y)
     ax.set_yticklabels(df["segmento"], fontsize=10.5, color=INK)
-    _style(ax, xlabel="Riesgo b2 realizado (%)", hgrid=False)
+    _style(ax, xlabel="Realized b2 risk (%)", hgrid=False)
     ax.xaxis.grid(True, color=GRID, linewidth=0.8)
     ax.set_axisbelow(True)
     ax.set_xlim(0, xmax)
     ax.axvline(total["riesgo_real_pct"], color=INK, linewidth=1.4, linestyle=(0, (4, 3)), zorder=2)
     ax.annotate(
-        f"media del canal {es(total['riesgo_real_pct'], 2, '%')}",
+        f"channel average {num(total['riesgo_real_pct'], 2, '%')}",
         (total["riesgo_real_pct"], len(df) - 0.5),
         xytext=(7, 4),
         textcoords="offset points",
@@ -212,26 +221,26 @@ def chart_channel_actual(actuals: pd.DataFrame, title: str) -> plt.Figure:
 
 
 # --------------------------------------------------------------------------- #
-# 3. Punto 2 — tienda: hoy vs parrilla de Online
+# 3. Point 2 — stores: today vs the Online grid
 # --------------------------------------------------------------------------- #
 def chart_stores_swap(grid: pd.DataFrame, compact: bool = False) -> plt.Figure:
-    """Dos paneles, una magnitud cada uno: la TA sube y el riesgo baja a la vez.
+    """Two panels, one magnitude each: acceptance goes up and risk goes down at once.
 
-    El color marca **identidad** —qué política— y no estado: las dos barras "hoy" van
-    en gris y las dos "parrilla EFX" en azul. Pintar de rojo la barra de riesgo nueva
-    la haría leer como "malo" justo cuando el mensaje es que el riesgo baja.
+    Colour marks **identity** — which policy — not state: both "today" bars are grey
+    and both "EFX grid" bars are blue. Painting the new risk bar red would read as
+    "bad" exactly when the message is that risk falls.
 
-    ``compact`` devuelve una versión para media slide: lienzo más pequeño con los
-    mismos cuerpos de letra, para que al reducirla el texto siga siendo legible en
-    proyección. Escalar la versión grande achicaría las fuentes a la mitad.
+    ``compact`` returns a half-slide version: smaller canvas with the same type sizes,
+    so the text stays legible when projected. Scaling the large version down would
+    halve the fonts.
     """
     total = grid[grid["segmento"] == "TOTAL"].iloc[0]
     ta0, ta1 = total["ta_actual_pct"], total["ta_efectiva_pct"]
     r0, r1 = total["riesgo_imputado_actual_pct"], total["riesgo_imputado_pct"]
-    # Los veredictos se calculan: un texto fijo mentiría en cuanto el dato cambiara de signo.
+    # Verdicts are computed: a fixed text would lie as soon as the data changed sign.
     panels = [
-        ("Tasa de aceptación (% demanda €)", ta0, ta1, "más aceptación" if ta1 >= ta0 else "menos aceptación"),
-        ("Riesgo imputado (%)", r0, r1, "menos riesgo" if r1 <= r0 else "más riesgo"),
+        ("Acceptance rate (% of € demand)", ta0, ta1, "more acceptance" if ta1 >= ta0 else "less acceptance"),
+        ("Imputed risk (%)", r0, r1, "less risk" if r1 <= r0 else "more risk"),
     ]
     figsize = (6.8, 3.2) if compact else (10.5, 4.4)
     fig, axes = plt.subplots(1, 2, figsize=figsize)
@@ -239,7 +248,7 @@ def chart_stores_swap(grid: pd.DataFrame, compact: bool = False) -> plt.Figure:
         ax.bar([0, 1], [before, after], 0.34, color=[CURRENT, PROPOSED], zorder=3)
         for x, v in ((0, before), (1, after)):
             ax.annotate(
-                es(v, 2, "%"),
+                num(v, 2, "%"),
                 (x, v),
                 textcoords="offset points",
                 xytext=(0, 6),
@@ -250,12 +259,12 @@ def chart_stores_swap(grid: pd.DataFrame, compact: bool = False) -> plt.Figure:
             )
         ax.set_xticks([0, 1])
         ax.set_xticklabels(
-            ["Score interno\n(hoy)", "Parrilla EFX\nde e-commerce"], fontsize=9 if compact else 9.5, color=INK
+            ["Internal score\n(today)", "E-commerce\nEFX grid"], fontsize=9 if compact else 9.5, color=INK
         )
         _style(ax, ylabel=title)
         ax.set_ylim(0, max(before, after) * 1.32)
         ax.annotate(
-            f"{'+' if after >= before else ''}{es(after - before, 2)} pp  ·  {verdict}",
+            f"{'+' if after >= before else ''}{num(after - before, 2)} pp  ·  {verdict}",
             (0.5, max(before, after) * 1.20),
             ha="center",
             fontsize=9.5 if compact else 10.5,
@@ -264,7 +273,7 @@ def chart_stores_swap(grid: pd.DataFrame, compact: bool = False) -> plt.Figure:
         )
     if not compact:
         fig.suptitle(
-            "En tienda, cambiar al score EFX gana aceptación y baja riesgo a la vez",
+            "In stores, switching to the EFX score gains acceptance and lowers risk at once",
             fontsize=13,
             fontweight="bold",
             x=0.085,
@@ -277,31 +286,30 @@ def chart_stores_swap(grid: pd.DataFrame, compact: bool = False) -> plt.Figure:
 
 
 def chart_stores_by_segment(grid: pd.DataFrame) -> plt.Figure:
-    """Desglose por segmento: de dónde sale la mejora de tienda.
+    """Breakdown by segment: where the stores improvement comes from.
 
-    Dumbbell y no barras agrupadas: lo que se quiere leer es el **cambio** de cada
-    segmento, y un par de puntos unidos lo muestra directamente —la longitud del
-    conector es la magnitud y su dirección el signo—. Dos paneles, una magnitud cada
-    uno, compartiendo el eje de segmentos.
+    Dumbbell, not grouped bars: what should be read is each segment's **change**, and
+    a pair of joined dots shows it directly — the connector's length is the magnitude
+    and its direction the sign. Two panels, one magnitude each, sharing the segment axis.
     """
     df = grid[(grid["segmento"] != "TOTAL") & grid["riesgo_imputado_pct"].notna()].copy()
     df = df.sort_values("demanda_eur")
     y = np.arange(len(df))
     panels = [
-        ("Tasa de aceptación (% demanda €)", "ta_actual_pct", "ta_efectiva_pct"),
-        ("Riesgo imputado (%)", "riesgo_imputado_actual_pct", "riesgo_imputado_pct"),
+        ("Acceptance rate (% of € demand)", "ta_actual_pct", "ta_efectiva_pct"),
+        ("Imputed risk (%)", "riesgo_imputado_actual_pct", "riesgo_imputado_pct"),
     ]
     fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.6), sharey=True)
     for ax, (title, col_before, col_after) in zip(axes, panels, strict=True):
         before, after = df[col_before].to_numpy(), df[col_after].to_numpy()
         ax.hlines(y, before, after, color=GRID, linewidth=3.5, zorder=2)
-        ax.scatter(before, y, s=95, color=CURRENT, edgecolor=SURFACE, linewidth=2, zorder=3, label="Hoy")
-        ax.scatter(after, y, s=95, color=PROPOSED, edgecolor=SURFACE, linewidth=2, zorder=4, label="Parrilla EFX")
+        ax.scatter(before, y, s=95, color=CURRENT, edgecolor=SURFACE, linewidth=2, zorder=3, label="Today")
+        ax.scatter(after, y, s=95, color=PROPOSED, edgecolor=SURFACE, linewidth=2, zorder=4, label="EFX grid")
         span = max(after.max(), before.max())
         for i, value in enumerate(after):
-            # solo el valor de llegada: el de partida lo da el punto gris y la leyenda
+            # only the arrival value: the starting one is given by the grey dot and the legend
             ax.annotate(
-                es(value, 1, "%"),
+                num(value, 1, "%"),
                 (value, i),
                 xytext=(0, 11),
                 textcoords="offset points",
@@ -320,15 +328,16 @@ def chart_stores_by_segment(grid: pd.DataFrame) -> plt.Figure:
     legend = axes[0].legend(loc="lower right", frameon=False, fontsize=10, handletextpad=0.4)
     for text in legend.get_texts():
         text.set_color(MUTED)
-    # El titular se calcula: un grupo puede perder décimas de TA (A-C lo hace) y entonces
-    # "todos ganan" sería falso. Y "donde más pesa" se refiere al grupo con más demanda.
+    # The headline is computed: a group can lose a few tenths of acceptance (A-C does)
+    # and then "every group gains" would be false. "Where it weighs most" is the group
+    # with the most demand.
     gain = int((df["ta_efectiva_pct"] > df["ta_actual_pct"]).sum())
-    biggest = df.iloc[-1]  # df está ordenado por demanda ascendente
-    head = "Todos los grupos ganan aceptación" if gain == len(df) else f"{gain} de {len(df)} grupos ganan aceptación"
+    biggest = df.iloc[-1]  # df is sorted by demand, ascending
+    head = "Every group gains acceptance" if gain == len(df) else f"{gain} of {len(df)} groups gain acceptance"
     tail = (
-        "el riesgo baja donde más pesa"
+        "risk falls where it weighs most"
         if biggest["riesgo_imputado_pct"] < biggest["riesgo_imputado_actual_pct"]
-        else "el riesgo sube donde más pesa"
+        else "risk rises where it weighs most"
     )
     fig.suptitle(
         f"{head}; {tail}",
@@ -344,17 +353,18 @@ def chart_stores_by_segment(grid: pd.DataFrame) -> plt.Figure:
 
 
 # --------------------------------------------------------------------------- #
-# 4. Punto 3 — la frontera riesgo / aceptación
+# 4. Point 3 — the risk / acceptance frontier
 # --------------------------------------------------------------------------- #
 def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Figure:
-    """Frontera riesgo-aceptación, con la política actual marcada.
+    """Risk-acceptance frontier, with the current policy marked.
 
-    La TA del eje es la **efectiva** (producción sobre demanda), que es la misma base
-    que la del punto 1. La otra tasa que maneja el estudio —demanda que supera el
-    corte— es mucho más alta y no es comparable con "hoy"; va en la tabla, no aquí.
+    The acceptance on the axis is the **effective** one (production over demand),
+    the same base as point 1. The other rate the study handles — demand above the
+    cutoff — is much higher and not comparable with "today"; it goes in the table,
+    not here.
 
-    El punto de la parrilla actual es lo que convierte la curva en una decisión: sin él
-    no se ve que los cuatro objetivos son endurecimientos.
+    The current-grid point is what turns the curve into a decision: without it one
+    cannot see that all four targets are tightenings.
     """
     df = ladder.sort_values("riesgo_total_pct")
     fig, ax = plt.subplots(figsize=(11, 5.4))
@@ -365,7 +375,7 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
         df["riesgo_total_pct"], df["ta_efectiva_pct"], s=24, color=PROPOSED, edgecolor=SURFACE, linewidth=1.6, zorder=4
     )
 
-    marks = picks[picks["escenario"].str.contains("corte único", na=False)].dropna(subset=["riesgo_total_pct"])
+    marks = picks[picks["escenario"].str.contains(SINGLE_CUTOFF, na=False)].dropna(subset=["riesgo_total_pct"])
     ax.scatter(
         marks["riesgo_total_pct"],
         marks["ta_efectiva_pct"],
@@ -377,7 +387,7 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
     )
     for row in marks.itertuples():
         ax.annotate(
-            f"objetivo {row.escenario.split(' ·')[0]}",
+            f"target {row.escenario.split(' ·')[0]}",
             (row.riesgo_total_pct, row.ta_efectiva_pct),
             textcoords="offset points",
             xytext=(-14, 13),
@@ -386,9 +396,9 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
             fontweight="bold",
             color=INK,
         )
-    medido = picks[picks["escenario"].str.startswith("Hoy")]
-    if not medido.empty:
-        m = medido.iloc[0]
+    measured = picks[picks["escenario"] == TODAY_MEASURED]
+    if not measured.empty:
+        m = measured.iloc[0]
         ax.scatter(
             [m["riesgo_total_pct"]],
             [m["ta_efectiva_pct"]],
@@ -399,7 +409,7 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
             zorder=6,
         )
         ax.annotate(
-            f"hoy, medido: {es(m['ta_efectiva_pct'], 1, '%')} de TA",
+            f"today, measured: {num(m['ta_efectiva_pct'], 1, '%')} acceptance",
             (m["riesgo_total_pct"], m["ta_efectiva_pct"]),
             textcoords="offset points",
             xytext=(14, -16),
@@ -408,7 +418,7 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
             fontweight="bold",
             color=MUTED,
         )
-    base = picks[picks["escenario"].str.startswith("Parrilla Online")]
+    base = picks[picks["escenario"].str.startswith(CURRENT_GRID)]
     if not base.empty:
         b = base.iloc[0]
         ax.scatter(
@@ -421,7 +431,7 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
             zorder=6,
         )
         ax.annotate(
-            f"parrilla Online en ambos: {es(b['ta_efectiva_pct'], 1, '%')} de TA",
+            f"Online grid in both channels: {num(b['ta_efectiva_pct'], 1, '%')} acceptance",
             (b["riesgo_total_pct"], b["ta_efectiva_pct"]),
             textcoords="offset points",
             xytext=(16, -5),
@@ -430,25 +440,25 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
             fontweight="bold",
             color=RISK,
         )
-    _style(ax, ylabel="Tasa de aceptación efectiva (producción / demanda, %)", xlabel="Riesgo global Apple (%)")
-    # El eje se recorta a la zona de decisión: aflojar más allá de la política actual
-    # no está sobre la mesa, y con la cola entera los cuatro objetivos se apelotonan.
+    _style(ax, ylabel="Effective acceptance rate (production / demand, %)", xlabel="Global Apple risk (%)")
+    # The axis is cropped to the decision zone: loosening beyond the current policy is
+    # not on the table, and with the whole tail the four targets bunch up.
     if not base.empty:
         ax.set_xlim(0, float(base.iloc[0]["riesgo_total_pct"]) * 1.45)
         visible = df[df["riesgo_total_pct"] <= float(base.iloc[0]["riesgo_total_pct"]) * 1.45]
         ax.set_ylim(0, max(visible["ta_efectiva_pct"].max(), 1) * 1.3)
     else:
         ax.set_ylim(0, max(df["ta_efectiva_pct"].max(), 1) * 1.25)
-    # El título es una lectura del dato, así que se decide con el dato: solo vale si la
-    # parrilla vigente ya está (a 0,1 pp) sobre el objetivo más alto que se pide.
+    # The title is a reading of the data, so the data decides it: it only holds if the
+    # current grid already sits at or under the highest target requested.
     targets = picks["escenario"].str.extract(r"^(\d+(?:\.\d+)?)%")[0].dropna().astype(float)
     top = float(targets.max()) if not targets.empty else float("nan")
     base_risk = float(base.iloc[0]["riesgo_total_pct"]) if not base.empty else float("nan")
     already_there = np.isfinite(top) and np.isfinite(base_risk) and base_risk <= top + 0.05
     ax.set_title(
-        f"El objetivo del {top:g}% ya lo cumple la parrilla vigente"
+        f"The {top:g}% target is already met by the current grid"
         if already_there
-        else "Cada objetivo de riesgo tiene su precio en aceptación",
+        else "Each risk target has its price in acceptance",
         fontsize=13,
         fontweight="bold",
         loc="left",
@@ -458,18 +468,18 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
 
 
 # --------------------------------------------------------------------------- #
-# 5. Estacionalidad — por qué agosto no es un mes
+# 5. Seasonality — why a month is not a month
 # --------------------------------------------------------------------------- #
-_MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
 def chart_seasonality(index: pd.DataFrame) -> plt.Figure:
-    """Los dos perfiles estacionales, que no se parecen.
+    """The two seasonal profiles, which do not look alike.
 
-    Dos series en el mismo eje —es la misma magnitud, un índice mes-del-año— así que
-    aquí sí comparten gráfico: lo que hay que leer es precisamente la divergencia.
-    Leyenda presente por ser dos series, y etiqueta directa solo en septiembre, que es
-    donde se separan.
+    Two series on the same axis — it is the same magnitude, a month-of-year index — so
+    here they do share a chart: what must be read is precisely the divergence. Legend
+    present because there are two series, and a direct label only in September, where
+    they part ways.
     """
     df = index.sort_values("mes")
     months = df["mes"].to_numpy()
@@ -477,17 +487,23 @@ def chart_seasonality(index: pd.DataFrame) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(11, 4.6))
     series = [("Online", df["indice"].to_numpy(), CURRENT)]
     if has_stores:
-        series.append(("Tienda", df["indice_tienda"].to_numpy(), PROPOSED))
+        series.append(("Stores", df["indice_tienda"].to_numpy(), PROPOSED))
     for label, values, color in series:
         ax.plot(months, values, color=color, linewidth=2, solid_capstyle="round", zorder=3, label=label)
         ax.scatter(months, values, s=46, color=color, edgecolor=SURFACE, linewidth=2, zorder=4)
     ax.axhline(1.0, color=INK, linewidth=1.1, linestyle=(0, (4, 3)), zorder=2)
     ax.annotate(
-        "mes medio = 1,00", (5.0, 1.0), xytext=(0, 9), textcoords="offset points", ha="center", fontsize=9, color=MUTED
+        "average month = 1.00",
+        (5.0, 1.0),
+        xytext=(0, 9),
+        textcoords="offset points",
+        ha="center",
+        fontsize=9,
+        color=MUTED,
     )
     for _label, values, _color in series:
         ax.annotate(
-            es(values[8], 2),
+            num(values[8], 2),
             (9, values[8]),
             xytext=(10, -4),
             textcoords="offset points",
@@ -498,17 +514,17 @@ def chart_seasonality(index: pd.DataFrame) -> plt.Figure:
     top = max(v.max() for _, v, _ in series)
     ax.set_xticks(months)
     ax.set_xticklabels([_MONTHS[m - 1] for m in months], fontsize=9.5)
-    _style(ax, ylabel="Índice estacional de demanda")
+    _style(ax, ylabel="Seasonal demand index")
     ax.set_ylim(0, top * 1.22)
     legend = ax.legend(loc="upper left", frameon=False, fontsize=10.5, handletextpad=0.5)
     for text in legend.get_texts():
         text.set_color(MUTED)
     if has_stores:
         ax.annotate(
-            "septiembre: el lanzamiento de iPhone es un fenómeno de Online;\nen tienda es de los meses más flojos",
+            "September: the iPhone launch is an Online phenomenon;\nin stores it is one of the weakest months",
             (1.5, top * 0.10),
             fontsize=9.5,
             color=MUTED,
         )
-    ax.set_title("Los dos canales no comparten estacionalidad", fontsize=13, fontweight="bold", loc="left", pad=14)
+    ax.set_title("The two channels do not share a seasonality", fontsize=13, fontweight="bold", loc="left", pad=14)
     return fig

@@ -11,7 +11,8 @@ import pytest
 matplotlib = pytest.importorskip("matplotlib")
 pytest.importorskip("pptx")
 
-from generate_apple_deck import BIN_EDGES, build  # noqa: E402
+from generate_apple_deck import BIN_EDGES, build, span, translate_outputs  # noqa: E402
+from run_apple_study import SAME_BASE_LABEL  # noqa: E402
 from src import apple_deck_charts as ac  # noqa: E402
 
 
@@ -90,7 +91,7 @@ def study_outputs(tmp_path):
             # la primera fila es la parrilla actual: el deck la marca como punto de partida
             "escenario": [
                 "Hoy (medido)",
-                "Política de hoy, base de los escenarios",
+                SAME_BASE_LABEL,
                 "Parrilla Online en ambos canales",
                 "2.5% · corte único",
                 "2.5% · parrilla desplazada",
@@ -157,10 +158,38 @@ def test_deck_builds_from_study_outputs(study_outputs, tmp_path):
     assert len(list((tmp_path / "deck" / "images").glob("*.png"))) == 8
 
 
-def test_spanish_decimal_format():
-    # el deck se presenta en español: coma decimal, no punto
-    assert ac.es(3.128, 2) == "3,13"
-    assert ac.es(42.6, 1, "%") == "42,6%"
+def test_english_number_format():
+    # the deck is in English: decimal point, thousands comma
+    assert ac.num(3.128, 2) == "3.13"
+    assert ac.num(42.6, 1, "%") == "42.6%"
+    assert ac.num(18493.5, 1) == "18,493.5"
+
+
+def test_period_labels_in_english():
+    assert span("2025-03-01", "2026-03-01") == "Mar 2025 – Feb 2026"
+    assert span("2026-08-01", "2026-10-01") == "Aug–Sep 2026"
+    assert span("2026-08-01", "2026-09-01") == "Aug 2026"
+
+
+def test_study_labels_are_translated_once_on_load():
+    # the study writes Spanish labels; every chart and table matches on the English ones
+    picks = pd.DataFrame(
+        {
+            "escenario": ["Hoy (medido)", SAME_BASE_LABEL, "Parrilla Online en ambos canales", "3% · corte único"],
+            "corte": ["política vigente", "política vigente", "vigente", "+25 puntos"],
+        }
+    )
+    grids = pd.DataFrame({"grupo": [">=G"], "Parrilla actual": ["rechazo"], "3% · único": ["> 51"]})
+    picks, grids = translate_outputs(picks, grids)
+    assert picks["escenario"].tolist() == [
+        ac.TODAY_MEASURED,
+        ac.TODAY_SAME_BASE,
+        ac.CURRENT_GRID,
+        f"3% · {ac.SINGLE_CUTOFF}",
+    ]
+    assert picks["corte"].tolist() == ["current policy", "current policy", "current", "+25 points"]
+    assert list(grids.columns) == ["group", "Current grid", "3% · single"]
+    assert grids.iloc[0].tolist() == [">=G", "reject", "> 51"]
 
 
 def test_charts_render_without_labels_overflowing_axes(study_outputs):
