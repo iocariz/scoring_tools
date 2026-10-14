@@ -10,7 +10,9 @@ import pytest
 
 from run_apple_study import (
     ALWAYS_REJECT,
+    DEMAND_STATES,
     apply_reject_inference,
+    demand_breakdown,
     effective_months,
     estimate_risk_curve,
     grid_fidelity,
@@ -351,3 +353,33 @@ class TestLevelAnchorInPolicyKpis:
         curve = TestTakeUp()._curve()
         both = policy_kpis(channel, channel, curve, {"New": 27.0}, 1.0, 1.0, 1.5)
         assert both["riesgo_total_pct"] == pytest.approx((3.0 + 3.0 * 1.5) / 2)
+
+
+class TestDemandBreakdown:
+    """Cada euro solicitado cae en exactamente un estado; la TA es la primera fila."""
+
+    def _channel(self):
+        cols = ["grupo_parrilla", "risk_score_rf", "se_decision_id", "reject_reason", "oa_amt", "bin"]
+        cols += ["acct_booked_h0", "oa_amt_h0", "status_name"]
+        return pd.DataFrame(
+            [
+                ["New", 60.0, "ok", None, 100.0, 13.0, 1, 100.0, "booked"],
+                ["New", 60.0, "ok", None, 100.0, 13.0, 0, 0.0, "canceled"],
+                ["New", 60.0, "rv", None, 100.0, 13.0, 0, 0.0, "rejected"],
+                ["New", 20.0, "ko", "09-score", 100.0, 5.0, 0, 0.0, "rejected"],
+                ["New", 90.0, "ko", "04-customer_profile", 100.0, 19.0, 0, 0.0, "canceled"],
+            ],
+            columns=cols,
+        )
+
+    def test_partition_covers_demand_exactly_once(self):
+        out = demand_breakdown(self._channel(), "x")
+        assert out["estado"].tolist() == list(DEMAND_STATES)
+        assert out["pct_demanda"].sum() == pytest.approx(100.0)
+        assert out["pct_demanda"].tolist() == pytest.approx([20.0, 20.0, 20.0, 20.0, 20.0])
+
+    def test_booked_row_is_the_effective_acceptance_rate(self):
+        channel = self._channel()
+        out = demand_breakdown(channel, "x").set_index("estado")
+        ta = 100 * channel.loc[channel["acct_booked_h0"] > 0, "oa_amt_h0"].sum() / channel["oa_amt"].sum()
+        assert out.loc["contratado", "pct_demanda"] == pytest.approx(ta)

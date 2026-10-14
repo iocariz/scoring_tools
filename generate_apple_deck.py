@@ -7,7 +7,7 @@ risk in every population. Here there are two channels, store risk is **imputed**
 the backtest has no mature cohort.
 
 Reads the outputs of ``run_apple_study.py`` (``output/apple_study/*.csv``, written
-with Spanish labels for the analyst) and writes a 13-slide ``.pptx`` in English.
+with Spanish labels for the analyst) and writes a 14-slide ``.pptx`` in English.
 Charts come from :mod:`src.apple_deck_charts`.
 
 Usage:
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -29,7 +30,7 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Emu, Inches, Pt
 
-from run_apple_study import BIN_EDGES, SAME_BASE_LABEL  # one definition, the study's
+from run_apple_study import BIN_EDGES, DEMAND_STATES, SAME_BASE_LABEL  # one definition, the study's
 from src import apple_deck_charts as ac
 from src.apple_deck_charts import CURRENT_GRID, SHIFTED_GRID, SINGLE_CUTOFF, TODAY_MEASURED, TODAY_SAME_BASE
 
@@ -61,6 +62,19 @@ _SCENARIOS = {
 _CUTOFFS = {"política vigente": "current policy", "vigente": "current", "no alcanzable": "not reachable"}
 _GRID_COLUMNS = {"grupo": "group", "Parrilla actual": "Current grid"}
 _GRID_CELLS = {"rechazo": "reject", "sin corte": "no cutoff"}
+_STATES = dict(
+    zip(
+        DEMAND_STATES,
+        [
+            "booked  (= acceptance rate)",
+            "approved, then cancelled (unfinished demand)",
+            "approved, rejected downstream",
+            "rejected by the engine: score",
+            "rejected by the engine: other rules",
+        ],
+        strict=True,
+    )
+)
 
 
 def translate_outputs(picks: pd.DataFrame, grids: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -207,12 +221,12 @@ def _table(slide, x, y, w, rows: list[list[str]], col_w: list[float] | None = No
         for c, value in enumerate(row):
             cell = table.cell(r, c)
             cell.text = str(value)
-            para = cell.text_frame.paragraphs[0]
-            para.alignment = PP_ALIGN.LEFT if c == 0 else PP_ALIGN.RIGHT
-            run = para.runs[0]
-            run.font.size, run.font.name = Pt(11.5), FONT
-            run.font.bold = r == 0
-            run.font.color.rgb = INK if r == 0 else MUTED
+            for para in cell.text_frame.paragraphs:
+                para.alignment = PP_ALIGN.LEFT if c == 0 else PP_ALIGN.RIGHT
+                for run in para.runs:
+                    run.font.size, run.font.name = Pt(11.5), FONT
+                    run.font.bold = r == 0
+                    run.font.color.rgb = INK if r == 0 else MUTED
             cell.fill.solid()
             cell.fill.fore_color.rgb = TILE_BG if r == 0 else RGBColor(0xFF, 0xFF, 0xFF)
 
@@ -787,6 +801,67 @@ def slide_closing(prs, meta: dict, facts: dict) -> None:
     )
 
 
+def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], period: str) -> None:
+    """What 'acceptance rate' means and where unfinished demand goes.
+
+    The two questions the business asked after the first read. The table IS the
+    definition: every € of demand lands in exactly one row, and the acceptance rate is
+    the first row over the total. The extra rows show why two channels with similar
+    engine approval end up with very different acceptance: take-up.
+    """
+    slide = _blank(prs)
+    y = _header(slide, "How acceptance is measured", "Definitions", period)
+    table = breakdown.pivot(index="estado", columns="canal", values="pct_demanda").reindex(list(DEMAND_STATES))
+    approval = table.iloc[:3].sum()
+    take_up = 100 * table.iloc[0] / approval
+    rows = [["Where each € of demand ends up"] + list(columns.values())]
+    for estado, label in _STATES.items():
+        rows.append([label] + [ac.num(table.loc[estado, c], 1, "%") for c in columns])
+    rows.append(["Total demand"] + ["100.0%"] * len(columns))
+    rows.append(["Engine approval (first three rows)"] + [ac.num(approval[c], 1, "%") for c in columns])
+    rows.append(["Take-up: booked / approved"] + [ac.num(take_up[c], 0, "%") for c in columns])
+    # Column widths measured for the longest label at 11.5 pt; headers are two lines
+    # (channel / period) so the period never has to fit on one.
+    _table(slide, MARGIN, y, Inches(7.5), rows, col_w=[3.45, 1.35, 1.35, 1.35], row_h=0.34)
+
+    _bullets(
+        slide,
+        MARGIN + Inches(7.8),
+        y,
+        Inches(4.25),
+        [
+            (
+                "Acceptance rate (effective).",
+                "€ booked / € applied for, over every application that comes through the door — rejected, "
+                "cancelled and booked alike. The first row of the table. Point 1 and every scenario use it.",
+            ),
+            (
+                "Score acceptance.",
+                "€ above the score cutoff and not rejected by another rule, over € demand. Comparable with the "
+                "engine's approval rate, not with the effective one; shown only in the scenario table.",
+            ),
+            (
+                "Unfinished demand.",
+                "Approved by the engine, then cancelled by the customer. It counts in the denominator and not in "
+                "the numerator, like a rejection. In the scenarios every accepted application converts at the "
+                "actual take-up of its decision, so cancellations are assumed to behave as today: a looser grid "
+                "does not recover them.",
+            ),
+            (
+                "Approved, rejected downstream.",
+                "Approved by the engine, rejected at a later step (no reason in the extract). Treated like "
+                "unfinished demand.",
+            ),
+            (
+                "Reject inference.",
+                "Neither state enters the per-bin acceptance rate — booked / (booked + score-rejected) — so they "
+                "do not inflate the uplift.",
+            ),
+        ],
+        size=10.5,
+    )
+
+
 def deck_facts(curve, p2, stores_actuals, grids, index, meta) -> dict:
     """The figures the deck's prose cites, computed from the study outputs.
 
@@ -857,6 +932,7 @@ def build(data_dir: Path, out_path: Path) -> Path:
     p_mixed = f"Online {p_online}  ·  stores {p_stores}"
     p_seasonal = " and ".join(str(a) for a in meta["estacionalidad_anios"])
     ladder, index = read("p3_escalera_corte_unico"), read("indice_estacional")
+    breakdown = read("p0_demanda_por_estado")
     picks, grids = translate_outputs(read("p3_escenarios_objetivo"), read("p4_parrillas_escenarios"))
     online = p1[p1["segmento"] == "TOTAL"].iloc[0]
     stores = p2[p2["segmento"] == "TOTAL"].iloc[0]
@@ -886,6 +962,17 @@ def build(data_dir: Path, out_path: Path) -> Path:
     # and how it was computed. What backs the figures goes last, as an appendix.
     slide_title(prs, online, stores, today)
     slide_exec(prs, online, stores, picks, paths["stores_compact"], meta, facts, p_mixed)
+    short = lambda period: re.sub(r"\b20(\d\d)\b", r"\1", period)  # noqa: E731  — fits a 1.35" column in bold
+    slide_definitions(
+        prs,
+        breakdown,
+        {
+            "online": f"Online\n{short(p_online)}",
+            "tienda_ventana": f"Stores\n{short(p_online)}",
+            "tienda_score": f"Stores\n{short(p_stores)}",
+        },
+        p_mixed,
+    )
     slide_chart(
         prs,
         "Apple Online today",
