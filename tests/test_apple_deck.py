@@ -88,12 +88,18 @@ def study_outputs(tmp_path):
     pd.DataFrame(
         {
             # la primera fila es la parrilla actual: el deck la marca como punto de partida
-            "escenario": ["Parrilla actual", "2.5% · corte único", "2.5% · parrilla desplazada"],
-            "corte": ["vigente", "> 68", "+39 puntos"],
-            "riesgo_total_pct": [4.18, 2.35, 2.48],
-            "ta_score_pct": [81.8, 42.0, 46.2],
-            "ta_efectiva_pct": [24.1, 12.8, 14.0],
-            "produccion_mensual_eur": [1.29e7, 6.9e6, 7.5e6],
+            "escenario": [
+                "Hoy (medido)",
+                "Política de hoy, base de los escenarios",
+                "Parrilla Online en ambos canales",
+                "2.5% · corte único",
+                "2.5% · parrilla desplazada",
+            ],
+            "corte": ["política vigente", "política vigente", "vigente", "> 68", "+39 puntos"],
+            "riesgo_total_pct": [3.99, 3.97, 3.95, 2.35, 2.48],
+            "ta_score_pct": [np.nan, np.nan, 58.3, 42.0, 46.2],
+            "ta_efectiva_pct": [29.5, 28.5, 32.7, 12.8, 14.0],
+            "produccion_mensual_eur": [1.53e7, 1.62e7, 1.85e7, 6.9e6, 7.5e6],
         }
     ).to_csv(tmp_path / "p3_escenarios_objetivo.csv", index=False)
     pd.DataFrame(
@@ -110,7 +116,7 @@ def study_outputs(tmp_path):
                 "online_desde": "2025-03-01",
                 "online_hasta": "2026-03-01",
                 "tienda_desde": "2026-08-01",
-                "tienda_hasta": "2026-09-01",
+                "tienda_hasta": "2026-10-01",
                 "estacionalidad_anios": [2024, 2025],
                 "reject_inference": True,
                 "factor_nivel_tienda": 0.9884,
@@ -126,6 +132,7 @@ def study_outputs(tmp_path):
                 "peso_tienda_calendario_pct": 20.4,
                 "peso_tienda_propio_pct": 25.2,
                 "peso_tienda_indice_online_pct": 34.4,
+                "demanda_tienda_vs_ventana_pct": 39.4,
             }
         ),
         encoding="utf-8",

@@ -28,7 +28,7 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Emu, Inches, Pt
 
-from run_apple_study import BIN_EDGES  # una sola definición de los tramos, la del estudio
+from run_apple_study import BIN_EDGES, SAME_BASE_LABEL  # una sola definición, la del estudio
 from src import apple_deck_charts as ac
 
 W, H = Inches(13.333), Inches(7.5)
@@ -42,6 +42,10 @@ TILE_BG = RGBColor(0xF6, 0xF7, 0xF9)
 FONT = "Arial"
 
 MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+MESES_LARGO = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+]  # fmt: skip
 
 
 # --------------------------------------------------------------------------- #
@@ -285,7 +289,7 @@ def slide_exec(prs, online, stores, picks, stores_img: Path, meta: dict, facts: 
     # slide del punto 3. Se publica la TA EFECTIVA, que es la comparable con el punto 1.
     rows = [["Escenario", "Corte", "TA efect.", "Producción"]]
     for row in picks.dropna(subset=["riesgo_total_pct"]).itertuples():
-        if "parrilla desplazada" in row.escenario:
+        if "parrilla desplazada" in row.escenario or row.escenario == SAME_BASE_LABEL:
             continue
         rows.append(
             [
@@ -470,16 +474,17 @@ def slide_method_seasonal(prs, meta: dict, facts: dict, period: str) -> None:
         [
             (
                 "1",
-                "El problema: tienda solo tiene un mes con score, y es agosto",
-                f"El score EFX se activó en tienda en {facts['stores_month']}. Comparar un mes suelto contra una media de doce "
-                "exige saber cuánto vale ese mes.",
+                f"El problema: tienda solo tiene score en {facts['stores_window']}",
+                f"El score EFX se activó en tienda en {facts['stores_first_month']}. Comparar "
+                f"{'un mes suelto' if facts['stores_n_months'] == 1 else str(facts['stores_n_months']) + ' meses sueltos'} "
+                "contra una media de doce exige saber cuánto vale cada mes.",
                 "MEDIDO",
             ),
             (
                 "2",
-                "Agosto no es un mes medio, y cada canal tiene el suyo",
-                f"Índice de agosto: {ac.es(facts['aug_online'], 2)} en Online y {ac.es(facts['aug_stores'], 2)} en "
-                f"tienda. Online concentra la demanda en el lanzamiento de iPhone ({facts['peak_online'][0]} "
+                f"{facts['stores_months_txt'].capitalize()}: ningún mes medio, y cada canal tiene el suyo",
+                f"Índice de {facts['stores_months_short']}: {facts['online_idx_txt']} en Online y "
+                f"{facts['stores_idx_txt']} en tienda. Online concentra la demanda en el lanzamiento de iPhone ({facts['peak_online'][0]} "
                 f"{ac.es(facts['peak_online'][1], 2)}) y tienda en Navidad ({facts['peak_stores'][0]} "
                 f"{ac.es(facts['peak_stores'][1], 2)}). La correlación entre ambos perfiles es "
                 f"{ac.es(facts['index_corr'], 2)}: no son el mismo patrón.",
@@ -489,8 +494,9 @@ def slide_method_seasonal(prs, meta: dict, facts: dict, period: str) -> None:
                 "3",
                 "Meses efectivos en vez de meses de calendario",
                 "El run-rate no se divide por el número de meses sino por la suma del índice estacional de los "
-                "meses cubiertos. Una ventana natural completa suma 12,00 y no altera nada; el agosto de tienda "
-                f"suma {ac.es(facts['aug_stores'], 2)} y corrige por ser un mes flojo.",
+                "meses cubiertos. Una ventana natural completa suma 12,00 y no altera nada; la ventana de tienda "
+                f"({facts['stores_window']}) suma {ac.es(facts['stores_eff_months'], 2)} y corrige por caer en "
+                "meses flojos de tienda.",
                 "CORREGIDO",
             ),
             (
@@ -499,7 +505,8 @@ def slide_method_seasonal(prs, meta: dict, facts: dict, period: str) -> None:
                 f"Sin corregir, tienda parecía pesar el {ac.es(meta['peso_tienda_calendario_pct'], 0)}% de la "
                 f"demanda. Con su estacionalidad propia pesa el {ac.es(meta['peso_tienda_propio_pct'], 0)}%. Si se le "
                 "hubiera aplicado la de Online —lo único posible antes de tener su histórico— habríamos dicho "
-                f"{ac.es(meta['peso_tienda_indice_online_pct'], 0)}%, y todos los escenarios saldrían con más "
+                f"{ac.es(meta['peso_tienda_indice_online_pct'], 0)}%, y todos los escenarios saldrían con "
+                f"{'más' if meta['peso_tienda_indice_online_pct'] > meta['peso_tienda_propio_pct'] else 'menos'} "
                 "producción de la real.",
                 "MEDIDO",
             ),
@@ -512,8 +519,8 @@ def slide_method_seasonal(prs, meta: dict, facts: dict, period: str) -> None:
         W - 2 * MARGIN,
         Inches(0.9),
         "El índice se estima promediando años naturales completos, de modo que el crecimiento de volumen "
-        "entre años no se confunda con estacionalidad. Lo que queda abierto es si el mix de un único mes "
-        "de tienda es representativo del año.",
+        "entre años no se confunda con estacionalidad. Lo que queda abierto es si el mix de "
+        f"{facts['stores_window']} en tienda es representativo del año.",
         size=11.5,
         color=MUTED,
         spacing=1.2,
@@ -545,13 +552,15 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, meta: dict, period: str 
     for row in picks.dropna(subset=["riesgo_total_pct"]).itertuples():
         rows.append(
             [
-                row.escenario.replace(" · corte único", " · único").replace(" · parrilla desplazada", " · parrilla"),
+                row.escenario.replace(" · corte único", " · único")
+                .replace(" · parrilla desplazada", " · parrilla")
+                .replace(SAME_BASE_LABEL, "Hoy, base escenarios"),
                 str(row.corte).replace(" puntos", "p"),
                 "—" if pd.isna(row.ta_score_pct) else ac.es(row.ta_score_pct, 1, "%"),
                 ac.es(row.ta_efectiva_pct, 1, "%"),
             ]
         )
-    _table(slide, x2, y + Inches(0.1), Inches(4.75), rows, col_w=[1.7, 1.0, 0.9, 0.9], row_h=0.28)
+    _table(slide, x2, y + Inches(0.1), Inches(4.75), rows, col_w=[1.7, 1.0, 0.9, 0.9], row_h=0.26)
 
     # El aviso va bajo el gráfico, que es donde queda sitio y donde lo verá quien mire la
     # curva. Es la pregunta que va a salir en comité: por qué el modelo produce más que lo
@@ -560,6 +569,22 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, meta: dict, period: str 
     base_prod = float(base_rows.iloc[0]["produccion_mensual_eur"]) if not base_rows.empty else float("nan")
     today_rows = picks[picks["escenario"].str.startswith("Hoy")]
     today_prod = float(today_rows.iloc[0]["produccion_mensual_eur"]) if not today_rows.empty else float("nan")
+    same_rows = picks[picks["escenario"] == SAME_BASE_LABEL]
+    same_prod = float(same_rows.iloc[0]["produccion_mensual_eur"]) if not same_rows.empty else float("nan")
+    if pd.notna(same_prod):
+        split = (
+            f"Esa diferencia tiene dos partes: la parrilla (+{ac.es((base_prod - same_prod) / 1e6, 1)} M€/mes "
+            f"sobre la misma base, {ac.es(same_prod / 1e6, 1)} → {ac.es(base_prod / 1e6, 1)}) y el volumen "
+            f"({'+' if same_prod >= today_prod else ''}{ac.es((same_prod - today_prod) / 1e6, 1, ' M€')}: la demanda de tienda en "
+            f"{periodo(meta['tienda_desde'], meta['tienda_hasta'])} va un "
+            f"{ac.es(meta.get('demanda_tienda_vs_ventana_pct', float('nan')), 0)}% por encima de la media de la "
+            "ventana de 'hoy')."
+        )
+    else:
+        split = (
+            f"Es por tanto la ganancia de tienda, medida sobre {periodo(meta['tienda_desde'], meta['tienda_hasta'])} "
+            "frente a la ventana completa de 'hoy'."
+        )
     # Debajo del gráfico, calculado desde su alto real: estimarlo a ojo lo hacía chocar
     # con la etiqueta del eje.
     note_y = y + chart_h + Inches(0.12)
@@ -579,15 +604,13 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, meta: dict, period: str 
         MARGIN,
         note_y + Inches(0.34),
         chart_w,
-        Inches(1.1),
+        Inches(1.4),
         "La parrilla vigente calca las decisiones reales de Online (acepta el "
         f"{ac.es(meta['online_parrilla_pct'], 1, '%')} de la demanda; el motor aprobó el "
         f"{ac.es(meta['online_aprobado_real_pct'], 1, '%')}: swap-in {ac.es(meta['online_swap_in_pct'], 1, '%')}, "
         f"swap-out {ac.es(meta['online_swap_out_pct'], 1, '%')}) y cada solicitud aceptada convierte a la tasa de "
-        f"su decisión real. La diferencia entre {ac.es(base_prod / 1e6, 1)} y {ac.es(today_prod / 1e6, 1)} M€/mes "
-        f"es por tanto la ganancia de tienda, medida sobre {periodo(meta['tienda_desde'], meta['tienda_hasta'])} "
-        "(único mes con EFX) frente a la ventana "
-        "completa de 'hoy'.",
+        f"su decisión real. Online modelado y medido coinciden: la diferencia entre {ac.es(base_prod / 1e6, 1)} y "
+        f"{ac.es(today_prod / 1e6, 1)} M€/mes es tienda. {split}",
         size=11,
         color=MUTED,
         spacing=1.2,
@@ -652,7 +675,7 @@ def slide_grids(prs, grids: pd.DataFrame, period: str = "") -> None:
     )
 
 
-def slide_closing(prs, facts: dict) -> None:
+def slide_closing(prs, meta: dict, facts: dict) -> None:
     slide = _blank(prs)
     y = _header(slide, "Qué falta y qué haría falta decidir", "Limitaciones y siguientes pasos")
     _text(slide, MARGIN, y, Inches(5.9), Inches(0.4), "Limitaciones del estudio", size=15, bold=True, color=RISK)
@@ -678,9 +701,11 @@ def slide_closing(prs, facts: dict) -> None:
                 f"selección ({ac.es(facts['max_uplift'], 1)}x). Son los que abren el escenario más laxo.",
             ),
             (
-                "Un solo mes de tienda.",
-                f"La foto sale de {facts['stores_month']}. Su estacionalidad propia ya está medida, pero el mix de un "
-                "único mes puede no ser representativo.",
+                f"Solo {facts['stores_window']} en tienda.",
+                f"Su estacionalidad propia ya está medida, pero el mix de {facts['stores_n_months']} "
+                f"{'mes' if facts['stores_n_months'] == 1 else 'meses'} puede no ser representativo, y su demanda va un "
+                f"{ac.es(meta.get('demanda_tienda_vs_ventana_pct', float('nan')), 0)}% por encima de la media de la "
+                "ventana de 'hoy': parte de la mejora frente a lo medido es volumen, no parrilla.",
             ),
         ],
         size=12,
@@ -697,7 +722,7 @@ def slide_closing(prs, facts: dict) -> None:
         [
             (
                 "Extracción.",
-                f"Refresco de Online a {facts['stores_month']}, score EFX en tienda y su histórico de comportamiento "
+                f"Refresco de Online a {facts['stores_last_month']}, score EFX en tienda y su histórico de comportamiento "
                 "para anclar el nivel de riesgo.",
             ),
             ("Decisión de negocio.", "Objetivo de riesgo global y si el corte es único o por segmento."),
@@ -728,11 +753,17 @@ def deck_facts(curve, p2, stores_actuals, grids, index, meta) -> dict:
     stores_total = p2[p2["segmento"] == "TOTAL"].iloc[0]
     new = p2[p2["segmento"].str.lower() == "new"]
     last_stores_month = pd.Timestamp(meta["tienda_hasta"]) - pd.Timedelta(days=1)
+    stores_months = pd.period_range(meta["tienda_desde"], last_stores_month, freq="M")
+    idx = index.set_index("mes")
+    stores_idx = [float(idx.loc[p.month, "indice_tienda"]) for p in stores_months]
+    online_idx = [float(idx.loc[p.month, "indice"]) for p in stores_months]
+    months_txt = " y ".join(MESES_LARGO[p.month - 1] for p in stores_months)
 
     def mes(ts: pd.Timestamp) -> str:
         return f"{MESES[ts.month - 1]}-{ts.year}"
 
     peak_online, peak_stores = int(index["indice"].idxmax()), int(index["indice_tienda"].idxmax())
+    weak_stores = int(index["indice_tienda"].idxmin())
     return {
         "max_uplift": float(uplift.max()),
         "min_acc_pct": float(acceptance.min()),
@@ -749,7 +780,16 @@ def deck_facts(curve, p2, stores_actuals, grids, index, meta) -> dict:
         "peak_online": (MESES[int(index.loc[peak_online, "mes"]) - 1], float(index.loc[peak_online, "indice"])),
         "peak_stores": (MESES[int(index.loc[peak_stores, "mes"]) - 1], float(index.loc[peak_stores, "indice_tienda"])),
         "index_corr": float(index["indice"].corr(index["indice_tienda"])),
-        "stores_month": mes(last_stores_month),
+        "stores_first_month": mes(pd.Timestamp(meta["tienda_desde"])),
+        "stores_last_month": mes(last_stores_month),
+        "stores_window": periodo(meta["tienda_desde"], meta["tienda_hasta"]),
+        "stores_n_months": len(stores_months),
+        "stores_months_txt": months_txt,
+        "stores_months_short": " y ".join(MESES[p.month - 1] for p in stores_months),
+        "stores_idx_txt": " / ".join(ac.es(v, 2) for v in stores_idx),
+        "online_idx_txt": " / ".join(ac.es(v, 2) for v in online_idx),
+        "stores_eff_months": float(sum(stores_idx)),
+        "weak_stores": MESES_LARGO[int(index.loc[weak_stores, "mes"]) - 1],
         "h3_month": mes(last_stores_month + pd.DateOffset(months=3)),
         "h6_month": mes(last_stores_month + pd.DateOffset(months=6)),
     }
@@ -819,7 +859,8 @@ def build(data_dir: Path, out_path: Path) -> Path:
         "Tienda con la parrilla de e-commerce",
         "Punto 2 · Riesgo estimado",
         paths["tienda"],
-        "Las dos columnas miden la misma población —el único mes con score EFX—, por eso aquí el 'hoy' es "
+        f"Las dos columnas miden la misma población —{facts['stores_window']}, lo único con score EFX en tienda—, "
+        "por eso aquí el 'hoy' es "
         f"{ac.es(facts['ta_stores_aug_pct'], 1, '%')} y en la slide anterior "
         f"{ac.es(facts['ta_stores_window_pct'], 1, '%')}. Sustitución de la regla de score; las demás reglas de tienda "
         "se mantienen. El riesgo va imputado desde la curva de Online, con el nivel anclado al realizado "
@@ -855,13 +896,15 @@ def build(data_dir: Path, out_path: Path) -> Path:
         "Los dos canales no comparten estacionalidad",
         "Anexo · Anualización",
         paths["estacional"],
-        "El único mes con score en tienda es agosto, así que su peso en Apple depende de cómo se anualice. "
-        "Tienda tiene su pico en diciembre y septiembre entre sus meses más flojos: usar la curva de Online "
-        f"le habría inflado el peso al {ac.es(meta['peso_tienda_indice_online_pct'], 0)}% cuando con su propia "
-        f"estacionalidad es el {ac.es(meta['peso_tienda_propio_pct'], 0)}%.",
+        f"Tienda solo tiene score en {facts['stores_window']}, así que su peso en Apple depende de cómo se anualice. "
+        f"Tienda tiene su pico en {MESES_LARGO[MESES.index(facts['peak_stores'][0])]} y {facts['weak_stores']} es su mes "
+        "más flojo, el contrario de Online: usar la curva de Online le habría "
+        f"{'inflado' if meta['peso_tienda_indice_online_pct'] > meta['peso_tienda_propio_pct'] else 'rebajado'} el peso "
+        f"al {ac.es(meta['peso_tienda_indice_online_pct'], 0)}% cuando con su propia estacionalidad es el "
+        f"{ac.es(meta['peso_tienda_propio_pct'], 0)}%.",
         period=f"Años completos {p_estacional}",
     )
-    slide_closing(prs, facts)
+    slide_closing(prs, meta, facts)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(out_path))

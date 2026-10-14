@@ -444,9 +444,9 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
     targets = picks["escenario"].str.extract(r"^(\d+(?:\.\d+)?)%")[0].dropna().astype(float)
     top = float(targets.max()) if not targets.empty else float("nan")
     base_risk = float(base.iloc[0]["riesgo_total_pct"]) if not base.empty else float("nan")
-    already_there = np.isfinite(top) and np.isfinite(base_risk) and abs(base_risk - top) <= 0.1
+    already_there = np.isfinite(top) and np.isfinite(base_risk) and base_risk <= top + 0.05
     ax.set_title(
-        f"El objetivo del {top:g}% es prácticamente el punto de partida"
+        f"El objetivo del {top:g}% ya lo cumple la parrilla vigente"
         if already_there
         else "Cada objetivo de riesgo tiene su precio en aceptación",
         fontsize=13,
