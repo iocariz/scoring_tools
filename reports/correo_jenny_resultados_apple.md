@@ -19,7 +19,7 @@
 > +2,3 M€/mes; frente a lo medido en la ventana, +3,2 pp y +3,2 M€.
 
 **Asunto:** Apple — Score Equifax en tienda: resultados y escenarios
-**Adjunto:** `output/apple_deck/Estudio_Apple_EFX.pptx`
+**Adjunto:** `output/apple_deck/Apple_EFX_Study.pptx` (en inglés)
 
 ---
 
@@ -91,7 +91,7 @@ Las parrillas concretas (umbral de rechazo por grupo, se acepta por encima):
 
 Decidme qué objetivo de riesgo queréis y si preferís un corte único para todo Apple —más simple de operar— o desplazar la parrilla por grupo, que da algo más de aceptación al mismo riesgo. Con eso lanzo la corrida definitiva y preparo la propuesta de implementación.
 
-Tienes la presentación adjunta con el detalle y la metodología.
+Tienes la presentación adjunta (en inglés) con el detalle y la metodología.
 
 Un saludo,
 Iñigo

@@ -544,7 +544,7 @@ def measured_status_quo(
     }
 
 
-SAME_BASE_LABEL = "Política de hoy, base de los escenarios"
+SAME_BASE_LABEL = "Hoy, con la demanda actual de tienda"
 
 
 def same_base_status_quo(
