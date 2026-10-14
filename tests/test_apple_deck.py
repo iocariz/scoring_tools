@@ -136,6 +136,10 @@ def study_outputs(tmp_path):
                 "demanda_tienda_vs_ventana_pct": 39.4,
                 "riesgo_parrilla_base_hoy_pct": 3.76,
                 "ri_margen_online_pp": 0.08,
+                "take_up_online_ok_pct": 44.3,
+                "take_up_online_rv_pct": 5.5,
+                "take_up_tienda_ok_pct": 81.5,
+                "take_up_tienda_rv_pct": 17.8,
             }
         ),
         encoding="utf-8",
@@ -162,6 +166,37 @@ def study_outputs(tmp_path):
             "pct_demanda": [20.9, 27.9, 3.1, 6.9, 41.2, 58.7, 10.0, 2.0, 15.0, 14.3, 47.2, 9.6, 2.0, 21.1, 20.1],
         }
     ).to_csv(tmp_path / "p0_demanda_por_estado.csv", index=False)
+    pd.DataFrame(
+        {
+            "categoria": [
+                "se mantiene: aprobada hoy, por encima del corte",
+                "swap-in: rechazada hoy por score, por encima del corte",
+                "swap-out: aprobada hoy, por debajo del corte",
+                "sigue fuera: rechazada hoy por score, por debajo del corte",
+                "intacta: rechazada por otras reglas",
+            ],
+            "n": [10, 3, 1, 1, 3],
+            "demanda_eur": [5.6e5, 1.9e5, 2e4, 2e4, 2e5],
+            "pct_demanda": [56.8, 19.3, 2.0, 1.9, 20.0],
+            "produccion_est_eur": [4.5e5, 1.5e5, 1.5e4, 1.5e4, 1.6e5],
+            "riesgo_imputado_pct": [3.3, 4.1, 47.6, 41.6, 8.0],
+            "score_mediano": [79.0, 66.0, 19.0, 20.0, 66.0],
+        }
+    ).to_csv(tmp_path / "p2b_tienda_swap.csv", index=False)
+    pd.DataFrame(
+        {
+            "canal": ["online", "tienda", "total"],
+            "meses_efectivos": [12.0, 1.45, np.nan],
+            "factor_nivel": [1.0, 0.95, np.nan],
+            "demanda_mensual_eur": [4.0e7, 1.65e7, 5.65e7],
+            "aceptado_mensual_eur": [2.1e7, 1.25e7, 3.35e7],
+            "produccion_mensual_eur": [8.4e6, 1.01e7, 1.85e7],
+            "exposicion_mensual_eur": [5.46e7, 6.56e7, 1.2e8],
+            "peso_exposicion_pct": [45.4, 54.6, 100.0],
+            "riesgo_pct": [4.26, 3.51, 3.85],
+            "ta_efectiva_pct": [20.9, 61.2, 32.7],
+        }
+    ).to_csv(tmp_path / "p3b_mezcla_canales.csv", index=False)
     return tmp_path
 
 
@@ -170,7 +205,7 @@ def test_deck_builds_from_study_outputs(study_outputs, tmp_path):
     assert out.exists() and out.stat().st_size > 0
     from pptx import Presentation
 
-    assert len(Presentation(str(out)).slides._sldIdLst) == 14
+    assert len(Presentation(str(out)).slides._sldIdLst) == 15
     # 6 gráficos de slide + la variante compacta de tienda y el desglose por segmento
     assert len(list((tmp_path / "deck" / "images").glob("*.png"))) == 8
 

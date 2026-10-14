@@ -11,7 +11,9 @@ import pytest
 from run_apple_study import (
     ALWAYS_REJECT,
     DEMAND_STATES,
+    SWAP_CATEGORIES,
     apply_reject_inference,
+    channel_blend,
     demand_breakdown,
     effective_months,
     estimate_risk_curve,
@@ -21,6 +23,7 @@ from run_apple_study import (
     measured_status_quo,
     policy_kpis,
     same_base_status_quo,
+    stores_swap_breakdown,
     stores_under_grid,
     take_up_by_decision,
     warn_partial_rollout,
@@ -383,3 +386,31 @@ class TestDemandBreakdown:
         out = demand_breakdown(channel, "x").set_index("estado")
         ta = 100 * channel.loc[channel["acct_booked_h0"] > 0, "oa_amt_h0"].sum() / channel["oa_amt"].sum()
         assert out.loc["contratado", "pct_demanda"] == pytest.approx(ta)
+
+
+class TestStoresSwapBreakdown:
+    """Cada euro de la demanda de tienda cae en una categoría del swap; las dos primeras son lo aceptado."""
+
+    def test_partition_and_accepted_match_policy_kpis(self):
+        channel = TestTakeUp()._channel()  # 2 ok + 4 rv por encima del corte, 1 ko-score por debajo
+        curve = TestTakeUp()._curve()
+        out = stores_swap_breakdown(channel, curve, {"New": 27.0}, 1.0)
+        assert out["categoria"].tolist() == list(SWAP_CATEGORIES)
+        assert out["pct_demanda"].sum() == pytest.approx(100.0)
+        assert out["pct_demanda"].tolist() == pytest.approx([600 / 7, 0.0, 0.0, 100 / 7, 0.0])
+        kpis = policy_kpis(channel.iloc[0:0], channel, curve, {"New": 27.0}, 1.0, 1.0, 1.0)
+        assert out["produccion_est_eur"].iloc[:2].sum() == pytest.approx(kpis["produccion_mensual_eur"])
+        assert out["riesgo_imputado_pct"].iloc[0] == pytest.approx(3.0)
+        assert out["riesgo_imputado_pct"].iloc[3] == pytest.approx(5.0)  # lo que queda fuera también se valora
+
+
+class TestChannelBlend:
+    def test_total_row_reproduces_policy_kpis_and_weights_sum_to_one(self):
+        channel = TestTakeUp()._channel()
+        curve = TestTakeUp()._curve()
+        blend = channel_blend(channel, channel, curve, {"New": 27.0}, 1.0, 2.0, 1.5).set_index("canal")
+        kpis = policy_kpis(channel, channel, curve, {"New": 27.0}, 1.0, 2.0, 1.5)
+        assert blend.loc["total", "riesgo_pct"] == pytest.approx(kpis["riesgo_total_pct"])
+        assert blend.loc["total", "produccion_mensual_eur"] == pytest.approx(kpis["produccion_mensual_eur"])
+        assert blend.loc[["online", "tienda"], "peso_exposicion_pct"].sum() == pytest.approx(100.0)
+        assert blend.loc["tienda", "riesgo_pct"] == pytest.approx(1.5 * blend.loc["online", "riesgo_pct"])
