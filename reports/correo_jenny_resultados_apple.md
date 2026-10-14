@@ -102,8 +102,10 @@ Qué hace la parrilla con cada euro:
 | **swap-out**: aprobada hoy, por debajo del corte EFX | 2,0% | 0,4 M€ | 47,6% |
 | **rechazada por los dos scores**: hoy por el score interno y por debajo del corte EFX | 1,8% | 0,4 M€ | 41,6% |
 | intacta: rechazada por otras reglas (no se tocan) | 20,1% | 3,9 M€ | 8,0% |
-| **aceptado por la parrilla** (las dos primeras) | **76,0%** | **14,6 M€** | **3,51%** |
-| la cartera contratada hoy, valorada igual | 47,2% | 11,3 M€ | 3,74% |
+| **aceptado por la parrilla** (las dos primeras) | **76,0%** | **14,6 M€ (61,2%)** | **3,51%** |
+| hoy, con el score interno: aprobado por el motor → contratado | 58,8% | 11,3 M€ (47,2%) | 3,74% |
+
+La última fila es lo que tienda contrató de verdad en agosto-septiembre con su score interno: 11,3 M€, el 47,2% de la demanda; valorada con la misma curva y el ancla da su 3,74% realizado. En las dos filas resumen, el porcentaje es la demanda que pasa la decisión (el motor hoy, 58,8%; la parrilla, 76,0%) y el paréntesis de la producción es la tasa de aceptación efectiva.
 
 Dos cosas que se ven ahí. El swap-out es pequeño (2,0% de la demanda) pero carga un 48% de riesgo imputado (score EFX mediano 19): son las aprobaciones más débiles del score interno, y la parrilla las quita. El swap-in trae un 19,3% de demanda que hoy se rechaza, a un 4,1%. De ahí que suban aceptación y baje riesgo a la vez.
 

@@ -876,7 +876,7 @@ def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], per
 
 
 def slide_store_demand(
-    prs, swap: pd.DataFrame, blend: pd.DataFrame, stores, meta: dict, facts: dict, period: str
+    prs, swap: pd.DataFrame, blend: pd.DataFrame, breakdown: pd.DataFrame, stores, meta: dict, facts: dict, period: str
 ) -> None:
     """The stores demand, step by step: what the grid does with each € and how the
     channel blends into the total.
@@ -893,6 +893,8 @@ def slide_store_demand(
     bl = blend.set_index("canal")
     accepted = sw.iloc[:2]
     eff = float(bl.loc["tienda", "meses_efectivos"])
+    scored = breakdown[breakdown["canal"] == "tienda_score"].set_index("estado")["pct_demanda"]
+    engine_approval = scored.reindex(list(DEMAND_STATES)).iloc[:3].sum()  # booked + cancelled + rejected downstream
     # The left table is WINDOW totals; the blend on the right is a monthly run-rate. The
     # bridge row says the divisor, because the two production figures otherwise look like
     # they disagree (€14.6M over Aug–Sep vs €10.1M/mo).
@@ -911,7 +913,9 @@ def slide_store_demand(
         [
             "Accepted by the grid (kept + swap-in)",
             ac.num(accepted["pct_demanda"].sum(), 1, "%"),
-            money(accepted["produccion_est_eur"].sum()),
+            # the effective acceptance in brackets is point 2's figure (per-segment take-up),
+            # so this slide and slide 5 quote the same 61.2%; the € are the same at 1 decimal
+            f"{money(accepted['produccion_est_eur'].sum())} ({ac.num(stores['ta_efectiva_pct'], 1, '%')})",
             ac.num(stores["riesgo_imputado_pct"], 2, "%"),
         ]
     )
@@ -925,9 +929,13 @@ def slide_store_demand(
     )
     rows.append(
         [
-            "Today's book, valued the same way",
-            ac.num(stores["ta_actual_pct"], 1, "%"),
-            money(stores["demanda_eur"] * stores["ta_actual_pct"] / 100),
+            # Like for like with the row above: share = demand that passes the decision (the
+            # engine's approval today vs the grid), production = what gets booked, with the
+            # effective acceptance in brackets. Its risk is the realized figure the curve is
+            # anchored to.
+            "Engine today: approved → booked",
+            ac.num(float(engine_approval), 1, "%"),
+            f"{money(stores['demanda_eur'] * stores['ta_actual_pct'] / 100)} ({ac.num(stores['ta_actual_pct'], 1, '%')})",
             ac.num(stores["riesgo_imputado_actual_pct"], 2, "%"),
         ]
     )
@@ -1151,7 +1159,7 @@ def build(data_dir: Path, out_path: Path) -> Path:
     slide_frontier(prs, paths["frontier"], picks, meta, p_mixed)
     slide_grids(prs, grids, "Policy — no period")
     slide_method_risk(prs, meta, facts, f"Online {p_online}  ·  stores {p_stores}")
-    slide_store_demand(prs, swap, blend, stores, meta, facts, p_mixed)
+    slide_store_demand(prs, swap, blend, breakdown, stores, meta, facts, p_mixed)
     slide_method_seasonal(prs, meta, facts, f"Full years {p_seasonal}")
     slide_chart(
         prs,
