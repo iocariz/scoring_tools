@@ -95,7 +95,7 @@ Es la única demanda de tienda con score Equifax, y los escenarios de tienda y d
 
 Qué hace la parrilla con cada euro:
 
-| cada euro de la demanda de tienda ago-sep 26 | % demanda | producción esperada | riesgo imputado |
+| cada euro de la demanda de tienda ago-sep 26 | % demanda | producción esperada (total ago-sep) | riesgo imputado |
 |---|---:|---:|---:|
 | se mantiene: aprobada hoy y por encima del corte EFX | 56,8% | 10,9 M€ | 3,3% |
 | **swap-in**: rechazada hoy por el score interno, por encima del corte EFX | 19,3% | 3,7 M€ | 4,1% |
@@ -106,6 +106,8 @@ Qué hace la parrilla con cada euro:
 | la cartera contratada hoy, valorada igual | 47,2% | 11,3 M€ | 3,74% |
 
 Dos cosas que se ven ahí. El swap-out es pequeño (2,0% de la demanda) pero carga un 48% de riesgo imputado (score EFX mediano 19): son las aprobaciones más débiles del score interno, y la parrilla las quita. El swap-in trae un 19,3% de demanda que hoy se rechaza, a un 4,1%. De ahí que suban aceptación y baje riesgo a la vez.
+
+Ojo con las bases: esta tabla son totales de los dos meses y la siguiente es run-rate mensual. Los 14,6 M€ aceptados, divididos por los 1,45 meses efectivos de la ventana, dan los 10,1 M€/mes de abajo (y los 23,9 M€ de demanda, los 16,5 M€/mes). No se divide por 2 porque agosto y septiembre son meses flojos de tienda (índices 0,76 y 0,69): en un mes medio tienda pide y contrata más que en esos dos.
 
 Y cómo se mezcla con Online:
 

@@ -890,8 +890,13 @@ def slide_store_demand(
         slide, f"Store demand {facts['stores_window']}: from applications to risk", "Methodology · Store demand", period
     )
     sw = swap.set_index("categoria")
+    bl = blend.set_index("canal")
     accepted = sw.iloc[:2]
-    rows = [["Each € of store demand", "Share", "Exp. production", "Imputed risk"]]
+    eff = float(bl.loc["tienda", "meses_efectivos"])
+    # The left table is WINDOW totals; the blend on the right is a monthly run-rate. The
+    # bridge row says the divisor, because the two production figures otherwise look like
+    # they disagree (€14.6M over Aug–Sep vs €10.1M/mo).
+    rows = [["Each € of store demand", "Share", f"Exp. production\n{facts['stores_window']}", "Imputed risk"]]
     for key, label in _SWAP.items():
         r = sw.loc[key]
         rows.append(
@@ -912,15 +917,22 @@ def slide_store_demand(
     )
     rows.append(
         [
+            f"= monthly run-rate (÷ {ac.num(eff, 2)} effective months)",
+            "",
+            f"{money(bl.loc['tienda', 'produccion_mensual_eur'])}/mo",
+            "",
+        ]
+    )
+    rows.append(
+        [
             "Today's book, valued the same way",
             ac.num(stores["ta_actual_pct"], 1, "%"),
             money(stores["demanda_eur"] * stores["ta_actual_pct"] / 100),
             ac.num(stores["riesgo_imputado_actual_pct"], 2, "%"),
         ]
     )
-    _table(slide, MARGIN, y, Inches(7.5), rows, col_w=[3.4, 1.2, 1.5, 1.4], row_h=0.34)
+    _table(slide, MARGIN, y, Inches(7.5), rows, col_w=[3.4, 1.2, 1.5, 1.4], row_h=0.30)
 
-    bl = blend.set_index("canal")
     cols = {"online": "Online", "tienda": "Stores", "total": "Apple"}
     brows = [["Monthly run-rate"] + list(cols.values())]
     brows.append(
@@ -939,8 +951,11 @@ def slide_store_demand(
         bx,
         y + Inches(0.34 * len(brows) + 0.2),
         Inches(4.25),
-        Inches(1.6),
-        "Risk blends by expected H6 exposure, the base of b2: stores are "
+        Inches(2.4),
+        f"Window totals become a run-rate by dividing by effective months: {money(accepted['produccion_est_eur'].sum())} "
+        f"over {facts['stores_window']} ÷ {ac.num(eff, 2)} = {money(bl.loc['tienda', 'produccion_mensual_eur'])}/mo — not ÷ "
+        f"{facts['stores_n_months']}, because {facts['stores_months_short']} are weak store months (index "
+        f"{facts['stores_idx_txt']}). Risk blends by expected H6 exposure, the base of b2: stores are "
         f"{ac.num(bl.loc['tienda', 'demanda_mensual_eur'] / bl.loc['total', 'demanda_mensual_eur'] * 100, 0)}% of "
         f"demand but {ac.num(bl.loc['tienda', 'peso_exposicion_pct'], 0)}% of exposure, because they convert "
         f"{ac.num(bl.loc['tienda', 'ta_efectiva_pct'], 0)}% of what they are asked for and Online "
@@ -952,7 +967,7 @@ def slide_store_demand(
         spacing=1.2,
     )
 
-    steps_y = y + Inches(0.34 * len(rows) + 0.18)
+    steps_y = y + Inches(0.30 * len(rows) + 0.3)
     _bullets(
         slide,
         MARGIN,
