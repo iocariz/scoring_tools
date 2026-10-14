@@ -134,6 +134,8 @@ def study_outputs(tmp_path):
                 "peso_tienda_propio_pct": 25.2,
                 "peso_tienda_indice_online_pct": 34.4,
                 "demanda_tienda_vs_ventana_pct": 39.4,
+                "riesgo_parrilla_base_hoy_pct": 3.76,
+                "ri_margen_online_pp": 0.08,
             }
         ),
         encoding="utf-8",

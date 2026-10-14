@@ -887,6 +887,22 @@ def main(argv: list[str] | None = None) -> int:
         f"{same_base['produccion_mensual_eur'] / 1e6:.2f} M€/mes | riesgo {same_base['riesgo_total_pct']:.2f}% "
         f"(demanda de tienda {stores_volume_vs_window_pct:+.1f}% frente a la ventana)"
     )
+    # Base de reject inference: los escenarios llevan la curva corregida por selección, un
+    # margen conservador que recae también sobre la cartera ya contratada de Online; las
+    # filas de "hoy" van a realizado. Se persiste el efecto de la parrilla sobre el riesgo
+    # en la MISMA base que "hoy" para que el deck no venda como efecto de la parrilla lo
+    # que es diferencia de base.
+    booked_curve = curve.assign(b2_pct=curve[_BOOKED_COL])
+    grid_on_today_basis = policy_kpis(ecom, stores, booked_curve, cutoffs, eff_ecom, eff_stores, level_factor)
+    online_under_grid = policy_kpis(ecom, ecom.iloc[0:0], curve, cutoffs, eff_ecom, 1.0, 1.0)
+    ri_margin_online_pp = online_under_grid["riesgo_total_pct"] - float(
+        actuals.set_index("segmento").loc["TOTAL", "riesgo_real_pct"]
+    )
+    logger.info(
+        f"Base RI: Online bajo la parrilla vigente {online_under_grid['riesgo_total_pct']:.2f}% con curva RI "
+        f"(+{ri_margin_online_pp:.2f} pp sobre el realizado) | parrilla vigente en base 'hoy' "
+        f"{grid_on_today_basis['riesgo_total_pct']:.2f}% frente a {baseline['riesgo_total_pct']:.2f}% con RI"
+    )
     picks = pick_targets(ladder, ladder_grid, baseline, measured, same_base, args.targets)
     grids = scenario_grids(ladder, ladder_grid, cutoffs, args.targets)
 
@@ -918,6 +934,8 @@ def main(argv: list[str] | None = None) -> int:
             "riesgo_online_historico_pct": round(float(history_total["riesgo_real_pct"]), 4),
             **{k: round(v, 2) for k, v in weights.items()},
             "demanda_tienda_vs_ventana_pct": round(stores_volume_vs_window_pct, 2),
+            "riesgo_parrilla_base_hoy_pct": round(grid_on_today_basis["riesgo_total_pct"], 4),
+            "ri_margen_online_pp": round(ri_margin_online_pp, 4),
         },
         (out / "periodos.json").open("w", encoding="utf-8"),
         indent=2,
