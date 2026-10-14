@@ -290,7 +290,7 @@ def slide_title(prs, online, stores, today: str) -> None:
         Inches(6.4),
         W - 2 * MARGIN,
         Inches(0.4),
-        f"Risk  ·  {today}  ·  scope: Apple own stores (Apple Propio)",
+        f"Risk  ·  {today}  ·  scope: Apple Propio (own channel, no APRS)",
         size=11,
         color=MUTED,
     )
@@ -517,7 +517,7 @@ def slide_method_seasonal(prs, meta: dict, facts: dict, period: str) -> None:
                 "1",
                 f"The problem: stores only have the score for {facts['stores_window']}",
                 f"The EFX score went live in stores in {facts['stores_first_month']}. Comparing "
-                f"{'a single month' if n == 1 else f'{n} loose months'} against a twelve-month average requires "
+                f"{'a single month on its own' if n == 1 else f'{n} months on their own'} against a twelve-month average requires "
                 "knowing what each month is worth.",
                 "MEASURED",
             ),
@@ -624,6 +624,20 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, meta: dict, period: str 
         )
     else:
         split = f"It is therefore the stores gain, measured on {stores_window} against the full 'today' window."
+    # Scenario rows carry the reject-inference uplift, which also falls on Online's own
+    # book; the 'today' rows are realized. Said explicitly, or the table sells a basis
+    # difference as an effect of the grid.
+    same_risk = float(same_rows.iloc[0]["riesgo_total_pct"]) if not same_rows.empty else float("nan")
+    grid_today_basis = meta.get("riesgo_parrilla_base_hoy_pct", float("nan"))
+    ri_margin = meta.get("ri_margen_online_pp", float("nan"))
+    if pd.notna(same_risk) and pd.notna(grid_today_basis) and pd.notna(ri_margin):
+        ri_note = (
+            "\n\nScenario risks carry the reject-inference uplift, a conservative margin that also falls on "
+            f"Online's own book (+{ac.num(ri_margin, 2)} pp vs realized); the two 'today' rows are realized. Like "
+            f"for like, the current grid moves risk by {grid_today_basis - same_risk:+.2f} pp."
+        )
+    else:
+        ri_note = ""
     # Below the chart, computed from its real height: eyeballing it made it collide with
     # the axis label.
     note_y = y + chart_h + Inches(0.12)
@@ -663,7 +677,7 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, meta: dict, period: str 
         "Score acc.: demand above the cutoff.\n"
         "Eff. acc.: production / demand, the same base as point 1. The two are not comparable.\n\n"
         "Shifting the current grid keeps its shape —looser where the group is good— and gives slightly more "
-        "acceptance at the same risk.",
+        f"acceptance at the same risk.{ri_note}",
         size=10.5,
         color=MUTED,
         spacing=1.25,
@@ -737,7 +751,7 @@ def slide_closing(prs, meta: dict, facts: dict) -> None:
             ),
             (
                 "Weak low bins.",
-                f"Bins 1-{facts['low_bins']} carry almost no production, and that is where the selection uplift "
+                f"Bins 1-{facts['low_bins']} carry under 0.5% of production each, and that is where the selection uplift "
                 f"weighs most ({ac.num(facts['max_uplift'], 1)}x). They are the ones that open the loosest scenario.",
             ),
             (
@@ -807,7 +821,8 @@ def deck_facts(curve, p2, stores_actuals, grids, index, meta) -> dict:
         "max_acc_pct": float(acceptance.max()),
         "zone_lo_pct": float(zone.min()),
         "zone_hi_pct": float(zone.max()),
-        "low_bins": int((curve["tasa_aceptacion"] < 0.5).sum()),
+        # same criterion as the shading on the risk-curve chart (production under 0.5% of the total)
+        "low_bins": int(curve.loc[curve["booked_eur"] < 0.005 * curve["booked_eur"].sum(), "bin"].max()),
         "new_share_pct": 100 * float(new["demanda_eur"].sum()) / float(stores_total["demanda_eur"]),
         "ta_stores_window_pct": float(stores_actuals.set_index("segmento").loc["TOTAL", "ta_pct"]),
         "ta_stores_recent_pct": float(stores_total["ta_actual_pct"]),
