@@ -17,6 +17,10 @@
 > de ago-sep, 0,95, valía 0,09 pp). La demanda de tienda en ago-sep va un 40% por encima de la
 > ventana de "hoy", así que el titular se da sobre la misma base (fila nueva en `p3`): +4,1 pp y
 > +2,3 M€/mes; frente a lo medido en la ventana, +3,2 pp y +3,2 M€.
+>
+> **14-10-2026 (tarde):** sección "Dos definiciones" a petición de Jenny (definición de la TA y tratamiento de la
+> demanda no finalizada); la tabla sale de `p0_demanda_por_estado.csv`. El deck gana la slide 3, "How acceptance
+> is measured".
 
 **Asunto:** Apple — Score Equifax en tienda: resultados y escenarios
 **Adjunto:** `output/apple_deck/Apple_EFX_Study.pptx` (en inglés)
@@ -30,6 +34,27 @@ Ya está el estudio, actualizado con septiembre de tienda. Te resumo primero la 
 **En una línea: extender la parrilla de Equifax de Online a tienda nos daría +4,1 puntos de tasa de aceptación y unos +2,3 M€ de producción al mes, con el riesgo global algo por debajo del de hoy (3,85% frente a 3,97%).** Y el objetivo de riesgo del 4% ya lo cumplimos hoy: no requiere ningún cambio.
 
 ---
+
+## Dos definiciones antes de las cifras
+
+**Tasa de aceptación (TA).** En todo el estudio es la **efectiva**: euros contratados / euros solicitados, sobre toda la demanda que entra —rechazada, cancelada y contratada—. No es la tasa de aprobación del motor, que es más alta: entre aprobar y contratar el cliente puede no finalizar. En el deck aparece además una "TA de score" (demanda que supera el corte), comparable con la aprobación del motor y no con la TA.
+
+**Demanda no finalizada.** La que el motor aprueba y el cliente cancela. Cuenta en el denominador y no en el numerador, igual que un rechazo. En los escenarios, cada solicitud que pasa el corte convierte a la tasa real de contratación de su decisión, así que el modelo asume que se cancela igual que hoy: una parrilla más laxa no recupera cancelaciones. En la corrección por selección (reject inference) no cuenta ni como aceptada ni como rechazada, de modo que no infla el recargo. Lo mismo vale para la aprobada y rechazada en una fase posterior.
+
+Dónde acaba cada euro solicitado:
+
+| | Online mar-25 → feb-26 | Tienda mar-25 → feb-26 | Tienda ago-sep 26 |
+|---|---:|---:|---:|
+| contratado (= TA) | 20,9% | 58,7% | 47,2% |
+| aprobado y cancelado (**no finalizada**) | 27,9% | 7,0% | 9,6% |
+| aprobado y rechazado después | 3,1% | 2,6% | 2,0% |
+| rechazado por score | 6,9% | 11,3% | 21,1% |
+| rechazado por otras reglas | 41,2% | 20,3% | 20,1% |
+| **total solicitado** | 100% | 100% | 100% |
+| aprobación del motor (tres primeras filas) | 51,9% | 68,3% | 58,8% |
+| de lo aprobado, contrata | 40% | 86% | 80% |
+
+Dos lecturas: en Online más de la mitad de lo aprobado no se finaliza y en tienda uno de cada seis, y ahí está la razón de fondo de que tienda acepte casi el triple con una aprobación parecida (51,9% frente a 58,8%). Y la caída de la TA de tienda del 58,7% al 47,2% es casi toda rechazo por score (11,3% → 21,1% de la demanda), no cancelaciones: el score interno ha endurecido.
 
 ## 1. Situación actual, medida
 

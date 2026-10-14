@@ -147,6 +147,21 @@ def study_outputs(tmp_path):
             "indice_tienda": [1.17, 0.86, 0.9, 0.87, 0.88, 0.83, 0.83, 0.76, 0.69, 1.14, 1.37, 1.7],
         }
     ).to_csv(tmp_path / "indice_estacional.csv", index=False)
+    states = [
+        "contratado",
+        "aprobado, cancelado (no finalizada)",
+        "aprobado, rechazado después",
+        "rechazado por score",
+        "rechazado por otras reglas",
+    ]
+    pd.DataFrame(
+        {
+            "canal": ["online"] * 5 + ["tienda_ventana"] * 5 + ["tienda_score"] * 5,
+            "estado": states * 3,
+            "eur": [1.0] * 15,
+            "pct_demanda": [20.9, 27.9, 3.1, 6.9, 41.2, 58.7, 10.0, 2.0, 15.0, 14.3, 47.2, 9.6, 2.0, 21.1, 20.1],
+        }
+    ).to_csv(tmp_path / "p0_demanda_por_estado.csv", index=False)
     return tmp_path
 
 
@@ -155,7 +170,7 @@ def test_deck_builds_from_study_outputs(study_outputs, tmp_path):
     assert out.exists() and out.stat().st_size > 0
     from pptx import Presentation
 
-    assert len(Presentation(str(out)).slides._sldIdLst) == 13
+    assert len(Presentation(str(out)).slides._sldIdLst) == 14
     # 6 gráficos de slide + la variante compacta de tienda y el desglose por segmento
     assert len(list((tmp_path / "deck" / "images").glob("*.png"))) == 8
 

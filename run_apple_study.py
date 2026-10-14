@@ -36,7 +36,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from src.constants import DEFAULT_RISK_MULTIPLIER, Columns, RejectReason, SystemDecision
+from src.constants import DEFAULT_RISK_MULTIPLIER, Columns, RejectReason, StatusName, SystemDecision
 from src.data_manager import load_data, standardize_columns_and_values
 
 _BOOKED_COL = "b2_pct_contratados"  # curva sin corregir por selección; ver apply_reject_inference
@@ -358,6 +358,52 @@ def channel_actuals(channel: pd.DataFrame, multiplier: float) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+DEMAND_STATES = (
+    "contratado",
+    "aprobado, cancelado (no finalizada)",
+    "aprobado, rechazado después",
+    "rechazado por score",
+    "rechazado por otras reglas",
+)
+
+
+def demand_breakdown(channel: pd.DataFrame, label: str) -> pd.DataFrame:
+    """Dónde acaba cada euro solicitado: la partición que define la tasa de aceptación.
+
+    La TA del estudio es **efectiva**: € contratado / € solicitado, sobre toda la demanda
+    que entra (through-the-door). Entre la aprobación del motor y el contrato hay dos
+    estados que no son rechazo del motor: la **demanda no finalizada** (aprobada y
+    cancelada por el cliente) y la aprobada pero rechazada en una fase posterior. Las dos
+    cuentan en el denominador y no en el numerador, igual que un rechazo. En los
+    escenarios entran por el take-up de su decisión —una aprobada convierte a la tasa
+    real de las aprobadas—, así que el modelo asume que se cancela igual que hoy: una
+    parrilla más laxa no recupera cancelaciones. En el reject inference no cuentan ni
+    como aceptadas ni como rechazadas: la tasa de aceptación por tramo del pipeline es
+    contratadas / (contratadas + rechazadas por score).
+
+    Cada euro cae en exactamente un estado; la TA es la primera fila sobre el total.
+    """
+    demand = channel[Columns.OA_AMT].sum()
+    booked = channel["acct_booked_h0"] > 0
+    approved = channel[Columns.SE_DECISION_ID].isin([SystemDecision.OK.value, SystemDecision.RV.value])
+    ko = channel[Columns.SE_DECISION_ID] == SystemDecision.KO
+    status = channel["status_name"]
+    score_ko = ko & (channel[Columns.REJECT_REASON] == RejectReason.SCORE)
+    amounts = [
+        channel.loc[booked, Columns.OA_AMT_H0].sum(),
+        channel.loc[approved & ~booked & (status == StatusName.CANCELED), Columns.OA_AMT].sum(),
+        channel.loc[approved & ~booked & (status == StatusName.REJECTED), Columns.OA_AMT].sum(),
+        channel.loc[score_ko, Columns.OA_AMT].sum(),
+        channel.loc[ko & ~score_ko, Columns.OA_AMT].sum(),
+    ]
+    covered = 100 * sum(amounts) / demand
+    if abs(covered - 100) > 0.5:
+        logger.warning(f"[{label}] la partición de la demanda cubre el {covered:.1f}%: hay estados fuera del esquema")
+    return pd.DataFrame(
+        {"canal": label, "estado": DEMAND_STATES, "eur": amounts, "pct_demanda": [100 * a / demand for a in amounts]}
+    )
 
 
 def stores_under_grid(
@@ -842,6 +888,14 @@ def main(argv: list[str] | None = None) -> int:
         curve[_BOOKED_COL] = curve["b2_pct"]
     actuals = channel_actuals(ecom, args.multiplier)
     stores_actuals = channel_actuals(stores_window, args.multiplier)
+    breakdown = pd.concat(
+        [
+            demand_breakdown(ecom, "online"),
+            demand_breakdown(stores_window, "tienda_ventana"),
+            demand_breakdown(stores, "tienda_score"),
+        ],
+        ignore_index=True,
+    )
     grid = stores_under_grid(stores, curve, cutoffs, level_factor)
     fidelity = grid_fidelity(ecom, cutoffs)
     # Cifras que el deck rotula y que antes iban escritas a mano: el riesgo de Online sobre
@@ -960,9 +1014,13 @@ def main(argv: list[str] | None = None) -> int:
         ("p3_escalera_parrilla_desplazada", ladder_grid),
         ("p3_escenarios_objetivo", picks),
         ("p4_parrillas_escenarios", grids),
+        ("p0_demanda_por_estado", breakdown),
     ):
         frame.to_csv(out / f"{name}.csv", index=False)
-    logger.info(f"Resultados en {out}/ (5 ficheros)")
+    logger.info(f"Resultados en {out}/")
+
+    print("\n=== 0) DÓNDE ACABA CADA EURO SOLICITADO (% de la demanda) ===")
+    print(breakdown.pivot(index="estado", columns="canal", values="pct_demanda").reindex(list(DEMAND_STATES)).round(1))
 
     print("\n=== 1) APPLE ONLINE — actual, medido ===")
     print(actuals.round(2).to_string(index=False))
