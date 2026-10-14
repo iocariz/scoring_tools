@@ -7,7 +7,7 @@ risk in every population. Here there are two channels, store risk is **imputed**
 the backtest has no mature cohort.
 
 Reads the outputs of ``run_apple_study.py`` (``output/apple_study/*.csv``, written
-with Spanish labels for the analyst) and writes a 14-slide ``.pptx`` in English.
+with Spanish labels for the analyst) and writes a 15-slide ``.pptx`` in English.
 Charts come from :mod:`src.apple_deck_charts`.
 
 Usage:
@@ -30,7 +30,7 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Emu, Inches, Pt
 
-from run_apple_study import BIN_EDGES, DEMAND_STATES, SAME_BASE_LABEL  # one definition, the study's
+from run_apple_study import BIN_EDGES, DEMAND_STATES, SAME_BASE_LABEL, SWAP_CATEGORIES  # one definition, the study's
 from src import apple_deck_charts as ac
 from src.apple_deck_charts import CURRENT_GRID, SHIFTED_GRID, SINGLE_CUTOFF, TODAY_MEASURED, TODAY_SAME_BASE
 
@@ -62,6 +62,19 @@ _SCENARIOS = {
 _CUTOFFS = {"política vigente": "current policy", "vigente": "current", "no alcanzable": "not reachable"}
 _GRID_COLUMNS = {"grupo": "group", "Parrilla actual": "Current grid"}
 _GRID_CELLS = {"rechazo": "reject", "sin corte": "no cutoff"}
+_SWAP = dict(
+    zip(
+        SWAP_CATEGORIES,
+        [
+            "kept: approved today, above the cutoff",
+            "swap-in: rejected by score, above cutoff",
+            "swap-out: approved today, below cutoff",
+            "stays out: rejected by score, below cutoff",
+            "untouched: rejected by other rules",
+        ],
+        strict=True,
+    )
+)
 _STATES = dict(
     zip(
         DEMAND_STATES,
@@ -862,6 +875,121 @@ def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], per
     )
 
 
+def slide_store_demand(
+    prs, swap: pd.DataFrame, blend: pd.DataFrame, stores, meta: dict, facts: dict, period: str
+) -> None:
+    """The stores demand, step by step: what the grid does with each € and how the
+    channel blends into the total.
+
+    The methodology slide says *how* risk is imputed; this one shows it happening on
+    the actual Aug–Sep demand, category by category, so the business can see where the
+    76% acceptance and the 3.5% come from — and what the grid leaves out.
+    """
+    slide = _blank(prs)
+    y = _header(
+        slide, f"Store demand {facts['stores_window']}: from applications to risk", "Methodology · Store demand", period
+    )
+    sw = swap.set_index("categoria")
+    accepted = sw.iloc[:2]
+    rows = [["Each € of store demand", "Share", "Exp. production", "Imputed risk"]]
+    for key, label in _SWAP.items():
+        r = sw.loc[key]
+        rows.append(
+            [
+                label,
+                ac.num(r["pct_demanda"], 1, "%"),
+                money(r["produccion_est_eur"]),
+                ac.num(r["riesgo_imputado_pct"], 1, "%"),
+            ]
+        )
+    rows.append(
+        [
+            "Accepted by the grid (kept + swap-in)",
+            ac.num(accepted["pct_demanda"].sum(), 1, "%"),
+            money(accepted["produccion_est_eur"].sum()),
+            ac.num(stores["riesgo_imputado_pct"], 2, "%"),
+        ]
+    )
+    rows.append(
+        [
+            "Today's book, valued the same way",
+            ac.num(stores["ta_actual_pct"], 1, "%"),
+            money(stores["demanda_eur"] * stores["ta_actual_pct"] / 100),
+            ac.num(stores["riesgo_imputado_actual_pct"], 2, "%"),
+        ]
+    )
+    _table(slide, MARGIN, y, Inches(7.5), rows, col_w=[3.4, 1.2, 1.5, 1.4], row_h=0.34)
+
+    bl = blend.set_index("canal")
+    cols = {"online": "Online", "tienda": "Stores", "total": "Apple"}
+    brows = [["Monthly run-rate"] + list(cols.values())]
+    brows.append(
+        ["Effective months"] + [ac.num(bl.loc[c, "meses_efectivos"], 2) if c != "total" else "—" for c in cols]
+    )
+    brows.append(["Demand, €M/mo"] + [ac.num(bl.loc[c, "demanda_mensual_eur"] / 1e6, 1) for c in cols])
+    brows.append(["Exp. production, €M/mo"] + [ac.num(bl.loc[c, "produccion_mensual_eur"] / 1e6, 1) for c in cols])
+    brows.append(["Share of exp. H6 exposure"] + [ac.num(bl.loc[c, "peso_exposicion_pct"], 0, "%") for c in cols])
+    brows.append(["Risk (b2)"] + [ac.num(bl.loc[c, "riesgo_pct"], 2, "%") for c in cols])
+    bx = MARGIN + Inches(7.8)
+    _table(slide, bx, y, Inches(4.25), brows, col_w=[2.1, 0.75, 0.75, 0.75], row_h=0.34)
+
+    swap_out, swap_in = sw.iloc[2], sw.iloc[1]
+    _text(
+        slide,
+        bx,
+        y + Inches(0.34 * len(brows) + 0.2),
+        Inches(4.25),
+        Inches(1.6),
+        "Risk blends by expected H6 exposure, the base of b2: stores are "
+        f"{ac.num(bl.loc['tienda', 'demanda_mensual_eur'] / bl.loc['total', 'demanda_mensual_eur'] * 100, 0)}% of "
+        f"demand but {ac.num(bl.loc['tienda', 'peso_exposicion_pct'], 0)}% of exposure, because they convert "
+        f"{ac.num(bl.loc['tienda', 'ta_efectiva_pct'], 0)}% of what they are asked for and Online "
+        f"{ac.num(bl.loc['online', 'ta_efectiva_pct'], 0)}%. Online's "
+        f"{ac.num(bl.loc['online', 'riesgo_pct'], 2, '%')} carries the reject-inference uplift on its own book "
+        f"(realized {ac.num(bl.loc['online', 'riesgo_pct'] - meta.get('ri_margen_online_pp', 0.0), 2, '%')}).",
+        size=10.5,
+        color=MUTED,
+        spacing=1.2,
+    )
+
+    steps_y = y + Inches(0.34 * len(rows) + 0.18)
+    _bullets(
+        slide,
+        MARGIN,
+        steps_y,
+        Inches(7.5),
+        [
+            ("1 · Score and bin.", "Every application gets its EFX score and one of the 20 bins of the Online curve."),
+            (
+                "2 · Apply the Online grid.",
+                "Accepted if above its group's reject threshold and not rejected by another rule — only the "
+                "score rule is swapped; the engine's other rules stay.",
+            ),
+            (
+                "3 · Expected production.",
+                "€ applied for × the actual take-up of its engine decision (stores: approved "
+                f"{ac.num(meta['take_up_tienda_ok_pct'], 0)}%, referred {ac.num(meta['take_up_tienda_rv_pct'], 0)}%); "
+                "cancellations are assumed to behave as today.",
+            ),
+            (
+                "4 · Impute risk.",
+                "Each accepted € takes its bin's Online risk (reject-inference blended), weighted by expected H6 "
+                "exposure; the level is rescaled by "
+                f"{ac.num(meta['factor_nivel_tienda'], 3)} so that today's store book reproduces its realized "
+                f"{ac.num(meta['riesgo_tienda_realizado_pct'], 2, '%')}.",
+            ),
+            (
+                "5 · What the grid leaves out.",
+                f"The swap-out is {ac.num(swap_out['pct_demanda'], 1, '%')} of demand with "
+                f"{ac.num(swap_out['riesgo_imputado_pct'], 0, '%')} imputed risk (median EFX "
+                f"{ac.num(swap_out['score_mediano'], 0)}): the octroi's weakest approvals. The swap-in brings "
+                f"{ac.num(swap_in['pct_demanda'], 1, '%')} of demand at {ac.num(swap_in['riesgo_imputado_pct'], 1, '%')}.",
+            ),
+        ],
+        size=10.5,
+    )
+
+
 def deck_facts(curve, p2, stores_actuals, grids, index, meta) -> dict:
     """The figures the deck's prose cites, computed from the study outputs.
 
@@ -933,6 +1061,7 @@ def build(data_dir: Path, out_path: Path) -> Path:
     p_seasonal = " and ".join(str(a) for a in meta["estacionalidad_anios"])
     ladder, index = read("p3_escalera_corte_unico"), read("indice_estacional")
     breakdown = read("p0_demanda_por_estado")
+    swap, blend = read("p2b_tienda_swap"), read("p3b_mezcla_canales")
     picks, grids = translate_outputs(read("p3_escenarios_objetivo"), read("p4_parrillas_escenarios"))
     online = p1[p1["segmento"] == "TOTAL"].iloc[0]
     stores = p2[p2["segmento"] == "TOTAL"].iloc[0]
@@ -1007,6 +1136,7 @@ def build(data_dir: Path, out_path: Path) -> Path:
     slide_frontier(prs, paths["frontier"], picks, meta, p_mixed)
     slide_grids(prs, grids, "Policy — no period")
     slide_method_risk(prs, meta, facts, f"Online {p_online}  ·  stores {p_stores}")
+    slide_store_demand(prs, swap, blend, stores, meta, facts, p_mixed)
     slide_method_seasonal(prs, meta, facts, f"Full years {p_seasonal}")
     slide_chart(
         prs,

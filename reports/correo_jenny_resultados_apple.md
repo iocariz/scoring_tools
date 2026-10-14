@@ -21,6 +21,10 @@
 > **14-10-2026 (tarde):** sección "Dos definiciones" a petición de Jenny (definición de la TA y tratamiento de la
 > demanda no finalizada); la tabla sale de `p0_demanda_por_estado.csv`. El deck gana la slide 3, "How acceptance
 > is measured".
+>
+> **14-10-2026 (noche):** sección "Cómo se ha tratado la demanda de tienda de agosto-septiembre" (Jenny quiere
+> profundizar); tablas desde `p2b_tienda_swap.csv` y `p3b_mezcla_canales.csv`. El deck gana la slide 10,
+> "Store demand Aug–Sep 2026: from applications to risk" (15 slides).
 
 **Asunto:** Apple — Score Equifax en tienda: resultados y escenarios
 **Adjunto:** `output/apple_deck/Apple_EFX_Study.pptx` (en inglés)
@@ -78,6 +82,42 @@ Sobre agosto y septiembre de 2026, los dos meses con score Equifax en tienda:
 | Riesgo | 3,74% | **3,51%** |
 
 Sube la aceptación y baja el riesgo a la vez. El riesgo de tienda es **estimado**, no medido —no habrá medición real hasta marzo de 2027—, pero su **nivel** está calibrado contra la morosidad que tienda ha tenido de verdad: la curva de Online predecía 3,93% para la cartera que tienda contrató y lo observado es 3,74%, un 5% de diferencia que se corrige. Lo que seguimos asumiendo es que el score ordena en tienda igual que en e-commerce.
+
+## Cómo se ha tratado la demanda de tienda de agosto-septiembre
+
+Es la única demanda de tienda con score Equifax, y los escenarios de tienda y del total salen de ella. Paso a paso:
+
+1. **Score y tramo.** A cada solicitud se le asigna su score EFX y uno de los 20 tramos de la curva de Online.
+2. **Parrilla de Online.** Se acepta si supera el umbral de rechazo de su grupo y no venía rechazada por otra regla: solo se cambia la regla de score, las demás reglas del motor se mantienen.
+3. **Producción esperada.** Euros solicitados × take-up real de su decisión del motor (en tienda: aprobada 82%, en revisión 18%); se asume que se cancela igual que hoy.
+4. **Riesgo imputado.** Cada euro aceptado toma el riesgo de su tramo en la curva de Online (ya corregida por selección), ponderado por la exposición H6 esperada; el nivel se reescala por 0,952 para que la cartera que tienda contrató reproduzca su morosidad real (3,74%).
+5. **Total Apple.** Online y tienda se llevan a run-rate mensual con su propia estacionalidad y se mezclan ponderando por exposición esperada, que es la base del b2.
+
+Qué hace la parrilla con cada euro:
+
+| cada euro de la demanda de tienda ago-sep 26 | % demanda | producción esperada | riesgo imputado |
+|---|---:|---:|---:|
+| se mantiene: aprobada hoy y por encima del corte EFX | 56,8% | 10,9 M€ | 3,3% |
+| **swap-in**: rechazada hoy por el score interno, por encima del corte EFX | 19,3% | 3,7 M€ | 4,1% |
+| **swap-out**: aprobada hoy, por debajo del corte EFX | 2,0% | 0,4 M€ | 47,6% |
+| sigue fuera: rechazada hoy por score y por debajo del corte | 1,8% | 0,4 M€ | 41,6% |
+| intacta: rechazada por otras reglas (no se tocan) | 20,1% | 3,9 M€ | 8,0% |
+| **aceptado por la parrilla** (las dos primeras) | **76,0%** | **14,6 M€** | **3,51%** |
+| la cartera contratada hoy, valorada igual | 47,2% | 11,3 M€ | 3,74% |
+
+Dos cosas que se ven ahí. El swap-out es pequeño (2,0% de la demanda) pero carga un 48% de riesgo imputado (score EFX mediano 19): son las aprobaciones más débiles del score interno, y la parrilla las quita. El swap-in trae un 19,3% de demanda que hoy se rechaza, a un 4,1%. De ahí que suban aceptación y baje riesgo a la vez.
+
+Y cómo se mezcla con Online:
+
+| run-rate mensual | Online | Tienda | Apple |
+|---|---:|---:|---:|
+| meses efectivos de la ventana | 12,00 | 1,45 | — |
+| demanda | 40,1 M€ | 16,5 M€ | 56,6 M€ |
+| producción esperada | 8,4 M€ | 10,1 M€ | 18,5 M€ |
+| peso en la exposición H6 esperada | 45% | 55% | 100% |
+| riesgo (b2) | 4,26% | 3,51% | **3,85%** |
+
+Tienda es el 29% de la demanda pero el 55% de la exposición, porque convierte el 61% de lo que se le pide y Online el 21%: en el riesgo total pesa más de la mitad. El 4,26% de Online lleva el recargo de la corrección por selección también sobre su propia cartera (su realizado es el 4,18%), como se explica en la slide de escenarios.
 
 ## 3. Escenarios de riesgo global Apple
 

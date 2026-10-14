@@ -470,6 +470,119 @@ def stores_under_grid(
     return frame
 
 
+def _channel_under_policy(
+    channel: pd.DataFrame, months: float, factor: float, curve: pd.DataFrame, cutoffs: dict[str, float | None]
+) -> dict[str, float]:
+    """Un canal bajo una política, en run-rate mensual: las piezas que luego se suman entre canales.
+
+    Mismo modelo de swap que grid_swap_mask: solo cambia la regla de score, las demás
+    reglas del canal se mantienen (aplicar solo el umbral suponía que TODO el que supera
+    el corte entra, e inflaba la población sobre la que se mide el riesgo). Cada solicitud
+    aceptada convierte a la tasa de su decisión real (ok / rv), medida sobre lo solicitado
+    de esa decisión: condicional a estar aprobada —sobre la demanda total contaría el
+    rechazo por score dos veces— y sin aplicar la tasa de las ok a las rv, que convierten
+    diez veces menos y la swap mask también acepta. El riesgo se pondera por exposición
+    esperada (producción × exposición H6 por euro del tramo), que es la base del b2, y el
+    ancla reescala el NIVEL de riesgo del canal igual que en imputed_risk: aplicada al peso
+    se cancelaba y tienda entraba en los escenarios sin anclar.
+    """
+    eligible = channel[grid_swap_mask(channel, cutoffs)]
+    expected = _expected_production(eligible, take_up_by_decision(channel))
+    prod_by_bin = expected.groupby(eligible["bin"]).sum() / months
+    weight = (prod_by_bin * curve["exposure_ratio"]).fillna(0)
+    return {
+        "demanda_mensual_eur": channel[Columns.OA_AMT].sum() / months,
+        "aceptado_mensual_eur": eligible[Columns.OA_AMT].sum() / months,
+        "produccion_mensual_eur": float(prod_by_bin.sum()),
+        "exposicion_mensual_eur": float(weight.sum()),
+        "riesgo_x_exposicion": float((weight * curve["b2_pct"] * factor).sum()),
+    }
+
+
+def channel_blend(
+    ecom: pd.DataFrame,
+    stores: pd.DataFrame,
+    curve: pd.DataFrame,
+    cutoffs: dict[str, float | None],
+    months_ecom: float,
+    months_stores: float,
+    level_factor: float,
+) -> pd.DataFrame:
+    """Cómo se mezclan los dos canales en el riesgo total: una fila por canal y el total.
+
+    El riesgo total es una media ponderada por **exposición esperada** (producción ×
+    exposición H6 por euro), que es la base del b2: un canal pesa por lo que acabará
+    teniendo en balance, no por lo que solicita. Tienda es ~29% de la demanda de Apple
+    pero más de la mitad de la exposición, porque convierte el triple que Online. Cada
+    canal va en run-rate mensual con sus propios meses efectivos.
+    """
+    rows = []
+    for name, channel, months, factor in (
+        ("online", ecom, months_ecom, 1.0),
+        ("tienda", stores, months_stores, level_factor),
+    ):
+        rows.append(
+            {"canal": name, "meses_efectivos": months, "factor_nivel": factor}
+            | _channel_under_policy(channel, months, factor, curve, cutoffs)
+        )
+    frame = pd.DataFrame(rows)
+    totals = frame.drop(columns=["canal", "meses_efectivos", "factor_nivel"]).sum()
+    frame = pd.concat([frame, pd.DataFrame([{"canal": "total"} | totals.to_dict()])], ignore_index=True)
+    frame["peso_exposicion_pct"] = 100 * frame["exposicion_mensual_eur"] / float(totals["exposicion_mensual_eur"])
+    frame["riesgo_pct"] = frame["riesgo_x_exposicion"] / frame["exposicion_mensual_eur"]
+    frame["ta_efectiva_pct"] = 100 * frame["produccion_mensual_eur"] / frame["demanda_mensual_eur"]
+    return frame.drop(columns=["riesgo_x_exposicion"])
+
+
+SWAP_CATEGORIES = (
+    "se mantiene: aprobada hoy, por encima del corte",
+    "swap-in: rechazada hoy por score, por encima del corte",
+    "swap-out: aprobada hoy, por debajo del corte",
+    "sigue fuera: rechazada hoy por score, por debajo del corte",
+    "intacta: rechazada por otras reglas",
+)
+
+
+def stores_swap_breakdown(
+    stores: pd.DataFrame, curve: pd.DataFrame, cutoffs: dict[str, float | None], level_factor: float
+) -> pd.DataFrame:
+    """Qué hace la parrilla de Online con cada euro de la demanda de tienda con score.
+
+    Es el paso a paso de la imputación, categoría a categoría: cuánta demanda cae en
+    cada una, qué producción se espera de ella (take-up de su decisión real) y qué
+    riesgo le imputa la curva de Online (tramo EFX, ponderado por exposición, nivel
+    anclado). Las dos primeras son lo que acepta la parrilla; a las tres restantes se
+    les imputa riesgo igual, para que se vea qué deja fuera —en especial el swap-out:
+    aprobada hoy por el octroi con un EFX bajísimo—. Cada euro cae en una categoría.
+    """
+    mask = grid_swap_mask(stores, cutoffs)
+    approved = stores[Columns.SE_DECISION_ID].isin([SystemDecision.OK.value, SystemDecision.RV.value])
+    ko = stores[Columns.SE_DECISION_ID] == SystemDecision.KO
+    score_ko = ko & (stores[Columns.REJECT_REASON] == RejectReason.SCORE)
+    masks = [mask & approved, mask & score_ko, ~mask & approved, ~mask & score_ko, ko & ~score_ko]
+    rates = take_up_by_decision(stores)
+    demand = stores[Columns.OA_AMT].sum()
+    rows = []
+    for name, m in zip(SWAP_CATEGORIES, masks, strict=True):
+        group = stores[m]
+        rows.append(
+            {
+                "categoria": name,
+                "n": int(len(group)),
+                "demanda_eur": group[Columns.OA_AMT].sum(),
+                "pct_demanda": 100 * group[Columns.OA_AMT].sum() / demand,
+                "produccion_est_eur": float(_expected_production(group, rates).sum()) if len(group) else 0.0,
+                "riesgo_imputado_pct": imputed_risk(group, curve, level_factor) if len(group) else float("nan"),
+                "score_mediano": float(group[SCORE_COL].median()) if len(group) else float("nan"),
+            }
+        )
+    frame = pd.DataFrame(rows)
+    covered = frame["pct_demanda"].sum()
+    if abs(covered - 100) > 0.5:
+        logger.warning(f"Las categorías del swap cubren el {covered:.1f}% de la demanda de tienda: hay estados fuera")
+    return frame
+
+
 def policy_kpis(
     ecom: pd.DataFrame,
     stores: pd.DataFrame,
@@ -490,31 +603,16 @@ def policy_kpis(
 
     Ambos canales se normalizan a run-rate mensual con su propia estacionalidad.
     """
-    total_demand = ecom[Columns.OA_AMT].sum() / months_ecom + stores[Columns.OA_AMT].sum() / months_stores
-    num = den = accepted = production = 0.0
-    for channel, months, factor in ((ecom, months_ecom, 1.0), (stores, months_stores, level_factor)):
-        # Mismo modelo de swap que grid_swap_mask: solo cambia la regla de score, las demás
-        # reglas del canal se mantienen. Antes esto solo aplicaba el umbral, de modo que la
-        # escalera suponía que TODO el que supera el corte entra — en contra de la premisa
-        # del estudio— y además inflaba la población sobre la que se mide el riesgo.
-        eligible = channel[grid_swap_mask(channel, cutoffs)]
-        # Cada solicitud aceptada convierte a la tasa de su decisión real (ok / rv), medida
-        # sobre lo solicitado de esa decisión: condicional a estar aprobada (medida sobre la
-        # demanda total contaría el rechazo por score dos veces) y sin aplicar la tasa de las
-        # ok a las rv, que convierten diez veces menos y la swap mask también acepta.
-        expected = _expected_production(eligible, take_up_by_decision(channel))
-        prod_by_bin = expected.groupby(eligible["bin"]).sum() / months
-        weight = (prod_by_bin * curve["exposure_ratio"]).fillna(0)
-        # El ancla reescala el NIVEL de riesgo de tienda, igual que en imputed_risk. Aplicada
-        # al peso se cancelaba dentro del canal y tienda entraba en los escenarios sin anclar
-        # (invisible con el factor 0,99 de agosto; 0,09 pp de riesgo total con el 0,95 de ago-sep).
-        num += (weight * curve["b2_pct"] * factor).sum()
-        den += weight.sum()
-        accepted += eligible[Columns.OA_AMT].sum() / months
-        production += prod_by_bin.sum()
+    parts = [
+        _channel_under_policy(channel, months, factor, curve, cutoffs)
+        for channel, months, factor in ((ecom, months_ecom, 1.0), (stores, months_stores, level_factor))
+    ]
+    total_demand = sum(p["demanda_mensual_eur"] for p in parts)
+    den = sum(p["exposicion_mensual_eur"] for p in parts)
+    production = sum(p["produccion_mensual_eur"] for p in parts)
     return {
-        "riesgo_total_pct": num / den if den else float("nan"),
-        "ta_score_pct": 100 * accepted / total_demand,
+        "riesgo_total_pct": sum(p["riesgo_x_exposicion"] for p in parts) / den if den else float("nan"),
+        "ta_score_pct": 100 * sum(p["aceptado_mensual_eur"] for p in parts) / total_demand,
         "ta_efectiva_pct": 100 * production / total_demand,
         "produccion_mensual_eur": production,
     }
@@ -897,6 +995,7 @@ def main(argv: list[str] | None = None) -> int:
         ignore_index=True,
     )
     grid = stores_under_grid(stores, curve, cutoffs, level_factor)
+    swap = stores_swap_breakdown(stores, curve, cutoffs, level_factor)
     fidelity = grid_fidelity(ecom, cutoffs)
     # Cifras que el deck rotula y que antes iban escritas a mano: el riesgo de Online sobre
     # todo su histórico maduro (robustez de la ventana) y cuánto pesa tienda en Apple según
@@ -926,6 +1025,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     ladder, ladder_grid = scenario_ladders(ecom, stores, curve, cutoffs, eff_ecom, eff_stores, level_factor)
     baseline = policy_kpis(ecom, stores, curve, cutoffs, eff_ecom, eff_stores, level_factor)
+    blend = channel_blend(ecom, stores, curve, cutoffs, eff_ecom, eff_stores, level_factor)
+    take_up = {"online": take_up_by_decision(ecom), "tienda": take_up_by_decision(stores)}
     measured = measured_status_quo(
         ecom, stores_window, eff_ecom, effective_months(args.main_from, args.main_to, idx_stores), args.multiplier
     )
@@ -988,6 +1089,12 @@ def main(argv: list[str] | None = None) -> int:
             "riesgo_online_historico_pct": round(float(history_total["riesgo_real_pct"]), 4),
             **{k: round(v, 2) for k, v in weights.items()},
             "demanda_tienda_vs_ventana_pct": round(stores_volume_vs_window_pct, 2),
+            **{
+                f"take_up_{ch}_{dec}_pct": round(100 * r, 2)
+                for ch, rr in take_up.items()
+                for dec, r in rr.items()
+                if dec != "ko"
+            },
             "riesgo_parrilla_base_hoy_pct": round(grid_on_today_basis["riesgo_total_pct"], 4),
             "ri_margen_online_pp": round(ri_margin_online_pp, 4),
         },
@@ -1015,10 +1122,16 @@ def main(argv: list[str] | None = None) -> int:
         ("p3_escenarios_objetivo", picks),
         ("p4_parrillas_escenarios", grids),
         ("p0_demanda_por_estado", breakdown),
+        ("p2b_tienda_swap", swap),
+        ("p3b_mezcla_canales", blend),
     ):
         frame.to_csv(out / f"{name}.csv", index=False)
     logger.info(f"Resultados en {out}/")
 
+    print("\n=== 2b) TIENDA: QUÉ HACE LA PARRILLA DE ONLINE CON CADA EURO ===")
+    print(swap.round(2).to_string(index=False))
+    print("\n=== 3b) MEZCLA DE CANALES (run-rate mensual, ponderada por exposición) ===")
+    print(blend.round(2).to_string(index=False))
     print("\n=== 0) DÓNDE ACABA CADA EURO SOLICITADO (% de la demanda) ===")
     print(breakdown.pivot(index="estado", columns="canal", values="pct_demanda").reindex(list(DEMAND_STATES)).round(1))
 
