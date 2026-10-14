@@ -172,7 +172,7 @@ def study_outputs(tmp_path):
                 "se mantiene: aprobada hoy, por encima del corte",
                 "swap-in: rechazada hoy por score, por encima del corte",
                 "swap-out: aprobada hoy, por debajo del corte",
-                "sigue fuera: rechazada hoy por score, por debajo del corte",
+                "rechazada por los dos scores: hoy por el interno, por debajo del corte EFX",
                 "intacta: rechazada por otras reglas",
             ],
             "n": [10, 3, 1, 1, 3],
