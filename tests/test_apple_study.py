@@ -309,9 +309,9 @@ class TestMeasuredStatusQuo:
     def test_each_channel_is_normalised_by_its_own_effective_months(self):
         # Online y tienda tienen perfiles estacionales distintos: el 'hoy' medido debe
         # dividir cada canal por sus propios meses efectivos, no por los de Online.
-        cols = ["oa_amt", "acct_booked_h0", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"]
-        ecom = pd.DataFrame([[100.0, 1, 100.0, 1.0, 100.0]], columns=cols)
-        stores = pd.DataFrame([[100.0, 1, 100.0, 1.0, 100.0]], columns=cols)
+        cols = ["oa_amt", "acct_booked_h0", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6", "se_decision_id"]
+        ecom = pd.DataFrame([[100.0, 1, 100.0, 1.0, 100.0, "ok"]], columns=cols)
+        stores = pd.DataFrame([[100.0, 1, 100.0, 1.0, 100.0, "ok"]], columns=cols)
         kpis = measured_status_quo(ecom, stores, months_ecom=1.0, months_stores=2.0, multiplier=7.0)
         assert kpis["produccion_mensual_eur"] == pytest.approx(100.0 + 50.0)
         assert kpis["ta_efectiva_pct"] == pytest.approx(100.0)
@@ -329,7 +329,10 @@ class TestSameBaseStatusQuo:
         assert same["produccion_mensual_eur"] == pytest.approx(modelled["produccion_mensual_eur"])
         assert same["produccion_mensual_eur"] == pytest.approx(200.0 + 100.0)
         assert same["ta_efectiva_pct"] == pytest.approx(modelled["ta_efectiva_pct"])
-        assert np.isnan(same["ta_score_pct"])
+        # aprobación del sistema medida: 6 de 7 solicitudes son ok/rv en cada canal
+        assert same["ta_score_pct"] == pytest.approx(100 * 600 / 700)
+        assert same["online_aprobacion_sistema_pct"] == pytest.approx(100 * 600 / 700)
+        assert same["tienda_tasa_contratacion_pct"] == pytest.approx(modelled["tienda_tasa_contratacion_pct"])
 
     def test_risk_is_the_booked_curve_weighted_by_booked_exposure(self):
         channel = TestTakeUp()._channel()

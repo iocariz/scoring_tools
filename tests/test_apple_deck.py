@@ -101,6 +101,14 @@ def study_outputs(tmp_path):
             "ta_score_pct": [np.nan, np.nan, 58.3, 42.0, 46.2],
             "ta_efectiva_pct": [29.5, 28.5, 32.7, 12.8, 14.0],
             "produccion_mensual_eur": [1.53e7, 1.62e7, 1.85e7, 6.9e6, 7.5e6],
+            "online_aprobacion_sistema_pct": [51.9, 51.9, 51.8, 32.0, 32.1],
+            "online_tasa_contratacion_pct": [20.9, 20.9, 20.9, 12.9, 13.0],
+            "online_produccion_mensual_eur": [8.4e6, 8.4e6, 8.4e6, 5.2e6, 5.2e6],
+            "online_riesgo_pct": [4.18, 4.15, 4.26, 2.58, 2.61],
+            "tienda_aprobacion_sistema_pct": [64.1, 53.5, 69.2, 48.4, 48.4],
+            "tienda_tasa_contratacion_pct": [55.1, 43.0, 55.9, 39.1, 39.1],
+            "tienda_produccion_mensual_eur": [6.9e6, 7.8e6, 1.01e7, 7.1e6, 7.1e6],
+            "tienda_riesgo_pct": [3.74, 3.74, 3.52, 2.38, 2.40],
         }
     ).to_csv(tmp_path / "p3_escenarios_objetivo.csv", index=False)
     pd.DataFrame(
@@ -214,7 +222,7 @@ def test_deck_builds_from_study_outputs(study_outputs, tmp_path):
     assert out.exists() and out.stat().st_size > 0
     from pptx import Presentation
 
-    assert len(Presentation(str(out)).slides._sldIdLst) == 15
+    assert len(Presentation(str(out)).slides._sldIdLst) == 16
     # 6 gráficos de slide + la variante compacta de tienda y el desglose por segmento
     assert len(list((tmp_path / "deck" / "images").glob("*.png"))) == 8
 

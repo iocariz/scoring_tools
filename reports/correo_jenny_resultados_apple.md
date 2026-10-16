@@ -28,6 +28,10 @@
 > en tienda desde julio de 2025 y en Online desde mayo de 2026 (fuera de su ventana). Efecto: el riesgo no cambia en
 > nada; bajan las TA de tienda y del total por el denominador (titular +4,1 → +4,0 pp; +2,3 M€/mes igual).
 > El índice estacional se calcula sin ellas para no inflar la segunda mitad de 2025.
+>
+> **16-10-2026 (tarde):** indicadores con nombre: *aprobación del sistema* (OK+RV / demanda) y *tasa de contratación*
+> (contratado / demanda), y todo el total Apple desglosado en e-commerce / tienda / total (tablas nuevas en el punto 3;
+> slide 8 del deck, 16 slides).
 
 **Asunto:** Apple — Score Equifax en tienda: resultados y escenarios
 **Adjunto:** `output/apple_deck/Apple_EFX_Study.pptx` (en inglés)
@@ -38,13 +42,15 @@ Hola Jenny,
 
 Ya está el estudio, actualizado con septiembre de tienda y con las solicitudes rechazadas en estudio ligero en la base. Te resumo primero la conclusión y debajo los tres puntos con el detalle.
 
-**En una línea: extender la parrilla de Equifax de Online a tienda nos daría +4,0 puntos de tasa de aceptación y unos +2,3 M€ de producción al mes, con el riesgo global algo por debajo del de hoy (3,85% frente a 3,95%).** Y el objetivo de riesgo del 4% ya lo cumplimos hoy: no requiere ningún cambio.
+**En una línea: extender la parrilla de Equifax de Online a tienda nos daría +4,0 puntos de tasa de contratación y unos +2,3 M€ de producción al mes, con el riesgo global algo por debajo del de hoy (3,85% frente a 3,95%).** Y el objetivo de riesgo del 4% ya lo cumplimos hoy: no requiere ningún cambio.
 
 ---
 
-## Dos definiciones antes de las cifras
+## Tres definiciones antes de las cifras
 
-**Tasa de aceptación (TA).** En todo el estudio es la **efectiva**: euros contratados / euros solicitados, sobre toda la demanda que entra —rechazada, cancelada y contratada—. No es la tasa de aprobación del motor, que es más alta: entre aprobar y contratar el cliente puede no finalizar. En el deck aparece además una "TA de score" (demanda que supera el corte), comparable con la aprobación del motor y no con la TA.
+**Aprobación del sistema.** (OK + RV) / demanda solicitada, en euros: lo que el motor deja pasar antes de que el cliente decida. Bajo una parrilla se simula como la demanda que supera el corte y no viene rechazada por otra regla, así que es comparable entre hoy y cualquier escenario.
+
+**Tasa de contratación.** Euros contratados / euros solicitados, sobre toda la demanda que entra —rechazada, cancelada y contratada—. Es la que usan el punto 1, los escenarios y el titular, y las dos se encadenan con el take-up: tasa de contratación = aprobación del sistema × take-up (de lo aprobado, lo que se contrata).
 
 **Demanda no finalizada.** La que el motor aprueba y el cliente cancela. Cuenta en el denominador y no en el numerador, igual que un rechazo. En los escenarios, cada solicitud que pasa el corte convierte a la tasa real de contratación de su decisión, así que el modelo asume que se cancela igual que hoy: una parrilla más laxa no recupera cancelaciones. En la corrección por selección (reject inference) no cuenta ni como aceptada ni como rechazada, de modo que no infla el recargo. Lo mismo vale para la aprobada y rechazada en una fase posterior.
 
@@ -54,29 +60,29 @@ Dónde acaba cada euro solicitado:
 
 | | Online mar-25 → feb-26 | Tienda mar-25 → feb-26 | Tienda ago-sep 26 |
 |---|---:|---:|---:|
-| contratado (= TA) | 20,9% | 55,1% | 43,0% |
+| contratado (= tasa de contratación) | 20,9% | 55,1% | 43,0% |
 | aprobado y cancelado (**no finalizada**) | 27,9% | 6,6% | 8,7% |
 | aprobado y rechazado después | 3,1% | 2,5% | 1,8% |
 | rechazado por score | 6,8% | 10,6% | 19,2% |
 | rechazado por otras reglas | 37,2% | 19,1% | 18,3% |
 | **rechazada en estudio ligero** (sin llamada a Equifax) | 4,1% | 6,2% | 9,0% |
 | **total solicitado** | 100% | 100% | 100% |
-| aprobación del motor (tres primeras filas) | 51,9% | 64,1% | 53,5% |
+| **aprobación del sistema** (OK + RV, tres primeras filas) | 51,9% | 64,1% | 53,5% |
 | de lo aprobado, contrata | 40% | 86% | 80% |
 
-Dos lecturas: en Online más de la mitad de lo aprobado no se finaliza y en tienda uno de cada seis, y ahí está la razón de fondo de que tienda acepte el doble con una aprobación parecida (51,9% frente a 53,5%). Y la caída de la TA de tienda del 55,1% al 43,0% es sobre todo rechazo por score (10,6% → 19,2% de la demanda), no cancelaciones: el score interno ha endurecido.
+Dos lecturas: en Online más de la mitad de lo aprobado no se finaliza y en tienda uno de cada seis, y ahí está la razón de fondo de que tienda contrate el doble con una aprobación del sistema parecida (51,9% frente a 53,5%). Y la caída de la tasa de contratación de tienda del 55,1% al 43,0% es sobre todo rechazo por score (10,6% → 19,2% de la demanda), no cancelaciones: el score interno ha endurecido.
 
 ## 1. Situación actual, medida
 
 Ventana de originación marzo-2025 a febrero-2026 (doce meses con los seis de comportamiento cumplidos).
 
-| | TA | Riesgo |
-|---|---:|---:|
-| Apple Online | 20,9% | 4,18% |
-| Apple Stores | 55,1% | 3,74% |
-| **Apple Total** | **29,0%** | **3,99%** |
+| | Aprobación del sistema | Tasa de contratación | Riesgo |
+|---|---:|---:|---:|
+| Apple Online | 51,9% | 20,9% | 4,18% |
+| Apple Stores | 64,1% | 55,1% | 3,74% |
+| **Apple Total** | **54,8%** | **29,0%** | **3,99%** |
 
-Tienda acepta más del doble que Online y arriesga menos. En Online el riesgo se concentra en `New` (5,07%) frente a `A-C` (1,32%) o `Inactive` (0,81%).
+Tienda contrata más del doble que Online y arriesga menos. En Online el riesgo se concentra en `New` (5,07%) frente a `A-C` (1,32%) o `Inactive` (0,81%).
 
 ## 2. Tienda con la parrilla de Online
 
@@ -84,10 +90,11 @@ Sobre agosto y septiembre de 2026, los dos meses con score Equifax en tienda:
 
 | | hoy | con la parrilla de Online |
 |---|---:|---:|
-| Tasa de aceptación | 43,0% | **55,7%** |
+| Aprobación del sistema | 53,5% | **69,2%** |
+| Tasa de contratación | 43,0% | **55,7%** |
 | Riesgo | 3,74% | **3,52%** |
 
-Sube la aceptación y baja el riesgo a la vez. El riesgo de tienda es **estimado**, no medido —no habrá medición real hasta marzo de 2027—, pero su **nivel** está calibrado contra la morosidad que tienda ha tenido de verdad: la curva de Online predecía 3,92% para la cartera que tienda contrató y lo observado es 3,74%, un 5% de diferencia que se corrige. Lo que seguimos asumiendo es que el score ordena en tienda igual que en e-commerce.
+Sube la contratación y baja el riesgo a la vez. El riesgo de tienda es **estimado**, no medido —no habrá medición real hasta marzo de 2027—, pero su **nivel** está calibrado contra la morosidad que tienda ha tenido de verdad: la curva de Online predecía 3,92% para la cartera que tienda contrató y lo observado es 3,74%, un 5% de diferencia que se corrige. Lo que seguimos asumiendo es que el score ordena en tienda igual que en e-commerce.
 
 ## Cómo se ha tratado la demanda de tienda de agosto-septiembre
 
@@ -132,14 +139,29 @@ Tienda es el 31% de la demanda pero el 55% de la exposición, porque convierte e
 
 ## 3. Escenarios de riesgo global Apple
 
-| objetivo | TA Apple | producción | parrilla |
-|---|---:|---:|---|
-| Hoy, medido en la ventana | 29,0% | 15,3 M€/mes | vigente |
-| Hoy, con la demanda actual de tienda | 27,7% | 16,2 M€/mes | vigente |
-| 2,5% | 21,1% | 12,3 M€/mes | +36 puntos |
-| 3,0% | 26,7% | 15,6 M€/mes | +23 puntos |
-| 3,5% | 30,4% | 17,7 M€/mes | +10 puntos |
-| **4,0%** | **31,7%** | **18,5 M€/mes** | **sin cambios** |
+Apple en total (Online + tienda, run-rate mensual):
+
+| objetivo | aprobación del sistema | tasa de contratación | producción | riesgo | parrilla |
+|---|---:|---:|---:|---:|---|
+| Hoy, medido en la ventana | 54,8% | 29,0% | 15,3 M€/mes | 3,99% | vigente |
+| Hoy, con la demanda actual de tienda | 52,4% | 27,7% | 16,2 M€/mes | 3,95% | vigente |
+| 2,5% | 37,2% | 21,1% | 12,3 M€/mes | 2,48% | +36 puntos |
+| 3,0% | 47,5% | 26,7% | 15,6 M€/mes | 2,97% | +23 puntos |
+| 3,5% | 54,4% | 30,4% | 17,7 M€/mes | 3,48% | +10 puntos |
+| **4,0%** | **57,2%** | **31,7%** | **18,5 M€/mes** | **3,85%** | **sin cambios** |
+
+Y separado por canal:
+
+| escenario | e-commerce: aprobación | contratación | producción/mes | riesgo | tienda: aprobación | contratación | producción/mes | riesgo |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Hoy, medido en la ventana | 51,9% | 20,9% | 8,4 M€ | 4,18% | 64,1% | 55,1% | 6,9 M€ | 3,74% |
+| Hoy, con la demanda actual de tienda | 51,9% | 20,9% | 8,4 M€ | 4,15% | 53,5% | 43,0% | 7,8 M€ | 3,74% |
+| 2,5% | 32,1% | 13,0% | 5,2 M€ | 2,61% | 48,4% | 39,1% | 7,1 M€ | 2,40% |
+| 3,0% | 41,8% | 16,9% | 6,8 M€ | 3,14% | 60,1% | 48,5% | 8,8 M€ | 2,83% |
+| 3,5% | 48,8% | 19,7% | 7,9 M€ | 3,75% | 67,0% | 54,1% | 9,8 M€ | 3,27% |
+| **4,0% (sin cambios)** | **51,8%** | **20,9%** | **8,4 M€** | **4,26%** | **69,2%** | **55,9%** | **10,1 M€** | **3,52%** |
+
+En tienda, la fila "hoy, medido en la ventana" es marzo-2025 a febrero-2026 con el score interno; el resto de filas son agosto-septiembre de 2026, lo único con score Equifax. Online es siempre marzo-2025 a febrero-2026. El riesgo de Online en las filas de parrilla lleva el recargo de la corrección por selección sobre su propia cartera (realizado 4,18%).
 
 Las parrillas concretas (umbral de rechazo por grupo, se acepta por encima):
 
@@ -159,9 +181,9 @@ Las parrillas concretas (umbral de rechazo por grupo, se acepta por encima):
 
 **Parte de la mejora frente a lo medido es volumen, no parrilla.** La parrilla vigente calca lo que el motor decide hoy en Online (acepta el 51,8% de la demanda; el motor aprobó el 51,9%), y cada solicitud aceptada convierte a la tasa de su decisión real —la misma tasa de financiación que usamos en el proceso general—, así que Online modelado y medido coinciden. Los 18,5 frente a 15,3 M€/mes son tienda, pero en dos partes: +2,3 M€ por la parrilla, sobre la misma demanda, y +0,9 M€ porque la demanda de tienda en agosto-septiembre va un 40% por encima de la media de la ventana de "hoy". Por eso el titular va sobre la misma base.
 
-**Tienda lleva un año endureciendo por su cuenta**: su TA ha pasado del 55,1% (marzo-2025 a febrero-2026) al 43,0% en agosto-septiembre de 2026, mientras su demanda crece. La base contra la que comparamos se está moviendo.
+**Tienda lleva un año endureciendo por su cuenta**: su tasa de contratación ha pasado del 55,1% (marzo-2025 a febrero-2026) al 43,0% en agosto-septiembre de 2026, mientras su demanda crece. La base contra la que comparamos se está moviendo.
 
-**La base de tienda incluye desde julio de 2025 las rechazadas en estudio ligero.** Son el 9,0% de su demanda de agosto-septiembre. Bajan la TA de tienda y del total pero no tocan el riesgo: no llegan a la parrilla. Como la ventana de "hoy" solo las lleva en 8 de sus 12 meses, el 55,1% de tienda es una mezcla de bases; si se puede extraer su histórico completo, conviene rehacer esa cifra.
+**La base de tienda incluye desde julio de 2025 las rechazadas en estudio ligero.** Son el 9,0% de su demanda de agosto-septiembre. Bajan la tasa de contratación de tienda y del total pero no tocan el riesgo: no llegan a la parrilla. Como la ventana de "hoy" solo las lleva en 8 de sus 12 meses, el 55,1% de tienda es una mezcla de bases; si se puede extraer su histórico completo, conviene rehacer esa cifra.
 
 **El perímetro es Apple Propio**, una sola cadena, sin APRS.
 
@@ -183,7 +205,7 @@ Iñigo
 * Los cinco avisos quitan brillo al titular, pero son las preguntas que saldrán en la sala: mejor que salgan de ti.
 * La fila "Hoy, con la demanda actual de tienda" es la política vigente evaluada sobre la misma demanda que los escenarios (Online en su ventana, tienda en ago-sep 2026): su diferencia con la fila siguiente es el efecto puro de la parrilla. Frente a lo medido en la ventana, la parrilla da +2,7 pp y +3,2 M€, de lo que +0,9 M€ es volumen.
 * El take-up va **por decisión del motor** (`ok` 44% / `rv` 6% en Online; las que entran nuevas por score convierten como `ok`), que es la `tasa_fin` del pipeline a nivel solicitud.
-* La TA de los escenarios es **efectiva** (producción / demanda), la misma base que la del punto 1. El deck publica además la TA "de score" (demanda que supera el corte), que es mucho más alta y no es comparable con la TA de hoy.
+* Nombres (16-10): "aprobación del sistema" = (OK + RV) / demanda, medida hoy y simulada bajo cada parrilla; "tasa de contratación" = contratado / demanda. Negocio llama a la segunda *financing rate*; aquí se evita porque en el proceso general "tasa de financiación" (`tasa_fin`) es contratado / aprobado, o sea el take-up, y chocarían. Si se prefiere *financing rate*, es una constante en el deck (`BOOKING_RATE`) y un par de etiquetas en este correo. El deck llamaba antes "TA de score" a la aprobación simulada y "TA efectiva" a la contratación.
 * El 3,85% de la parrilla lleva el recargo de reject inference también sobre la cartera ya contratada de Online (+0,08 pp sobre su 4,18% realizado); las dos filas de "hoy" van a realizado. Like-for-like con el 3,95%, la parrilla daría 3,76% (-0,19 pp en vez de -0,10). Se deja el conservador; el deck lo explica en la slide de la frontera.
 * Estudio ligero: pedir si el histórico de estas rechazadas existe antes de julio de 2025 en tienda y antes de mayo de 2026 en Online. Con la historia completa, la ventana de "hoy" de tienda dejaría de ser una mezcla y el índice estacional podría calcularse con toda la demanda. Hoy el índice va sin ellas (`tipotran = est1`), para no inflar la segunda mitad de 2025.
 * La ventana de Online se mantiene en marzo-2025 a febrero-2026 aunque marzo-2026 ya está maduro. Moverla no cambia Online (20,9% / 4,18%); de moverla, en la corrida definitiva. Ojo: Online lleva estudio ligero desde mayo de 2026 (17-23% de su demanda), así que mover la ventana hasta ahí bajaría su TA por el denominador.
