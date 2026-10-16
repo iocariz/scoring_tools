@@ -814,6 +814,29 @@ def measured_status_quo(
     return _with_channels(total, parts)
 
 
+def booked_without_bin(channel: pd.DataFrame, multiplier: float) -> dict[str, float]:
+    """Contratos sin tramo EFX (aprobados sin llamada a Equifax): cuántos, qué producción y qué riesgo.
+
+    Entran en el riesgo realizado del canal pero no en la curva ni en las filas que
+    valoran por tramo (``same_base_status_quo`` y las de parrilla): es la diferencia entre
+    el 'hoy medido' y el 'hoy en la base de los escenarios' en el mismo canal. Se persiste
+    para que el deck y el correo lo digan desde el dato.
+    """
+    booked = _booked(channel)
+    without = booked[booked["bin"].isna()]
+    mature = without[without["todu_amt_pile_h6"] > 0]
+    production = booked[Columns.OA_AMT_H0].sum()
+    return {
+        "n": int(len(without)),
+        "produccion_pct": 100 * without[Columns.OA_AMT_H0].sum() / production if production else float("nan"),
+        "riesgo_pct": (
+            multiplier * 100 * mature["todu_30ever_h6"].sum() / mature["todu_amt_pile_h6"].sum()
+            if not mature.empty
+            else float("nan")
+        ),
+    }
+
+
 SAME_BASE_LABEL = "Hoy, con la demanda actual de tienda"
 
 
@@ -835,8 +858,13 @@ def same_base_status_quo(
     Online en ambos canales" es el efecto puro de la parrilla; su diferencia con "Hoy
     (medido)" es base, no política.
 
-    El riesgo va con la curva de contratados sobre la cartera contratada: en Online
-    reproduce su realizado por construcción; en tienda, el ancla hace lo mismo.
+    El riesgo va con la curva de contratados sobre la cartera contratada **con tramo**:
+    en Online reproduce el realizado de su cartera puntuada; en tienda, el ancla hace lo
+    mismo. NO coincide con el realizado total de ``measured_status_quo`` si hay contratos
+    sin score (aprobados sin llamada a Equifax, centinela 0 → sin tramo): entran en la
+    medición pero no en la curva ni en ninguna fila valorada por tramo, igual que en las
+    filas de parrilla, que nunca pueden aceptarlos. ``booked_without_bin`` los cuantifica
+    y el deck lo rotula (en Online son 23 contratos con ~89% de mora: 4,18% vs 4,15%).
     """
     parts: dict[str, dict[str, float]] = {}
     for name, channel, months, factor in (
@@ -1204,6 +1232,14 @@ def main(argv: list[str] | None = None) -> int:
         f"(+{ri_margin_online_pp:.2f} pp sobre el realizado) | parrilla vigente en base 'hoy' "
         f"{grid_on_today_basis['riesgo_total_pct']:.2f}% frente a {baseline['riesgo_total_pct']:.2f}% con RI"
     )
+    unscored_booked = booked_without_bin(ecom, args.multiplier)
+    if unscored_booked["n"]:
+        logger.warning(
+            f"Online: {unscored_booked['n']} contratos sin tramo EFX (aprobados sin llamada a Equifax), "
+            f"{unscored_booked['produccion_pct']:.2f}% de la producción con {unscored_booked['riesgo_pct']:.1f}% de "
+            f"riesgo: cuentan en el realizado ({measured['online_riesgo_pct']:.2f}%) pero no en la base de los "
+            f"escenarios ({same_base['online_riesgo_pct']:.2f}%)"
+        )
     picks = pick_targets(ladder, ladder_grid, baseline, measured, same_base, args.targets)
     grids = scenario_grids(ladder, ladder_grid, cutoffs, args.targets)
 
@@ -1248,6 +1284,9 @@ def main(argv: list[str] | None = None) -> int:
             },
             "riesgo_parrilla_base_hoy_pct": round(grid_on_today_basis["riesgo_total_pct"], 4),
             "ri_margen_online_pp": round(ri_margin_online_pp, 4),
+            "online_contratados_sin_efx_n": unscored_booked["n"],
+            "online_contratados_sin_efx_produccion_pct": round(unscored_booked["produccion_pct"], 3),
+            "online_contratados_sin_efx_riesgo_pct": round(unscored_booked["riesgo_pct"], 2),
         },
         (out / "periodos.json").open("w", encoding="utf-8"),
         indent=2,
