@@ -40,6 +40,7 @@ def study_outputs(tmp_path):
             "booked_n": [20, 10, 30],
             "produccion_eur": [2e5, 1e5, 3e5],
             "ta_pct": [20.0, 20.0, 20.0],
+            "aprobacion_sistema_pct": [52.0, 52.0, 52.0],
             "riesgo_real_pct": [5.0, 1.2, 4.2],
         }
     ).to_csv(tmp_path / "p1_online_actual.csv", index=False)
@@ -51,6 +52,7 @@ def study_outputs(tmp_path):
             "booked_n": [60, 30, 90],
             "produccion_eur": [6e5, 3e5, 9e5],
             "ta_pct": [60.0, 60.0, 60.0],
+            "aprobacion_sistema_pct": [64.0, 64.0, 64.0],
             "riesgo_real_pct": [4.5, 0.6, 3.7],
         }
     ).to_csv(tmp_path / "p1b_tienda_actual.csv", index=False)
@@ -64,6 +66,7 @@ def study_outputs(tmp_path):
             "ta_efectiva_pct": [57.0, 57.0],
             "riesgo_imputado_pct": [3.1, 3.1],
             "ta_actual_pct": [47.6, 47.6],
+            "aprobacion_sistema_actual_pct": [53.5, 53.5],
             "riesgo_imputado_actual_pct": [3.75, 3.75],
         }
     ).to_csv(tmp_path / "p2_tienda_parrilla_online.csv", index=False)
@@ -98,7 +101,7 @@ def study_outputs(tmp_path):
             ],
             "corte": ["política vigente", "política vigente", "vigente", "> 68", "+39 puntos"],
             "riesgo_total_pct": [3.99, 3.97, 3.95, 2.35, 2.48],
-            "ta_score_pct": [np.nan, np.nan, 58.3, 42.0, 46.2],
+            "ta_score_pct": [54.8, 52.4, 58.3, 42.0, 46.2],
             "ta_efectiva_pct": [29.5, 28.5, 32.7, 12.8, 14.0],
             "produccion_mensual_eur": [1.53e7, 1.62e7, 1.85e7, 6.9e6, 7.5e6],
             "online_aprobacion_sistema_pct": [51.9, 51.9, 51.8, 32.0, 32.1],
@@ -289,6 +292,7 @@ def test_segment_breakdown_excludes_always_rejected(study_outputs):
                         "ta_efectiva_pct": 0.0,
                         "riesgo_imputado_pct": np.nan,
                         "ta_actual_pct": 0.0,
+                        "aprobacion_sistema_actual_pct": 0.0,
                         "riesgo_imputado_actual_pct": np.nan,
                     }
                 ]

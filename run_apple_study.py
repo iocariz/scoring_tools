@@ -380,6 +380,12 @@ def channel_actuals(channel: pd.DataFrame, multiplier: float) -> pd.DataFrame:
                 "booked_n": len(booked),
                 "produccion_eur": booked[Columns.OA_AMT_H0].sum(),
                 "ta_pct": 100 * booked[Columns.OA_AMT_H0].sum() / group[Columns.OA_AMT].sum(),
+                "aprobacion_sistema_pct": 100
+                * group.loc[
+                    group[Columns.SE_DECISION_ID].isin([SystemDecision.OK.value, SystemDecision.RV.value]),
+                    Columns.OA_AMT,
+                ].sum()
+                / group[Columns.OA_AMT].sum(),
                 "riesgo_real_pct": (
                     multiplier * 100 * mature["todu_30ever_h6"].sum() / mature["todu_amt_pile_h6"].sum()
                     if not (mature := booked[booked["todu_amt_pile_h6"] > 0]).empty
@@ -507,6 +513,12 @@ def stores_under_grid(
                 "ta_efectiva_pct": 100 * production / demand,
                 "riesgo_imputado_pct": imputed_risk(accepted, curve, level_factor),
                 "ta_actual_pct": 100 * booked[Columns.OA_AMT_H0].sum() / demand,
+                "aprobacion_sistema_actual_pct": 100
+                * group.loc[
+                    group[Columns.SE_DECISION_ID].isin([SystemDecision.OK.value, SystemDecision.RV.value]),
+                    Columns.OA_AMT,
+                ].sum()
+                / demand,
                 # La cartera ya contratada ES la población seleccionada: valorarla con la
                 # curva corregida por selección sería corregir dos veces. Va con la de
                 # contratados; el uplift solo pesa sobre lo que entraría nuevo.
