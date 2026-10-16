@@ -32,6 +32,11 @@
 > **16-10-2026 (tarde):** indicadores con nombre: *aprobación del sistema* (OK+RV / demanda) y *tasa de contratación*
 > (contratado / demanda), y todo el total Apple desglosado en e-commerce / tienda / total (tablas nuevas en el punto 3;
 > slide 8 del deck, 16 slides).
+>
+> **16-10-2026 (noche), verificación:** el estudio reproduce byte a byte y todas las cifras de este correo cuadran con
+> los CSV. Nota al pie nueva en la tabla por canal: el riesgo de Online en la fila "hoy, con la demanda actual de
+> tienda" es 4,15 % y no el 4,18 % medido porque 23 contratos aprobados **sin llamada a Equifax** (sin score, 88,6 % de
+> mora) no tienen tramo y quedan fuera de la curva (`online_contratados_sin_efx_*` en `periodos.json`; slide 8).
 
 **Asunto:** Apple — Score Equifax en tienda: resultados y escenarios
 **Adjunto:** `output/apple_deck/Apple_EFX_Study.pptx` (en inglés)
@@ -161,7 +166,7 @@ Y separado por canal:
 | 3,5% | 48,8% | 19,7% | 7,9 M€ | 3,75% | 67,0% | 54,1% | 9,8 M€ | 3,27% |
 | **4,0% (sin cambios)** | **51,8%** | **20,9%** | **8,4 M€** | **4,26%** | **69,2%** | **55,9%** | **10,1 M€** | **3,52%** |
 
-En tienda, la fila "hoy, medido en la ventana" es marzo-2025 a febrero-2026 con el score interno; el resto de filas son agosto-septiembre de 2026, lo único con score Equifax. Online es siempre marzo-2025 a febrero-2026. El riesgo de Online en las filas de parrilla lleva el recargo de la corrección por selección sobre su propia cartera (realizado 4,18%).
+En tienda, la fila "hoy, medido en la ventana" es marzo-2025 a febrero-2026 con el score interno; el resto de filas son agosto-septiembre de 2026, lo único con score Equifax. Online es siempre marzo-2025 a febrero-2026. El riesgo de Online en las filas de parrilla lleva el recargo de la corrección por selección sobre su propia cartera (realizado 4,18%). El 4,15% de Online en la fila "hoy, con la demanda actual de tienda" va sobre la cartera con score: 23 contratos aprobados sin llamada a Equifax (sin score; el 0,03% de la producción, con un 88,6% de mora) entran en el 4,18% medido pero no tienen tramo, así que quedan fuera de la curva y de todas las filas valoradas por tramo; la parrilla nunca podría aceptarlos.
 
 Las parrillas concretas (umbral de rechazo por grupo, se acepta por encima):
 
@@ -208,4 +213,5 @@ Iñigo
 * Nombres (16-10): "aprobación del sistema" = (OK + RV) / demanda, medida hoy y simulada bajo cada parrilla; "tasa de contratación" = contratado / demanda. Negocio llama a la segunda *financing rate*; aquí se evita porque en el proceso general "tasa de financiación" (`tasa_fin`) es contratado / aprobado, o sea el take-up, y chocarían. Decidido (16-10): se queda *booking rate* / tasa de contratación. El deck llamaba antes "TA de score" a la aprobación simulada y "TA efectiva" a la contratación.
 * El 3,85% de la parrilla lleva el recargo de reject inference también sobre la cartera ya contratada de Online (+0,08 pp sobre su 4,18% realizado); las dos filas de "hoy" van a realizado. Like-for-like con el 3,95%, la parrilla daría 3,76% (-0,19 pp en vez de -0,10). Se deja el conservador; el deck lo explica en la slide de la frontera.
 * Estudio ligero: pedir si el histórico de estas rechazadas existe antes de julio de 2025 en tienda y antes de mayo de 2026 en Online. Con la historia completa, la ventana de "hoy" de tienda dejaría de ser una mezcla y el índice estacional podría calcularse con toda la demanda. Hoy el índice va sin ellas (`tipotran = est1`), para no inflar la segunda mitad de 2025.
+* Los 23 contratos de Online aprobados **sin llamada a Equifax** (marzo-mayo de 2025, 22 `ok` + 1 `rv`, 32,6 k€) tienen un 88,6% de mora: una anomalía que conviene enseñar a negocio y preguntar por qué se aprobaron sin score. Son el 0,03% de la producción, pero mueven el riesgo de Online 0,03 pp (4,18 → 4,15) y explican por qué el like-for-like pasó de -0,21 a -0,19 pp al excluirlos del tramo 1 (antes del 16-10 el centinela 0 caía en el tramo más bajo).
 * La ventana de Online se mantiene en marzo-2025 a febrero-2026 aunque marzo-2026 ya está maduro. Moverla no cambia Online (20,9% / 4,18%); de moverla, en la corrida definitiva. Ojo: Online lleva estudio ligero desde mayo de 2026 (17-23% de su demanda), así que mover la ventana hasta ahí bajaría su TA por el denominador.

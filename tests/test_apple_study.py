@@ -13,6 +13,7 @@ from run_apple_study import (
     DEMAND_STATES,
     SWAP_CATEGORIES,
     apply_reject_inference,
+    booked_without_bin,
     channel_blend,
     demand_breakdown,
     effective_months,
@@ -341,6 +342,48 @@ class TestSameBaseStatusQuo:
         # riesgo de tienda, no su peso: media simple de 3,0 (Online) y 3,0 x 1,5 (tienda)
         same = same_base_status_quo(channel, channel, curve, 1.0, 1.0, 1.5)
         assert same["riesgo_total_pct"] == pytest.approx((3.0 + 3.0 * 1.5) / 2)
+
+
+class TestBookedWithoutBin:
+    """Contratos sin tramo EFX (aprobados sin llamada a Equifax): entran en el realizado
+    medido pero no en la curva ni en la fila de misma base. Hay que cuantificarlos y
+    rotularlos, o los dos 'hoy' de Online parecen una errata."""
+
+    def _channel(self):
+        cols = ["oa_amt", "acct_booked_h0", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6", "se_decision_id", "bin"]
+        return pd.DataFrame(
+            [
+                [100.0, 1, 100.0, 1.0, 100.0, "ok", 13.0],  # con tramo: 7% de riesgo
+                [100.0, 1, 100.0, 1.0, 100.0, "ok", 13.0],
+                [100.0, 1, 100.0, 1.0, 100.0, "ok", 13.0],
+                [100.0, 1, 100.0, 10.0, 100.0, "ok", np.nan],  # sin tramo: 70% de riesgo
+                [100.0, 0, 0.0, 0.0, 0.0, "ko", np.nan],  # rechazada sin score: no cuenta
+            ],
+            columns=cols,
+        )
+
+    def test_counts_production_share_and_risk_of_booked_without_bin(self):
+        out = booked_without_bin(self._channel(), multiplier=7.0)
+        assert out["n"] == 1
+        assert out["produccion_pct"] == pytest.approx(25.0)
+        assert out["riesgo_pct"] == pytest.approx(70.0)
+
+    def test_same_base_risk_excludes_them_while_measured_includes_them(self):
+        channel = self._channel()
+        curve = estimate_risk_curve(channel, 7.0)
+        curve["b2_pct_contratados"] = curve["b2_pct"]
+        measured = measured_status_quo(channel, channel.iloc[0:0], 1.0, 1.0, 7.0)
+        same = same_base_status_quo(channel, channel.iloc[0:0], curve, 1.0, 1.0, 1.0)
+        # medido: 7 * 13 / 400 = 22,75%; base de escenarios: solo los tres con tramo, 7%
+        assert measured["online_riesgo_pct"] == pytest.approx(22.75)
+        assert same["online_riesgo_pct"] == pytest.approx(7.0)
+        # la producción sin tramo sí cuenta en la fila de misma base (está contratada)
+        assert same["online_produccion_mensual_eur"] == pytest.approx(400.0)
+
+    def test_no_unscored_booked_is_zero_and_nan(self):
+        channel = self._channel().dropna(subset=["bin"])
+        out = booked_without_bin(channel, multiplier=7.0)
+        assert out["n"] == 0 and out["produccion_pct"] == 0.0 and np.isnan(out["riesgo_pct"])
 
 
 class TestLevelAnchorInPolicyKpis:

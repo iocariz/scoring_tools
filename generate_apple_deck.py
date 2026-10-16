@@ -806,6 +806,24 @@ def slide_scenarios_by_channel(prs, picks: pd.DataFrame, meta: dict, period: str
     y3 = y + Inches(0.42 + 0.3 * (len(table) - 1)) + Inches(0.15)
     stores_today = span(meta["online_desde"], meta["online_hasta"])
     stores_scored = span(meta["tienda_desde"], meta["tienda_hasta"])
+    measured_risk = sel.loc[TODAY_MEASURED, "online_riesgo_pct"] if TODAY_MEASURED in sel.index else float("nan")
+    # Online's two 'today' rows differ in risk although window and policy are the same:
+    # contracts booked without an Equifax call have no bin, so they enter the measured
+    # figure but not the curve nor any row valued by bin. Said from the data, or the
+    # reader takes the gap for a typo.
+    unscored_n = int(meta.get("online_contratados_sin_efx_n", 0) or 0)
+    same_risk = sel.loc[TODAY_SAME_BASE, "online_riesgo_pct"] if TODAY_SAME_BASE in sel.index else float("nan")
+    if unscored_n and pd.notna(same_risk):
+        unscored_note = (
+            f" Online's 'Today, current store demand' risk ({pct_or_dash(same_risk, 2)}) is on the scored book: "
+            f"{unscored_n} contracts booked without an Equifax call (no score, "
+            f"{ac.num(meta['online_contratados_sin_efx_produccion_pct'], 2, '%')} of production, "
+            f"{ac.num(meta['online_contratados_sin_efx_riesgo_pct'], 1, '%')} realized risk) enter the measured "
+            f"{pct_or_dash(measured_risk, 2)} but have no bin, so they sit outside the curve and every row valued "
+            "by bin — the grid can never accept them."
+        )
+    else:
+        unscored_note = ""
     _text(
         slide,
         MARGIN,
@@ -815,7 +833,7 @@ def slide_scenarios_by_channel(prs, picks: pd.DataFrame, meta: dict, period: str
         f"Stores: 'Today (measured)' is the {stores_today} window with the internal score; every other row is "
         f"{stores_scored}, the only period with an EFX score. Online is always {stores_today}. Online's risk "
         "in the grid rows carries the reject-inference uplift on its own book (realized "
-        f"{pct_or_dash(sel.loc[TODAY_MEASURED, 'online_riesgo_pct'] if TODAY_MEASURED in sel.index else float('nan'), 2)}).",
+        f"{pct_or_dash(measured_risk, 2)}).{unscored_note}",
         size=10,
         color=MUTED,
         spacing=1.2,

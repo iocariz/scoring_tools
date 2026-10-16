@@ -147,6 +147,9 @@ def study_outputs(tmp_path):
                 "demanda_tienda_vs_ventana_pct": 39.4,
                 "riesgo_parrilla_base_hoy_pct": 3.76,
                 "ri_margen_online_pp": 0.08,
+                "online_contratados_sin_efx_n": 23,
+                "online_contratados_sin_efx_produccion_pct": 0.033,
+                "online_contratados_sin_efx_riesgo_pct": 88.6,
                 "take_up_online_ok_pct": 44.3,
                 "take_up_online_rv_pct": 5.5,
                 "take_up_tienda_ok_pct": 81.5,
@@ -225,7 +228,12 @@ def test_deck_builds_from_study_outputs(study_outputs, tmp_path):
     assert out.exists() and out.stat().st_size > 0
     from pptx import Presentation
 
-    assert len(Presentation(str(out)).slides._sldIdLst) == 16
+    prs = Presentation(str(out))
+    assert len(prs.slides._sldIdLst) == 16
+    # slide 8: the two Online 'today' risks differ (4.18 vs 4.15); the footnote says why, from periodos.json
+    texts = "\n".join(sh.text_frame.text for sh in prs.slides[7].shapes if sh.has_text_frame)
+    assert "23 contracts booked without an Equifax call" in texts
+    assert "4.15%" in texts and "4.18%" in texts
     # 6 gráficos de slide + la variante compacta de tienda y el desglose por segmento
     assert len(list((tmp_path / "deck" / "images").glob("*.png"))) == 8
 
