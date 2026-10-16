@@ -309,9 +309,9 @@ class TestMeasuredStatusQuo:
     def test_each_channel_is_normalised_by_its_own_effective_months(self):
         # Online y tienda tienen perfiles estacionales distintos: el 'hoy' medido debe
         # dividir cada canal por sus propios meses efectivos, no por los de Online.
-        cols = ["oa_amt", "acct_booked_h0", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"]
-        ecom = pd.DataFrame([[100.0, 1, 100.0, 1.0, 100.0]], columns=cols)
-        stores = pd.DataFrame([[100.0, 1, 100.0, 1.0, 100.0]], columns=cols)
+        cols = ["oa_amt", "acct_booked_h0", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6", "se_decision_id"]
+        ecom = pd.DataFrame([[100.0, 1, 100.0, 1.0, 100.0, "ok"]], columns=cols)
+        stores = pd.DataFrame([[100.0, 1, 100.0, 1.0, 100.0, "ok"]], columns=cols)
         kpis = measured_status_quo(ecom, stores, months_ecom=1.0, months_stores=2.0, multiplier=7.0)
         assert kpis["produccion_mensual_eur"] == pytest.approx(100.0 + 50.0)
         assert kpis["ta_efectiva_pct"] == pytest.approx(100.0)
@@ -329,7 +329,10 @@ class TestSameBaseStatusQuo:
         assert same["produccion_mensual_eur"] == pytest.approx(modelled["produccion_mensual_eur"])
         assert same["produccion_mensual_eur"] == pytest.approx(200.0 + 100.0)
         assert same["ta_efectiva_pct"] == pytest.approx(modelled["ta_efectiva_pct"])
-        assert np.isnan(same["ta_score_pct"])
+        # aprobación del sistema medida: 6 de 7 solicitudes son ok/rv en cada canal
+        assert same["ta_score_pct"] == pytest.approx(100 * 600 / 700)
+        assert same["online_aprobacion_sistema_pct"] == pytest.approx(100 * 600 / 700)
+        assert same["tienda_tasa_contratacion_pct"] == pytest.approx(modelled["tienda_tasa_contratacion_pct"])
 
     def test_risk_is_the_booked_curve_weighted_by_booked_exposure(self):
         channel = TestTakeUp()._channel()
@@ -379,7 +382,18 @@ class TestDemandBreakdown:
         out = demand_breakdown(self._channel(), "x")
         assert out["estado"].tolist() == list(DEMAND_STATES)
         assert out["pct_demanda"].sum() == pytest.approx(100.0)
-        assert out["pct_demanda"].tolist() == pytest.approx([20.0, 20.0, 20.0, 20.0, 20.0])
+        assert out["pct_demanda"].tolist() == pytest.approx([20.0, 20.0, 20.0, 20.0, 20.0, 0.0])
+
+    def test_light_assessment_rejections_are_their_own_state(self):
+        # KO con score 0 = rechazada en estudio ligero (sin llamada a Equifax): denominador sí,
+        # tramo nunca — ni aunque el motivo diga score
+        channel = self._channel()
+        extra = channel.iloc[[3, 4]].copy()
+        extra["risk_score_rf"] = 0.0
+        out = demand_breakdown(pd.concat([channel, extra], ignore_index=True), "x").set_index("estado")
+        assert out.loc[DEMAND_STATES[-1], "pct_demanda"] == pytest.approx(100 * 200 / 700)
+        assert out.loc["rechazado por score", "pct_demanda"] == pytest.approx(100 * 100 / 700)
+        assert out["pct_demanda"].sum() == pytest.approx(100.0)
 
     def test_booked_row_is_the_effective_acceptance_rate(self):
         channel = self._channel()
@@ -397,11 +411,23 @@ class TestStoresSwapBreakdown:
         out = stores_swap_breakdown(channel, curve, {"New": 27.0}, 1.0)
         assert out["categoria"].tolist() == list(SWAP_CATEGORIES)
         assert out["pct_demanda"].sum() == pytest.approx(100.0)
-        assert out["pct_demanda"].tolist() == pytest.approx([600 / 7, 0.0, 0.0, 100 / 7, 0.0])
+        assert out["pct_demanda"].tolist() == pytest.approx([600 / 7, 0.0, 0.0, 100 / 7, 0.0, 0.0])
         kpis = policy_kpis(channel.iloc[0:0], channel, curve, {"New": 27.0}, 1.0, 1.0, 1.0)
         assert out["produccion_est_eur"].iloc[:2].sum() == pytest.approx(kpis["produccion_mensual_eur"])
         assert out["riesgo_imputado_pct"].iloc[0] == pytest.approx(3.0)
         assert out["riesgo_imputado_pct"].iloc[3] == pytest.approx(5.0)  # lo que queda fuera también se valora
+
+    def test_unscored_rows_are_untouched_and_carry_no_imputed_risk(self):
+        channel = TestTakeUp()._channel()
+        light = channel.iloc[[6]].copy()  # ko por score... pero con 0 centinela: estudio ligero
+        light["risk_score_rf"] = 0.0
+        channel = pd.concat([channel, light], ignore_index=True)
+        out = stores_swap_breakdown(channel, TestTakeUp()._curve(), {"New": 27.0}, 1.0).set_index("categoria")
+        assert out.loc[SWAP_CATEGORIES[-1], "pct_demanda"] == pytest.approx(100 * 100 / 800)
+        assert np.isnan(out.loc[SWAP_CATEGORIES[-1], "riesgo_imputado_pct"])
+        assert out["pct_demanda"].sum() == pytest.approx(100.0)
+        # ni con un grupo sin corte entra: 0 > -inf sería True sin la guarda
+        assert not grid_swap_mask(light, {"New": None}).iloc[0]
 
 
 class TestChannelBlend:

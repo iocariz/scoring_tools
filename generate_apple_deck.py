@@ -7,7 +7,7 @@ risk in every population. Here there are two channels, store risk is **imputed**
 the backtest has no mature cohort.
 
 Reads the outputs of ``run_apple_study.py`` (``output/apple_study/*.csv``, written
-with Spanish labels for the analyst) and writes a 15-slide ``.pptx`` in English.
+with Spanish labels for the analyst) and writes a 16-slide ``.pptx`` in English.
 Charts come from :mod:`src.apple_deck_charts`.
 
 Usage:
@@ -32,7 +32,15 @@ from pptx.util import Emu, Inches, Pt
 
 from run_apple_study import BIN_EDGES, DEMAND_STATES, SAME_BASE_LABEL, SWAP_CATEGORIES  # one definition, the study's
 from src import apple_deck_charts as ac
-from src.apple_deck_charts import CURRENT_GRID, SHIFTED_GRID, SINGLE_CUTOFF, TODAY_MEASURED, TODAY_SAME_BASE
+from src.apple_deck_charts import (
+    BOOKING_RATE,
+    CURRENT_GRID,
+    SHIFTED_GRID,
+    SINGLE_CUTOFF,
+    SYSTEM_APPROVAL,
+    TODAY_MEASURED,
+    TODAY_SAME_BASE,
+)
 
 W, H = Inches(13.333), Inches(7.5)
 MARGIN = Inches(0.62)
@@ -71,6 +79,7 @@ _SWAP = dict(
             "swap-out: approved today, below cutoff",
             "rejected by both scores (today, and by EFX)",
             "untouched: rejected by other rules",
+            "untouched: light assessment, no Equifax call",
         ],
         strict=True,
     )
@@ -79,11 +88,12 @@ _STATES = dict(
     zip(
         DEMAND_STATES,
         [
-            "booked  (= acceptance rate)",
+            "booked  (= booking rate)",
             "approved, then cancelled (unfinished demand)",
             "approved, rejected downstream",
             "rejected by the engine: score",
             "rejected by the engine: other rules",
+            "rejected at the light assessment (no Equifax call)",
         ],
         strict=True,
     )
@@ -115,6 +125,15 @@ def money(eur: float, decimals: int = 1) -> str:
     return f"€{ac.num(eur / 1e6, decimals)}M"
 
 
+def pct_or_dash(value: float, decimals: int = 1) -> str:
+    """A percentage, or '—' when there is nothing to show (no score, no risk)."""
+    return "—" if pd.isna(value) else ac.num(float(value), decimals, "%")
+
+
+def money_or_dash(eur: float, decimals: int = 1) -> str:
+    return "—" if pd.isna(eur) else money(float(eur), decimals)
+
+
 # --------------------------------------------------------------------------- #
 # layout primitives
 # --------------------------------------------------------------------------- #
@@ -135,6 +154,12 @@ def _text(slide, x, y, w, h, text, size=14, bold=False, color=INK, align=PP_ALIG
         run.font.size, run.font.bold, run.font.name = Pt(size), bold, FONT
         run.font.color.rgb = color
     return box
+
+
+def month_label(first_of_month: str) -> str:
+    """'2025-07-01' -> 'Jul 2025'."""
+    d = date.fromisoformat(first_of_month)
+    return f"{MONTHS[d.month - 1]} {d.year}"
 
 
 def span(start: str, end: str) -> str:
@@ -221,23 +246,34 @@ def _tile(slide, x, y, w, h, label: str, value: str, note: str = "", value_color
         _text(slide, x + Inches(0.18), y + h - Inches(0.52), w - Inches(0.36), Inches(0.42), note, size=10, color=MUTED)
 
 
-def _table(slide, x, y, w, rows: list[list[str]], col_w: list[float] | None = None, row_h: float = 0.36) -> None:
+def _table(
+    slide,
+    x,
+    y,
+    w,
+    rows: list[list[str]],
+    col_w: list[float] | None = None,
+    row_h: float = 0.36,
+    font_pt: float = 11.5,
+    header_h: float | None = None,
+) -> None:
+    """``header_h`` lets a two-line header row be taller than the data rows."""
     n_rows, n_cols = len(rows), len(rows[0])
-    shape = slide.shapes.add_table(n_rows, n_cols, x, y, w, Inches(row_h * n_rows))
+    shape = slide.shapes.add_table(n_rows, n_cols, x, y, w, Inches(row_h * (n_rows - 1) + (header_h or row_h)))
     table = shape.table
     if col_w:
         total = sum(col_w)
         for i, frac in enumerate(col_w):
             table.columns[i].width = Emu(int(w * frac / total))
     for r, row in enumerate(rows):
-        table.rows[r].height = Inches(row_h)
+        table.rows[r].height = Inches(header_h if r == 0 and header_h else row_h)
         for c, value in enumerate(row):
             cell = table.cell(r, c)
             cell.text = str(value)
             for para in cell.text_frame.paragraphs:
                 para.alignment = PP_ALIGN.LEFT if c == 0 else PP_ALIGN.RIGHT
                 for run in para.runs:
-                    run.font.size, run.font.name = Pt(11.5), FONT
+                    run.font.size, run.font.name = Pt(font_pt), FONT
                     run.font.bold = r == 0
                     run.font.color.rgb = INK if r == 0 else MUTED
             cell.fill.solid()
@@ -304,7 +340,7 @@ def slide_title(prs, online, stores, today: str) -> None:
         Inches(4.25),
         Inches(8.6),
         Inches(1.2),
-        "Applying the Apple Online grid to Apple Stores gains acceptance and lowers risk at the same time. "
+        "Applying the Apple Online grid to Apple Stores raises the booking rate and lowers risk at the same time. "
         "Store risk is still an estimate, but its level is now anchored to the delinquency stores have "
         "actually had: the only assumption left is that the score ranks the same way, not how much risk there is.",
         size=15,
@@ -330,11 +366,11 @@ def slide_exec(prs, online, stores, picks, stores_img: Path, meta: dict, facts: 
     w, gap = Inches(3.02), Inches(0.18)
     tiles = [
         ("Apple Online realized risk", ac.num(online["riesgo_real_pct"], 2, "%"), "measured on the mature book", RISK),
-        ("Online acceptance rate", ac.num(online["ta_pct"], 1, "%"), "on € demand", INK),
+        (f"Online {BOOKING_RATE.lower()}", ac.num(online["ta_pct"], 1, "%"), "booked / € demand", INK),
         (
             "Stores with the EFX grid",
             ac.num(stores["ta_efectiva_pct"], 1, "%"),
-            f"acceptance, from {ac.num(stores['ta_actual_pct'], 1, '%')} today",
+            f"booking rate, from {ac.num(stores['ta_actual_pct'], 1, '%')} today",
             ACCENT,
         ),
         (
@@ -352,8 +388,8 @@ def slide_exec(prs, online, stores, picks, stores_img: Path, meta: dict, facts: 
 
     _text(slide, MARGIN, y2, left_w, Inches(0.4), "Global Apple risk scenarios", size=15, bold=True)
     # Only the single cutoff in the summary; the shifted-grid variant goes on the point-3
-    # slide. The EFFECTIVE acceptance is published, the one comparable with point 1.
-    rows = [["Scenario", "Cutoff", "Eff. acc.", "Production"]]
+    # slide. Both demand-based rates are published; the booking rate is the one point 1 uses.
+    rows = [["Scenario", "Cutoff", "Sys. appr.", "Booking", "Production"]]
     for row in picks.dropna(subset=["riesgo_total_pct"]).itertuples():
         if SHIFTED_GRID in row.escenario or row.escenario == TODAY_SAME_BASE:
             continue
@@ -361,12 +397,13 @@ def slide_exec(prs, online, stores, picks, stores_img: Path, meta: dict, facts: 
             [
                 row.escenario.replace(f" · {SINGLE_CUTOFF}", ""),
                 str(row.corte),
+                pct_or_dash(row.ta_score_pct),
                 ac.num(row.ta_efectiva_pct, 1, "%"),
                 f"{money(row.produccion_mensual_eur)}/mo",
             ]
         )
     # Column 0 is sized for its longest label at 11.5 pt: a wrapped cell grows the row into the bullets below.
-    _table(slide, MARGIN, y2 + Inches(0.45), left_w, rows, col_w=[2.1, 0.9, 0.9, 1.1], row_h=0.30)
+    _table(slide, MARGIN, y2 + Inches(0.45), left_w, rows, col_w=[2.0, 1.05, 0.85, 0.85, 1.0], row_h=0.30)
 
     _bullets(
         slide,
@@ -616,7 +653,7 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, meta: dict, period: str 
     slide.shapes.add_picture(str(img), MARGIN, y, width=chart_w, height=chart_h)
 
     x2 = MARGIN + chart_w + Inches(0.28)
-    rows = [["Scenario", "Cutoff", "Score acc.", "Eff. acc."]]
+    rows = [["Scenario", "Cutoff", "Sys. appr.", "Booking"]]
     for row in picks.dropna(subset=["riesgo_total_pct"]).itertuples():
         rows.append(
             [
@@ -625,7 +662,7 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, meta: dict, period: str 
                 .replace(TODAY_SAME_BASE, "Today, current demand")
                 .replace(CURRENT_GRID, "Online grid (both)"),
                 str(row.corte).replace(" points", "p"),
-                "—" if pd.isna(row.ta_score_pct) else ac.num(row.ta_score_pct, 1, "%"),
+                pct_or_dash(row.ta_score_pct),
                 ac.num(row.ta_efectiva_pct, 1, "%"),
             ]
         )
@@ -701,13 +738,106 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, meta: dict, period: str 
         y + Inches(3.40),
         Inches(4.75),
         Inches(2.3),
-        "Score acc.: demand above the cutoff.\n"
-        "Eff. acc.: production / demand, the same base as point 1. The two are not comparable.\n\n"
+        f"{SYSTEM_APPROVAL}: demand the engine lets through — (OK + RV) today; above the cutoff and not rejected "
+        "by another rule under a grid.\n"
+        f"{BOOKING_RATE}: booked / demand = system approval × take-up. Point 1 and the headline use it.\n\n"
         "Shifting the current grid keeps its shape —looser where the group is good— and gives slightly more "
         f"acceptance at the same risk.{ri_note}",
         size=10.5,
         color=MUTED,
         spacing=1.25,
+    )
+
+
+def slide_scenarios_by_channel(prs, picks: pd.DataFrame, meta: dict, period: str = "") -> None:
+    """Every Apple-total figure, split e-commerce / stores / Apple.
+
+    Two tables, one magnitude family each (rates; production and risk), so a 13-column
+    table does not have to be read. Only the shifted-grid instrument per target: it is
+    the one the email quotes and the single cutoff is one row away on the previous slide.
+    """
+    slide = _blank(prs)
+    y = _header(slide, "Scenarios by channel", "Point 3 · E-commerce, stores and Apple", period)
+    targets = sorted(picks["escenario"].str.extract(r"^(\d+(?:\.\d+)?)%")[0].dropna().astype(float).unique())
+    wanted = [TODAY_MEASURED, TODAY_SAME_BASE, CURRENT_GRID] + [f"{t:g}% · {SHIFTED_GRID}" for t in targets]
+    short = {
+        TODAY_MEASURED: "Today (measured)",
+        TODAY_SAME_BASE: "Today, current store demand",
+        CURRENT_GRID: "Online grid in both",
+    }
+    sel = picks.set_index("escenario").reindex([w for w in wanted if w in set(picks["escenario"])])
+
+    def label(name: str) -> str:
+        return short.get(name, name.replace(f" · {SHIFTED_GRID}", " target · shifted grid"))
+
+    rates = [
+        [
+            "Rates, % of € demand",
+            "E-com\nsys. appr.",
+            "E-com\nbooking",
+            "Stores\nsys. appr.",
+            "Stores\nbooking",
+            "Apple\nsys. appr.",
+            "Apple\nbooking",
+        ]
+    ]
+    money_risk = [
+        [
+            "Production €M/mo · risk (b2)",
+            "E-com\nprod./mo",
+            "E-com\nrisk",
+            "Stores\nprod./mo",
+            "Stores\nrisk",
+            "Apple\nprod./mo",
+            "Apple\nrisk",
+        ]
+    ]
+    for name, r in sel.iterrows():
+        rates.append(
+            [
+                label(name),
+                pct_or_dash(r["online_aprobacion_sistema_pct"]),
+                pct_or_dash(r["online_tasa_contratacion_pct"]),
+                pct_or_dash(r["tienda_aprobacion_sistema_pct"]),
+                pct_or_dash(r["tienda_tasa_contratacion_pct"]),
+                pct_or_dash(r["ta_score_pct"]),
+                pct_or_dash(r["ta_efectiva_pct"]),
+            ]
+        )
+        money_risk.append(
+            [
+                label(name),
+                money_or_dash(r["online_produccion_mensual_eur"]),
+                pct_or_dash(r["online_riesgo_pct"], 2),
+                money_or_dash(r["tienda_produccion_mensual_eur"]),
+                pct_or_dash(r["tienda_riesgo_pct"], 2),
+                money_or_dash(r["produccion_mensual_eur"]),
+                pct_or_dash(r["riesgo_total_pct"], 2),
+            ]
+        )
+    w = W - 2 * MARGIN
+    # Two tables stacked: 10.5 pt, two-line header rows, the magnitude title in the header cell.
+    kw = {"col_w": [2.6] + [1.0] * 6, "row_h": 0.25, "font_pt": 10.5, "header_h": 0.42}
+    _table(slide, MARGIN, y, w, rates, **kw)
+    y2 = y + Inches(0.42 + 0.25 * (len(rates) - 1)) + Inches(0.15)
+    _table(slide, MARGIN, y2, w, money_risk, **kw)
+    y3 = y2 + Inches(0.42 + 0.25 * (len(money_risk) - 1)) + Inches(0.12)
+    stores_today = span(meta["online_desde"], meta["online_hasta"])
+    stores_scored = span(meta["tienda_desde"], meta["tienda_hasta"])
+    _text(
+        slide,
+        MARGIN,
+        y3,
+        w,
+        H - y3 - Inches(0.2),
+        f"Stores: 'Today (measured)' is the {stores_today} window with the internal score; every other row is "
+        f"{stores_scored}, the only period with an EFX score. Online is always {stores_today}. Store booking rates "
+        "here use the channel take-up; point 2 uses per-segment take-up, hence a 0.1 pp difference. Online's risk "
+        "in the grid rows carries the reject-inference uplift on its own book (realized "
+        f"{pct_or_dash(sel.loc[TODAY_MEASURED, 'online_riesgo_pct'] if TODAY_MEASURED in sel.index else float('nan'), 2)}).",
+        size=10,
+        color=MUTED,
+        spacing=1.2,
     )
 
 
@@ -814,7 +944,7 @@ def slide_closing(prs, meta: dict, facts: dict) -> None:
     )
 
 
-def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], period: str) -> None:
+def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], meta: dict, period: str) -> None:
     """What 'acceptance rate' means and where unfinished demand goes.
 
     The two questions the business asked after the first read. The table IS the
@@ -823,19 +953,30 @@ def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], per
     engine approval end up with very different acceptance: take-up.
     """
     slide = _blank(prs)
-    y = _header(slide, "How acceptance is measured", "Definitions", period)
+    y = _header(slide, "System approval, take-up and booking rate", "Definitions", period)
     table = breakdown.pivot(index="estado", columns="canal", values="pct_demanda").reindex(list(DEMAND_STATES))
     approval = table.iloc[:3].sum()
     take_up = 100 * table.iloc[0] / approval
+    st_from, on_from = meta.get("estudio_ligero_tienda_desde"), meta.get("estudio_ligero_online_desde")
+    n_months = meta.get("estudio_ligero_meses_ventana_tienda", 0)
+    if st_from:
+        light_note = (
+            f"The extract carries them for stores from {month_label(st_from)}"
+            + (f" and for Online from {month_label(on_from)} (outside the Online window)" if on_from else "")
+            + f"; the stores 'today' window has them in {n_months} of its 12 months, so its acceptance rate is a "
+            "blend. Online's own unscored rejections have always been in its base."
+        )
+    else:
+        light_note = ""
     rows = [["Where each € of demand ends up"] + list(columns.values())]
     for estado, label in _STATES.items():
         rows.append([label] + [ac.num(table.loc[estado, c], 1, "%") for c in columns])
     rows.append(["Total demand"] + ["100.0%"] * len(columns))
-    rows.append(["Engine approval (first three rows)"] + [ac.num(approval[c], 1, "%") for c in columns])
+    rows.append([f"{SYSTEM_APPROVAL}: OK + RV (first three rows)"] + [ac.num(approval[c], 1, "%") for c in columns])
     rows.append(["Take-up: booked / approved"] + [ac.num(take_up[c], 0, "%") for c in columns])
     # Column widths measured for the longest label at 11.5 pt; headers are two lines
     # (channel / period) so the period never has to fit on one.
-    _table(slide, MARGIN, y, Inches(7.5), rows, col_w=[3.45, 1.35, 1.35, 1.35], row_h=0.34)
+    _table(slide, MARGIN, y, Inches(7.5), rows, col_w=[3.45, 1.35, 1.35, 1.35], row_h=0.32)
 
     _bullets(
         slide,
@@ -844,14 +985,16 @@ def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], per
         Inches(4.25),
         [
             (
-                "Acceptance rate (effective).",
+                f"{BOOKING_RATE}.",
                 "€ booked / € applied for, over every application that comes through the door — rejected, "
-                "cancelled and booked alike. The first row of the table. Point 1 and every scenario use it.",
+                "cancelled and booked alike. The first row of the table; point 1, the scenarios and the headline "
+                "use it. It equals system approval × take-up.",
             ),
             (
-                "Score acceptance.",
-                "€ above the score cutoff and not rejected by another rule, over € demand. Comparable with the "
-                "engine's approval rate, not with the effective one; shown only in the scenario table.",
+                f"{SYSTEM_APPROVAL}.",
+                "(OK + RV) / € demand: what the engine lets through, before the customer decides. Under a grid it "
+                "is simulated as demand above the cutoff and not rejected by another rule. Comparable across "
+                "today and every scenario; not comparable with the booking rate.",
             ),
             (
                 "Unfinished demand.",
@@ -866,12 +1009,18 @@ def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], per
                 "unfinished demand.",
             ),
             (
+                "Light assessment.",
+                "Applications rejected before the full study: the Equifax API is never called, so they have no "
+                "score. They count in the denominator like any rejection and are never swap-in candidates nor "
+                f"given an imputed risk. {light_note}",
+            ),
+            (
                 "Reject inference.",
-                "Neither state enters the per-bin acceptance rate — booked / (booked + score-rejected) — so they "
-                "do not inflate the uplift.",
+                "None of these states enters the per-bin acceptance rate — booked / (booked + score-rejected) — "
+                "so they do not inflate the uplift.",
             ),
         ],
-        size=10.5,
+        size=10,
     )
 
 
@@ -898,15 +1047,15 @@ def slide_store_demand(
     # The left table is WINDOW totals; the blend on the right is a monthly run-rate. The
     # bridge row says the divisor, because the two production figures otherwise look like
     # they disagree (€14.6M over Aug–Sep vs €10.1M/mo).
-    rows = [["Each € of store demand", "Share", f"Exp. production\n{facts['stores_window']}", "Imputed risk"]]
+    rows = [["Each € of store demand", "Sys. appr.", f"Exp. production\n{facts['stores_window']}", "Imputed risk"]]
     for key, label in _SWAP.items():
         r = sw.loc[key]
         rows.append(
             [
                 label,
                 ac.num(r["pct_demanda"], 1, "%"),
-                money(r["produccion_est_eur"]),
-                ac.num(r["riesgo_imputado_pct"], 1, "%"),
+                money_or_dash(r["produccion_est_eur"]),
+                pct_or_dash(r["riesgo_imputado_pct"]),
             ]
         )
     rows.append(
@@ -939,7 +1088,7 @@ def slide_store_demand(
             ac.num(stores["riesgo_imputado_actual_pct"], 2, "%"),
         ]
     )
-    _table(slide, MARGIN, y, Inches(7.5), rows, col_w=[3.4, 1.2, 1.5, 1.4], row_h=0.30)
+    _table(slide, MARGIN, y, Inches(7.5), rows, col_w=[3.4, 1.2, 1.5, 1.4], row_h=0.28)
 
     cols = {"online": "Online", "tienda": "Stores", "total": "Apple"}
     brows = [["Monthly run-rate"] + list(cols.values())]
@@ -975,7 +1124,7 @@ def slide_store_demand(
         spacing=1.2,
     )
 
-    steps_y = y + Inches(0.30 * len(rows) + 0.3)
+    steps_y = y + Inches(0.28 * len(rows) + 0.25)
     _bullets(
         slide,
         MARGIN,
@@ -1006,10 +1155,12 @@ def slide_store_demand(
                 f"The swap-out is {ac.num(swap_out['pct_demanda'], 1, '%')} of demand with "
                 f"{ac.num(swap_out['riesgo_imputado_pct'], 0, '%')} imputed risk (median EFX "
                 f"{ac.num(swap_out['score_mediano'], 0)}): the octroi's weakest approvals. The swap-in brings "
-                f"{ac.num(swap_in['pct_demanda'], 1, '%')} of demand at {ac.num(swap_in['riesgo_imputado_pct'], 1, '%')}.",
+                f"{ac.num(swap_in['pct_demanda'], 1, '%')} of demand at {ac.num(swap_in['riesgo_imputado_pct'], 1, '%')}. "
+                f"Light-assessment rejections ({ac.num(sw.iloc[5]['pct_demanda'], 1, '%')} of demand) never reach the "
+                "grid: no Equifax call, no score.",
             ),
         ],
-        size=10.5,
+        size=10,
     )
 
 
@@ -1118,12 +1269,13 @@ def build(data_dir: Path, out_path: Path) -> Path:
     slide_definitions(
         prs,
         breakdown,
-        {
+        meta=meta,
+        columns={
             "online": f"Online\n{short(p_online)}",
             "tienda_ventana": f"Stores\n{short(p_online)}",
             "tienda_score": f"Stores\n{short(p_stores)}",
         },
-        p_mixed,
+        period=p_mixed,
     )
     slide_chart(
         prs,
@@ -1140,7 +1292,7 @@ def build(data_dir: Path, out_path: Path) -> Path:
         paths["stores_today"],
         "Measured on stores' own history, same window as Online: describing where they stand today needs no "
         "imputation. They accept almost three times as much as Online and carry less risk. Warning: their "
-        f"acceptance rate is falling ({ac.num(facts['ta_stores_window_pct'], 1, '%')} over {p_online}, "
+        f"booking rate is falling ({ac.num(facts['ta_stores_window_pct'], 1, '%')} over {p_online}, "
         f"{ac.num(facts['ta_stores_recent_pct'], 1, '%')} in {p_stores}), so the baseline is moving.",
         period=f"Originations {p_online}",
     )
@@ -1157,6 +1309,7 @@ def build(data_dir: Path, out_path: Path) -> Path:
         period=f"Stores {p_stores}",
     )
     slide_frontier(prs, paths["frontier"], picks, meta, p_mixed)
+    slide_scenarios_by_channel(prs, picks, meta, p_mixed)
     slide_grids(prs, grids, "Policy — no period")
     slide_method_risk(prs, meta, facts, f"Online {p_online}  ·  stores {p_stores}")
     slide_store_demand(prs, swap, blend, breakdown, stores, meta, facts, p_mixed)
