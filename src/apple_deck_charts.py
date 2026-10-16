@@ -49,11 +49,10 @@ CURRENT_GRID = "Online grid in both channels"
 SINGLE_CUTOFF = "single cutoff"
 SHIFTED_GRID = "shifted grid"
 
-# The two demand-based rates, chained by take-up: booking rate = system approval × take-up.
-# Business calls the second one "financing rate"; the pipeline already uses "tasa de
-# financiación" for booked / approved (the take-up), so the deck says "booking rate".
+# The deck's single demand-based rate (Iñigo, 2026-10-16): system approval = (OK + RV) / €
+# demand, measured today and simulated under a grid. The email also carries the booking
+# rate (booked / demand); the deck deliberately does not.
 SYSTEM_APPROVAL = "System approval"
-BOOKING_RATE = "Booking rate"
 
 
 def num(value: float, decimals: int = 2, suffix: str = "") -> str:
@@ -182,7 +181,7 @@ def chart_risk_curve(curve: pd.DataFrame, edges: list[float]) -> plt.Figure:
 # 2. Point 1 — Apple Online, measured
 # --------------------------------------------------------------------------- #
 def chart_channel_actual(actuals: pd.DataFrame, title: str) -> plt.Figure:
-    """Realized risk by group, with the acceptance rate as a direct label (one magnitude per axis).
+    """Realized risk by group, with system approval as a direct label (one magnitude per axis).
 
     Works for both channels: their current situation is measured, not imputed.
     """
@@ -203,7 +202,14 @@ def chart_channel_actual(actuals: pd.DataFrame, title: str) -> plt.Figure:
             fontweight="bold",
             color=INK,
         )
-        ax.annotate(f"booking {num(row.ta_pct, 1, '%')}", (xmax, i), ha="right", va="center", fontsize=9.5, color=MUTED)
+        ax.annotate(
+            f"approval {num(row.aprobacion_sistema_pct, 1, '%')}",
+            (xmax, i),
+            ha="right",
+            va="center",
+            fontsize=9.5,
+            color=MUTED,
+        )
     ax.set_yticks(y)
     ax.set_yticklabels(df["segmento"], fontsize=10.5, color=INK)
     _style(ax, xlabel="Realized b2 risk (%)", hgrid=False)
@@ -239,11 +245,11 @@ def chart_stores_swap(grid: pd.DataFrame, compact: bool = False) -> plt.Figure:
     halve the fonts.
     """
     total = grid[grid["segmento"] == "TOTAL"].iloc[0]
-    ta0, ta1 = total["ta_actual_pct"], total["ta_efectiva_pct"]
+    ta0, ta1 = total["aprobacion_sistema_actual_pct"], total["pct_demanda_aceptada"]
     r0, r1 = total["riesgo_imputado_actual_pct"], total["riesgo_imputado_pct"]
     # Verdicts are computed: a fixed text would lie as soon as the data changed sign.
     panels = [
-        (f"{BOOKING_RATE} (% of € demand)", ta0, ta1, "higher booking rate" if ta1 >= ta0 else "lower booking rate"),
+        (f"{SYSTEM_APPROVAL} (% of € demand)", ta0, ta1, "higher approval" if ta1 >= ta0 else "lower approval"),
         ("Imputed risk (%)", r0, r1, "less risk" if r1 <= r0 else "more risk"),
     ]
     figsize = (6.8, 3.2) if compact else (10.5, 4.4)
@@ -277,7 +283,7 @@ def chart_stores_swap(grid: pd.DataFrame, compact: bool = False) -> plt.Figure:
         )
     if not compact:
         fig.suptitle(
-            "In stores, switching to the EFX score raises the booking rate and lowers risk at once",
+            "In stores, switching to the EFX score raises system approval and lowers risk at once",
             fontsize=13,
             fontweight="bold",
             x=0.085,
@@ -300,7 +306,7 @@ def chart_stores_by_segment(grid: pd.DataFrame) -> plt.Figure:
     df = df.sort_values("demanda_eur")
     y = np.arange(len(df))
     panels = [
-        (f"{BOOKING_RATE} (% of € demand)", "ta_actual_pct", "ta_efectiva_pct"),
+        (f"{SYSTEM_APPROVAL} (% of € demand)", "aprobacion_sistema_actual_pct", "pct_demanda_aceptada"),
         ("Imputed risk (%)", "riesgo_imputado_actual_pct", "riesgo_imputado_pct"),
     ]
     fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.6), sharey=True)
@@ -335,12 +341,12 @@ def chart_stores_by_segment(grid: pd.DataFrame) -> plt.Figure:
     # The headline is computed: a group can lose a few tenths of acceptance (A-C does)
     # and then "every group gains" would be false. "Where it weighs most" is the group
     # with the most demand.
-    gain = int((df["ta_efectiva_pct"] > df["ta_actual_pct"]).sum())
+    gain = int((df["pct_demanda_aceptada"] > df["aprobacion_sistema_actual_pct"]).sum())
     biggest = df.iloc[-1]  # df is sorted by demand, ascending
     head = (
-        "Every group's booking rate rises"
+        "Every group's system approval rises"
         if gain == len(df)
-        else f"{gain} of {len(df)} groups raise their booking rate"
+        else f"{gain} of {len(df)} groups raise their system approval"
     )
     tail = (
         "risk falls where it weighs most"
@@ -366,27 +372,24 @@ def chart_stores_by_segment(grid: pd.DataFrame) -> plt.Figure:
 def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Figure:
     """Risk-acceptance frontier, with the current policy marked.
 
-    The acceptance on the axis is the **effective** one (production over demand),
-    the same base as point 1. The other rate the study handles — demand above the
-    cutoff — is much higher and not comparable with "today"; it goes in the table,
-    not here.
+    The rate on the axis is system approval: (OK + RV) / demand today, and under a grid
+    the demand above the cutoff that no other rule rejects — the deck's single
+    acceptance metric.
 
     The current-grid point is what turns the curve into a decision: without it one
     cannot see that all four targets are tightenings.
     """
     df = ladder.sort_values("riesgo_total_pct")
     fig, ax = plt.subplots(figsize=(11, 5.4))
-    ax.plot(
-        df["riesgo_total_pct"], df["ta_efectiva_pct"], color=PROPOSED, linewidth=2, solid_capstyle="round", zorder=3
-    )
+    ax.plot(df["riesgo_total_pct"], df["ta_score_pct"], color=PROPOSED, linewidth=2, solid_capstyle="round", zorder=3)
     ax.scatter(
-        df["riesgo_total_pct"], df["ta_efectiva_pct"], s=24, color=PROPOSED, edgecolor=SURFACE, linewidth=1.6, zorder=4
+        df["riesgo_total_pct"], df["ta_score_pct"], s=24, color=PROPOSED, edgecolor=SURFACE, linewidth=1.6, zorder=4
     )
 
     marks = picks[picks["escenario"].str.contains(SINGLE_CUTOFF, na=False)].dropna(subset=["riesgo_total_pct"])
     ax.scatter(
         marks["riesgo_total_pct"],
-        marks["ta_efectiva_pct"],
+        marks["ta_score_pct"],
         s=170,
         facecolor=SURFACE,
         edgecolor=INK,
@@ -396,7 +399,7 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
     for row in marks.itertuples():
         ax.annotate(
             f"target {row.escenario.split(' ·')[0]}",
-            (row.riesgo_total_pct, row.ta_efectiva_pct),
+            (row.riesgo_total_pct, row.ta_score_pct),
             textcoords="offset points",
             xytext=(-14, 13),
             ha="right",
@@ -409,7 +412,7 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
         m = measured.iloc[0]
         ax.scatter(
             [m["riesgo_total_pct"]],
-            [m["ta_efectiva_pct"]],
+            [m["ta_score_pct"]],
             s=200,
             color=CURRENT,
             edgecolor=SURFACE,
@@ -417,8 +420,8 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
             zorder=6,
         )
         ax.annotate(
-            f"today, measured: {num(m['ta_efectiva_pct'], 1, '%')} booking rate",
-            (m["riesgo_total_pct"], m["ta_efectiva_pct"]),
+            f"today, measured: {num(m['ta_score_pct'], 1, '%')} system approval",
+            (m["riesgo_total_pct"], m["ta_score_pct"]),
             textcoords="offset points",
             xytext=(14, -16),
             ha="left",
@@ -431,7 +434,7 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
         b = base.iloc[0]
         ax.scatter(
             [b["riesgo_total_pct"]],
-            [b["ta_efectiva_pct"]],
+            [b["ta_score_pct"]],
             s=200,
             color=RISK,
             edgecolor=SURFACE,
@@ -439,8 +442,8 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
             zorder=6,
         )
         ax.annotate(
-            f"Online grid in both channels: {num(b['ta_efectiva_pct'], 1, '%')} booking rate",
-            (b["riesgo_total_pct"], b["ta_efectiva_pct"]),
+            f"Online grid in both channels: {num(b['ta_score_pct'], 1, '%')} system approval",
+            (b["riesgo_total_pct"], b["ta_score_pct"]),
             textcoords="offset points",
             xytext=(16, -5),
             ha="left",
@@ -448,15 +451,15 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
             fontweight="bold",
             color=RISK,
         )
-    _style(ax, ylabel=f"{BOOKING_RATE} (production / demand, %)", xlabel="Global Apple risk (%)")
+    _style(ax, ylabel=f"{SYSTEM_APPROVAL} (% of € demand)", xlabel="Global Apple risk (%)")
     # The axis is cropped to the decision zone: loosening beyond the current policy is
     # not on the table, and with the whole tail the four targets bunch up.
     if not base.empty:
         ax.set_xlim(0, float(base.iloc[0]["riesgo_total_pct"]) * 1.45)
         visible = df[df["riesgo_total_pct"] <= float(base.iloc[0]["riesgo_total_pct"]) * 1.45]
-        ax.set_ylim(0, max(visible["ta_efectiva_pct"].max(), 1) * 1.3)
+        ax.set_ylim(0, max(visible["ta_score_pct"].max(), 1) * 1.3)
     else:
-        ax.set_ylim(0, max(df["ta_efectiva_pct"].max(), 1) * 1.25)
+        ax.set_ylim(0, max(df["ta_score_pct"].max(), 1) * 1.25)
     # The title is a reading of the data, so the data decides it: it only holds if the
     # current grid already sits at or under the highest target requested.
     targets = picks["escenario"].str.extract(r"^(\d+(?:\.\d+)?)%")[0].dropna().astype(float)
@@ -466,7 +469,7 @@ def chart_scenario_frontier(ladder: pd.DataFrame, picks: pd.DataFrame) -> plt.Fi
     ax.set_title(
         f"The {top:g}% target is already met by the current grid"
         if already_there
-        else "Each risk target has its price in booking rate",
+        else "Each risk target has its price in system approval",
         fontsize=13,
         fontweight="bold",
         loc="left",
