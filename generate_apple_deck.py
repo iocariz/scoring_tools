@@ -71,6 +71,7 @@ _SWAP = dict(
             "swap-out: approved today, below cutoff",
             "rejected by both scores (today, and by EFX)",
             "untouched: rejected by other rules",
+            "untouched: light assessment, no Equifax call",
         ],
         strict=True,
     )
@@ -84,6 +85,7 @@ _STATES = dict(
             "approved, rejected downstream",
             "rejected by the engine: score",
             "rejected by the engine: other rules",
+            "rejected at the light assessment (no Equifax call)",
         ],
         strict=True,
     )
@@ -115,6 +117,15 @@ def money(eur: float, decimals: int = 1) -> str:
     return f"€{ac.num(eur / 1e6, decimals)}M"
 
 
+def pct_or_dash(value: float, decimals: int = 1) -> str:
+    """A percentage, or '—' when there is nothing to show (no score, no risk)."""
+    return "—" if pd.isna(value) else ac.num(float(value), decimals, "%")
+
+
+def money_or_dash(eur: float, decimals: int = 1) -> str:
+    return "—" if pd.isna(eur) else money(float(eur), decimals)
+
+
 # --------------------------------------------------------------------------- #
 # layout primitives
 # --------------------------------------------------------------------------- #
@@ -135,6 +146,12 @@ def _text(slide, x, y, w, h, text, size=14, bold=False, color=INK, align=PP_ALIG
         run.font.size, run.font.bold, run.font.name = Pt(size), bold, FONT
         run.font.color.rgb = color
     return box
+
+
+def month_label(first_of_month: str) -> str:
+    """'2025-07-01' -> 'Jul 2025'."""
+    d = date.fromisoformat(first_of_month)
+    return f"{MONTHS[d.month - 1]} {d.year}"
 
 
 def span(start: str, end: str) -> str:
@@ -814,7 +831,7 @@ def slide_closing(prs, meta: dict, facts: dict) -> None:
     )
 
 
-def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], period: str) -> None:
+def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], meta: dict, period: str) -> None:
     """What 'acceptance rate' means and where unfinished demand goes.
 
     The two questions the business asked after the first read. The table IS the
@@ -827,6 +844,17 @@ def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], per
     table = breakdown.pivot(index="estado", columns="canal", values="pct_demanda").reindex(list(DEMAND_STATES))
     approval = table.iloc[:3].sum()
     take_up = 100 * table.iloc[0] / approval
+    st_from, on_from = meta.get("estudio_ligero_tienda_desde"), meta.get("estudio_ligero_online_desde")
+    n_months = meta.get("estudio_ligero_meses_ventana_tienda", 0)
+    if st_from:
+        light_note = (
+            f"The extract carries them for stores from {month_label(st_from)}"
+            + (f" and for Online from {month_label(on_from)} (outside the Online window)" if on_from else "")
+            + f"; the stores 'today' window has them in {n_months} of its 12 months, so its acceptance rate is a "
+            "blend. Online's own unscored rejections have always been in its base."
+        )
+    else:
+        light_note = ""
     rows = [["Where each € of demand ends up"] + list(columns.values())]
     for estado, label in _STATES.items():
         rows.append([label] + [ac.num(table.loc[estado, c], 1, "%") for c in columns])
@@ -835,7 +863,7 @@ def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], per
     rows.append(["Take-up: booked / approved"] + [ac.num(take_up[c], 0, "%") for c in columns])
     # Column widths measured for the longest label at 11.5 pt; headers are two lines
     # (channel / period) so the period never has to fit on one.
-    _table(slide, MARGIN, y, Inches(7.5), rows, col_w=[3.45, 1.35, 1.35, 1.35], row_h=0.34)
+    _table(slide, MARGIN, y, Inches(7.5), rows, col_w=[3.45, 1.35, 1.35, 1.35], row_h=0.32)
 
     _bullets(
         slide,
@@ -866,12 +894,18 @@ def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], per
                 "unfinished demand.",
             ),
             (
+                "Light assessment.",
+                "Applications rejected before the full study: the Equifax API is never called, so they have no "
+                "score. They count in the denominator like any rejection and are never swap-in candidates nor "
+                f"given an imputed risk. {light_note}",
+            ),
+            (
                 "Reject inference.",
-                "Neither state enters the per-bin acceptance rate — booked / (booked + score-rejected) — so they "
-                "do not inflate the uplift.",
+                "None of these states enters the per-bin acceptance rate — booked / (booked + score-rejected) — "
+                "so they do not inflate the uplift.",
             ),
         ],
-        size=10.5,
+        size=10,
     )
 
 
@@ -905,8 +939,8 @@ def slide_store_demand(
             [
                 label,
                 ac.num(r["pct_demanda"], 1, "%"),
-                money(r["produccion_est_eur"]),
-                ac.num(r["riesgo_imputado_pct"], 1, "%"),
+                money_or_dash(r["produccion_est_eur"]),
+                pct_or_dash(r["riesgo_imputado_pct"]),
             ]
         )
     rows.append(
@@ -939,7 +973,7 @@ def slide_store_demand(
             ac.num(stores["riesgo_imputado_actual_pct"], 2, "%"),
         ]
     )
-    _table(slide, MARGIN, y, Inches(7.5), rows, col_w=[3.4, 1.2, 1.5, 1.4], row_h=0.30)
+    _table(slide, MARGIN, y, Inches(7.5), rows, col_w=[3.4, 1.2, 1.5, 1.4], row_h=0.28)
 
     cols = {"online": "Online", "tienda": "Stores", "total": "Apple"}
     brows = [["Monthly run-rate"] + list(cols.values())]
@@ -975,7 +1009,7 @@ def slide_store_demand(
         spacing=1.2,
     )
 
-    steps_y = y + Inches(0.30 * len(rows) + 0.3)
+    steps_y = y + Inches(0.28 * len(rows) + 0.25)
     _bullets(
         slide,
         MARGIN,
@@ -1006,10 +1040,12 @@ def slide_store_demand(
                 f"The swap-out is {ac.num(swap_out['pct_demanda'], 1, '%')} of demand with "
                 f"{ac.num(swap_out['riesgo_imputado_pct'], 0, '%')} imputed risk (median EFX "
                 f"{ac.num(swap_out['score_mediano'], 0)}): the octroi's weakest approvals. The swap-in brings "
-                f"{ac.num(swap_in['pct_demanda'], 1, '%')} of demand at {ac.num(swap_in['riesgo_imputado_pct'], 1, '%')}.",
+                f"{ac.num(swap_in['pct_demanda'], 1, '%')} of demand at {ac.num(swap_in['riesgo_imputado_pct'], 1, '%')}. "
+                f"Light-assessment rejections ({ac.num(sw.iloc[5]['pct_demanda'], 1, '%')} of demand) never reach the "
+                "grid: no Equifax call, no score.",
             ),
         ],
-        size=10.5,
+        size=10,
     )
 
 
@@ -1118,12 +1154,13 @@ def build(data_dir: Path, out_path: Path) -> Path:
     slide_definitions(
         prs,
         breakdown,
-        {
+        meta=meta,
+        columns={
             "online": f"Online\n{short(p_online)}",
             "tienda_ventana": f"Stores\n{short(p_online)}",
             "tienda_score": f"Stores\n{short(p_stores)}",
         },
-        p_mixed,
+        period=p_mixed,
     )
     slide_chart(
         prs,

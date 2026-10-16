@@ -140,6 +140,9 @@ def study_outputs(tmp_path):
                 "take_up_online_rv_pct": 5.5,
                 "take_up_tienda_ok_pct": 81.5,
                 "take_up_tienda_rv_pct": 17.8,
+                "estudio_ligero_tienda_desde": "2025-07-01",
+                "estudio_ligero_online_desde": "2026-05-01",
+                "estudio_ligero_meses_ventana_tienda": 8,
             }
         ),
         encoding="utf-8",
@@ -157,13 +160,18 @@ def study_outputs(tmp_path):
         "aprobado, rechazado después",
         "rechazado por score",
         "rechazado por otras reglas",
+        "rechazada en estudio ligero (sin llamada a Equifax)",
     ]
     pd.DataFrame(
         {
-            "canal": ["online"] * 5 + ["tienda_ventana"] * 5 + ["tienda_score"] * 5,
+            "canal": ["online"] * 6 + ["tienda_ventana"] * 6 + ["tienda_score"] * 6,
             "estado": states * 3,
-            "eur": [1.0] * 15,
-            "pct_demanda": [20.9, 27.9, 3.1, 6.9, 41.2, 58.7, 10.0, 2.0, 15.0, 14.3, 47.2, 9.6, 2.0, 21.1, 20.1],
+            "eur": [1.0] * 18,
+            "pct_demanda": [
+                *[20.9, 27.9, 3.1, 6.9, 37.1, 4.1],
+                *[55.0, 6.6, 2.5, 10.6, 19.1, 6.2],
+                *[43.0, 8.7, 1.8, 19.2, 18.3, 9.0],
+            ],
         }
     ).to_csv(tmp_path / "p0_demanda_por_estado.csv", index=False)
     pd.DataFrame(
@@ -174,13 +182,14 @@ def study_outputs(tmp_path):
                 "swap-out: aprobada hoy, por debajo del corte",
                 "rechazada por los dos scores: hoy por el interno, por debajo del corte EFX",
                 "intacta: rechazada por otras reglas",
+                "intacta: rechazada en estudio ligero (sin llamada a Equifax)",
             ],
-            "n": [10, 3, 1, 1, 3],
-            "demanda_eur": [5.6e5, 1.9e5, 2e4, 2e4, 2e5],
-            "pct_demanda": [56.8, 19.3, 2.0, 1.9, 20.0],
-            "produccion_est_eur": [4.5e5, 1.5e5, 1.5e4, 1.5e4, 1.6e5],
-            "riesgo_imputado_pct": [3.3, 4.1, 47.6, 41.6, 8.0],
-            "score_mediano": [79.0, 66.0, 19.0, 20.0, 66.0],
+            "n": [10, 3, 1, 1, 3, 2],
+            "demanda_eur": [5.2e5, 1.8e5, 2e4, 2e4, 1.8e5, 9e4],
+            "pct_demanda": [51.7, 17.5, 1.8, 1.7, 18.3, 9.0],
+            "produccion_est_eur": [4.5e5, 1.5e5, 1.5e4, 1.5e4, 1.5e5, 7e4],
+            "riesgo_imputado_pct": [3.3, 4.1, 47.6, 41.6, 8.0, np.nan],
+            "score_mediano": [79.0, 66.0, 19.0, 20.0, 66.0, np.nan],
         }
     ).to_csv(tmp_path / "p2b_tienda_swap.csv", index=False)
     pd.DataFrame(

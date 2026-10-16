@@ -122,6 +122,30 @@ def load_study_data(data_path: str) -> pd.DataFrame:
     data[SEGMENT_COL] = data[LETTER_COL].astype(str).str.upper().map(PARRILLA_GROUPS).fillna(PARRILLA_DEFAULT_GROUP)
     logger.info(f"Grupos de parrilla: {dict(data[SEGMENT_COL].value_counts())}")
 
+    # Rechazadas en el ESTUDIO LIGERO: no pasan al estudio completo y no se llama a la API
+    # de Equifax, así que no tienen score; el extracto trae un 0 centinela. Son demanda
+    # (cuentan en el denominador de la TA, como en Online, que siempre llevó una población
+    # equivalente sin marca: KO bureaux / customer_risk con 0) pero NUNCA se puntúan: el 0
+    # caería en el tramo 1 y se les imputaría un 166% de riesgo. El score pasa a NaN para que
+    # ningún corte, curva ni reject inference las vea.
+    light = (
+        data[LIGHT_FLAG_COL].astype(str).str.lower().eq(LIGHT_FLAG_VALUE)
+        if LIGHT_FLAG_COL in data.columns
+        else pd.Series(False, index=data.index)
+    )
+    data[LIGHT_COL] = light
+    data[UNSCORED_COL] = light | data[SCORE_COL].eq(0)
+    approved_unscored = int(
+        (
+            data[UNSCORED_COL] & data[Columns.SE_DECISION_ID].isin([SystemDecision.OK.value, SystemDecision.RV.value])
+        ).sum()
+    )
+    logger.info(
+        f"Sin llamada a Equifax: {int(data[UNSCORED_COL].sum()):,} filas ({int(light.sum()):,} marcadas estudio ligero, "
+        f"{int((data[SCORE_COL].eq(0) & ~light).sum()):,} con 0 centinela sin marca); {approved_unscored} aprobadas pese a ello"
+    )
+    data.loc[data[UNSCORED_COL], SCORE_COL] = np.nan
+
     data["bin"] = pd.cut(data[SCORE_COL], bins=BIN_EDGES, labels=range(1, len(BIN_EDGES))).astype(float)
     # Las filas sin score NO se descartan aquí: el histórico de tienda no lleva EFX
     # —esas decisiones las tomó el octroi interno— y es justo el que ancla el nivel de
@@ -166,6 +190,11 @@ def stores_level_anchor(all_stores: pd.DataFrame, scored_booked: pd.DataFrame, c
 
 def _booked(df: pd.DataFrame) -> pd.DataFrame:
     return df[df["acct_booked_h0"] > 0]
+
+
+def _unscored(df: pd.DataFrame) -> pd.Series:
+    """Sin llamada a Equifax: la marca del loader o, en frames que no pasaron por él, el 0 centinela."""
+    return df[UNSCORED_COL].astype(bool) if UNSCORED_COL in df.columns else df[SCORE_COL].eq(0).fillna(False)
 
 
 def take_up_by_decision(channel: pd.DataFrame, fallback: dict[str, float] | None = None) -> dict[str, float]:
@@ -324,7 +353,8 @@ def grid_swap_mask(stores: pd.DataFrame, cutoffs: dict[str, float | None]) -> pd
     pipeline, para que los números sean comparables con el motor de decisión.
     """
     threshold = stores[SEGMENT_COL].map(cutoffs).astype(float).fillna(-np.inf)
-    passes_score = stores[SCORE_COL] > threshold
+    # Una solicitud sin score no supera ningún corte, tampoco un grupo sin corte (-inf).
+    passes_score = (stores[SCORE_COL] > threshold) & ~_unscored(stores)
     rejected_elsewhere = (stores[Columns.SE_DECISION_ID] == SystemDecision.KO) & (
         stores[Columns.REJECT_REASON] != RejectReason.SCORE
     )
@@ -360,12 +390,18 @@ def channel_actuals(channel: pd.DataFrame, multiplier: float) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+LIGHT_FLAG_COL = "tipotran"  # 'est1' = rechazada en el estudio ligero (extracto del 16-10-2026)
+LIGHT_FLAG_VALUE = "est1"
+LIGHT_COL = "estudio_ligero"  # cobertura parcial: tienda desde jul-2025, Online desde may-2026
+UNSCORED_COL = "sin_efx"  # sin llamada a la API de Equifax: estudio ligero, o 0 centinela en el score
+
 DEMAND_STATES = (
     "contratado",
     "aprobado, cancelado (no finalizada)",
     "aprobado, rechazado después",
     "rechazado por score",
     "rechazado por otras reglas",
+    "rechazada en estudio ligero (sin llamada a Equifax)",
 )
 
 
@@ -383,6 +419,10 @@ def demand_breakdown(channel: pd.DataFrame, label: str) -> pd.DataFrame:
     como aceptadas ni como rechazadas: la tasa de aceptación por tramo del pipeline es
     contratadas / (contratadas + rechazadas por score).
 
+    La **rechazada en estudio ligero** no llegó al estudio completo —no se llamó a la API
+    de Equifax— y por eso no tiene score: cuenta en el denominador como cualquier rechazo
+    pero nunca es candidata a swap-in ni recibe riesgo imputado.
+
     Cada euro cae en exactamente un estado; la TA es la primera fila sobre el total.
     """
     demand = channel[Columns.OA_AMT].sum()
@@ -390,13 +430,15 @@ def demand_breakdown(channel: pd.DataFrame, label: str) -> pd.DataFrame:
     approved = channel[Columns.SE_DECISION_ID].isin([SystemDecision.OK.value, SystemDecision.RV.value])
     ko = channel[Columns.SE_DECISION_ID] == SystemDecision.KO
     status = channel["status_name"]
-    score_ko = ko & (channel[Columns.REJECT_REASON] == RejectReason.SCORE)
+    light = ko & _unscored(channel)
+    score_ko = ko & (channel[Columns.REJECT_REASON] == RejectReason.SCORE) & ~light
     amounts = [
         channel.loc[booked, Columns.OA_AMT_H0].sum(),
         channel.loc[approved & ~booked & (status == StatusName.CANCELED), Columns.OA_AMT].sum(),
         channel.loc[approved & ~booked & (status == StatusName.REJECTED), Columns.OA_AMT].sum(),
         channel.loc[score_ko, Columns.OA_AMT].sum(),
-        channel.loc[ko & ~score_ko, Columns.OA_AMT].sum(),
+        channel.loc[ko & ~score_ko & ~light, Columns.OA_AMT].sum(),
+        channel.loc[light, Columns.OA_AMT].sum(),
     ]
     covered = 100 * sum(amounts) / demand
     if abs(covered - 100) > 0.5:
@@ -540,6 +582,7 @@ SWAP_CATEGORIES = (
     "swap-out: aprobada hoy, por debajo del corte",
     "rechazada por los dos scores: hoy por el interno, por debajo del corte EFX",
     "intacta: rechazada por otras reglas",
+    "intacta: rechazada en estudio ligero (sin llamada a Equifax)",
 )
 
 
@@ -559,7 +602,9 @@ def stores_swap_breakdown(
     approved = stores[Columns.SE_DECISION_ID].isin([SystemDecision.OK.value, SystemDecision.RV.value])
     ko = stores[Columns.SE_DECISION_ID] == SystemDecision.KO
     score_ko = ko & (stores[Columns.REJECT_REASON] == RejectReason.SCORE)
-    masks = [mask & approved, mask & score_ko, ~mask & approved, ~mask & score_ko, ko & ~score_ko]
+    light = ko & _unscored(stores)
+    score_ko = score_ko & ~light
+    masks = [mask & approved, mask & score_ko, ~mask & approved, ~mask & score_ko, ko & ~score_ko & ~light, light]
     rates = take_up_by_decision(stores)
     demand = stores[Columns.OA_AMT].sum()
     rows = []
@@ -571,9 +616,19 @@ def stores_swap_breakdown(
                 "n": int(len(group)),
                 "demanda_eur": group[Columns.OA_AMT].sum(),
                 "pct_demanda": 100 * group[Columns.OA_AMT].sum() / demand,
-                "produccion_est_eur": float(_expected_production(group, rates).sum()) if len(group) else 0.0,
-                "riesgo_imputado_pct": imputed_risk(group, curve, level_factor) if len(group) else float("nan"),
-                "score_mediano": float(group[SCORE_COL].median()) if len(group) else float("nan"),
+                # sin score ninguna parrilla puede dejarla entrar: no hay producción esperada que dar
+                "produccion_est_eur": (
+                    float(_expected_production(group, rates).sum())
+                    if len(group) and m is not masks[-1]
+                    else float("nan")
+                ),
+                # sin llamada a Equifax no hay score ni riesgo que imputar, tenga el frame el tramo que tenga
+                "riesgo_imputado_pct": (
+                    imputed_risk(group, curve, level_factor) if len(group) and m is not masks[-1] else float("nan")
+                ),
+                "score_mediano": float(group[SCORE_COL].median())
+                if len(group) and m is not masks[-1]
+                else float("nan"),
             }
         )
     frame = pd.DataFrame(rows)
@@ -719,7 +774,9 @@ def same_base_status_quo(
         weight = (by_bin * curve["exposure_ratio"]).fillna(0)
         num += (weight * curve[_BOOKED_COL] * factor).sum()
         den += weight.sum()
-        production += by_bin.sum()
+        # lo contratado sin tramo (aprobadas sin llamada a Equifax, residuales) cuenta como
+        # producción aunque no pueda entrar en la media de riesgo
+        production += _booked(channel)[Columns.OA_AMT_H0].sum() / months
     return {
         "riesgo_total_pct": num / den if den else float("nan"),
         "ta_score_pct": float("nan"),
@@ -948,10 +1005,19 @@ def main(argv: list[str] | None = None) -> int:
     else:
         # El índice se estima sobre TODA la demanda del canal, lleve score o no: es un
         # perfil de volumen y tienda no tiene EFX antes de agosto.
-        idx_ecom = seasonal_index(data[data[CHANNEL_COL] == CHANNEL_ECOM], "Online")
-        idx_stores = seasonal_index(all_stores, "Tienda", fallback=idx_ecom)
+        # Sobre la población extraída de forma homogénea en toda la historia: las rechazadas
+        # en estudio ligero solo vienen desde jul-2025 (tienda) / may-2026 (Online) y, dentro,
+        # inflarían la segunda mitad de 2025 como si fuera estacionalidad.
+        consistent = data[~data[LIGHT_COL]]
+        idx_ecom = seasonal_index(consistent[consistent[CHANNEL_COL] == CHANNEL_ECOM], "Online")
+        idx_stores = seasonal_index(consistent[consistent[CHANNEL_COL] == CHANNEL_STORES], "Tienda", fallback=idx_ecom)
         if idx_stores is not None:
             warn_partial_rollout(all_stores[all_stores[Columns.MIS_DATE] >= args.stores_from], idx_stores)
+    light_from = {
+        name: (m.min().strftime("%Y-%m-01") if not (m := frame.loc[frame[LIGHT_COL], Columns.MIS_DATE]).empty else None)
+        for name, frame in (("tienda", all_stores), ("online", all_ecom))
+    }
+    logger.info(f"Estudio ligero en el extracto desde: {light_from}")
 
     data = data[data["bin"].notna()]
     eff_ecom = effective_months(args.main_from, args.main_to, idx_ecom)
@@ -1034,8 +1100,12 @@ def main(argv: list[str] | None = None) -> int:
     # Cuánto más demanda trae tienda en los meses con score que en la ventana de "hoy":
     # es la parte de la diferencia entre ambas filas que es volumen y no política.
     stores_window_months = effective_months(args.main_from, args.main_to, idx_stores)
+    # Sobre la población homogénea: el estudio ligero solo está en parte de la ventana y
+    # sumaría volumen que no es crecimiento.
     stores_volume_vs_window_pct = 100 * (
-        (stores_demand / eff_stores) / (stores_window[Columns.OA_AMT].sum() / stores_window_months) - 1
+        (stores.loc[~stores[LIGHT_COL], Columns.OA_AMT].sum() / eff_stores)
+        / (stores_window.loc[~stores_window[LIGHT_COL], Columns.OA_AMT].sum() / stores_window_months)
+        - 1
     )
     logger.info(
         f"Política de hoy sobre la base de los escenarios: TA {same_base['ta_efectiva_pct']:.2f}% | "
@@ -1089,6 +1159,11 @@ def main(argv: list[str] | None = None) -> int:
             "riesgo_online_historico_pct": round(float(history_total["riesgo_real_pct"]), 4),
             **{k: round(v, 2) for k, v in weights.items()},
             "demanda_tienda_vs_ventana_pct": round(stores_volume_vs_window_pct, 2),
+            "estudio_ligero_tienda_desde": light_from["tienda"],
+            "estudio_ligero_online_desde": light_from["online"],
+            "estudio_ligero_meses_ventana_tienda": int(
+                stores_window.loc[stores_window[LIGHT_COL], Columns.MIS_DATE].dt.to_period("M").nunique()
+            ),
             **{
                 f"take_up_{ch}_{dec}_pct": round(100 * r, 2)
                 for ch, rr in take_up.items()
