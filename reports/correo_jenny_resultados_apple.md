@@ -37,6 +37,11 @@
 > los CSV. Nota al pie nueva en la tabla por canal: el riesgo de Online en la fila "hoy, con la demanda actual de
 > tienda" es 4,15 % y no el 4,18 % medido porque 23 contratos aprobados **sin llamada a Equifax** (sin score, 88,6 % de
 > mora) no tienen tramo y quedan fuera de la curva (`online_contratados_sin_efx_*` en `periodos.json`; slide 8).
+>
+> **16-10-2026 (noche), tasa de contratación de tienda en una sola base:** el punto 2 y la fila "aceptado por la parrilla"
+> decían 55,7 % (total de `p2_tienda_parrilla_online.csv`, take-up `ok` por grupo de letra: 14,61 M€) mientras la tabla por canal,
+> los 14,6 M€ del swap y el titular van con el take-up del canal (`p2b`/`p3b`/`p3`: 14,64 M€, 55,9 %). El correo usa ahora la base del
+> canal en todas partes; el código no cambia (0,1 pp, 30 k€ en dos meses; el take-up por grupo sigue en las filas por grupo de `p2`).
 
 **Asunto:** Apple — Score Equifax en tienda: resultados y escenarios
 **Adjunto:** `output/apple_deck/Apple_EFX_Study.pptx` (en inglés)
@@ -96,7 +101,7 @@ Sobre agosto y septiembre de 2026, los dos meses con score Equifax en tienda:
 | | hoy | con la parrilla de Online |
 |---|---:|---:|
 | Aprobación del sistema | 53,5% | **69,2%** |
-| Tasa de contratación | 43,0% | **55,7%** |
+| Tasa de contratación | 43,0% | **55,9%** |
 | Riesgo | 3,74% | **3,52%** |
 
 Sube la contratación y baja el riesgo a la vez. El riesgo de tienda es **estimado**, no medido —no habrá medición real hasta marzo de 2027—, pero su **nivel** está calibrado contra la morosidad que tienda ha tenido de verdad: la curva de Online predecía 3,92% para la cartera que tienda contrató y lo observado es 3,74%, un 5% de diferencia que se corrige. Lo que seguimos asumiendo es que el score ordena en tienda igual que en e-commerce.
@@ -121,7 +126,7 @@ Qué hace la parrilla con cada euro:
 | **rechazada por los dos scores**: hoy por el score interno y por debajo del corte EFX | 1,7% | 0,4 M€ | 41,1% |
 | intacta: rechazada por otras reglas (no se tocan) | 18,3% | 3,9 M€ | 7,9% |
 | intacta: **rechazada en estudio ligero** (sin llamada a Equifax, sin score) | 9,0% | — | — |
-| **aceptado por la parrilla** (las dos primeras) | **69,2%** | **14,6 M€ (55,7%)** | **3,52%** |
+| **aceptado por la parrilla** (las dos primeras) | **69,2%** | **14,6 M€ (55,9%)** | **3,52%** |
 | hoy, con el score interno: aprobado por el motor → contratado | 53,5% | 11,3 M€ (43,0%) | 3,74% |
 
 La última fila es lo que tienda contrató de verdad en agosto-septiembre con su score interno: 11,3 M€, el 43,0% de la demanda; valorada con la misma curva y el ancla da su 3,74% realizado. En las dos filas resumen, el porcentaje es la demanda que pasa la decisión (el motor hoy, 53,5%; la parrilla, 69,2%) y el paréntesis de la producción es la tasa de aceptación efectiva.
@@ -213,5 +218,8 @@ Iñigo
 * Nombres (16-10): "aprobación del sistema" = (OK + RV) / demanda, medida hoy y simulada bajo cada parrilla; "tasa de contratación" = contratado / demanda. Negocio llama a la segunda *financing rate*; aquí se evita porque en el proceso general "tasa de financiación" (`tasa_fin`) es contratado / aprobado, o sea el take-up, y chocarían. Decidido (16-10): se queda *booking rate* / tasa de contratación. El deck llamaba antes "TA de score" a la aprobación simulada y "TA efectiva" a la contratación.
 * El 3,85% de la parrilla lleva el recargo de reject inference también sobre la cartera ya contratada de Online (+0,08 pp sobre su 4,18% realizado); las dos filas de "hoy" van a realizado. Like-for-like con el 3,95%, la parrilla daría 3,76% (-0,19 pp en vez de -0,10). Se deja el conservador; el deck lo explica en la slide de la frontera.
 * Estudio ligero: pedir si el histórico de estas rechazadas existe antes de julio de 2025 en tienda y antes de mayo de 2026 en Online. Con la historia completa, la ventana de "hoy" de tienda dejaría de ser una mezcla y el índice estacional podría calcularse con toda la demanda. Hoy el índice va sin ellas (`tipotran = est1`), para no inflar la segunda mitad de 2025.
+* El total de `p2_tienda_parrilla_online.csv` da 55,7% de contratación de tienda bajo la parrilla porque su take-up va por grupo de
+  letra (para que ningún grupo parezca perder aceptación); el correo va con la base del canal (55,9%), que es la del titular, los
+  escenarios y los 14,6 M€ de la slide 11. Diferencia 0,1 pp / 30 k€ en dos meses.
 * Los 23 contratos de Online aprobados **sin llamada a Equifax** (marzo-mayo de 2025, 22 `ok` + 1 `rv`, 32,6 k€) tienen un 88,6% de mora: una anomalía que conviene enseñar a negocio y preguntar por qué se aprobaron sin score. Son el 0,03% de la producción, pero mueven el riesgo de Online 0,03 pp (4,18 → 4,15) y explican por qué el like-for-like pasó de -0,21 a -0,19 pp al excluirlos del tramo 1 (antes del 16-10 el centinela 0 caía en el tramo más bajo).
 * La ventana de Online se mantiene en marzo-2025 a febrero-2026 aunque marzo-2026 ya está maduro. Moverla no cambia Online (20,9% / 4,18%); de moverla, en la corrida definitiva. Ojo: Online lleva estudio ligero desde mayo de 2026 (17-23% de su demanda), así que mover la ventana hasta ahí bajaría su TA por el denominador.
