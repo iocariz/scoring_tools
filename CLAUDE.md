@@ -112,6 +112,7 @@ uv run python run_apple_study.py                      # writes output/apple_stud
 uv run python run_apple_study.py --cutoff New=27 --cutoff A-C=16   # override the grid (reject threshold; accept ABOVE)
 uv run python run_apple_study.py --no-reject-inference --stores-level-factor 1.0   # raw Online curve, no anchoring
 uv run python generate_apple_deck.py                  # 16-slide .pptx IN ENGLISH from those CSVs -> output/apple_deck/Apple_EFX_Study.pptx
+uv run python scripts/check_apple_email.py           # the e-mail draft is hand-written: recompute every table cell / prose figure from the CSVs + periodos.json and diff (exit 1 on mismatch; tests/test_check_apple_email.py skips without real outputs)
 # Study outputs feed reports/correo_jenny_resultados_apple.md; the data request + decision log lives in
 # reports/peticion_datos_apple_stores_efx.md (historical: read its dated status note first).
 
