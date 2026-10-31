@@ -126,6 +126,28 @@ def test_resimulation_refuses_changed_config(monkeypatch, tmp_path):
         run_resimulation("cfg.toml", [1.0], output=output)
 
 
+def test_effective_cli_overrides_enter_the_fingerprint(monkeypatch, tmp_path):
+    """Follow-up: the snapshot is taken AFTER --baseline is applied, so a baseline run's artifacts
+    cannot pass as an ordinary run's; the DQ escape hatch stays an allowed difference."""
+    import src.pipeline.segment_runner as runner
+
+    captured = {}
+
+    def capture(settings):
+        captured["baseline_mode"] = settings.baseline_mode
+        raise RuntimeError("stop after snapshot")
+
+    monkeypatch.setattr(runner, "load_and_validate_config", lambda p: (_settings(), None, None, 1.0))
+    monkeypatch.setattr(runner, "_config_snapshot", capture)
+    with pytest.raises(RuntimeError, match="stop after snapshot"):
+        runner.run_pipeline("cfg.toml", baseline_mode=True, output=OutputPaths(base_dir=tmp_path))
+    assert captured["baseline_mode"] is True
+
+    base = _config_fingerprint(_config_snapshot(_settings()))
+    assert _config_fingerprint(_config_snapshot(_settings(baseline_mode=True))) != base
+    assert _config_fingerprint(_config_snapshot(_settings(dq_allow_warnings=True))) == base
+
+
 def test_resimulation_meta_records_snapshot(tmp_path):
     output = _resim_fixture(tmp_path, _settings())
     meta = json.loads(Path(output.resimulation_meta_json).read_text())
@@ -218,13 +240,27 @@ def test_power_curve_is_evaluated_once_on_the_bin(alpha):
     assert weighted == pytest.approx(max(expected, bin_h3), rel=1e-4)
 
 
-def test_linear_method_unchanged_per_account():
+def test_linear_method_unchanged_when_oa_tracks_h3_exposure():
     num = np.array([0.0, 30.0, 0.0, 5.0])
     pile = np.array([100.0, 200.0, 50.0, 100.0])
     out = _assign(_tier2_frame(num, pile, pile), "linear", 1.0, ratio=2.5)
-    expected = 4.0 * num / pile * 2.5  # account H3 × ratio (ratio >= 1, so the floor is inactive)
-    assert np.allclose(out["b2_ever_h6_tmp"].values, np.round(4.0 * num / pile, 6) * 2.5)
-    assert np.allclose(out["b2_ever_h6_tmp"].values, expected, atol=1e-5)
+    assert np.allclose(out["b2_ever_h6_tmp"].values, 4.0 * num / pile * 2.5, atol=1e-5)
+
+
+@pytest.mark.parametrize("method,alpha", [("power", 2.0), ("power", 0.5), ("linear", 1.0)])
+@pytest.mark.parametrize("defaulter_oa", [10.0, 1000.0])
+def test_reconstruction_matches_bin_forecast_with_unequal_exposures(method, alpha, defaulter_oa):
+    """Follow-up: the H6 exposure is pro-rated by oa_amt, so the oa-weighted bin rate must equal the
+    bin forecast even when a defaulter's oa differs from its H3 pile (was x9.2 / x0.10 off)."""
+    from src.analysis.mr_extrapolation import extrapolate_h3_to_h6
+
+    num = np.array([0.025] + [0.0] * 99)
+    pile = np.full(100, 100.0)
+    oa = np.array([defaulter_oa] + [100.0] * 99)
+    out = _assign(_tier2_frame(num, pile, oa), method, alpha)
+    bin_h3 = 4.0 * num.sum() / pile.sum()
+    target = max(float(extrapolate_h3_to_h6(bin_h3, 2.0, method, alpha, 0.001)), bin_h3)
+    assert float(np.average(out["b2_ever_h6_tmp"], weights=oa)) == pytest.approx(target, rel=1e-4)
 
 
 def test_h3_floor_applies_to_the_bin_multiplier():
@@ -269,3 +305,42 @@ def test_hri_training_requires_only_features():
     indicators = [c for c in _f2_frame().columns if c not in ("x", "y", "status_name")]
     booked, _, _ = _prepare_pipeline_data(_f2_frame(), (), ["x", "y"], indicators, "hri_h6", 1.0)
     assert len(booked) == 3
+
+
+# ---------------------------------------------------------------- F6 follow-up: surfaced in reports
+
+
+def _summary_csv(tmp_path, requested, applied, feasible):
+    path = tmp_path / "risk_production_summary_table_base.csv"
+    pd.DataFrame(
+        {
+            "Metric": ["Actual", "Optimum selected"],
+            "Feasible": [True, True],
+            "selection_basis_requested": [None, requested],
+            "selection_basis_applied": [None, applied],
+            "ci_upper_feasible": [None, feasible],
+        }
+    ).to_csv(path, index=False)
+    return path
+
+
+def test_segment_banner_flags_unmet_ci_margin(tmp_path):
+    from src.report.reporting import _feasibility_banner, _selection_trail_hidden
+
+    unmet = _summary_csv(tmp_path, "ci_upper", "point", False)
+    assert "CI-upper selection NOT applied" in _feasibility_banner(unmet, "base")
+    assert _selection_trail_hidden(unmet) == []  # columns shown when ci_upper was requested
+
+    point = _summary_csv(tmp_path, "point", "point", None)
+    assert _feasibility_banner(point, "base") == ""
+    assert _selection_trail_hidden(point)  # hidden for ordinary point-basis runs
+
+
+def test_consolidated_lists_segments_with_unmet_ci_margin(tmp_path):
+    from src.report.consolidation import _ci_margin_unmet_segments
+
+    for seg, feasible in (("seg_unmet", False), ("seg_ok", True)):
+        data = tmp_path / seg / "data"
+        data.mkdir(parents=True)
+        _summary_csv(data, "ci_upper", "point" if not feasible else "ci_upper", feasible)
+    assert _ci_margin_unmet_segments(tmp_path, {"seg_unmet": {}, "seg_ok": {}}, "_base") == ["seg_unmet"]

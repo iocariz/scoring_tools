@@ -2,7 +2,9 @@
 
 Run: uv run python reports/validation/code_audit_2026_10_31_checks.py
 
-All six findings are fixed; every check asserts the CORRECTED behavior (F3-F6 in PR #264, F1/F2 after it).
+All six findings are fixed; every check asserts the CORRECTED behavior (F3-F6 in PR #264, F1/F2 in #265,
+plus the follow-up: F1 with unequal exposures, F5 with CLI overrides, F6 surfaced in reports —
+see tests/test_audit_2026_10_31.py).
 """
 
 from __future__ import annotations

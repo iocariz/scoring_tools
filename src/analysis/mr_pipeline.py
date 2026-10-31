@@ -1102,8 +1102,9 @@ def _assign_tiered_risk(
     """Assign per-account tiered MR risk based on maturity.
 
     Tier 1: >=mr_maturity_months months maturity — use actual H6 outcomes.
-    Tier 2: >=3 months and, when mr_maturity_months > 0, <mr_maturity_months — account H3 times the
-        bin's H3→H6 multiplier (curve evaluated once on the bin cohort's H3; when the bin H3 is reliable).
+    Tier 2: >=3 months and, when mr_maturity_months > 0, <mr_maturity_months — the bin forecast
+        max(curve(H3_bin), H3_bin) allocated to accounts in proportion to their H3, normalised so the
+        oa-weighted (= H6-exposure-weighted) bin rate equals the forecast (when the bin H3 is reliable).
     Tier 3: otherwise for remaining booked accounts — use whatever per-bin risk was
         provided in ``merge_df`` (bin-level main / MR observed / etc.).
     Tier 4: unfilled (no merge match) — handled by model_fallback downstream.
@@ -1234,19 +1235,38 @@ def _assign_tiered_risk(
                 b2_main_h3_vals = acct_main_h3["b2_main_h3"].values
 
             # Extrapolate H3 → H6 at the BIN level, where the curve was fitted, then allocate to accounts
-            # (audit 2026-10-31 F1). Applying a nonlinear curve to each account's sparse H3 (mostly 0 or a
-            # single default) and averaging does not reproduce the curve at the bin's H3 (Jensen gap): the
-            # bin's H6 could move several-fold in either direction depending on the curvature. Per bin we
-            # evaluate the curve once on the cohort's Σnum/Σden H3 and turn it into a multiplier
-            # m = H6_bin / H3_bin; each account gets H3_account × m, so accounts keep their relative risk
-            # and the production-weighted bin rate equals the curve at the bin H3. For method="linear"
-            # m is the plain ratio, i.e. identical to the former per-account formula.
-            cohort = data_demand_mr.loc[h3_eligible, merge_keys + ["todu_30ever_h3", "todu_amt_pile_h3"]]
+            # so the RECONSTRUCTED bin rate equals that forecast (audit 2026-10-31 F1 + follow-up).
+            #  1. Forecast once per bin on the cohort's Σnum/Σden H3: t = max(curve(H3_bin), H3_bin) (H3 floor
+            #     at the bin level). A nonlinear curve applied to each account's sparse H3 and averaged does
+            #     not reproduce the curve at the bin's H3 (Jensen gap).
+            #  2. Accounts get H3_account × m_bin with m_bin = t / (oa-weighted mean of account H3). The H6
+            #     exposure of these accounts is later pro-rated by oa_amt within the bin, so this makes the
+            #     reconstructed Σnum/Σden equal t whatever the mix of H3 and H6 exposures — the former
+            #     per-account ratio (also for method="linear") drifted by the defaulters' oa/H3-pile mix.
+            #     Without usable account H3 weight the bin forecast is assigned uniformly.
+            # Weights = the H6 exposure the reconstruction will use (pro-rated by oa_amt); the H3 pile
+            # stands in when oa_amt is unavailable (partial frames in unit tests).
+            weight_col = "oa_amt" if "oa_amt" in data_demand_mr.columns else "todu_amt_pile_h3"
+            cohort = data_demand_mr.loc[
+                h3_eligible, list(dict.fromkeys(merge_keys + ["todu_30ever_h3", "todu_amt_pile_h3", weight_col]))
+            ]
+            cohort = cohort.assign(_acct_h3=acct_b2_h3.values, _w=cohort[weight_col].values)
             cohort_h3 = _grouped_b2(
                 cohort, merge_keys, "todu_30ever_h3", "todu_amt_pile_h3", multiplier_h3, "_cohort_b2_h3"
             )[merge_keys + ["_cohort_b2_h3"]]
-            bin_h3 = acct_keys[merge_keys].merge(cohort_h3, on=merge_keys, how="left")["_cohort_b2_h3"].values
-            bin_h3 = bin_h3.astype(float)
+            usable = cohort["_acct_h3"].notna() & cohort["_w"].notna()
+            weighted = (
+                cohort[usable]
+                .assign(_w_h3=lambda d: d["_acct_h3"] * d["_w"])
+                .groupby(merge_keys)[["_w_h3", "_w"]]
+                .sum()
+                .reset_index()
+            )
+            weighted["_oa_mean_h3"] = weighted["_w_h3"] / weighted["_w"].replace(0, np.nan)
+            per_acct = acct_keys[merge_keys].merge(cohort_h3, on=merge_keys, how="left")
+            per_acct = per_acct.merge(weighted[merge_keys + ["_oa_mean_h3"]], on=merge_keys, how="left")
+            bin_h3 = per_acct["_cohort_b2_h3"].values.astype(float)
+            oa_mean_h3 = per_acct["_oa_mean_h3"].values.astype(float)
             bin_h6 = np.asarray(
                 extrapolate_h3_to_h6(
                     bin_h3,
@@ -1257,12 +1277,14 @@ def _assign_tiered_risk(
                 ),
                 dtype=float,
             )
+            # H3 floor (H6 >= H3) at the bin level, only when the bin-level H3 is reliable.
+            bin_h6 = np.where(can_extrapolate_bin, np.maximum(bin_h6, bin_h3), bin_h6)
+            acct_h3_vals = acct_b2_h3.values.astype(float)
             with np.errstate(divide="ignore", invalid="ignore"):
-                bin_multiplier = np.where(bin_h3 > 0, bin_h6 / bin_h3, bin_ratio)
-            # H3 floor (H6 >= H3), only when the bin-level H3 is reliable. On a per-account
-            # H3 × m allocation the floor is exactly m >= 1, so it keeps the bin total consistent.
-            bin_multiplier = np.where(can_extrapolate_bin, np.maximum(bin_multiplier, 1.0), bin_multiplier)
-            h6_extrapolated = acct_b2_h3.values * bin_multiplier
+                h6_extrapolated = np.where(
+                    oa_mean_h3 > 0, acct_h3_vals * (bin_h6 / oa_mean_h3), np.where(bin_h6 == 0, 0.0, bin_h6)
+                )
+            h6_extrapolated = np.where(np.isfinite(acct_h3_vals), h6_extrapolated, np.nan)
 
             tier2_idx = data_demand_mr.index[h3_eligible]
             finite_extrapolated = can_extrapolate_bin & np.isfinite(h6_extrapolated)
