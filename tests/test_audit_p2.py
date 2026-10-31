@@ -6,11 +6,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.config import BinConfig, OutputPaths, PreprocessingSettings
+from src.analysis.sensitivity import perturb_risk_summary, run_sensitivity_analysis
+from src.core.config import BinConfig, OutputPaths, PreprocessingSettings
+from src.core.risk_indicators import HRI_H6
+from src.optimize.reject_inference import _enforce_multiplier_monotonicity, apply_parceling_adjustment
 from src.pipeline.sensitivity import run_sensitivity_phase
-from src.reject_inference import _enforce_multiplier_monotonicity, apply_parceling_adjustment
-from src.risk_indicators import HRI_H6
-from src.sensitivity import perturb_risk_summary, run_sensitivity_analysis
 
 
 @pytest.mark.parametrize("frozen", [True, False])

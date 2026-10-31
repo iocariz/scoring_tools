@@ -23,7 +23,7 @@ is the maturity anchor; `use_mr_outcomes` is validation-only (M3a).
 | Activity | Artifact | Result |
 |---|---|---|
 | Decision-critical findings cleared (M1) | `docs/todo-list.md` #1–#21 + sub-findings | All resolved, real-data verified |
-| Data-quality hard gate (M2) | `src/data_quality.py`, lineage | Fail-closed by default; `--allow-dq-warnings` escape hatch |
+| Data-quality hard gate (M2) | `src/data/data_quality.py`, lineage | Fail-closed by default; `--allow-dq-warnings` escape hatch |
 | Data-snapshot pinning (M2) | `run_lineage.json` | SHA-256 / mtime / rows / git / config hash / assumptions per run |
 | Config-complexity / sensitivity (M3) | `reports/sensitivity/` | Knob tiering; defaults safe; `multiplier` fixed; materiality segment-dependent |
 | Out-of-time backtest (M4) | `run_backtest.py`, backtest reports | Realized vs predicted on held-out cohort |

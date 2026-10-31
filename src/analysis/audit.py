@@ -1,0 +1,706 @@
+"""
+Audit table generation for cutoff analysis.
+
+This module provides functions to generate audit tables that track individual
+records and their classification based on cutoff decisions.
+
+Classification logic matches the main pipeline:
+- Only rejected records with reject_reason="09-score" are eligible for swap-in
+- Swap-in amounts are multiplied by the financing rate (tasa_fin)
+"""
+
+import numpy as np
+import pandas as pd
+from loguru import logger
+
+from src.core.constants import RejectReason, StatusName, SystemDecision
+
+
+def _is_numeric_like(value: object) -> bool:
+    """True if *value* can be parsed as a float (covers int/float/str-numbers)."""
+    try:
+        float(value)  # type: ignore[arg-type]
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def primary_amount_column(df: pd.DataFrame) -> str:
+    """Column used for production amounts in audit: prefer ``oa_amt_h0`` (grid-aligned), else ``oa_amt``."""
+    if "oa_amt_h0" in df.columns:
+        return "oa_amt_h0"
+    return "oa_amt"
+
+
+def audit_production_kpis(audit_df: pd.DataFrame | None) -> dict[str, float | None]:
+    """
+    Production (€) totals from an audit extract — same basis as ``reconcile_risk_production_summary_with_audit``.
+
+    Uses ``oa_amt_adjusted`` when present, else ``primary_amount_column`` (``oa_amt_h0`` or ``oa_amt``).
+    ``total_demand`` / ``actual_rejections`` / ``optimum_rejections`` follow the
+    rejection-rate basis of ``_rejection_amounts_from_audit`` (through-the-door
+    demand, canceled never counted as a rejection).
+    """
+    empty = {
+        "actual": 0.0,
+        "swap_in": 0.0,
+        "swap_out": 0.0,
+        "optimum": 0.0,
+        "total_demand": 0.0,
+        "actual_rejections": 0.0,
+        "optimum_rejections": None,
+        "actual_system_rejections": 0.0,
+        "optimum_system_rejections": None,
+    }
+    if audit_df is None or audit_df.empty or "classification" not in audit_df.columns:
+        return empty.copy()
+    if "oa_amt_adjusted" in audit_df.columns:
+        amt = "oa_amt_adjusted"
+    else:
+        amt = primary_amount_column(audit_df)
+    if amt not in audit_df.columns:
+        return empty.copy()
+    cls = audit_df["classification"].astype(str).str.strip()
+    swap_in = float(audit_df.loc[cls == "swap_in", amt].sum())
+    swap_out = float(audit_df.loc[cls == "swap_out", amt].sum())
+    if "status_name" in audit_df.columns:
+        st = audit_df["status_name"].astype(str).str.strip()
+        booked = st == StatusName.BOOKED.value
+        actual = float(audit_df.loc[booked, amt].sum())
+    else:
+        actual = 0.0
+    optimum = actual - swap_out + swap_in
+    total_demand, actual_rejections, optimum_rejections = _rejection_amounts_from_audit(audit_df, amt)
+    _, actual_system_rejections, optimum_system_rejections = _system_rejection_amounts_from_audit(audit_df, amt)
+    return {
+        "actual": actual,
+        "swap_in": swap_in,
+        "swap_out": swap_out,
+        "optimum": optimum,
+        "total_demand": total_demand,
+        "actual_rejections": actual_rejections,
+        "optimum_rejections": optimum_rejections,
+        "actual_system_rejections": actual_system_rejections,
+        "optimum_system_rejections": optimum_system_rejections,
+    }
+
+
+def _row_financing_rates(
+    audit_df: pd.DataFrame,
+    variables: list[str],
+    per_bin_tasa_fin: pd.DataFrame | None,
+    financing_rate: float,
+) -> np.ndarray:
+    """Per-row financing (tasa_fin) rate for the audit, mirroring the optimizer.
+
+    When ``per_bin_tasa_fin`` (grid-cell -> ``tasa_fin``) is given, each row gets its
+    OWN cell's rate; cells absent from the table — or with dtype-mismatched keys — fall
+    back to the scalar ``financing_rate``, the same ``.fillna(tasa_fin)`` contract the
+    optimizer uses (``run_optimization_pipeline``). Otherwise every row gets the scalar.
+    Returns a float array aligned POSITIONALLY to ``audit_df`` rows.
+    """
+    n = len(audit_df)
+    have_cols = (
+        per_bin_tasa_fin is not None
+        and not per_bin_tasa_fin.empty
+        and "tasa_fin" in per_bin_tasa_fin.columns
+        and all(v in audit_df.columns for v in variables)
+        and all(v in per_bin_tasa_fin.columns for v in variables)
+    )
+    if not have_cols:
+        return np.full(n, float(financing_rate), dtype="float64")
+    tf = per_bin_tasa_fin[[*variables, "tasa_fin"]].drop_duplicates(subset=list(variables))
+    # Positional left-merge on the cell coordinates: merge drops the index but
+    # preserves left row order when the right frame is unique on the keys.
+    keys = audit_df[list(variables)].reset_index(drop=True)
+    merged = keys.merge(tf, on=list(variables), how="left")
+    rate = merged["tasa_fin"].to_numpy(dtype="float64")
+    return np.where(np.isnan(rate), float(financing_rate), rate)
+
+
+def generate_audit_table(
+    data: pd.DataFrame,
+    optimal_solution_df: pd.DataFrame,
+    variables: list[str],
+    financing_rate: float = 1.0,
+    inv_var1: bool = False,
+    audit_columns: list[str] | None = None,
+    n_months: int | None = None,
+    mask: np.ndarray | None = None,
+    grid: object | None = None,
+    per_bin_tasa_fin: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """
+    Generate an audit table with individual record classifications.
+
+    Args:
+        data: DataFrame with individual records (must include status_name, reject_reason, var0, var1).
+            Production amounts use ``oa_amt_h0`` when present, otherwise ``oa_amt``.
+        optimal_solution_df: DataFrame with optimal solution (first row used).
+        variables: List of variable names [var0, var1, ...].
+        financing_rate: Rate to multiply swap-in amounts (tasa_fin). Default 1.0.
+        inv_var1: If True, use >= comparison for var1 cutoff (2-var path only).
+        audit_columns: Columns to include in audit table. If None, uses defaults.
+        n_months: Number of months in the period. Used to annualize amounts (12/n_months).
+        mask: Optional binary acceptance mask for N-d classify_by_mask path.
+        grid: Optional CellGrid for N-d classify_by_mask path.
+        per_bin_tasa_fin: Optional per-cell financing rates (grid variables + ``tasa_fin``).
+            When given, swap-in rows are discounted by their OWN cell's rate (falling back
+            to ``financing_rate`` for absent cells), matching the optimizer's per-cell basis.
+
+    Returns:
+        DataFrame with audit information for each record.
+    """
+    if optimal_solution_df is None or optimal_solution_df.empty:
+        logger.warning("optimal_solution_df is missing or empty. Cannot generate audit table.")
+        return pd.DataFrame()
+
+    var0_col = variables[0]
+    var1_col = variables[1] if len(variables) > 1 else None
+
+    # Default audit columns - now includes reject_reason
+    if audit_columns is None:
+        amt_col = primary_amount_column(data)
+        audit_columns = [
+            "authorization_id",
+            "status_name",
+            "se_decision_id",
+            "reject_reason",
+            "risk_score_rf",
+            "score_rf",
+            var0_col,
+            amt_col,
+            "income_t1t2_m",
+            "todu_30ever_h6",
+            "todu_amt_pile_h6",
+        ]
+        if var1_col is not None:
+            audit_columns.insert(-1, var1_col)
+        # Include extra variables for N>2
+        for v in variables[2:]:
+            if v not in audit_columns:
+                audit_columns.append(v)
+        # HRI source columns (optional) — appended only when present to keep the
+        # missing-columns warning below meaningful on older extracts.
+        audit_columns += [c for c in ("h_num_h6", "h_den_h6", "h_num_h3", "h_den_h3") if c in data.columns]
+
+    # Filter to columns that exist in data
+    available_columns = [col for col in audit_columns if col in data.columns]
+    missing_columns = [col for col in audit_columns if col not in data.columns]
+    if missing_columns:
+        logger.warning(f"Audit columns not found in data: {missing_columns}")
+
+    # Determine passes_cut via mask (N-d) or cut_map (2-var)
+    from src.optimize.optimization_utils import CutoffSpec
+
+    if mask is None or grid is None:
+        # Guardrail: require at least one parseable bin column in optimal_solution_df
+        has_bin_col = any(col != "sol_fac" and _is_numeric_like(col) for col in optimal_solution_df.columns)
+        if not has_bin_col:
+            raise ValueError("No valid cutoff bins found in optimal_solution_df")
+
+    spec = CutoffSpec.from_optimal_solution(
+        optimal_solution_df,
+        variables,
+        data_summary=data,
+        mask=mask,
+        grid=grid,
+        inv_vars=[variables[1]] if (inv_var1 and len(variables) > 1) else None,
+    )
+    passes_cut = spec.classify(data)
+
+    audit_df = data[available_columns].copy()
+    if spec.is_2d:
+        assert var1_col is not None  # narrowed: is_2d implies ≥ 2 variables
+        cut_map = spec.as_2d_cut_map()
+        logger.info(f"Cutoff map: {cut_map}")
+        audit_df["cut_limit"] = data[var0_col].astype(float).map(cut_map)
+        audit_df["decision_source"] = "cutoff"
+    else:
+        audit_df["cut_limit"] = np.nan
+        audit_df["decision_source"] = "mask"
+
+    is_booked = data["status_name"] == StatusName.BOOKED.value
+    if "reject_reason" in data.columns:
+        reject_reason_col = data["reject_reason"].astype(object).fillna("").astype(str)
+    else:
+        reject_reason_col = pd.Series("", index=data.index)
+    is_score_rejected = (data["status_name"] == StatusName.REJECTED.value) & (
+        reject_reason_col == RejectReason.SCORE.value
+    )
+
+    audit_df["classification"] = np.select(
+        [
+            is_booked & passes_cut,
+            is_booked & ~passes_cut,
+            is_score_rejected & passes_cut,
+            is_score_rejected & ~passes_cut,
+        ],
+        ["keep", "swap_out", "swap_in", "rejected"],
+        default="rejected_other",
+    )
+
+    # Handle rows with no cutoff found (2-var path only)
+    if mask is None:
+        no_cutoff = audit_df["cut_limit"].isna()
+        if no_cutoff.any():
+            logger.warning(f"{no_cutoff.sum()} records had no matching cutoff bin — classified as 'unknown'.")
+            audit_df.loc[no_cutoff, "classification"] = "unknown"
+
+    # Human-readable key for the grid cell used in the decision
+    if variables:
+        key_parts = []
+        for v in variables:
+            if v in data.columns:
+                key_parts.append(data[v].astype(str))
+        if key_parts:
+            cell_key = key_parts[0]
+            for part in key_parts[1:]:
+                cell_key = cell_key + "|" + part
+            audit_df["cell_key"] = cell_key
+        else:
+            audit_df["cell_key"] = ""
+    else:
+        audit_df["cell_key"] = ""
+
+    audit_df["passes_cut"] = passes_cut
+
+    # Calculate annualization coefficient
+    annual_coef = 12 / n_months if n_months and n_months > 0 else 1.0
+
+    # Vectorized adjusted amount (annualization + financing on swap-in); base = oa_amt_h0 when present
+    base_amt = primary_amount_column(audit_df)
+    if base_amt in audit_df.columns:
+        is_swap_in = (audit_df["classification"] == "swap_in").to_numpy()
+        # Demand basis: annualized but WITHOUT the swap-in financing discount, so
+        # rejection-rate denominators don't depend on the scenario's accepted set
+        audit_df["oa_amt_demand"] = audit_df[base_amt] * annual_coef
+        audit_df["oa_amt_adjusted"] = audit_df[base_amt] * annual_coef
+        # Financing (tasa_fin) discounts swap-in rows. Match the optimizer basis: when
+        # per_bin_tasa_fin is given, discount each swap-in row by its OWN cell's rate
+        # (audit #4 — previously always the scalar, so the audit-reconciled production
+        # diverged from the optimizer whenever tasa_fin varied by cell).
+        row_rate = _row_financing_rates(audit_df, variables, per_bin_tasa_fin, financing_rate)
+        swap_mult = np.where(is_swap_in, row_rate, 1.0)
+        audit_df["oa_amt_adjusted"] = audit_df["oa_amt_adjusted"].to_numpy() * swap_mult
+        if per_bin_tasa_fin is not None and not per_bin_tasa_fin.empty and is_swap_in.any():
+            n_percell = int((row_rate[is_swap_in] != financing_rate).sum())
+            logger.info(
+                f"Per-cell financing on swap-in: {n_percell}/{int(is_swap_in.sum())} swap-in row(s) used a "
+                f"cell-specific tasa_fin (rest fell back to scalar {financing_rate:.2%})."
+            )
+
+    logger.info(f"Annualization: {n_months} months -> coefficient {annual_coef:.4f}")
+    logger.info(f"Financing rate applied to swap-in (scalar fallback): {financing_rate:.2%}")
+
+    return audit_df
+
+
+def generate_audit_summary(audit_df: pd.DataFrame, use_adjusted: bool = True) -> pd.DataFrame:
+    """
+    Generate summary statistics from audit table.
+
+    Args:
+        audit_df: Audit DataFrame with classification column.
+        use_adjusted: If True, use oa_amt_adjusted for totals. Default True.
+
+    Returns:
+        Summary DataFrame with counts and amounts by classification.
+    """
+    if use_adjusted and "oa_amt_adjusted" in audit_df.columns:
+        amount_col = "oa_amt_adjusted"
+    else:
+        amount_col = primary_amount_column(audit_df)
+
+    if amount_col in audit_df.columns:
+        summary = (
+            audit_df.groupby("classification")
+            .agg(
+                count=("classification", "size"),
+                total_oa_amt=(amount_col, "sum"),
+            )
+            .reset_index()
+        )
+    else:
+        summary = (
+            audit_df.groupby("classification")
+            .agg(
+                count=("classification", "size"),
+            )
+            .reset_index()
+        )
+        summary["total_oa_amt"] = 0
+
+    return summary
+
+
+def _rejection_amounts_from_audit(audit_df: pd.DataFrame, amount_col: str) -> tuple[float, float, float | None]:
+    """``(total_demand, actual_rejections, optimum_rejections)`` in € for rejection-rate math.
+
+    Rejection rate = rejections / total demand, where total demand is the full
+    through-the-door population (booked + rejected + canceled) and the numerator
+    NEVER includes canceled applications — an approved-but-not-taken loan is not
+    a rejection. ``actual_rejections`` is everything with rejected status;
+    ``optimum_rejections`` is what the optimum policy declines: applications
+    failing the new cutoff plus non-score rejections, which stay rejected
+    regardless of score (a canceled application passing the cutoff counts as
+    approved). ``optimum_rejections`` is None when ``passes_cut`` /
+    ``classification`` are unavailable.
+
+    Prefers ``oa_amt_demand`` (annualized, undiscounted) over *amount_col*: the
+    ``oa_amt_adjusted`` basis discounts swap-in rows by the financing rate, so the
+    same score-rejected application would weigh less when the scenario accepts it,
+    making the rates vary across scenarios. Falls back to *amount_col* for audit
+    extracts that predate the column.
+    """
+    if "status_name" not in audit_df.columns:
+        return 0.0, 0.0, None
+    col = "oa_amt_demand" if "oa_amt_demand" in audit_df.columns else amount_col
+    amounts = audit_df[col]
+    sn = audit_df["status_name"].astype(str).str.strip().str.lower()
+    total_demand = float(amounts.sum())
+    rejected = sn == StatusName.REJECTED.value.lower()
+    actual_rejections = float(amounts[rejected].sum())
+    optimum_rejections = None
+    if "passes_cut" in audit_df.columns and "classification" in audit_df.columns:
+        fails_cut = ~audit_df["passes_cut"].astype(bool)
+        cls = audit_df["classification"].astype(str).str.strip()
+        non_score_reject = rejected & (cls == "rejected_other")
+        optimum_rejections = float(amounts[fails_cut | non_score_reject].sum())
+    return total_demand, actual_rejections, optimum_rejections
+
+
+def _system_rejection_amounts_from_audit(audit_df: pd.DataFrame, amount_col: str) -> tuple[float, float, float | None]:
+    """``(total_demand, actual_system_ko, optimum_system_ko)`` in € for system-rejection-rate math.
+
+    The "system rejection rate" tracks the **upstream scoring-system** decision
+    (``se_decision_id``), not the final booked status. Actual numerator is the
+    through-the-door demand the system rejected (``se_decision_id == 'ko'``); the
+    optimum/simulated numerator is what the **new cutoff** would reject: every
+    application failing the cutoff PLUS the currently-``ko`` applications whose
+    rejection was for a non-score reason (a score-only ``ko`` whose cell the new
+    policy accepts flips to ``ok``). This is the ``se_decision_id`` analogue of
+    ``_rejection_amounts_from_audit`` and shares its ``oa_amt_demand`` denominator,
+    so the two rates sit on the same €-weighted, scenario-invariant basis.
+    ``optimum_system_ko`` is None when ``passes_cut`` is unavailable.
+    """
+    if "se_decision_id" not in audit_df.columns:
+        return 0.0, 0.0, None
+    col = "oa_amt_demand" if "oa_amt_demand" in audit_df.columns else amount_col
+    amounts = audit_df[col]
+    sd = audit_df["se_decision_id"].astype(str).str.strip().str.lower()
+    total_demand = float(amounts.sum())
+    is_ko = sd == SystemDecision.KO.value
+    actual_system = float(amounts[is_ko].sum())
+    optimum_system = None
+    if "passes_cut" in audit_df.columns:
+        fails_cut = ~audit_df["passes_cut"].astype(bool)
+        if "reject_reason" in audit_df.columns:
+            rr = audit_df["reject_reason"].astype(object).fillna("").astype(str).str.strip().str.lower()
+        else:
+            rr = pd.Series("", index=audit_df.index)
+        ko_non_score = is_ko & (rr != RejectReason.SCORE.value)
+        optimum_system = float(amounts[fails_cut | ko_non_score].sum())
+    return total_demand, actual_system, optimum_system
+
+
+def reconcile_risk_production_summary_with_audit(
+    summary_table: pd.DataFrame,
+    audit_df: pd.DataFrame | None,
+    *,
+    silent: bool = False,
+) -> pd.DataFrame:
+    """
+    Align risk production summary ``Production (€)`` and ``Production (%)`` with loan-level audit totals.
+
+    The summary table is built from grid / frontier KPIs; the audit table sums ``oa_amt_h0`` / ``oa_amt``
+    (or ``oa_amt_adjusted`` after annualization) per classification. Those can differ slightly when
+    grid and loan-level paths diverge. This overwrites production rows so Excel/CSV summary
+    matches ``audit_*.csv`` drill-down totals.
+    """
+    if audit_df is None or audit_df.empty or "classification" not in audit_df.columns:
+        return summary_table
+
+    if "oa_amt_adjusted" in audit_df.columns:
+        amount_col = "oa_amt_adjusted"
+    else:
+        amount_col = primary_amount_column(audit_df)
+    if amount_col not in audit_df.columns:
+        return summary_table
+
+    st = summary_table.copy()
+    metric_col = "Metric"
+    if metric_col not in st.columns:
+        return summary_table
+
+    m = st[metric_col].astype(str).str.strip()
+    cls = audit_df["classification"].astype(str).str.strip()
+
+    swap_in = float(audit_df.loc[cls == "swap_in", amount_col].sum())
+    swap_out = float(audit_df.loc[cls == "swap_out", amount_col].sum())
+
+    if "status_name" in audit_df.columns:
+        status_s = audit_df["status_name"].astype(str).str.strip()
+        booked_mask = status_s == StatusName.BOOKED.value
+    else:
+        booked_mask = pd.Series(False, index=audit_df.index)
+    actual_prod = float(audit_df.loc[booked_mask, amount_col].sum())
+    optimum_prod = actual_prod - swap_out + swap_in
+
+    def _set_rows(metric_name: str, prod: float, pct: float | None) -> None:
+        mask = m.str.lower() == metric_name.lower()
+        if not mask.any():
+            return
+        if "Production (€)" in st.columns:
+            st.loc[mask, "Production (€)"] = prod
+        if pct is not None and "Production (%)" in st.columns:
+            st.loc[mask, "Production (%)"] = pct
+
+    if actual_prod > 0:
+        # "Production (%)" is a TRUE percent (×100), matching its label + "0.00" format and every
+        # other "(%)" column. Levels are % of Actual (Actual = 100); Summary is the % delta.
+        _set_rows("Actual", actual_prod, 100.0)
+        _set_rows("Swap-in", swap_in, 100.0 * swap_in / actual_prod)
+        _set_rows("Swap-out", swap_out, 100.0 * swap_out / actual_prod)
+        _set_rows("Optimum selected", optimum_prod, 100.0 * optimum_prod / actual_prod)
+        delta = optimum_prod - actual_prod
+        _set_rows("Summary", delta, 100.0 * delta / actual_prod)
+    else:
+        _set_rows("Actual", actual_prod, None)
+        _set_rows("Swap-in", swap_in, None)
+        _set_rows("Swap-out", swap_out, None)
+        _set_rows("Optimum selected", optimum_prod, None)
+        _set_rows("Summary", optimum_prod - actual_prod, None)
+
+    # Total demand and rejection rates from the same audit subset (required for per-income-bin tables)
+    td_col = next((c for c in st.columns if "total demand" in c.lower()), None)
+    total_demand, actual_rejections, optimum_rejections = _rejection_amounts_from_audit(audit_df, amount_col)
+    if td_col and td_col in st.columns and total_demand > 0:
+        act_row = m.str.lower() == "actual"
+        if act_row.any():
+            st.loc[act_row, td_col] = total_demand
+
+    if total_demand > 0 and "Rejection Rate (%)" in st.columns:
+        act_mask = m.str.lower() == "actual"
+        opt_mask = m.str.lower() == "optimum selected"
+        if act_mask.any():
+            st.loc[act_mask, "Rejection Rate (%)"] = actual_rejections / total_demand * 100.0
+        if opt_mask.any() and optimum_rejections is not None:
+            st.loc[opt_mask, "Rejection Rate (%)"] = optimum_rejections / total_demand * 100.0
+
+    # System rejection rate (upstream se_decision_id == ko), same €-weighted demand basis
+    if total_demand > 0 and "System Rejection Rate (%)" in st.columns:
+        _, actual_system, optimum_system = _system_rejection_amounts_from_audit(audit_df, amount_col)
+        act_mask = m.str.lower() == "actual"
+        opt_mask = m.str.lower() == "optimum selected"
+        if act_mask.any():
+            st.loc[act_mask, "System Rejection Rate (%)"] = actual_system / total_demand * 100.0
+        if opt_mask.any() and optimum_system is not None:
+            st.loc[opt_mask, "System Rejection Rate (%)"] = optimum_system / total_demand * 100.0
+
+    log_fn = logger.debug if silent else logger.info
+    log_fn(
+        f"Reconciled risk production summary with audit ({amount_col}): "
+        f"actual={actual_prod:,.0f}, swap_out={swap_out:,.0f}, swap_in={swap_in:,.0f}, optimum={optimum_prod:,.0f}"
+    )
+    return st
+
+
+def set_baseline_system_rejection_rate(summary_table: pd.DataFrame, audit_df: pd.DataFrame) -> pd.DataFrame:
+    """Populate 'System Rejection Rate (%)' when the full reconcile is skipped (baseline mode).
+
+    ``baseline_mode`` deliberately skips ``reconcile_risk_production_summary_with_audit`` — its
+    accept-all mask mislabels swap-in/out and would corrupt the Optimum=Actual production. But the
+    ACTUAL system-rejection rate (through-the-door ``se_decision_id=='ko'`` / demand) is
+    swap-INVARIANT, and Optimum=Actual in baseline, so it is safe to set here. Without it the rate
+    stays N/A and also blanks the consolidated supersegment aggregate + TOTAL (which cannot sum a
+    missing component). Only 'System Rejection Rate (%)' is touched — production / swap /
+    regular-rejection columns are left exactly as constructed.
+    """
+    if summary_table is None or summary_table.empty:
+        return summary_table
+    if "System Rejection Rate (%)" not in summary_table.columns or "se_decision_id" not in audit_df.columns:
+        return summary_table
+    total_demand, actual_system, _ = _system_rejection_amounts_from_audit(audit_df, primary_amount_column(audit_df))
+    if not total_demand or total_demand <= 0:
+        return summary_table
+    rate = actual_system / total_demand * 100.0
+    m = summary_table["Metric"].astype(str).str.lower()
+    for label in ("actual", "optimum selected"):  # baseline: Optimum = Actual
+        mask = m == label
+        if mask.any():
+            summary_table.loc[mask, "System Rejection Rate (%)"] = rate
+    return summary_table
+
+
+def save_audit_tables(
+    data_main: pd.DataFrame,
+    data_mr: pd.DataFrame,
+    optimal_solution_df: pd.DataFrame,
+    variables: list[str],
+    scenario_name: str,
+    output_dir: str = "data",
+    inv_var1: bool = False,
+    financing_rate: float = 1.0,
+    n_months_main: int | None = None,
+    n_months_mr: int | None = None,
+    mask: np.ndarray | None = None,
+    grid: object | None = None,
+    audit_main: pd.DataFrame | None = None,
+    audit_mr: pd.DataFrame | None = None,
+    per_bin_tasa_fin: pd.DataFrame | None = None,
+) -> dict[str, pd.DataFrame]:
+    """
+    Generate and save audit tables for main and MR periods.
+
+    Args:
+        data_main: Main period data with individual records.
+        data_mr: MR period data with individual records.
+        optimal_solution_df: Optimal solution DataFrame.
+        variables: List of variable names [var0, var1, ...].
+        scenario_name: Scenario name (e.g., 'base', 'optimistic', 'pessimistic').
+        output_dir: Directory to save audit tables.
+        inv_var1: If True, use >= comparison for var1 cutoff (2-var path only).
+        financing_rate: Rate to multiply swap-in amounts (tasa_fin). Default 1.0.
+        n_months_main: Number of months in main period for annualization.
+        n_months_mr: Number of months in MR period for annualization.
+        mask: Optional binary acceptance mask for N-d classify_by_mask path.
+        grid: Optional CellGrid for N-d classify_by_mask path.
+
+    Returns:
+        Dictionary with audit DataFrames for main and MR periods.
+    """
+    results = {}
+
+    # Generate audit for main period
+    if audit_main is None:
+        logger.info(f"Generating audit table for main period - {scenario_name}")
+        audit_main = generate_audit_table(
+            data=data_main,
+            optimal_solution_df=optimal_solution_df,
+            variables=variables,
+            financing_rate=financing_rate,
+            inv_var1=inv_var1,
+            n_months=n_months_main,
+            mask=mask,
+            grid=grid,
+            per_bin_tasa_fin=per_bin_tasa_fin,
+        )
+    else:
+        logger.debug(f"Using precomputed main audit table for {scenario_name}")
+
+    # Save main period audit
+    main_path = f"{output_dir}/audit_{scenario_name}.csv"
+    audit_main.to_csv(main_path, index=False)
+    logger.info(f"Main period audit saved to {main_path}")
+    results["main"] = audit_main
+
+    # Log summary for main period
+    summary_main = generate_audit_summary(audit_main)
+    logger.info(f"Main period audit summary:\n{summary_main.to_string()}")
+
+    # Generate audit for MR period
+    if audit_mr is None:
+        logger.info(f"Generating audit table for MR period - {scenario_name}")
+        audit_mr = generate_audit_table(
+            data=data_mr,
+            optimal_solution_df=optimal_solution_df,
+            variables=variables,
+            financing_rate=financing_rate,
+            inv_var1=inv_var1,
+            n_months=n_months_mr,
+            mask=mask,
+            grid=grid,
+            per_bin_tasa_fin=per_bin_tasa_fin,
+        )
+    else:
+        logger.debug(f"Using precomputed MR audit table for {scenario_name}")
+
+    # Save MR period audit
+    mr_path = f"{output_dir}/audit_{scenario_name}_mr.csv"
+    audit_mr.to_csv(mr_path, index=False)
+    logger.info(f"MR period audit saved to {mr_path}")
+    results["mr"] = audit_mr
+
+    # Log summary for MR period
+    summary_mr = generate_audit_summary(audit_mr)
+    logger.info(f"MR period audit summary:\n{summary_mr.to_string()}")
+
+    return results
+
+
+def validate_audit_against_summary(
+    audit_df: pd.DataFrame,
+    summary_table: pd.DataFrame,
+    tolerance: float = 0.01,
+) -> bool:
+    """
+    Validate that audit table totals match the summary table.
+
+    Uses oa_amt_adjusted for swap-in comparison to account for financing rate.
+
+    Args:
+        audit_df: Audit DataFrame with classifications.
+        summary_table: Risk production summary table.
+        tolerance: Allowed relative difference (default 1%).
+
+    Returns:
+        ``True`` if audit totals match the summary within tolerance.
+        ``False`` if they diverge OR a precondition fails (missing
+        Swap-in/Swap-out rows, NaN values, structural mismatch). The
+        difference between "failed validation" and "could not validate"
+        is logged — callers that need the distinction should inspect
+        the logs rather than relying on a tri-state return.
+    """
+    # Calculate totals from audit using adjusted amounts
+    if "oa_amt_adjusted" in audit_df.columns:
+        amount_col = "oa_amt_adjusted"
+    else:
+        amount_col = primary_amount_column(audit_df)
+    audit_totals = audit_df.groupby("classification")[amount_col].sum()
+
+    # Map to summary table metrics
+    # swap_in = Swap-in (only 09-score rejected that pass), swap_out = Swap-out
+    swap_in_audit = audit_totals.get("swap_in", 0)
+    swap_out_audit = audit_totals.get("swap_out", 0)
+    keep_audit = audit_totals.get("keep", 0)
+
+    logger.info(
+        f"Audit totals - swap_in: {swap_in_audit:,.0f}, swap_out: {swap_out_audit:,.0f}, keep: {keep_audit:,.0f}"
+    )
+
+    try:
+        swap_in_row = summary_table[summary_table["Metric"] == "Swap-in"]
+        swap_out_row = summary_table[summary_table["Metric"] == "Swap-out"]
+    except (KeyError, ValueError) as e:
+        logger.warning(f"Audit validation failed: summary_table does not expose a Metric column ({e})")
+        return False
+
+    if swap_in_row.empty or swap_out_row.empty:
+        logger.warning(
+            f"Audit validation failed: summary_table is missing Swap-in or Swap-out rows "
+            f"(swap_in_empty={swap_in_row.empty}, swap_out_empty={swap_out_row.empty}). "
+            f"Treating as validation failure, not a silent skip."
+        )
+        return False
+
+    swap_in_summary = swap_in_row["Production (€)"].values[0]
+    swap_out_summary = swap_out_row["Production (€)"].values[0]
+
+    if pd.isna(swap_in_summary) or pd.isna(swap_out_summary):
+        logger.warning(
+            f"Audit validation failed: summary_table contains NaN reference value(s) "
+            f"(swap_in={swap_in_summary}, swap_out={swap_out_summary}). Cannot compare."
+        )
+        return False
+
+    # Compare with tolerance
+    si_diff = abs(swap_in_audit - swap_in_summary) / max(swap_in_summary, 1)
+    so_diff = abs(swap_out_audit - swap_out_summary) / max(swap_out_summary, 1)
+
+    if si_diff > tolerance or so_diff > tolerance:
+        logger.warning(f"Audit validation warning: swap_in diff={si_diff:.2%}, swap_out diff={so_diff:.2%}")
+        return False
+
+    logger.info("Audit validation passed: totals match summary table")
+    return True

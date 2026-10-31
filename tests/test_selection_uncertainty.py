@@ -8,8 +8,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 import pandas as pd
 
-from src.optimization_utils import CellGrid
-from src.selection_uncertainty import selection_aware_bootstrap
+from src.analysis.selection_uncertainty import selection_aware_bootstrap
+from src.optimize.optimization_utils import CellGrid
 
 
 def _grid_2x2():
@@ -169,7 +169,7 @@ def test_nan_loan_values_do_not_poison_cell_sums():
 def test_select_with_ci_margin():
     """Phase C rule: max production among candidates whose CI-UPPER clears the
     threshold; None when no candidate qualifies (caller falls back loudly)."""
-    from src.selection_uncertainty import SelectionBootstrapResult, select_with_ci_margin
+    from src.analysis.selection_uncertainty import SelectionBootstrapResult, select_with_ci_margin
 
     res = SelectionBootstrapResult(
         risk_ci_sel_lower=0.0,
@@ -195,7 +195,7 @@ def test_select_with_ci_margin():
 
 
 def test_config_selection_risk_basis_validation():
-    from src.config import PreprocessingSettings
+    from src.core.config import PreprocessingSettings
 
     base = dict(
         keep_vars=["mis_date"],

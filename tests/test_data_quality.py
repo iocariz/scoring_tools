@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.config import PreprocessingSettings
-from src.data_quality import (
+from src.core.config import PreprocessingSettings
+from src.data.data_quality import (
     CheckResult,
     CheckStatus,
     DataQualityReport,

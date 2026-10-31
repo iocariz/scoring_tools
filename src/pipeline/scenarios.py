@@ -12,29 +12,29 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from src.audit import (
+from src.analysis.audit import (
     generate_audit_table,
     reconcile_risk_production_summary_with_audit,
     save_audit_tables,
     set_baseline_system_rejection_rate,
     validate_audit_against_summary,
 )
-from src.config import OutputPaths, PreprocessingSettings
-from src.constants import Columns, RejectReason, StatusName
-from src.mr_pipeline import process_mr_period
-from src.optimization_utils import (
-    CellGrid,
-    CutoffSpec,
-)
-from src.plots import RiskProductionVisualizer
-from src.preprocess_improved import filter_by_date
-from src.utils import (
-    calculate_annual_coef,
-    calculate_bootstrap_intervals,
+from src.analysis.bootstrap import calculate_bootstrap_intervals
+from src.analysis.mr_pipeline import process_mr_period
+from src.core.config import OutputPaths, PreprocessingSettings
+from src.core.constants import Columns, RejectReason, StatusName
+from src.core.utils import calculate_annual_coef
+from src.data.preprocess_improved import filter_by_date
+from src.optimize.cutoff_summary import (
     consolidate_cutoff_summaries,
     format_cutoff_summary_table,
     generate_cutoff_summary,
 )
+from src.optimize.optimization_utils import (
+    CellGrid,
+    CutoffSpec,
+)
+from src.report.plots import RiskProductionVisualizer
 
 
 def _select_target(scenario_risk: float) -> float:
@@ -176,7 +176,7 @@ def run_scenario_analysis(
             f"risk_indicator={settings.risk_indicator} — selection CIs are unavailable in this mode."
         )
     elif grid is not None and pareto_masks:
-        from src.selection_uncertainty import selection_aware_bootstrap
+        from src.analysis.selection_uncertainty import selection_aware_bootstrap
 
         sel_boot = selection_aware_bootstrap(
             data_booked=data_booked,
@@ -209,7 +209,7 @@ def run_scenario_analysis(
                 "bootstrap is unavailable (no frontier masks/grid) — falling back to the point rule."
             )
         else:
-            from src.selection_uncertainty import select_with_ci_margin
+            from src.analysis.selection_uncertainty import select_with_ci_margin
 
             j = select_with_ci_margin(sel_boot, current_risk)
             if j is None:
@@ -495,7 +495,7 @@ def run_scenario_analysis(
     # Generate acceptance grid visualization for N>2
     if is_nd and selected_mask is not None and grid is not None:
         try:
-            from src.plots import plot_acceptance_grid_nd
+            from src.report.plots import plot_acceptance_grid_nd
 
             plot_acceptance_grid_nd(
                 mask=selected_mask,

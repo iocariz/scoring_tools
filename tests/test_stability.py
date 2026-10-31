@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.stability import (
+from src.analysis.stability import (
     PSIResult,
     StabilityReport,
     StabilityStatus,

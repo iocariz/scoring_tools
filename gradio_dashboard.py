@@ -22,31 +22,31 @@ import plotly.express as px
 import plotly.graph_objects as go
 from loguru import logger
 
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     SCENARIO_ORDER,
 )
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     get_available_segments as _shared_get_available_segments,
 )
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     get_data_dir as _shared_get_data_dir,
 )
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     get_images_dir as _shared_get_images_dir,
 )
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     get_models_dir as _shared_get_models_dir,
 )
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     get_scenario_paths as _shared_get_scenario_paths,
 )
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     get_scenarios as _shared_get_scenarios,
 )
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     resolve_supersegment as _shared_resolve_supersegment,
 )
-from src.styles import (
+from src.report.styles import (
     COLOR_BAD,
     COLOR_GOOD,
     COLOR_NEUTRAL,
@@ -295,7 +295,7 @@ def build_period_tab(segment: str | None, scenario: str, period: str) -> tuple:
 
 def load_cutoff_data(scenario: str, segment: str | None):
     """Return (summary_data, pareto_solutions, variables, inv_vars, multiplier, optimal_mask)."""
-    from src.config import PreprocessingSettings
+    from src.core.config import PreprocessingSettings
 
     inv_vars: list[str] = []
     config_variables: list[str] = []
@@ -338,7 +338,7 @@ def load_cutoff_data(scenario: str, segment: str | None):
     if paths["cutoffs"].exists():
         opt_sol = pd.read_csv(paths["cutoffs"])
         if len(variables) != 2 and not opt_sol.empty and "acceptance_mask" in opt_sol.columns:
-            from src.optimization_utils import decode_mask
+            from src.optimize.optimization_utils import decode_mask
 
             optimal_mask = decode_mask(str(opt_sol["acceptance_mask"].iloc[0])).tolist()
 
@@ -361,7 +361,7 @@ def build_cutoff_heatmap(summary_data, variables, mask_or_cuts, inv_vars, multip
 
     # 1D: bar chart with accept/reject coloring
     if is_1d:
-        from src.optimization_utils import CellGrid
+        from src.optimize.optimization_utils import CellGrid
 
         var0 = variables[0]
         grid = CellGrid.from_summary(summary_data, variables)
@@ -467,7 +467,7 @@ def _calculate_metrics_from_custom_cuts(data, cut_map, var0_col, var1_col, inv_v
 
 
 def _calculate_metrics_from_mask(data, mask, variables, multiplier):
-    from src.optimization_utils import CellGrid, evaluate_solution
+    from src.optimize.optimization_utils import CellGrid, evaluate_solution
 
     mask_arr = np.asarray(mask, dtype=int)
     grid = CellGrid.from_summary(data, variables)
@@ -577,7 +577,7 @@ def get_latest_model(segment: str | None = None) -> dict | None:
 
 def parse_coefficients(model_dir: str) -> list[dict]:
     """Parse model_summary.txt for feature coefficients — shared helper (#64)."""
-    from src.dashboard_data import parse_coefficients as _shared
+    from src.report.dashboard_data import parse_coefficients as _shared
 
     return _shared(model_dir)
 
@@ -906,7 +906,7 @@ def create_app() -> gr.Blocks:
                     if is_nd:
                         # Re-solve with MILP at new risk target
                         try:
-                            from src.optimization_utils import CellGrid, milp_solve_cutoffs
+                            from src.optimize.optimization_utils import CellGrid, milp_solve_cutoffs
 
                             grid = CellGrid.from_summary(summary_data, variables)
                             mask = milp_solve_cutoffs(grid, risk_val, inv_vars, multiplier)
@@ -1069,7 +1069,7 @@ if __name__ == "__main__":
     # Auth policy (todo #50): non-localhost binds require env credentials.
     # --share implies a non-localhost bind (public tunnel), so auth is
     # required even when binding locally in that case.
-    from src.web_auth import DashboardAuthError, enforce_bind_auth_policy
+    from src.report.web_auth import DashboardAuthError, enforce_bind_auth_policy
 
     effective_host = args.host
     try:

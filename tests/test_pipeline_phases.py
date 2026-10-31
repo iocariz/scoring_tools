@@ -16,7 +16,7 @@ import src.pipeline.config_loader as config_loader_module
 import src.pipeline.ri_optimizer as ri_optimizer_module
 import src.pipeline.scenarios as scenarios_module
 import src.pipeline.sensitivity as sensitivity_module
-from src.config import OutputPaths, PreprocessingSettings
+from src.core.config import OutputPaths, PreprocessingSettings
 
 
 def make_settings(**overrides):
@@ -108,23 +108,23 @@ class TestRunSensitivityPhase:
         fake_grid.cell_data = np.zeros((2, 4))
 
         monkeypatch.setattr(
-            "src.optimization_utils.CellGrid.from_summary",
+            "src.optimize.optimization_utils.CellGrid.from_summary",
             classmethod(lambda cls, df, variables: fake_grid),
         )
         monkeypatch.setattr(
-            "src.optimization_utils.milp_solve_cutoffs",
+            "src.optimize.optimization_utils.milp_solve_cutoffs",
             lambda *a, **kw: np.array([1, 0]),
         )
         monkeypatch.setattr(
-            "src.sensitivity.run_sensitivity_analysis",
+            "src.analysis.sensitivity.run_sensitivity_analysis",
             lambda *a, **kw: pd.DataFrame({"level": [0.1], "swap_in": [42.0]}),
         )
         monkeypatch.setattr(
-            "src.sensitivity.sensitivity_cell_detail",
+            "src.analysis.sensitivity.sensitivity_cell_detail",
             lambda *a, **kw: pd.DataFrame({"cell": [0], "impact": [1.0]}),
         )
         monkeypatch.setattr(
-            "src.sensitivity.compute_cell_marginal_impact",
+            "src.analysis.sensitivity.compute_cell_marginal_impact",
             lambda *a, **kw: pd.DataFrame({"cell": [0], "marginal": [0.5]}),
         )
 
@@ -142,11 +142,11 @@ class TestRunSensitivityPhase:
         fake_grid = MagicMock()
         fake_grid.cell_data = np.zeros((2, 4))
         monkeypatch.setattr(
-            "src.optimization_utils.CellGrid.from_summary",
+            "src.optimize.optimization_utils.CellGrid.from_summary",
             classmethod(lambda cls, df, variables: fake_grid),
         )
         monkeypatch.setattr(
-            "src.optimization_utils.milp_solve_cutoffs",
+            "src.optimize.optimization_utils.milp_solve_cutoffs",
             lambda *a, **kw: None,
         )
 
@@ -159,7 +159,7 @@ class TestRunSensitivityPhase:
         output = OutputPaths(base_dir=tmp_path)
 
         monkeypatch.setattr(
-            "src.optimization_utils.CellGrid.from_summary",
+            "src.optimize.optimization_utils.CellGrid.from_summary",
             classmethod(lambda cls, df, variables: (_ for _ in ()).throw(RuntimeError("boom"))),
         )
         # Should not raise
@@ -216,18 +216,18 @@ class TestRunRiOptimizerPhase:
         data_demand = pd.DataFrame({"mis_date": pd.to_datetime(["2024-01-01"])})
 
         monkeypatch.setattr(
-            "src.inference_optimized.compute_pre_reject_inference_data",
+            "src.model.inference_optimized.compute_pre_reject_inference_data",
             lambda **kw: (pd.DataFrame({"x": [1]}), pd.DataFrame({"y": [2]})),
         )
         monkeypatch.setattr(
-            "src.reject_inference.compute_acceptance_rates",
+            "src.optimize.reject_inference.compute_acceptance_rates",
             lambda *a, **kw: pd.DataFrame({"rate": [0.5]}),
         )
 
         best = {"uplift_factor": 1.2, "max_risk_multiplier": 1.4, "error": 0.01}
         results_df = pd.DataFrame({"uplift_factor": [1.2], "max_risk_multiplier": [1.4], "is_best": [True]})
         monkeypatch.setattr(
-            "src.reject_inference_optimizer.run_reject_inference_optimization",
+            "src.optimize.reject_inference_optimizer.run_reject_inference_optimization",
             lambda *a, **kw: (results_df, best),
         )
 
@@ -250,7 +250,7 @@ class TestRunRiOptimizerPhase:
     def test_exception_is_non_blocking(self, monkeypatch, tmp_path):
         settings = make_settings(run_ri_optimizer=True, reject_inference_method="parceling")
         monkeypatch.setattr(
-            "src.inference_optimized.compute_pre_reject_inference_data",
+            "src.model.inference_optimized.compute_pre_reject_inference_data",
             lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")),
         )
         result = ri_optimizer_module.run_ri_optimizer_phase(
@@ -280,11 +280,11 @@ class TestRunRiOptimizerPhase:
         calls: list[str] = []
 
         monkeypatch.setattr(
-            "src.inference_optimized.compute_pre_reject_inference_data",
+            "src.model.inference_optimized.compute_pre_reject_inference_data",
             lambda **kw: (pd.DataFrame({"x": [1]}), pd.DataFrame({"y": [2]})),
         )
         monkeypatch.setattr(
-            "src.reject_inference.compute_acceptance_rates",
+            "src.optimize.reject_inference.compute_acceptance_rates",
             lambda *a, **kw: pd.DataFrame({"rate": [0.5]}),
         )
 
@@ -297,11 +297,11 @@ class TestRunRiOptimizerPhase:
             return pd.DataFrame(), {}
 
         monkeypatch.setattr(
-            "src.reject_inference_optimizer.run_reject_inference_optimization_optuna",
+            "src.optimize.reject_inference_optimizer.run_reject_inference_optimization_optuna",
             fake_optuna,
         )
         monkeypatch.setattr(
-            "src.reject_inference_optimizer.run_reject_inference_optimization",
+            "src.optimize.reject_inference_optimizer.run_reject_inference_optimization",
             fake_grid,
         )
 

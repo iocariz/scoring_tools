@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from src.optuna_tuning import tune_tree_models
+from src.model.optuna_tuning import tune_tree_models
 
 
 def test_tune_tree_models_runs_without_crashing():
@@ -70,8 +70,8 @@ def _per_loan_linear_data(seed=0):
 def test_tune_linear_models_hurdle_per_loan_flag():
     """include_hurdle=True offers the per-loan hurdle (and it trains without crashing on per-loan
     rows); include_hurdle=False omits it entirely (audit #6)."""
-    from src.inference_optimized import _generate_regression_variables
-    from src.optuna_tuning import tune_linear_models
+    from src.model.inference_optimized import _generate_regression_variables
+    from src.model.optuna_tuning import tune_linear_models
 
     df = _per_loan_linear_data()
     variables = ["var0", "var1"]
@@ -115,8 +115,8 @@ def test_selection_metric_reports_real_cv_se():
     """Audit #7: candidate rows are scored by fresh-seed k-fold CV, so CV Std RMSE is a real
     standard error (> 0), not the degenerate 0.0 of the old single shared holdout — this is what
     lets the downstream 1-SE rule form a proper band instead of collapsing to argmin."""
-    from src.inference_optimized import _generate_regression_variables
-    from src.optuna_tuning import tune_linear_models
+    from src.model.inference_optimized import _generate_regression_variables
+    from src.model.optuna_tuning import tune_linear_models
 
     df = _per_loan_linear_data()
     variables = ["var0", "var1"]
@@ -147,9 +147,9 @@ def test_val_fold_scored_on_realized_target_not_winsorized(monkeypatch):
     so the riskiest val bins keep their true value instead of being clipped, which
     otherwise biases model selection toward under-prediction. The TRAIN fold stays
     winsorized at the configured z_threshold (#56) to bound the fitted surface."""
-    import src.inference_optimized as io_mod
+    import src.model.optuna_tuning as tuning_mod
 
-    real_process_dataset = io_mod.process_dataset
+    real_process_dataset = tuning_mod.process_dataset
     z_args = []
 
     def recording_process_dataset(*args, **kwargs):
@@ -159,7 +159,7 @@ def test_val_fold_scored_on_realized_target_not_winsorized(monkeypatch):
         z_args.append(z)
         return real_process_dataset(*args, **kwargs)
 
-    monkeypatch.setattr(io_mod, "process_dataset", recording_process_dataset)
+    monkeypatch.setattr(tuning_mod, "process_dataset", recording_process_dataset)
 
     np.random.seed(42)
     X = pd.DataFrame(

@@ -2,15 +2,15 @@
 Pipeline orchestration layer for HTML report generation.
 
 Thin wrappers called from ``main.py`` (single segment) and ``run_batch.py``
-(multi-segment).  All heavy lifting is in :mod:`src.reporting`.
+(multi-segment).  All heavy lifting is in :mod:`src.report.reporting`.
 """
 
 from pathlib import Path
 
 from loguru import logger
 
-from src.config import OutputPaths, PreprocessingSettings
-from src.reporting import (
+from src.core.config import OutputPaths, PreprocessingSettings
+from src.report.reporting import (
     build_consolidated_report,
     build_segment_report,
     render_report,

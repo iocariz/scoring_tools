@@ -11,8 +11,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
-from src.constants import Columns, StatusName
-from src.plots import (
+from src.core.constants import Columns, StatusName
+from src.report.plots import (
     plot_bin_threshold_diagnostic,
     plot_precision_recall_curve,
     plot_risk_vs_production,
@@ -43,7 +43,7 @@ class TestSelectionFeasibility:
     meets optimum_risk (min-risk fallback). Tested surgically (the method reads just 3 attrs)."""
 
     def _viz(self, optimum_risk, target_sol_fac=None):
-        from src.plots import RiskProductionVisualizer
+        from src.report.plots import RiskProductionVisualizer
 
         viz = RiskProductionVisualizer.__new__(RiskProductionVisualizer)
         viz.target_sol_fac = target_sol_fac
@@ -73,7 +73,7 @@ class TestPlot3dSurfaceAxis:
     def test_bin_zero_not_clipped(self):
         from sklearn.linear_model import LinearRegression
 
-        from src.inference_optimized import plot_3d_surface
+        from src.model.inference_optimized import plot_3d_surface
 
         rng = np.random.RandomState(0)
         df = pd.DataFrame(

@@ -1,4 +1,4 @@
-"""Additional coverage tests for src.plots functions not in test_plots.py.
+"""Additional coverage tests for src.report.plots functions not in test_plots.py.
 
 Targets: SHAP dependence, income_bin_trends, transformation rate,
 per-bin transformation rate, `plot_acceptance_grid_nd`, small helpers
@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src import plots
+from src.report import plots
 
 
 @pytest.fixture(autouse=True)

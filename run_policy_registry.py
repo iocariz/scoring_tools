@@ -37,10 +37,11 @@ import pandas as pd
 from loguru import logger
 
 from run_backtest import _discover_segments, _scenario_suffix
-from src.backtest import BacktestError, build_holdout_window, load_frozen_policy
-from src.config import PreprocessingSettings
-from src.constants import StatusName
-from src.policy_registry import (
+from src.core.config import PreprocessingSettings
+from src.core.constants import StatusName
+from src.data.preprocess_improved import _run_data_transformations
+from src.governance.backtest import BacktestError, build_holdout_window, load_frozen_policy
+from src.governance.policy_registry import (
     REGISTRY_DIR,
     PolicyComparison,
     bin_edges_match,
@@ -56,8 +57,7 @@ from src.policy_registry import (
     write_comparison_consolidated,
     write_comparison_report,
 )
-from src.preprocess_improved import _run_data_transformations
-from src.reproducibility import _accepted_set_hash
+from src.governance.reproducibility import _accepted_set_hash
 
 # --------------------------------------------------------------------------- #
 # Register / list

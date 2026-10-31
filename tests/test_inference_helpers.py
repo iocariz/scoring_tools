@@ -1,4 +1,4 @@
-"""Pure-function coverage tests for src.inference_optimized helpers.
+"""Pure-function coverage tests for src.model.inference_optimized helpers.
 
 Covers the small stateless helpers that don't require a full model training run:
 complexity ranking, 1SE rule, CV splitter, feature-set generation, outlier stats,
@@ -9,7 +9,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src import inference_optimized as io
+from src.model import inference_optimized as io
+from src.model import training
 
 
 class TestGetModelComplexity:
@@ -133,14 +134,14 @@ class TestGenerateRegressionVariables:
 class TestCalculateTargetMetric:
     def test_basic_calculation(self):
         df = pd.DataFrame({"num": [1, 2, 3], "den": [10, 20, 30]})
-        result = io.calculate_target_metric(df, multiplier=100.0, numerator="num", denominator="den")
+        result = training.calculate_target_metric(df, multiplier=100.0, numerator="num", denominator="den")
         assert len(result) == 3
         # 1/10 * 100 = 10
         assert result[0] == pytest.approx(10.0, rel=1e-6)
 
     def test_zero_denominator_handled(self):
         df = pd.DataFrame({"num": [1, 2], "den": [10, 0]})
-        result = io.calculate_target_metric(df, multiplier=100.0, numerator="num", denominator="den")
+        result = training.calculate_target_metric(df, multiplier=100.0, numerator="num", denominator="den")
         assert len(result) == 2
         # Second row should be NaN or 0 depending on implementation
         assert np.isnan(result[1]) or result[1] == 0.0

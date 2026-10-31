@@ -2,8 +2,8 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from src.config import PreprocessingSettings
-from src.data_manager import DataValidationError, validate_data_columns, validate_data_not_empty
+from src.core.config import PreprocessingSettings
+from src.data.data_manager import DataValidationError, validate_data_columns, validate_data_not_empty
 
 
 class TestPreprocessorSettings:

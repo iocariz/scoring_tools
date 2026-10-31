@@ -41,8 +41,8 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from src.data_manager import load_data, standardize_columns_and_values
-from src.preprocess_improved import filter_by_date
+from src.data.data_manager import load_data, standardize_columns_and_values
+from src.data.preprocess_improved import filter_by_date
 
 DEFAULT_EDGES = [
     -np.inf,

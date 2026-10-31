@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import pytest
 from flask import Flask
 
-from src.web_auth import (
+from src.report.web_auth import (
     DashboardAuthError,
     enforce_bind_auth_policy,
     get_auth_credentials,

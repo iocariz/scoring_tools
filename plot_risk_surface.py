@@ -29,7 +29,7 @@ from pathlib import Path
 import pandas as pd
 from loguru import logger
 
-from src.risk_surface import aggregate_to_cells, build_risk_surface_figure, classify_cells
+from src.report.risk_surface import aggregate_to_cells, build_risk_surface_figure, classify_cells
 
 
 def _scenario_suffix(scenario: str) -> str:

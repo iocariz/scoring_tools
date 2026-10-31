@@ -8,7 +8,7 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
-from src.config import OutputPaths, PreprocessingSettings
+from src.core.config import OutputPaths, PreprocessingSettings
 
 
 def run_ri_optimizer_phase(
@@ -59,9 +59,9 @@ def run_ri_optimizer_phase(
     logger.info(f"[{segment}] Running reject inference parameter optimization...")
 
     try:
-        from src.inference_optimized import compute_pre_reject_inference_data
-        from src.reject_inference import compute_acceptance_rates
-        from src.reject_inference_optimizer import (
+        from src.model.inference_optimized import compute_pre_reject_inference_data
+        from src.optimize.reject_inference import compute_acceptance_rates
+        from src.optimize.reject_inference_optimizer import (
             OptimizerInputs,
             run_reject_inference_optimization,
             run_reject_inference_optimization_optuna,

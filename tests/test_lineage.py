@@ -6,8 +6,8 @@ import json
 import sys
 from pathlib import Path
 
-from src import lineage
-from src.config import OutputPaths, PreprocessingSettings
+from src.core.config import OutputPaths, PreprocessingSettings
+from src.governance import lineage
 
 
 def _make_settings(**overrides):

@@ -4,8 +4,8 @@ import pytest
 
 pytest.importorskip("pandera", reason="pandera not installed")
 
-from src.data_manager import DataValidationError
-from src.schema import validate_raw_data
+from src.core.schema import validate_raw_data
+from src.data.data_manager import DataValidationError
 
 
 def _make_valid_df(n: int = 20) -> pd.DataFrame:

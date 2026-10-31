@@ -1,4 +1,4 @@
-"""Coverage tests for src.data_manager.
+"""Coverage tests for src.data.data_manager.
 
 Mostly validation helpers + the prepare-from-preloaded-data path. We mock
 ``load_data`` rather than supplying a SAS fixture.
@@ -7,11 +7,11 @@ Mostly validation helpers + the prepare-from-preloaded-data path. We mock
 import pandas as pd
 import pytest
 
-from src import data_manager as dm
+from src.data import data_manager as dm
 
 
 def make_settings(**overrides):
-    from src.config import PreprocessingSettings
+    from src.core.config import PreprocessingSettings
 
     values = {
         "keep_vars": ["mis_date"],
@@ -95,7 +95,7 @@ class TestLoadAndPrepareData:
 
         monkeypatch.setattr(dm, "load_data", fake_load)
         # Avoid schema validation surprises by stubbing it
-        monkeypatch.setattr("src.schema.validate_raw_data", lambda d, raise_on_error=True: None)
+        monkeypatch.setattr("src.data.data_manager.validate_raw_data", lambda d, raise_on_error=True: None)
 
         data, out_settings = dm.load_and_prepare_data(settings, preloaded_data=self._minimal_data())
         assert called == []  # load_data was not invoked
@@ -110,7 +110,7 @@ class TestLoadAndPrepareData:
 
         # Preloaded data does NOT include the H3 columns
         df = self._minimal_data()
-        monkeypatch.setattr("src.schema.validate_raw_data", lambda d, raise_on_error=True: None)
+        monkeypatch.setattr("src.data.data_manager.validate_raw_data", lambda d, raise_on_error=True: None)
 
         _, out_settings = dm.load_and_prepare_data(settings, preloaded_data=df)
         # Settings should have H3 columns stripped, no exception raised
@@ -130,7 +130,7 @@ class TestLoadAndPrepareData:
             return raw
 
         monkeypatch.setattr(dm, "load_data", _fake_load_data)
-        monkeypatch.setattr("src.schema.validate_raw_data", lambda d, raise_on_error=True: None)
+        monkeypatch.setattr("src.data.data_manager.validate_raw_data", lambda d, raise_on_error=True: None)
 
         data, _ = dm.load_and_prepare_data(settings, preloaded_data=None)
         # Columns lowercased + spaces replaced

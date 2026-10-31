@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from sklearn.linear_model import LogisticRegression, Ridge
 
-from src.estimators import HurdleRegressor
+from src.model.estimators import HurdleRegressor
 
 # =============================================================================
 # HurdleRegressor Tests
@@ -191,7 +191,7 @@ class TestTweedieGLM:
     """Tests for the TweedieGLM estimator."""
 
     def test_init(self):
-        from src.estimators import TweedieGLM
+        from src.model.estimators import TweedieGLM
 
         model = TweedieGLM(power=1.6, alpha=0.1)
         assert model.power == 1.6
@@ -199,7 +199,7 @@ class TestTweedieGLM:
         assert model.link == "log"
 
     def test_fit_mixed_data(self):
-        from src.estimators import TweedieGLM
+        from src.model.estimators import TweedieGLM
 
         np.random.seed(42)
         n = 100
@@ -219,7 +219,7 @@ class TestTweedieGLM:
         assert (preds >= 0).all()
 
     def test_fit_sample_weights(self):
-        from src.estimators import TweedieGLM
+        from src.model.estimators import TweedieGLM
 
         X = np.array([[1], [2], [3]])
         y = np.array([0, 10, 20])
@@ -337,7 +337,7 @@ class TestTweedieGLMExposureWeighting:
         return X, y, exposure
 
     def test_predicts_rate_without_exposure_column(self):
-        from src.estimators import TweedieGLM
+        from src.model.estimators import TweedieGLM
 
         X, y, exposure = self._data()
         model = TweedieGLM(power=1.5, alpha=0.5)
@@ -348,7 +348,7 @@ class TestTweedieGLMExposureWeighting:
         assert (preds >= 0).all()  # log link ⇒ non-negative rate
 
     def test_no_log_exposure_feature_added(self):
-        from src.estimators import TweedieGLM
+        from src.model.estimators import TweedieGLM
 
         X, y, exposure = self._data()
         model = TweedieGLM(power=1.5, alpha=0.5).fit(X, y, sample_weight=exposure)
@@ -357,7 +357,7 @@ class TestTweedieGLMExposureWeighting:
         assert not hasattr(model, "exposure_col")
 
     def test_sample_weight_changes_fit(self):
-        from src.estimators import TweedieGLM
+        from src.model.estimators import TweedieGLM
 
         X, y, exposure = self._data()
         unw = TweedieGLM(power=1.5, alpha=0.1).fit(X, y).predict(X)
@@ -368,7 +368,7 @@ class TestTweedieGLMExposureWeighting:
     def test_prepare_model_input_appends_no_exposure(self):
         import pandas as pd
 
-        from src.estimators import TweedieGLM, prepare_model_input
+        from src.model.estimators import TweedieGLM, prepare_model_input
 
         data = pd.DataFrame({"var0": [1.0, 2.0], "var1": [3.0, 4.0], "todu_amt_pile_h6": [900.0, 1100.0]})
         out = prepare_model_input(data, ["var0", "var1"], TweedieGLM())

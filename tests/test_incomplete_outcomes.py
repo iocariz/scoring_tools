@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.utils import mask_incomplete_outcome_pairs
+from src.core.utils import mask_incomplete_outcome_pairs
 
 nan = float("nan")
 
@@ -85,12 +85,12 @@ def _booked_with_partial_h6():
 
 
 def test_aggregation_excludes_partial_h6_from_risk_but_not_production():
-    from src.inference_optimized import compute_pre_reject_inference_data
+    from src.model.inference_optimized import compute_pre_reject_inference_data
 
     data = _booked_with_partial_h6()
     inds = ["oa_amt", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"]
     risk_model = {"best_model_info": {"model": object()}, "features": ["a"]}
-    with patch("src.models.calculate_risk_values", side_effect=lambda df, *a, **k: df):
+    with patch("src.model.models.calculate_risk_values", side_effect=lambda df, *a, **k: df):
         booked, _ = compute_pre_reject_inference_data(
             data, data, risk_model, None, 1.0, indicators=inds, variables=["a"], annual_coef=1
         )
@@ -108,8 +108,8 @@ def test_aggregation_excludes_partial_h6_from_risk_but_not_production():
 
 
 def test_bootstrap_worker_uses_joint_completeness():
-    from src.optimization_utils import CellGrid, CutoffSpec
-    from src.utils import _bootstrap_worker
+    from src.analysis.bootstrap import _bootstrap_worker
+    from src.optimize.optimization_utils import CellGrid, CutoffSpec
 
     df = _booked_with_partial_h6()
     cell = pd.DataFrame({"a": [0], "oa_amt_h0": [1000.0], "todu_30ever_h6": [1.0], "todu_amt_pile_h6": [100.0]})
@@ -125,8 +125,8 @@ def test_bootstrap_worker_uses_joint_completeness():
 
 
 def test_selection_bootstrap_zeroes_risk_pair_jointly():
-    from src.optimization_utils import CellGrid
-    from src.selection_uncertainty import selection_aware_bootstrap
+    from src.analysis.selection_uncertainty import selection_aware_bootstrap
+    from src.optimize.optimization_utils import CellGrid
 
     df = _booked_with_partial_h6()
     cell = pd.DataFrame(

@@ -3,9 +3,9 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from src.config import BinConfig, PreprocessingSettings
-from src.constants import RejectReason, StatusName, SystemDecision
-from src.preprocess_improved import (
+from src.core.config import BinConfig, PreprocessingSettings
+from src.core.constants import RejectReason, StatusName, SystemDecision
+from src.data.preprocess_improved import (
     _apply_binning_from_config,
     _infer_direction_from_bins,
     _run_data_transformations,
@@ -892,7 +892,7 @@ def _capture_warnings(fn):
     """Run fn() capturing loguru WARNING messages via a stdlib handler bridge."""
     import logging
 
-    from src import preprocess_improved as pp
+    from src.data import preprocess_improved as pp
 
     recs = []
 
@@ -921,7 +921,7 @@ def test_learn_quantile_bins_warns_on_tie_collapse():
 def test_apply_binning_warns_on_quantile_skew():
     """A mass point on a split edge + the right-closed cut makes the realized quantile bins
     materially unequal; that must be WARNED (value cutpoint kept, not rank-split)."""
-    from src.config import BinConfig
+    from src.core.config import BinConfig
 
     # 70 records at exactly the edge (2000) -> right-closed cut puts them ALL in the left bin.
     data = pd.DataFrame({"inc": [2000.0] * 70 + [3000.0] * 30})
@@ -940,7 +940,7 @@ def test_apply_binning_warns_on_quantile_skew():
 
 def test_apply_binning_no_skew_warning_when_balanced():
     """A quantile binning with balanced populations must NOT warn."""
-    from src.config import BinConfig
+    from src.core.config import BinConfig
 
     data = pd.DataFrame({"inc": list(range(100))})  # uniform -> ~50/50 at the median edge
     bc = BinConfig(

@@ -8,8 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.config import BinConfig, OutputPaths, PreprocessingSettings
-from src.mr_pipeline import (
+from src.analysis.mr_pipeline import (
     _assign_tiered_risk,
     _compute_account_maturity,
     _compute_hybrid_mr_risk,
@@ -21,7 +20,8 @@ from src.mr_pipeline import (
     calculate_metrics_from_cuts,
     process_mr_period,
 )
-from src.utils import calculate_b2_ever_h6
+from src.core.config import BinConfig, OutputPaths, PreprocessingSettings
+from src.core.utils import calculate_b2_ever_h6
 
 # =============================================================================
 # Fixtures
@@ -1239,7 +1239,7 @@ class TestCalculateMetricsNd:
 
     def test_3var_mask_grid_classification(self):
         """Verify mask+grid classification produces valid metrics for 3-var."""
-        from src.optimization_utils import CellGrid, classify_by_mask, evaluate_solution
+        from src.optimize.optimization_utils import CellGrid, classify_by_mask, evaluate_solution
 
         # Build 3D data
         rng = np.random.RandomState(42)
@@ -1296,7 +1296,7 @@ class TestCalculateMetricsNd:
 
     def test_3var_calculate_metrics_from_cuts_with_mask(self):
         """calculate_metrics_from_cuts works with mask+grid for 3-var."""
-        from src.optimization_utils import CellGrid
+        from src.optimize.optimization_utils import CellGrid
 
         rng = np.random.RandomState(42)
         rows = []
@@ -1372,11 +1372,13 @@ class TestProcessMRPeriodRegression:
             captured["imputed_b2"] = float(mr_row["b2_ever_h6_tmp"].iloc[0])
             return data_booked.copy()
 
-        monkeypatch.setattr("src.mr_pipeline.calculate_B2", fake_calculate_B2)
-        monkeypatch.setattr("src.mr_pipeline.run_optimization_pipeline", fake_run_optimization_pipeline)
-        monkeypatch.setattr("src.mr_pipeline.compare_main_vs_mr", lambda *args, **kwargs: DummyStabilityReport())
-        monkeypatch.setattr("src.mr_pipeline.styles.apply_plotly_style", lambda *args, **kwargs: None)
-        monkeypatch.setattr("src.alerts.generate_drift_alerts", lambda *args, **kwargs: DummyAlertReport())
+        monkeypatch.setattr("src.analysis.mr_pipeline.calculate_B2", fake_calculate_B2)
+        monkeypatch.setattr("src.analysis.mr_pipeline.run_optimization_pipeline", fake_run_optimization_pipeline)
+        monkeypatch.setattr(
+            "src.analysis.mr_pipeline.compare_main_vs_mr", lambda *args, **kwargs: DummyStabilityReport()
+        )
+        monkeypatch.setattr("src.analysis.mr_pipeline.styles.apply_plotly_style", lambda *args, **kwargs: None)
+        monkeypatch.setattr("src.analysis.alerts.generate_drift_alerts", lambda *args, **kwargs: DummyAlertReport())
 
         settings = PreprocessingSettings(
             keep_vars=["mis_date", "status_name", "segment_cut_off", "score_rf", "risk_score_rf"],
@@ -1520,11 +1522,13 @@ class TestProcessMRPeriodRegression:
             captured["grid_is_none"] = grid is None
             return pd.DataFrame([{"Metric": "Optimum selected", "Risk (%)": 0.0, "Production (€)": 0.0}])
 
-        monkeypatch.setattr("src.mr_pipeline.calculate_metrics_from_cuts", fake_calculate_metrics_from_cuts)
-        monkeypatch.setattr("src.mr_pipeline.compare_main_vs_mr", lambda *args, **kwargs: DummyStabilityReport())
-        monkeypatch.setattr("src.mr_pipeline.styles.apply_plotly_style", lambda *args, **kwargs: None)
-        monkeypatch.setattr("src.alerts.generate_drift_alerts", lambda *args, **kwargs: DummyAlertReport())
-        monkeypatch.setattr("src.mr_pipeline.go.Figure.write_html", lambda *args, **kwargs: None)
+        monkeypatch.setattr("src.analysis.mr_pipeline.calculate_metrics_from_cuts", fake_calculate_metrics_from_cuts)
+        monkeypatch.setattr(
+            "src.analysis.mr_pipeline.compare_main_vs_mr", lambda *args, **kwargs: DummyStabilityReport()
+        )
+        monkeypatch.setattr("src.analysis.mr_pipeline.styles.apply_plotly_style", lambda *args, **kwargs: None)
+        monkeypatch.setattr("src.analysis.alerts.generate_drift_alerts", lambda *args, **kwargs: DummyAlertReport())
+        monkeypatch.setattr("src.analysis.mr_pipeline.go.Figure.write_html", lambda *args, **kwargs: None)
 
         merge_keys = ["sc_octroi_new_clus", "new_efx_clus"]
 
@@ -1548,10 +1552,10 @@ class TestProcessMRPeriodRegression:
         )
 
         monkeypatch.setattr(
-            "src.mr_pipeline._compute_hybrid_mr_risk", lambda *args, **kwargs: (merge_df, comparison_df)
+            "src.analysis.mr_pipeline._compute_hybrid_mr_risk", lambda *args, **kwargs: (merge_df, comparison_df)
         )
         monkeypatch.setattr(
-            "src.mr_pipeline._assign_tiered_risk",
+            "src.analysis.mr_pipeline._assign_tiered_risk",
             lambda data_demand_mr, *args, **kwargs: data_demand_mr.assign(_mr_tier=3),
         )
 
@@ -1571,7 +1575,9 @@ class TestProcessMRPeriodRegression:
             }
         )
 
-        monkeypatch.setattr("src.mr_pipeline.run_optimization_pipeline", lambda *args, **kwargs: mr_surface.copy())
+        monkeypatch.setattr(
+            "src.analysis.mr_pipeline.run_optimization_pipeline", lambda *args, **kwargs: mr_surface.copy()
+        )
 
         # Force MILP re-solve after recalibration to return a known mask.
         new_mask = np.array([1, 0, 1, 0], dtype=int)
@@ -1582,7 +1588,7 @@ class TestProcessMRPeriodRegression:
             assert grid.n_cells == 4
             return new_mask
 
-        from src import optimization_utils as optimization_utils_module
+        from src.optimize import optimization_utils as optimization_utils_module
 
         monkeypatch.setattr(optimization_utils_module, "milp_solve_cutoffs", fake_milp_solve_cutoffs)
 
@@ -1688,13 +1694,13 @@ class TestProcessMRPeriodRegression:
                     f.write("{}")
 
         monkeypatch.setattr(
-            "src.mr_pipeline.calculate_metrics_from_cuts",
+            "src.analysis.mr_pipeline.calculate_metrics_from_cuts",
             lambda *a, **k: pd.DataFrame([{"Metric": "Optimum selected", "Risk (%)": 0.0, "Production (€)": 0.0}]),
         )
-        monkeypatch.setattr("src.mr_pipeline.compare_main_vs_mr", lambda *a, **k: DummyStabilityReport())
-        monkeypatch.setattr("src.mr_pipeline.styles.apply_plotly_style", lambda *a, **k: None)
-        monkeypatch.setattr("src.alerts.generate_drift_alerts", lambda *a, **k: DummyAlertReport())
-        monkeypatch.setattr("src.mr_pipeline.go.Figure.write_html", lambda *a, **k: None)
+        monkeypatch.setattr("src.analysis.mr_pipeline.compare_main_vs_mr", lambda *a, **k: DummyStabilityReport())
+        monkeypatch.setattr("src.analysis.mr_pipeline.styles.apply_plotly_style", lambda *a, **k: None)
+        monkeypatch.setattr("src.analysis.alerts.generate_drift_alerts", lambda *a, **k: DummyAlertReport())
+        monkeypatch.setattr("src.analysis.mr_pipeline.go.Figure.write_html", lambda *a, **k: None)
 
         merge_keys = ["sc_octroi_new_clus", "new_efx_clus"]
         merge_df = pd.DataFrame({merge_keys[0]: [1, 2], merge_keys[1]: [1, 1], "b2_ever_h6_tmp": [0.01, 0.02]})
@@ -1709,9 +1715,12 @@ class TestProcessMRPeriodRegression:
                 "fitted_curvature": [1.0, 1.0],
             }
         )
-        monkeypatch.setattr("src.mr_pipeline._compute_hybrid_mr_risk", lambda *a, **k: (merge_df, comparison_df))
         monkeypatch.setattr(
-            "src.mr_pipeline._assign_tiered_risk", lambda data_demand_mr, *a, **k: data_demand_mr.assign(_mr_tier=3)
+            "src.analysis.mr_pipeline._compute_hybrid_mr_risk", lambda *a, **k: (merge_df, comparison_df)
+        )
+        monkeypatch.setattr(
+            "src.analysis.mr_pipeline._assign_tiered_risk",
+            lambda data_demand_mr, *a, **k: data_demand_mr.assign(_mr_tier=3),
         )
         mr_surface = pd.DataFrame(
             {
@@ -1726,10 +1735,10 @@ class TestProcessMRPeriodRegression:
                 "todu_amt_pile_h6_rep": [100.0, 50.0, 200.0, 20.0],
             }
         )
-        monkeypatch.setattr("src.mr_pipeline.run_optimization_pipeline", lambda *a, **k: mr_surface.copy())
+        monkeypatch.setattr("src.analysis.mr_pipeline.run_optimization_pipeline", lambda *a, **k: mr_surface.copy())
 
         new_mask = np.array([1, 0, 1, 0], dtype=int)
-        from src import optimization_utils as ou
+        from src.optimize import optimization_utils as ou
 
         monkeypatch.setattr(ou, "milp_solve_cutoffs", lambda grid, target_risk, inv_vars, multiplier, **k: new_mask)
 
@@ -1740,7 +1749,7 @@ class TestProcessMRPeriodRegression:
             captured["audit_mask"] = mask
             return pd.DataFrame()  # no "classification" → downstream reconcile no-ops
 
-        monkeypatch.setattr("src.audit.generate_audit_table", fake_generate_audit_table)
+        monkeypatch.setattr("src.analysis.audit.generate_audit_table", fake_generate_audit_table)
 
         settings = PreprocessingSettings(
             keep_vars=["mis_date", "status_name", "segment_cut_off", "score_rf", "risk_score_rf"],
@@ -1846,13 +1855,13 @@ class TestProcessMRPeriodRegression:
                     f.write("{}")
 
         monkeypatch.setattr(
-            "src.mr_pipeline.calculate_metrics_from_cuts",
+            "src.analysis.mr_pipeline.calculate_metrics_from_cuts",
             lambda *a, **k: pd.DataFrame([{"Metric": "Optimum selected", "Risk (%)": 0.0, "Production (€)": 0.0}]),
         )
-        monkeypatch.setattr("src.mr_pipeline.compare_main_vs_mr", lambda *a, **k: DummyStabilityReport())
-        monkeypatch.setattr("src.mr_pipeline.styles.apply_plotly_style", lambda *a, **k: None)
-        monkeypatch.setattr("src.alerts.generate_drift_alerts", lambda *a, **k: DummyAlertReport())
-        monkeypatch.setattr("src.mr_pipeline.go.Figure.write_html", lambda *a, **k: None)
+        monkeypatch.setattr("src.analysis.mr_pipeline.compare_main_vs_mr", lambda *a, **k: DummyStabilityReport())
+        monkeypatch.setattr("src.analysis.mr_pipeline.styles.apply_plotly_style", lambda *a, **k: None)
+        monkeypatch.setattr("src.analysis.alerts.generate_drift_alerts", lambda *a, **k: DummyAlertReport())
+        monkeypatch.setattr("src.analysis.mr_pipeline.go.Figure.write_html", lambda *a, **k: None)
 
         merge_keys = ["sc_octroi_new_clus", "new_efx_clus"]
         merge_df = pd.DataFrame({merge_keys[0]: [1, 2], merge_keys[1]: [1, 1], "b2_ever_h6_tmp": [0.01, 0.02]})
@@ -1867,9 +1876,12 @@ class TestProcessMRPeriodRegression:
                 "fitted_curvature": [1.0, 1.0],
             }
         )
-        monkeypatch.setattr("src.mr_pipeline._compute_hybrid_mr_risk", lambda *a, **k: (merge_df, comparison_df))
         monkeypatch.setattr(
-            "src.mr_pipeline._assign_tiered_risk", lambda data_demand_mr, *a, **k: data_demand_mr.assign(_mr_tier=3)
+            "src.analysis.mr_pipeline._compute_hybrid_mr_risk", lambda *a, **k: (merge_df, comparison_df)
+        )
+        monkeypatch.setattr(
+            "src.analysis.mr_pipeline._assign_tiered_risk",
+            lambda data_demand_mr, *a, **k: data_demand_mr.assign(_mr_tier=3),
         )
         mr_surface = pd.DataFrame(
             {
@@ -1884,10 +1896,10 @@ class TestProcessMRPeriodRegression:
                 "todu_amt_pile_h6_rep": [100.0, 50.0, 200.0, 20.0],
             }
         )
-        monkeypatch.setattr("src.mr_pipeline.run_optimization_pipeline", lambda *a, **k: mr_surface.copy())
+        monkeypatch.setattr("src.analysis.mr_pipeline.run_optimization_pipeline", lambda *a, **k: mr_surface.copy())
 
         new_mask = np.array([1, 0, 1, 0], dtype=int)  # accept octroi-1/efx-1 and octroi-2/efx-1
-        from src import optimization_utils as ou
+        from src.optimize import optimization_utils as ou
 
         monkeypatch.setattr(ou, "milp_solve_cutoffs", lambda grid, target_risk, inv_vars, multiplier, **k: new_mask)
 
@@ -2013,11 +2025,13 @@ class TestProcessMRPeriodRegression:
             captured["imputed_b2"] = float(mr_row["b2_ever_h6_tmp"].iloc[0])
             return data_booked.copy()
 
-        monkeypatch.setattr("src.mr_pipeline.calculate_B2", fake_calculate_B2)
-        monkeypatch.setattr("src.mr_pipeline.run_optimization_pipeline", fake_run_optimization_pipeline)
-        monkeypatch.setattr("src.mr_pipeline.compare_main_vs_mr", lambda *args, **kwargs: DummyStabilityReport())
-        monkeypatch.setattr("src.mr_pipeline.styles.apply_plotly_style", lambda *args, **kwargs: None)
-        monkeypatch.setattr("src.alerts.generate_drift_alerts", lambda *args, **kwargs: DummyAlertReport())
+        monkeypatch.setattr("src.analysis.mr_pipeline.calculate_B2", fake_calculate_B2)
+        monkeypatch.setattr("src.analysis.mr_pipeline.run_optimization_pipeline", fake_run_optimization_pipeline)
+        monkeypatch.setattr(
+            "src.analysis.mr_pipeline.compare_main_vs_mr", lambda *args, **kwargs: DummyStabilityReport()
+        )
+        monkeypatch.setattr("src.analysis.mr_pipeline.styles.apply_plotly_style", lambda *args, **kwargs: None)
+        monkeypatch.setattr("src.analysis.alerts.generate_drift_alerts", lambda *args, **kwargs: DummyAlertReport())
 
         settings = PreprocessingSettings(
             keep_vars=["mis_date", "status_name", "segment_cut_off", "score_rf", "risk_score_rf"],
@@ -2141,10 +2155,12 @@ class TestProcessMRPeriodRegression:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write("{}")
 
-        monkeypatch.setattr("src.mr_pipeline.compare_main_vs_mr", lambda *args, **kwargs: DummyStabilityReport())
-        monkeypatch.setattr("src.mr_pipeline.styles.apply_plotly_style", lambda *args, **kwargs: None)
-        monkeypatch.setattr("src.alerts.generate_drift_alerts", lambda *args, **kwargs: DummyAlertReport())
-        monkeypatch.setattr("src.mr_pipeline.go.Figure.write_html", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            "src.analysis.mr_pipeline.compare_main_vs_mr", lambda *args, **kwargs: DummyStabilityReport()
+        )
+        monkeypatch.setattr("src.analysis.mr_pipeline.styles.apply_plotly_style", lambda *args, **kwargs: None)
+        monkeypatch.setattr("src.analysis.alerts.generate_drift_alerts", lambda *args, **kwargs: DummyAlertReport())
+        monkeypatch.setattr("src.analysis.mr_pipeline.go.Figure.write_html", lambda *args, **kwargs: None)
 
         merge_keys = ["sc_octroi_new_clus", "new_efx_clus"]
         merge_df = pd.DataFrame(
@@ -2167,10 +2183,10 @@ class TestProcessMRPeriodRegression:
             }
         )
         monkeypatch.setattr(
-            "src.mr_pipeline._compute_hybrid_mr_risk", lambda *args, **kwargs: (merge_df, comparison_df)
+            "src.analysis.mr_pipeline._compute_hybrid_mr_risk", lambda *args, **kwargs: (merge_df, comparison_df)
         )
         monkeypatch.setattr(
-            "src.mr_pipeline._assign_tiered_risk",
+            "src.analysis.mr_pipeline._assign_tiered_risk",
             lambda data_demand_mr, *args, **kwargs: data_demand_mr.assign(_mr_tier=3),
         )
 
@@ -2189,7 +2205,9 @@ class TestProcessMRPeriodRegression:
                 "oa_amt_h0_rep": [400.0, 400.0],
             }
         )
-        monkeypatch.setattr("src.mr_pipeline.run_optimization_pipeline", lambda *args, **kwargs: mr_surface.copy())
+        monkeypatch.setattr(
+            "src.analysis.mr_pipeline.run_optimization_pipeline", lambda *args, **kwargs: mr_surface.copy()
+        )
 
         settings = PreprocessingSettings(
             keep_vars=["mis_date", "status_name", "segment_cut_off", "score_rf", "risk_score_rf"],
@@ -2282,10 +2300,12 @@ class TestProcessMRPeriodRegression:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write("{}")
 
-        monkeypatch.setattr("src.mr_pipeline.compare_main_vs_mr", lambda *args, **kwargs: DummyStabilityReport())
-        monkeypatch.setattr("src.mr_pipeline.styles.apply_plotly_style", lambda *args, **kwargs: None)
-        monkeypatch.setattr("src.alerts.generate_drift_alerts", lambda *args, **kwargs: DummyAlertReport())
-        monkeypatch.setattr("src.mr_pipeline.go.Figure.write_html", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            "src.analysis.mr_pipeline.compare_main_vs_mr", lambda *args, **kwargs: DummyStabilityReport()
+        )
+        monkeypatch.setattr("src.analysis.mr_pipeline.styles.apply_plotly_style", lambda *args, **kwargs: None)
+        monkeypatch.setattr("src.analysis.alerts.generate_drift_alerts", lambda *args, **kwargs: DummyAlertReport())
+        monkeypatch.setattr("src.analysis.mr_pipeline.go.Figure.write_html", lambda *args, **kwargs: None)
 
         merge_keys = ["sc_octroi_new_clus", "new_efx_clus"]
         merge_df = pd.DataFrame({merge_keys[0]: [1], merge_keys[1]: [1], "b2_ever_h6_tmp": [np.nan]})
@@ -2301,11 +2321,11 @@ class TestProcessMRPeriodRegression:
             }
         )
         monkeypatch.setattr(
-            "src.mr_pipeline._compute_hybrid_mr_risk", lambda *args, **kwargs: (merge_df, comparison_df)
+            "src.analysis.mr_pipeline._compute_hybrid_mr_risk", lambda *args, **kwargs: (merge_df, comparison_df)
         )
         # Force model fallback inference failure so NaN remains.
         monkeypatch.setattr(
-            "src.mr_pipeline.calculate_B2", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
+            "src.analysis.mr_pipeline.calculate_B2", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
         )
 
         def fake_run_optimization_pipeline(*, data_demand, **kwargs):
@@ -2327,7 +2347,7 @@ class TestProcessMRPeriodRegression:
                 }
             )
 
-        monkeypatch.setattr("src.mr_pipeline.run_optimization_pipeline", fake_run_optimization_pipeline)
+        monkeypatch.setattr("src.analysis.mr_pipeline.run_optimization_pipeline", fake_run_optimization_pipeline)
 
         settings = PreprocessingSettings(
             keep_vars=["mis_date", "status_name", "segment_cut_off", "score_rf", "risk_score_rf"],
@@ -2904,7 +2924,7 @@ class TestRestoreTier1Actuals:
         )
 
     def test_tier1_actuals_restored_ratio_of_sums(self):
-        from src.mr_pipeline import _restore_tier1_actuals
+        from src.analysis.mr_pipeline import _restore_tier1_actuals
 
         df = self._frame()
         n = _restore_tier1_actuals(df)
@@ -2922,7 +2942,7 @@ class TestRestoreTier1Actuals:
         assert df.loc[2, "todu_amt_pile_h6"] == 90.0 and df.loc[2, "todu_30ever_h6"] == 1.0
 
     def test_noop_without_tier_column_or_actuals(self):
-        from src.mr_pipeline import _restore_tier1_actuals
+        from src.analysis.mr_pipeline import _restore_tier1_actuals
 
         df = pd.DataFrame({"todu_30ever_h6": [1.0], "todu_amt_pile_h6": [10.0]})
         assert _restore_tier1_actuals(df) == 0
@@ -2954,7 +2974,7 @@ def _mr_gate_settings(**overrides):
 @pytest.fixture
 def _mr_gate_inputs():
     """A 2x2 MR grid + accept-all main mask + an optimal-solution row."""
-    from src.optimization_utils import CellGrid
+    from src.optimize.optimization_utils import CellGrid
 
     df = pd.DataFrame(
         {
@@ -2982,7 +3002,7 @@ class TestMRReoptimizeGate:
         )
         called = []
         monkeypatch.setattr(
-            "src.optimization_utils.milp_solve_cutoffs",
+            "src.optimize.optimization_utils.milp_solve_cutoffs",
             lambda *a, **k: called.append(1) or np.zeros(len(grid.cell_data), dtype=int),
         )
         out_mask, out_grid, _ = _reoptimize_mr_mask_after_recalibration(df, settings, opt, mask, grid, True)
@@ -2994,7 +3014,7 @@ class TestMRReoptimizeGate:
         df, grid, mask, opt = _mr_gate_inputs
         settings = _mr_gate_settings(mr_reoptimize_cutoffs=False)  # no fixed cutoffs
         called = []
-        monkeypatch.setattr("src.optimization_utils.milp_solve_cutoffs", lambda *a, **k: called.append(1))
+        monkeypatch.setattr("src.optimize.optimization_utils.milp_solve_cutoffs", lambda *a, **k: called.append(1))
         out_mask, out_grid, _ = _reoptimize_mr_mask_after_recalibration(df, settings, opt, mask, grid, True)
         assert called == []
         assert out_mask is mask
@@ -3006,7 +3026,7 @@ class TestMRReoptimizeGate:
         new_mask = np.zeros(len(grid.cell_data), dtype=int)
         called = []
         monkeypatch.setattr(
-            "src.optimization_utils.milp_solve_cutoffs",
+            "src.optimize.optimization_utils.milp_solve_cutoffs",
             lambda *a, **k: (called.append(1), new_mask)[1],
         )
         out_mask, out_grid, _ = _reoptimize_mr_mask_after_recalibration(df, settings, opt, mask, grid, True)
@@ -3019,7 +3039,7 @@ class TestMRCutoffDriftOverlay:
     """The main-vs-MR accepted-cell drift overlay."""
 
     def test_overlay_categorizes_cells_and_writes_html(self, tmp_path):
-        from src.optimization_utils import CellGrid
+        from src.optimize.optimization_utils import CellGrid
 
         df = pd.DataFrame(
             {

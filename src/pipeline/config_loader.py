@@ -1,8 +1,8 @@
 import pandas as pd
 from loguru import logger
 
-from src.config import PreprocessingSettings
-from src.utils import calculate_annual_coef
+from src.core.config import PreprocessingSettings
+from src.core.utils import calculate_annual_coef
 
 
 def load_and_validate_config(config_path: str) -> tuple[PreprocessingSettings, pd.Timestamp, pd.Timestamp, float]:

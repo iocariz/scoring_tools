@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.selection_bias import (
+from src.analysis.selection_bias import (
     _nearest_decile_rate,
     compute_acceptance_gini_correlation,
     compute_bad_rate_by_decile,

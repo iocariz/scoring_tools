@@ -4,16 +4,16 @@ from dataclasses import dataclass
 import pandas as pd
 from loguru import logger
 
-from src.config import OutputPaths, PreprocessingSettings
-from src.data_quality import run_data_quality_checks
-from src.plots import (
+from src.core.config import OutputPaths, PreprocessingSettings
+from src.data.data_quality import run_data_quality_checks
+from src.data.preprocess_improved import complete_preprocessing_pipeline, filter_by_date
+from src.data.stress import calculate_per_bin_stress_factors, calculate_stress_factor
+from src.report.plots import (
     calculate_and_plot_transformation_rate,
     calculate_per_bin_transformation_rate,
     plot_bin_threshold_diagnostic,
     plot_risk_vs_production,
 )
-from src.preprocess_improved import complete_preprocessing_pipeline, filter_by_date
-from src.utils import calculate_per_bin_stress_factors, calculate_stress_factor
 
 
 @dataclass

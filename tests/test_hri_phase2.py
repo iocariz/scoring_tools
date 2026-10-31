@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.config import PreprocessingSettings
+from src.core.config import PreprocessingSettings
 
 BASE_KW = dict(
     keep_vars=["mis_date", "status_name"],
@@ -65,7 +65,7 @@ def test_hri_mode_selected_target_and_multiplier():
 
 
 def test_data_manager_fails_loudly_when_hri_target_columns_absent(monkeypatch):
-    import src.data_manager as dm
+    import src.data.data_manager as dm
 
     s = _settings(
         risk_indicator="hri_h6",
@@ -82,7 +82,7 @@ def test_data_manager_fails_loudly_when_hri_target_columns_absent(monkeypatch):
             "todu_amt_pile_h6": [1.0],
         }
     )
-    monkeypatch.setattr("src.schema.validate_raw_data", lambda d, raise_on_error=True: None)
+    monkeypatch.setattr("src.data.data_manager.validate_raw_data", lambda d, raise_on_error=True: None)
     with pytest.raises(dm.DataValidationError, match="hri_h6"):
         dm.load_and_prepare_data(s, preloaded_data=df)
 
@@ -113,7 +113,7 @@ def _flip_grid():
 
 
 def test_milp_mask_flips_with_indicator():
-    from src.optimization_utils import CellGrid, milp_solve_cutoffs
+    from src.optimize.optimization_utils import CellGrid, milp_solve_cutoffs
 
     grid = CellGrid.from_summary(_flip_grid(), ["v1"])
 
@@ -128,7 +128,7 @@ def test_milp_mask_flips_with_indicator():
 
 
 def test_trace_pareto_frontier_orders_by_hri():
-    from src.optimization_utils import trace_pareto_frontier
+    from src.optimize.optimization_utils import trace_pareto_frontier
 
     df, grid, masks = trace_pareto_frontier(
         _flip_grid(),
@@ -154,7 +154,7 @@ def test_trace_pareto_frontier_orders_by_hri():
 
 
 def test_selection_honors_hri_target_and_feasible_flag():
-    from src.plots import RiskProductionVisualizer
+    from src.report.plots import RiskProductionVisualizer
 
     vis = RiskProductionVisualizer.__new__(RiskProductionVisualizer)
     vis.data_summary = pd.DataFrame(
@@ -186,7 +186,7 @@ def test_selection_honors_hri_target_and_feasible_flag():
 
 
 def test_process_dataset_hri_target_uses_h_columns_without_multiplier():
-    from src.inference_optimized import process_dataset
+    from src.model.inference_optimized import process_dataset
 
     data = pd.DataFrame(
         {
@@ -215,7 +215,7 @@ def test_process_dataset_hri_target_uses_h_columns_without_multiplier():
 
 
 def test_ri_uplift_scales_h_num_only_when_enabled():
-    from src.reject_inference import apply_parceling_adjustment
+    from src.optimize.reject_inference import apply_parceling_adjustment
 
     repesca = pd.DataFrame(
         {
@@ -245,7 +245,7 @@ def test_ri_uplift_scales_h_num_only_when_enabled():
 
 
 def test_compare_headline_hri_fields_additive():
-    from src.reproducibility import Headline, compare_headline
+    from src.governance.reproducibility import Headline, compare_headline
 
     actual = Headline(
         segment="s",
@@ -287,7 +287,7 @@ def test_prepare_pipeline_data_does_not_drop_rows_on_sparse_hri_columns():
     """The dropna(variables+indicators) filter collapsed training to defaulted-only
     loans (78,723 -> 743 on real data) once h_* joined `indicators` — HRI source
     columns are sparse BY DESIGN and must be exempt from the row filter."""
-    from src.inference_optimized import _prepare_pipeline_data
+    from src.model.inference_optimized import _prepare_pipeline_data
 
     n = 100
     df = pd.DataFrame(

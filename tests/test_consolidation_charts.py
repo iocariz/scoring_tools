@@ -4,8 +4,8 @@ import openpyxl
 import pandas as pd
 import pytest
 
-from src.consolidation import _collect_frontier_specs, _write_sheet_how_we_got_here
-from src.consolidation_charts import render_frontier_small_multiples, render_production_bridge
+from src.report.consolidation import _collect_frontier_specs, _write_sheet_how_we_got_here
+from src.report.consolidation_charts import render_frontier_small_multiples, render_production_bridge
 
 TOTALS = {
     "actual_production": 336_800_000.0,

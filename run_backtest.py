@@ -29,13 +29,13 @@ from pathlib import Path
 
 from loguru import logger
 
-from src.backtest import (
+from src.core.config import PreprocessingSettings
+from src.governance.backtest import (
     BacktestError,
     backtest_segment,
     write_backtest_report,
     write_consolidated_report,
 )
-from src.config import PreprocessingSettings
 
 
 def _scenario_suffix(scenario: str) -> str:

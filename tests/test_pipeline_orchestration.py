@@ -14,7 +14,7 @@ import src.pipeline.inference as inference_module
 # so test monkey-patches must target the new module.
 import src.pipeline.preprocessing as preprocessing_module
 import src.pipeline.reporting as reporting_module
-from src.config import OutputPaths, PreprocessingSettings
+from src.core.config import OutputPaths, PreprocessingSettings
 
 
 class DummyFigure:
@@ -665,7 +665,7 @@ class TestRunOptimizationPhase:
         fake_pareto_df = pd.DataFrame({"sol_fac": [0], "oa_amt_h0": [999.0], "b2_ever_h6": [1.23]})
         fake_masks = [[1, 0]]
 
-        import src.optimization_utils as optimization_utils_module
+        import src.optimize.optimization_utils as optimization_utils_module
 
         monkeypatch.setattr(
             optimization_utils_module,
@@ -806,7 +806,7 @@ class TestLegacyEnumerationSkippedWithConstraints:
         fake_pareto_df = pd.DataFrame({"sol_fac": [0], "oa_amt_h0": [999.0], "b2_ever_h6": [1.23]})
         fake_masks = [[1, 0]]
 
-        import src.optimization_utils as optimization_utils_module
+        import src.optimize.optimization_utils as optimization_utils_module
 
         def fake_ga(grid, inv_vars, multiplier, indicators, n_points, **kwargs):
             captured_ga.update(kwargs)

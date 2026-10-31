@@ -17,17 +17,17 @@ import plotly.graph_objects as go
 import pytest
 from sklearn.linear_model import Ridge
 
-from src.alerts import AlertReport, AlertSeverity, generate_drift_alerts
-from src.data_manager import DataValidationError
-from src.inference_optimized import _compute_shap_values
-from src.metrics import bootstrap_confidence_interval
-from src.persistence import save_model_with_metadata
-from src.plots import plot_shap_summary
-from src.stability import StabilityReport, StabilityStatus, calculate_stability_report
-from src.trends import compute_monthly_metrics, detect_trend_changes, plot_metric_trends
+from src.analysis.alerts import AlertReport, AlertSeverity, generate_drift_alerts
+from src.analysis.stability import StabilityReport, StabilityStatus, calculate_stability_report
+from src.analysis.trends import compute_monthly_metrics, detect_trend_changes, plot_metric_trends
+from src.data.data_manager import DataValidationError
+from src.model.inference_optimized import _compute_shap_values
+from src.model.metrics import bootstrap_confidence_interval
+from src.model.persistence import save_model_with_metadata
+from src.report.plots import plot_shap_summary
 
 try:
-    from src.schema import validate_raw_data
+    from src.core.schema import validate_raw_data
 
     _has_pandera = True
 except ImportError:
@@ -310,7 +310,7 @@ class TestReproducibility:
 class TestCrossModuleConsistency:
     def test_stability_status_maps_to_alert_severity(self):
         """All StabilityStatus values have corresponding AlertSeverity mappings."""
-        from src.alerts import _SEVERITY_MAP
+        from src.analysis.alerts import _SEVERITY_MAP
 
         for status in StabilityStatus:
             assert status in _SEVERITY_MAP, f"Missing severity mapping for {status}"

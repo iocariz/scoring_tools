@@ -7,21 +7,25 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.utils import (
-    DEFAULT_RISK_MULTIPLIER,
-    calculate_annual_coef,
-    calculate_b2_ever_h6,
-    calculate_stress_factor,
-    calculate_todu_30ever_from_b2,
-    consolidate_cutoff_summaries,
+from src.analysis.mr_extrapolation import (
     extrapolate_h3_to_h6,
     fit_h3_curvature_within_bin_temporal,
     fit_h3_extrapolation_curve,
-    format_cutoff_summary_table,
-    generate_cutoff_summary,
+)
+from src.core.utils import (
+    DEFAULT_RISK_MULTIPLIER,
+    calculate_annual_coef,
+    calculate_b2_ever_h6,
+    calculate_todu_30ever_from_b2,
     optimize_dtypes,
     resolve_modelling_supersegment,
     resolve_reporting_supersegment,
+)
+from src.data.stress import calculate_stress_factor
+from src.optimize.cutoff_summary import (
+    consolidate_cutoff_summaries,
+    format_cutoff_summary_table,
+    generate_cutoff_summary,
 )
 
 # =============================================================================
@@ -378,7 +382,7 @@ class TestCalculateAnnualCoef:
     def _coef_capturing_warnings(start, end):
         import logging
 
-        from src import utils as u
+        from src.core import utils as u
 
         recs = []
 
@@ -440,7 +444,7 @@ class TestGenerateCutoffSummary:
         # With mask/grid the summary must be cell-level for ANY N (the
         # consolidated acceptance grids need the `accepted` column) — the
         # classic per-bin cutoff table is only the mask-less fallback.
-        from src.optimization_utils import CellGrid
+        from src.optimize.optimization_utils import CellGrid
 
         summary_df = pd.DataFrame(
             {
@@ -917,7 +921,7 @@ class TestCalculateStressFactorEdgeCases:
     def test_per_bin_worst_slice_zero_denominator_uses_global_fallback(self):
         """#54: a bin whose worst-score slice has zero denominator falls back to
         the global stress factor, not a 0.0 that would zero the bin's risk."""
-        from src.utils import calculate_per_bin_stress_factors
+        from src.data.stress import calculate_per_bin_stress_factors
 
         df = pd.DataFrame(
             {

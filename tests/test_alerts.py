@@ -4,13 +4,13 @@ import json
 
 import pandas as pd
 
-from src.alerts import (
+from src.analysis.alerts import (
     AlertReport,
     AlertSeverity,
     DriftAlert,
     generate_drift_alerts,
 )
-from src.stability import PSIResult, StabilityReport, StabilityStatus
+from src.analysis.stability import PSIResult, StabilityReport, StabilityStatus
 
 
 def _make_psi_result(variable: str, psi_value: float, status: StabilityStatus) -> PSIResult:

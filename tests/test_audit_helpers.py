@@ -1,4 +1,4 @@
-"""Coverage tests for src.audit helpers not directly hit by test_audit.py.
+"""Coverage tests for src.analysis.audit helpers not directly hit by test_audit.py.
 
 Targets the post-classification helpers:
 ``audit_production_kpis``, ``reconcile_risk_production_summary_with_audit``,
@@ -9,7 +9,7 @@ Targets the post-classification helpers:
 import numpy as np
 import pandas as pd
 
-from src import audit
+from src.analysis import audit
 
 
 def _audit_df() -> pd.DataFrame:

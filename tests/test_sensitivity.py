@@ -7,13 +7,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.optimization_utils import CellGrid, milp_solve_cutoffs, solve_with_fixed_cells
-from src.sensitivity import (
+from src.analysis.sensitivity import (
     compute_cell_marginal_impact,
     perturb_risk_summary,
     run_sensitivity_analysis,
     sensitivity_cell_detail,
 )
+from src.optimize.optimization_utils import CellGrid, milp_solve_cutoffs, solve_with_fixed_cells
 
 # =============================================================================
 # Helpers
@@ -319,7 +319,7 @@ class TestSolveWithFixedCells:
 class TestSensitivityPhaseBaseline:
     @staticmethod
     def _settings():
-        from src.config import PreprocessingSettings
+        from src.core.config import PreprocessingSettings
 
         return PreprocessingSettings(
             keep_vars=["mis_date"],
@@ -357,7 +357,7 @@ class TestSensitivityPhaseBaseline:
         mask (persisted acceptance_mask), not a fresh MILP re-solve. A deliberately
         NON-monotone frozen mask (accept only the riskiest cell) — which the MILP
         would never produce — must appear as the baseline, proving the reuse."""
-        from src.config import OutputPaths
+        from src.core.config import OutputPaths
         from src.pipeline.optimization import run_sensitivity_phase
 
         output = OutputPaths(base_dir=tmp_path)

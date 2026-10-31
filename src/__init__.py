@@ -9,7 +9,7 @@ This package provides modules for:
 - Visualization and plotting
 """
 
-from src.constants import (
+from src.core.constants import (
     DEFAULT_N_POINTS_3D,
     DEFAULT_RANDOM_STATE,
     DEFAULT_RISK_MULTIPLIER,
@@ -21,14 +21,14 @@ from src.constants import (
     StatusName,
     Suffixes,
 )
-from src.estimators import HurdleRegressor
-from src.persistence import (
+from src.data.preprocess_improved import (
+    complete_preprocessing_pipeline,
+)
+from src.model.estimators import HurdleRegressor
+from src.model.persistence import (
     load_model_for_prediction,
     predict_on_new_data,
     save_model_with_metadata,
-)
-from src.preprocess_improved import (
-    complete_preprocessing_pipeline,
 )
 
 __all__ = [

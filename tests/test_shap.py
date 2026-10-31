@@ -6,8 +6,8 @@ import plotly.graph_objects as go
 import pytest
 from sklearn.linear_model import Ridge
 
-from src.inference_optimized import _compute_shap_values
-from src.plots import plot_shap_summary
+from src.model.inference_optimized import _compute_shap_values
+from src.report.plots import plot_shap_summary
 
 try:
     import shap  # noqa: F401

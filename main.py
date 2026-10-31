@@ -8,9 +8,9 @@ import pandas as pd
 from loguru import logger
 from pydantic import ValidationError
 
-from src.config import OutputPaths
-from src.data_manager import DataValidationError, load_and_prepare_data
-from src.lineage import build_lineage, log_run_banner, write_lineage
+from src.core.config import OutputPaths
+from src.data.data_manager import DataValidationError, load_and_prepare_data
+from src.governance.lineage import build_lineage, log_run_banner, write_lineage
 from src.pipeline.config_loader import load_and_validate_config
 from src.pipeline.inference import run_inference_phase
 from src.pipeline.optimization import (
@@ -200,7 +200,7 @@ def _resolve_resimulation_model_path(output: OutputPaths, config_path: str, segm
     """
     import tomllib
 
-    from src.utils import resolve_modelling_supersegment
+    from src.core.utils import resolve_modelling_supersegment
 
     output_root = output.base_dir.parent
     model_dirs = sorted(Path(output.models_dir).glob("model_*"), reverse=True)
@@ -303,7 +303,7 @@ def run_resimulation(
         per_bin_tasa_fin = pd.read_csv(output.per_bin_tasa_fin_csv)
 
     # 5. Reconstruct grid + masks
-    from src.optimization_utils import CellGrid, decode_mask
+    from src.optimize.optimization_utils import CellGrid, decode_mask
 
     grid = CellGrid.from_summary(data_summary_desagregado, settings.variables)
     pareto_masks = []
@@ -323,7 +323,7 @@ def run_resimulation(
     risk_inference, reg_todu_amt_pile = run_inference_phase(data_clean, settings, model_path, output=output)
 
     # 7. Compute total_demand from data_clean
-    from src.preprocess_improved import filter_by_date
+    from src.data.preprocess_improved import filter_by_date
 
     data_demand_period = filter_by_date(data_clean, "mis_date", settings.date_ini_book_obs, settings.date_fin_book_obs)
     if "status_name" in data_demand_period.columns and "oa_amt_h0" in data_demand_period.columns:
@@ -741,7 +741,7 @@ def main(
 
         # Step 7: Temporal trend analysis (non-blocking)
         try:
-            from src.trends import compute_monthly_metrics, detect_trend_changes, plot_metric_trends
+            from src.analysis.trends import compute_monthly_metrics, detect_trend_changes, plot_metric_trends
 
             monthly = compute_monthly_metrics(
                 data_clean,

@@ -6,8 +6,8 @@ Targets ``write_portfolio_owner_pack``, ``policy_cutoff_table_to_markdown``,
 
 import pandas as pd
 
-from src import portfolio_owner as po
-from src.global_optimizer import AllocationResult, SegmentConstraints
+from src.optimize import portfolio_owner as po
+from src.optimize.global_optimizer import AllocationResult, SegmentConstraints
 
 
 class TestIsBinColumnKey:

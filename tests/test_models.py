@@ -3,7 +3,7 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.tree import DecisionTreeClassifier
 
-from src.models import (
+from src.model.models import (
     calculate_B2,
     calculate_risk_values,
     calculate_RV,
@@ -156,7 +156,7 @@ class TestCalculateB2:
         # Create a simple model mock
         model = Ridge(fit_intercept=False)
         # Fit on transformed data so we know the features
-        from src.models import transform_variables as tv
+        from src.model.models import transform_variables as tv
 
         train_df = tv(df.copy(), variables)
         var_reg = [c for c in train_df.columns if c not in ["var0", "var1"]]
@@ -172,7 +172,7 @@ class TestCalculateB2:
         variables = ["v0", "v1"]
 
         model = Ridge(fit_intercept=False)
-        from src.models import transform_variables as tv
+        from src.model.models import transform_variables as tv
 
         train_df = tv(df.copy(), variables)
         var_reg = [c for c in train_df.columns if c not in ["v0", "v1"]]
@@ -221,7 +221,7 @@ class TestCalculateRiskValues:
         model_rv.fit(pd.DataFrame({"oa_amt": [100, 200, 300]}), np.array([1000, 2000, 3000]))
 
         # Create risk model
-        from src.models import transform_variables as tv
+        from src.model.models import transform_variables as tv
 
         train_df = tv(df[["v0", "v1"]].copy(), variables)
         var_reg = [c for c in train_df.columns if c not in ["v0", "v1"]]
@@ -247,7 +247,7 @@ class TestCalculateRiskValues:
         model_rv = LinearRegression()
         model_rv.fit(pd.DataFrame({"oa_amt": [100.0, 200.0, 300.0]}), np.array([1000.0, 2000.0, 3000.0]))
 
-        from src.models import transform_variables as tv
+        from src.model.models import transform_variables as tv
 
         train_df = tv(pd.DataFrame({"v0": [0, 1, 2], "v1": [0, 1, 2]}), variables)
         var_reg = [c for c in train_df.columns if c not in ["v0", "v1"]]

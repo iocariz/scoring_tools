@@ -8,7 +8,7 @@ import os
 import pandas as pd
 from loguru import logger
 
-from src.config import OutputPaths, PreprocessingSettings
+from src.core.config import OutputPaths, PreprocessingSettings
 
 
 def run_sensitivity_phase(
@@ -39,8 +39,12 @@ def run_sensitivity_phase(
     logger.info(f"[{segment}] Running sensitivity analysis...")
 
     try:
-        from src.optimization_utils import CellGrid, decode_mask, milp_solve_cutoffs
-        from src.sensitivity import compute_cell_marginal_impact, run_sensitivity_analysis, sensitivity_cell_detail
+        from src.analysis.sensitivity import (
+            compute_cell_marginal_impact,
+            run_sensitivity_analysis,
+            sensitivity_cell_detail,
+        )
+        from src.optimize.optimization_utils import CellGrid, decode_mask, milp_solve_cutoffs
 
         grid = CellGrid.from_summary(data_summary_desagregado, settings.variables)
         indicator = settings.selected_indicator

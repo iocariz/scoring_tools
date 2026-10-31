@@ -35,11 +35,11 @@ import pandas as pd
 from loguru import logger
 from tqdm import tqdm
 
-from src.config import OutputPaths
-from src.consolidation import generate_consolidation_report
-from src.data_manager import load_data, standardize_columns_and_values
-from src.lineage import git_provenance
-from src.utils import resolve_modelling_supersegment, resolve_reporting_supersegment
+from src.core.config import OutputPaths
+from src.core.utils import resolve_modelling_supersegment, resolve_reporting_supersegment
+from src.data.data_manager import load_data, standardize_columns_and_values
+from src.governance.lineage import git_provenance
+from src.report.consolidation import generate_consolidation_report
 
 
 class SegmentPipelineError(RuntimeError):
@@ -117,7 +117,7 @@ def learn_global_bin_edges(data: pd.DataFrame, base_config: dict[str, Any]) -> d
         Mapping of variable name → learned bin edges.  Empty if no bins
         require learning.
     """
-    from src.preprocess_improved import filter_by_date, learn_quantile_bins
+    from src.data.preprocess_improved import filter_by_date, learn_quantile_bins
 
     bins_config = base_config.get("bins", {})
     if not bins_config:
@@ -192,7 +192,7 @@ def learn_supersegment_bin_edges(
     dict[str, dict[str, list[float]]]
         Mapping of supersegment name → {variable name → learned bin edges}.
     """
-    from src.preprocess_improved import filter_by_date, learn_quantile_bins
+    from src.data.preprocess_improved import filter_by_date, learn_quantile_bins
 
     bins_config = base_config.get("bins", {})
     if not bins_config:
