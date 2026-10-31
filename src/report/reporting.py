@@ -928,6 +928,27 @@ def _build_cutoff_comparison_section(output_base: Path, segments: dict) -> Repor
 # ---------------------------------------------------------------------------
 
 
+SELECTION_TRAIL_COLS = ["selection_basis_requested", "selection_basis_applied", "ci_upper_feasible"]
+
+
+def ci_margin_unmet(df: pd.DataFrame) -> bool:
+    """True when a ``ci_upper`` selection was requested but could not be applied (audit 2026-10-31 F6)."""
+    if "ci_upper_feasible" not in df.columns:
+        return False
+    return df["ci_upper_feasible"].astype(str).str.strip().str.lower().isin(["false", "0", "0.0"]).any()
+
+
+def _selection_trail_hidden(csv_path: str | Path) -> list[str]:
+    """Hide the selection-basis columns unless ``ci_upper`` was requested (then they matter)."""
+    try:
+        df = pd.read_csv(csv_path, usecols=lambda c: c == "selection_basis_requested")
+    except (OSError, pd.errors.ParserError, ValueError):
+        return SELECTION_TRAIL_COLS
+    if "selection_basis_requested" in df.columns and (df["selection_basis_requested"] == "ci_upper").any():
+        return []
+    return SELECTION_TRAIL_COLS
+
+
 def _feasibility_banner(csv_path: str | Path, scenario: str) -> str:
     """Return an HTML warning banner when the summary marks the risk target INFEASIBLE.
 
@@ -940,12 +961,25 @@ def _feasibility_banner(csv_path: str | Path, scenario: str) -> str:
         df = pd.read_csv(csv_path)
     except (OSError, pd.errors.ParserError, ValueError):
         return ""
-    if df.empty or "Feasible" not in df.columns:
+    if df.empty:
         return ""
+    banner = ""
+    if ci_margin_unmet(df):
+        banner += (
+            '<div class="alert-infeasible" style="background:#FDEBD0;border-left:5px solid #CA6F1E;'
+            'padding:10px 14px;margin:8px 0;color:#873600;border-radius:3px;">'
+            f"⚠ <strong>CI-upper selection NOT applied</strong> for scenario <em>{escape(scenario or 'base')}</em>: "
+            '<code>selection_risk_basis = "ci_upper"</code> was requested but no frontier point has a risk CI '
+            "upper bound within the target (or the bootstrap was unavailable), so the point rule was used. "
+            "The selected policy does <strong>not</strong> satisfy the requested noise margin."
+            "</div>"
+        )
+    if "Feasible" not in df.columns:
+        return banner
     feasible = df["Feasible"].astype(str).str.strip().str.lower()
     if not feasible.isin(["false", "0", "0.0"]).any():
-        return ""
-    return (
+        return banner
+    return banner + (
         '<div class="alert-infeasible" style="background:#FADBD8;border-left:5px solid #C0392B;'
         'padding:10px 14px;margin:8px 0;color:#922B21;border-radius:3px;">'
         f"⚠ <strong>Risk target INFEASIBLE</strong> for scenario <em>{escape(scenario or 'base')}</em>: "
@@ -991,15 +1025,11 @@ def build_segment_report(
         "h_den_h3",
         "Total Demand (€)",
         "Feasible",
-        # selection-basis audit trail (F6): persisted in the CSV, not shown in the HTML tables
-        "selection_basis_requested",
-        "selection_basis_applied",
-        "ci_upper_feasible",
     ]
     for scenario in scenarios:
         suffix = f"_{scenario}" if scenario else ""
         csv_p = output_paths.risk_production_summary_csv(suffix)
-        tbl = csv_to_html_table(csv_p, exclude_cols=_exclude_todu)
+        tbl = csv_to_html_table(csv_p, exclude_cols=_exclude_todu + _selection_trail_hidden(csv_p))
         if tbl:
             banner = _feasibility_banner(csv_p, scenario)
             exec_section.tables.append(f"<h4>Scenario: {scenario or 'base'}</h4>{banner}{tbl}")
@@ -1034,7 +1064,7 @@ def build_segment_report(
         if div:
             sa_section.charts.append(div)
         csv_p = output_paths.risk_production_summary_csv(suffix)
-        tbl = csv_to_html_table(csv_p, exclude_cols=_exclude_todu)
+        tbl = csv_to_html_table(csv_p, exclude_cols=_exclude_todu + _selection_trail_hidden(csv_p))
         if tbl:
             banner = _feasibility_banner(csv_p, scenario)
             sa_section.tables.append(f"{banner}{tbl}")
@@ -1158,12 +1188,8 @@ def build_consolidated_report(
         "h_den_h3",
         "Total Demand (€)",
         "Feasible",
-        # selection-basis audit trail (F6): persisted in the CSV, not shown in the HTML tables
-        "selection_basis_requested",
-        "selection_basis_applied",
-        "ci_upper_feasible",
     ]
-    _exclude_todu_mr = _exclude_todu + ["todu_30ever_h3", "todu_amt_pile_h3"]
+    _exclude_todu_mr = _exclude_todu + ["todu_30ever_h3", "todu_amt_pile_h3"] + SELECTION_TRAIL_COLS
 
     # Main period
     comparison_section = ReportSection(id="segment-comparison", title="Segment Comparison — Main Period")
@@ -1171,9 +1197,11 @@ def build_consolidated_report(
         seg_dir = output_base / seg_name
         seg_output = OutputPaths(base_dir=seg_dir)
         for suffix in ["_base", ""]:
-            tbl = csv_to_html_table(seg_output.risk_production_summary_csv(suffix), exclude_cols=_exclude_todu)
+            csv_p = seg_output.risk_production_summary_csv(suffix)
+            tbl = csv_to_html_table(csv_p, exclude_cols=_exclude_todu + _selection_trail_hidden(csv_p))
             if tbl:
-                comparison_section.tables.append(f"<h4>{seg_name}</h4>{tbl}")
+                banner = _feasibility_banner(csv_p, suffix.lstrip("_"))
+                comparison_section.tables.append(f"<h4>{seg_name}</h4>{banner}{tbl}")
                 break
     if comparison_section.tables:
         sections.append(comparison_section)

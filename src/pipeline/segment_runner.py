@@ -63,9 +63,12 @@ def _config_hash(settings) -> str:
     return hashlib.md5(key_fields.encode()).hexdigest()[:12]
 
 
-#: Settings a resimulation may legitimately change: the risk targets it re-selects at, and logging.
-#: Every other field shapes the population, risk surface or frontier the resimulation reloads.
-_RESIM_ALLOWED_CHANGES = frozenset({"optimum_risk", "optimum_hri", "risk_step", "log_level", "base_scenario_only"})
+#: Settings a resimulation may legitimately change: the risk targets it re-selects at, logging, and the
+#: DQ escape hatch (it only relaxes the fail-closed gate; resimulation runs no DQ). Every other field —
+#: including CLI overrides such as --baseline — shapes the population, risk surface or frontier reloaded.
+_RESIM_ALLOWED_CHANGES = frozenset(
+    {"optimum_risk", "optimum_hri", "risk_step", "log_level", "base_scenario_only", "dq_allow_warnings"}
+)
 
 
 def _config_snapshot(settings) -> dict:
@@ -92,8 +95,9 @@ def _save_resimulation_artifacts(
 ) -> None:
     """Save artifacts needed for resimulation mode.
 
-    ``config_snapshot`` is the validated config as loaded (before CLI overrides and optional-column
-    stripping), so a resimulation reloading the same config file reproduces its fingerprint.
+    ``config_snapshot`` is the effective validated config (CLI overrides applied, optional-column stripping
+    not yet), so a resimulation reloading the same config file reproduces its fingerprint unless the full
+    run used an override (e.g. --baseline) — which resimulation then refuses.
     """
     data_clean.to_parquet(output.data_clean_parquet, index=False)
     data_booked.to_parquet(output.data_booked_parquet, index=False)
@@ -526,7 +530,6 @@ def run_pipeline(
             raise ConfigLoadError(f"Error loading configuration from '{config_path}'") from e
 
         segment = settings.segment_filter
-        config_snapshot = _config_snapshot(settings)  # as validated, before overrides (resimulation identity)
         if baseline_mode:
             settings.baseline_mode = True
         if base_scenario_only:
@@ -534,6 +537,10 @@ def run_pipeline(
         if allow_dq_warnings:
             # Analyst escape hatch (M2): relax the fail-closed DQ gate for this run.
             settings.dq_allow_warnings = True
+        # Resimulation identity: the EFFECTIVE config (CLI overrides applied — a --baseline run must not
+        # pass as an ordinary one; audit follow-up), taken before load_and_prepare_data strips optional
+        # columns so a resimulation reloading the same config reproduces it.
+        config_snapshot = _config_snapshot(settings)
 
         # Resimulation mode: skip phases 2-5, load artifacts, run scenarios only
         if resimulate_risk:

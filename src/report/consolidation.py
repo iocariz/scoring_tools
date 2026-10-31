@@ -4356,6 +4356,23 @@ def _infeasible_segments(output_base, segments: dict, suffix: str) -> list[str]:
     return out
 
 
+def _ci_margin_unmet_segments(output_base, segments: dict, suffix: str) -> list[str]:
+    """Segments where ``selection_risk_basis="ci_upper"`` was requested but no candidate met the CI margin
+    (the point rule was applied instead), read from the persisted ``ci_upper_feasible`` column (audit
+    2026-10-31 F6). Empty when not requested, all met, or the column is absent (older runs)."""
+    from src.report.reporting import ci_margin_unmet
+
+    out: list[str] = []
+    for seg in segments:
+        try:
+            df = load_risk_production_table(Path(output_base) / seg, period="main", scenario_suffix=suffix)
+        except Exception:
+            df = None
+        if df is not None and not df.empty and ci_margin_unmet(df):
+            out.append(seg)
+    return out
+
+
 def _collect_frontier_specs(output_base: Path, segments: dict, suffix: str) -> tuple[list[dict], int, int]:
     """Per-segment efficient-frontier data for the How-We-Got-Here panels.
 
@@ -4589,6 +4606,13 @@ def _write_exec_recommendation(ws, start_row: int, consolidated_df, output_base,
             "No frontier point met the configured optimum_risk, so those figures are the closest "
             "(minimum-risk) fallback — NOT a target-meeting optimum. Raise optimum_risk or revisit the "
             "constraints before acting on them."
+        )
+    ci_unmet = _ci_margin_unmet_segments(output_base, segments, suffix)
+    if ci_unmet:
+        lines.append(
+            f"⚠ CI-UPPER SELECTION NOT APPLIED for {len(ci_unmet)} segment(s): {', '.join(sorted(ci_unmet))}. "
+            "selection_risk_basis='ci_upper' was requested but no frontier point keeps its risk CI upper bound "
+            "within the target, so the point rule was used — those policies do NOT satisfy the requested noise margin."
         )
 
     tr = _get_total_row(consolidated_df, "main")
