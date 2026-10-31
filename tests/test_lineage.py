@@ -138,20 +138,20 @@ def test_main_registers_allow_dq_warnings(monkeypatch):
 
 
 def test_run_batch_threads_allow_dq_warnings_and_run_id():
-    import run_batch
+    from src.pipeline import batch
 
     for fn in (
-        run_batch.run_segment_pipeline,
-        run_batch.run_supersegment_training,
-        run_batch.run_segments_sequential,
-        run_batch.run_segments_parallel,
+        batch.run_segment_pipeline,
+        batch.run_supersegment_training,
+        batch.run_segments_sequential,
+        batch.run_segments_parallel,
     ):
         params = set(inspect.signature(fn).parameters)
         assert {"allow_dq_warnings", "run_id", "run_ts_iso"} <= params, fn.__name__
 
 
 def test_main_threads_run_context():
-    import main
+    from src.pipeline.segment_runner import run_pipeline
 
-    params = set(inspect.signature(main.main).parameters)
+    params = set(inspect.signature(run_pipeline).parameters)
     assert {"allow_dq_warnings", "run_id", "run_ts_iso"} <= params

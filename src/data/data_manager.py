@@ -34,7 +34,7 @@ def standardize_columns_and_values(data: pd.DataFrame) -> pd.DataFrame:
     *values* are lowercased + underscored + cast to ``category`` — except for protected date and
     identifier columns (``PROTECTED_FROM_COERCION`` or any ``*_date`` name), which are left verbatim
     so dates and case-sensitive keys are never mangled (audit #19). Shared by both load paths
-    (``load_and_prepare_data`` and ``run_batch.load_and_standardize_data``) so they normalize
+    (``load_and_prepare_data`` and ``load_and_standardize_data``) so they normalize
     identically.
     """
     data.columns = data.columns.str.lower().str.replace(" ", "_")
@@ -43,6 +43,54 @@ def standardize_columns_and_values(data: pd.DataFrame) -> pd.DataFrame:
             continue
         data[col] = data[col].astype("string").str.lower().str.replace(" ", "_").astype("category")
     return data
+
+
+def load_and_standardize_data(data_path: str, encoding: str = "latin-1") -> pd.DataFrame | None:
+    """
+    Load data from SAS file and standardize column names and categorical values.
+
+    Called once at the batch level (``src.pipeline.batch``) to avoid reloading the same
+    data file for each segment. If loading fails (e.g., remote storage like MinIO),
+    returns None and the pipeline will fall back to per-segment loading.
+
+    Args:
+        data_path: Path to the SAS data file.
+
+    Returns:
+        Standardized DataFrame ready for processing, or None if loading fails.
+    """
+    try:
+        logger.info(f"Attempting to preload data from {data_path}...")
+        # Same reader + encoding as the per-segment path (audit #19).
+        data = load_data(data_path, encoding=encoding)
+        logger.info(f"Data loaded: {data.shape[0]:,} rows × {data.shape[1]} columns")
+
+        # Standardize column names + categorical values via the shared helper (protects dates/IDs).
+        logger.info("Standardizing column names and categorical values...")
+        data = standardize_columns_and_values(data)
+
+        logger.info("Data standardization complete.")
+        return data
+
+    except FileNotFoundError:
+        logger.warning(f"Data file not found at {data_path}. Each segment will load data individually.")
+        return None
+    except Exception as e:
+        logger.warning(f"Could not preload data: {e}. Each segment will load data individually.")
+        return None
+
+
+def load_configured_data(base_config: dict) -> pd.DataFrame | None:
+    """Preload the SAS file named by a ``[preprocessing]`` table, decoded with its ``sas_encoding`` (#64).
+
+    The batch-level entry points (batch run, backtest, policy comparison, score metrics, selection bias,
+    config sensitivity) all load the data this way, so every one of them sees the same population as
+    the per-segment runs. Returns ``None`` when loading fails (see :func:`load_and_standardize_data`).
+    """
+    return load_and_standardize_data(
+        base_config.get("data_path", PreprocessingSettings.model_fields["data_path"].default),
+        encoding=base_config.get("sas_encoding", "latin-1"),
+    )
 
 
 def find_missing_columns(df: pd.DataFrame, required_columns: list[str]) -> list[str]:

@@ -1029,7 +1029,7 @@ class TestResimulationNoStaleData:
     purges scenarios it does not regenerate."""
 
     def test_run_resimulation_raises_on_missing_artifacts(self, monkeypatch, tmp_path):
-        import main as main_module
+        import src.pipeline.segment_runner as main_module
 
         fake_settings = SimpleNamespace(segment_filter="seg_a")
         monkeypatch.setattr(main_module, "load_and_validate_config", lambda p: (fake_settings, None, None, 1.0))
@@ -1040,7 +1040,7 @@ class TestResimulationNoStaleData:
             main_module.run_resimulation("dummy.toml", [1.0], output=output)
 
     def test_cleanup_stale_scenarios_removes_non_active_keeps_protected(self, tmp_path):
-        import main as main_module
+        import src.pipeline.segment_runner as main_module
 
         output = OutputPaths(base_dir=tmp_path)
         output.ensure_dirs()
@@ -1069,7 +1069,7 @@ class TestResimulationNoStaleData:
     def test_cleanup_protect_saves_base_when_active_is_target_only(self, tmp_path):
         # N-value resimulation writes target_X.XX names; "base" is NOT active but
         # its desagregado grid is the optimization INPUT — protect must keep it.
-        import main as main_module
+        import src.pipeline.segment_runner as main_module
 
         output = OutputPaths(base_dir=tmp_path)
         output.ensure_dirs()
@@ -1093,7 +1093,7 @@ class TestResimulationNoStaleData:
         """#40: with the segment's own model absent, resolve THIS segment's
         modelling supersegment's model — not a lexicographic glob over ALL
         _supersegment_* dirs (which would pick 'zzz' over the correct 'total')."""
-        import main as main_module
+        import src.pipeline.segment_runner as main_module
 
         seg_dir = tmp_path / "seg_a"
         output = OutputPaths(base_dir=seg_dir)
@@ -1111,7 +1111,7 @@ class TestResimulationNoStaleData:
     def test_resim_model_falls_back_loudly_without_modelling_ss(self, tmp_path):
         """No modelling supersegment configured → last-resort glob still returns a
         model (loud), so the run isn't blocked."""
-        import main as main_module
+        import src.pipeline.segment_runner as main_module
 
         seg_dir = tmp_path / "seg_a"
         output = OutputPaths(base_dir=seg_dir)
@@ -1124,7 +1124,7 @@ class TestResimulationNoStaleData:
         assert resolved is not None and "_supersegment_only" in resolved
 
     def test_resim_model_none_when_absent(self, tmp_path):
-        import main as main_module
+        import src.pipeline.segment_runner as main_module
 
         seg_dir = tmp_path / "seg_a"
         output = OutputPaths(base_dir=seg_dir)

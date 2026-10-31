@@ -30,7 +30,6 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Emu, Inches, Pt
 
-from run_apple_study import BIN_EDGES, DEMAND_STATES, SAME_BASE_LABEL, SWAP_CATEGORIES  # one definition, the study's
 from src.studies.apple import deck_charts as ac
 from src.studies.apple.deck_charts import (
     CURRENT_GRID,
@@ -39,6 +38,12 @@ from src.studies.apple.deck_charts import (
     SYSTEM_APPROVAL,
     TODAY_MEASURED,
     TODAY_SAME_BASE,
+)
+from src.studies.apple.study import (  # one definition, the study's
+    BIN_EDGES,
+    DEMAND_STATES,
+    SAME_BASE_LABEL,
+    SWAP_CATEGORIES,
 )
 
 W, H = Inches(13.333), Inches(7.5)

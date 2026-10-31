@@ -29,18 +29,17 @@ from __future__ import annotations
 
 import argparse
 import sys
-import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
 from loguru import logger
 
-from run_backtest import _discover_segments, _scenario_suffix
 from src.core.config import PreprocessingSettings
 from src.core.constants import StatusName
 from src.data.preprocess_improved import _run_data_transformations
 from src.governance.backtest import BacktestError, build_holdout_window, load_frozen_policy
+from src.governance.backtest_runner import _discover_segments, _scenario_suffix
 from src.governance.policy_registry import (
     REGISTRY_DIR,
     PolicyComparison,
@@ -411,17 +410,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # --compare: load the SAS once, shared across segments.
-    from run_batch import load_and_standardize_data
+    from src.data.data_manager import load_configured_data
+    from src.pipeline.batch_config import load_base_config
 
-    with open(args.config, "rb") as f:
-        base_cfg = tomllib.load(f).get("preprocessing", {})
-    data_path = base_cfg.get("data_path", "data/demanda_direct_out.sas7bdat")
-    # #64: honour the configured SAS encoding so the champion is scored on data
-    # decoded the same way as the run that froze it (a different encoding decodes
-    # statuses/segment codes differently → a different population).
-    full_data = load_and_standardize_data(data_path, encoding=base_cfg.get("sas_encoding", "latin-1"))
+    base_cfg = load_base_config(args.config)
+    full_data = load_configured_data(base_cfg)  # configured path + sas_encoding (#64)
     if full_data is None:
-        logger.error(f"Could not load/standardize data from {data_path}")
+        logger.error(f"Could not load/standardize data from {base_cfg.get('data_path')}")
         return 1
 
     results = compare_all(

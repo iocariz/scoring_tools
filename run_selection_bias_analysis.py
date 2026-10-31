@@ -27,12 +27,15 @@ from pathlib import Path
 import pandas as pd
 from loguru import logger
 
-from run_batch import (
-    load_and_standardize_data,
-    load_base_config,
-    load_segments_config,
+from src.analysis.selection_bias import (
+    compute_acceptance_gini_correlation,
+    compute_selection_bias_report,
 )
-from run_score_metrics import (
+from src.core.utils import resolve_reporting_supersegment
+from src.data.data_manager import load_configured_data
+from src.model.metrics import compute_metrics
+from src.pipeline.batch_config import load_base_config, load_segments_config
+from src.report.score_metrics import (
     SCORE_COLUMNS,
     TARGET_COLUMN,
     _compute_rolling_gini,
@@ -40,12 +43,6 @@ from run_score_metrics import (
     _filter_booked_period,
     _load_reporting_supersegments,
 )
-from src.analysis.selection_bias import (
-    compute_acceptance_gini_correlation,
-    compute_selection_bias_report,
-)
-from src.core.utils import resolve_reporting_supersegment
-from src.model.metrics import compute_metrics
 from src.report.selection_bias_plots import (
     plot_all_truncation_panels,
     plot_bad_rate_by_decile,
@@ -457,8 +454,7 @@ def main():
         print(f"Error: Configuration file not found: {e}")
         return 1
 
-    data_path = base_config.get("data_path", "data/demanda_direct_out.sas7bdat")
-    preloaded_data = load_and_standardize_data(data_path)
+    preloaded_data = load_configured_data(base_config)
     if preloaded_data is None:
         print("Error: Could not load data.")
         return 1

@@ -164,7 +164,7 @@ def test_category_code_order():
 def test_summary_path_selects_period():
     from pathlib import Path
 
-    from plot_risk_surface import _summary_path
+    from src.report.risk_surface_batch import _summary_path
 
     data = Path("/x/data")
     assert _summary_path(data, "_base", "main").name == "data_summary_desagregado_base.csv"
