@@ -991,6 +991,10 @@ def build_segment_report(
         "h_den_h3",
         "Total Demand (€)",
         "Feasible",
+        # selection-basis audit trail (F6): persisted in the CSV, not shown in the HTML tables
+        "selection_basis_requested",
+        "selection_basis_applied",
+        "ci_upper_feasible",
     ]
     for scenario in scenarios:
         suffix = f"_{scenario}" if scenario else ""
@@ -1154,6 +1158,10 @@ def build_consolidated_report(
         "h_den_h3",
         "Total Demand (€)",
         "Feasible",
+        # selection-basis audit trail (F6): persisted in the CSV, not shown in the HTML tables
+        "selection_basis_requested",
+        "selection_basis_applied",
+        "ci_upper_feasible",
     ]
     _exclude_todu_mr = _exclude_todu + ["todu_30ever_h3", "todu_amt_pile_h3"]
 
