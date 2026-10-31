@@ -1102,8 +1102,8 @@ def _assign_tiered_risk(
     """Assign per-account tiered MR risk based on maturity.
 
     Tier 1: >=mr_maturity_months months maturity — use actual H6 outcomes.
-    Tier 2: >=3 months and, when mr_maturity_months > 0, <mr_maturity_months — extrapolate
-        account-level H3 via bin ratio (when the bin-level H3 is reliable).
+    Tier 2: >=3 months and, when mr_maturity_months > 0, <mr_maturity_months — account H3 times the
+        bin's H3→H6 multiplier (curve evaluated once on the bin cohort's H3; when the bin H3 is reliable).
     Tier 3: otherwise for remaining booked accounts — use whatever per-bin risk was
         provided in ``merge_df`` (bin-level main / MR observed / etc.).
     Tier 4: unfilled (no merge match) — handled by model_fallback downstream.
@@ -1233,19 +1233,36 @@ def _assign_tiered_risk(
                 acct_main_h3 = data_demand_mr.loc[h3_eligible, merge_keys].merge(main_h3_df, on=merge_keys, how="left")
                 b2_main_h3_vals = acct_main_h3["b2_main_h3"].values
 
-            # Extrapolate H3 → H6 per account
-            h6_extrapolated = extrapolate_h3_to_h6(
-                acct_b2_h3.values,
-                bin_ratio,
-                method=mr_extrapolation_method,
-                curvature=mr_extrapolation_curvature,
-                b2_h3_main=b2_main_h3_vals,
+            # Extrapolate H3 → H6 at the BIN level, where the curve was fitted, then allocate to accounts
+            # (audit 2026-10-31 F1). Applying a nonlinear curve to each account's sparse H3 (mostly 0 or a
+            # single default) and averaging does not reproduce the curve at the bin's H3 (Jensen gap): the
+            # bin's H6 could move several-fold in either direction depending on the curvature. Per bin we
+            # evaluate the curve once on the cohort's Σnum/Σden H3 and turn it into a multiplier
+            # m = H6_bin / H3_bin; each account gets H3_account × m, so accounts keep their relative risk
+            # and the production-weighted bin rate equals the curve at the bin H3. For method="linear"
+            # m is the plain ratio, i.e. identical to the former per-account formula.
+            cohort = data_demand_mr.loc[h3_eligible, merge_keys + ["todu_30ever_h3", "todu_amt_pile_h3"]]
+            cohort_h3 = _grouped_b2(
+                cohort, merge_keys, "todu_30ever_h3", "todu_amt_pile_h3", multiplier_h3, "_cohort_b2_h3"
+            )[merge_keys + ["_cohort_b2_h3"]]
+            bin_h3 = acct_keys[merge_keys].merge(cohort_h3, on=merge_keys, how="left")["_cohort_b2_h3"].values
+            bin_h3 = bin_h3.astype(float)
+            bin_h6 = np.asarray(
+                extrapolate_h3_to_h6(
+                    bin_h3,
+                    bin_ratio,
+                    method=mr_extrapolation_method,
+                    curvature=mr_extrapolation_curvature,
+                    b2_h3_main=b2_main_h3_vals,
+                ),
+                dtype=float,
             )
-
-            # H3 floor: H6 must be >= H3, but only when the bin-level H3 is reliable.
-            h3_floor_values = acct_b2_h3.values
-            h6_floored = np.maximum(h6_extrapolated, h3_floor_values)
-            h6_extrapolated = np.where(can_extrapolate_bin, h6_floored, h6_extrapolated)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                bin_multiplier = np.where(bin_h3 > 0, bin_h6 / bin_h3, bin_ratio)
+            # H3 floor (H6 >= H3), only when the bin-level H3 is reliable. On a per-account
+            # H3 × m allocation the floor is exactly m >= 1, so it keeps the bin total consistent.
+            bin_multiplier = np.where(can_extrapolate_bin, np.maximum(bin_multiplier, 1.0), bin_multiplier)
+            h6_extrapolated = acct_b2_h3.values * bin_multiplier
 
             tier2_idx = data_demand_mr.index[h3_eligible]
             finite_extrapolated = can_extrapolate_bin & np.isfinite(h6_extrapolated)

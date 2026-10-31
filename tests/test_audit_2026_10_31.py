@@ -154,3 +154,118 @@ def test_ci_upper_fallback_records_unmet_margin():
 def test_ci_upper_success_records_ci_basis():
     sol, basis, feasible = _resolve_selection("ci_upper", _boot([0.9, 1.3]), 1.0, "s")
     assert (basis, feasible) == ("ci_upper", True) and sol is not None
+
+
+# ---------------------------------------------------------------- F1: MR H3→H6 at the bin level
+
+
+def _tier2_frame(h3_num, pile_h3, oa):
+    n = len(h3_num)
+    return pd.DataFrame(
+        {
+            "x": [0] * n,
+            "y": [0] * n,
+            "status_name": ["booked"] * n,
+            "mis_date": pd.to_datetime(["2025-06-01"] * n),  # 4 months before the reference: tier 2
+            "todu_30ever_h3": h3_num,
+            "todu_amt_pile_h3": pile_h3,
+            "b2_ever_h6_tmp": [0.01] * n,
+            "oa_amt": oa,
+        }
+    )
+
+
+def _assign(frame, method, alpha, ratio=2.0, main_h3=0.001):
+    from src.analysis.mr_pipeline import _assign_tiered_risk
+
+    comparison = pd.DataFrame(
+        {
+            "x": [0],
+            "y": [0],
+            "h6_h3_ratio": [ratio],
+            "b2_main_h3": [main_h3],
+            "b2_mr_h3": [main_h3],
+            "n_obs_mr_h3": [1000],
+        }
+    )
+    return _assign_tiered_risk(
+        frame.copy(),
+        comparison,
+        comparison,
+        ["x", "y"],
+        multiplier=7.0,
+        multiplier_h3=4.0,
+        mr_extrapolation_method=method,
+        mr_extrapolation_curvature=alpha,
+        maturity_reference_date=pd.Timestamp("2025-10-01"),
+    )
+
+
+@pytest.mark.parametrize("alpha", [0.5, 2.0])
+def test_power_curve_is_evaluated_once_on_the_bin(alpha):
+    from src.analysis.mr_extrapolation import extrapolate_h3_to_h6
+
+    rng = np.random.RandomState(0)
+    n = 200
+    pile = rng.uniform(50, 500, n)
+    num = np.where(rng.rand(n) < 0.03, pile * rng.uniform(0.01, 0.05, n), 0.0)  # sparse H3 defaults (~0.3% bin H3)
+    frame = _tier2_frame(num, pile, pile * 1.1)  # oa proportional to the H3 pile
+    out = _assign(frame, "power", alpha, main_h3=0.004)
+    assert (out["_mr_tier"] == 2).all()
+    bin_h3 = 4.0 * num.sum() / pile.sum()  # deviation from main != 1
+    expected = float(extrapolate_h3_to_h6(bin_h3, 2.0, "power", alpha, 0.004))
+    weighted = float(np.average(out["b2_ever_h6_tmp"], weights=frame["oa_amt"]))
+    assert weighted == pytest.approx(max(expected, bin_h3), rel=1e-4)
+
+
+def test_linear_method_unchanged_per_account():
+    num = np.array([0.0, 30.0, 0.0, 5.0])
+    pile = np.array([100.0, 200.0, 50.0, 100.0])
+    out = _assign(_tier2_frame(num, pile, pile), "linear", 1.0, ratio=2.5)
+    expected = 4.0 * num / pile * 2.5  # account H3 × ratio (ratio >= 1, so the floor is inactive)
+    assert np.allclose(out["b2_ever_h6_tmp"].values, np.round(4.0 * num / pile, 6) * 2.5)
+    assert np.allclose(out["b2_ever_h6_tmp"].values, expected, atol=1e-5)
+
+
+def test_h3_floor_applies_to_the_bin_multiplier():
+    num = np.array([0.0, 20.0, 0.0, 0.0])
+    pile = np.array([100.0] * 4)
+    out = _assign(_tier2_frame(num, pile, pile), "linear", 1.0, ratio=0.5)  # ratio < 1: floor -> m = 1
+    assert np.allclose(out["b2_ever_h6_tmp"].values, np.round(4.0 * num / pile, 6))
+
+
+# ---------------------------------------------------------------- F2: training completeness
+
+
+def _f2_frame():
+    return pd.DataFrame(
+        {
+            "x": [0, 0, 1],
+            "y": [0, 0, 0],
+            "status_name": ["booked"] * 3,
+            "oa_amt_h0": [100.0, np.nan, 100.0],
+            "todu_30ever_h6": [0.0, 10.0, np.nan],
+            "todu_amt_pile_h6": [100.0, 100.0, 100.0],
+            "todu_30ever_h3": [0.0, np.nan, 0.0],
+            "todu_amt_pile_h3": [100.0, np.nan, 100.0],
+            "h_num_h6": [np.nan, 1.0, np.nan],
+            "h_den_h6": [10.0, 10.0, np.nan],
+        }
+    )
+
+
+def test_b2_training_requires_only_features_and_h6_pair():
+    from src.model.inference_optimized import _prepare_pipeline_data
+
+    indicators = [c for c in _f2_frame().columns if c not in ("x", "y", "status_name")]
+    booked, _, _ = _prepare_pipeline_data(_f2_frame(), (), ["x", "y"], indicators, "b2_ever_h6", 7.0)
+    # row 1 (missing H3 + oa_amt_h0) is kept; row 2 (missing the H6 numerator) is dropped
+    assert len(booked) == 2 and booked["todu_30ever_h6"].sum() == 10.0
+
+
+def test_hri_training_requires_only_features():
+    from src.model.inference_optimized import _prepare_pipeline_data
+
+    indicators = [c for c in _f2_frame().columns if c not in ("x", "y", "status_name")]
+    booked, _, _ = _prepare_pipeline_data(_f2_frame(), (), ["x", "y"], indicators, "hri_h6", 1.0)
+    assert len(booked) == 3

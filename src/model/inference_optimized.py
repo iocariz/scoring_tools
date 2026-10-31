@@ -796,14 +796,14 @@ def _prepare_pipeline_data(
 
     booked_data = data[data[Columns.STATUS_NAME] == StatusName.BOOKED.value].copy()
 
-    # We remove records where the demographic variables or target indicators are null.
-    # The HRI source columns are EXCLUDED from this filter: they are sparse BY DESIGN
-    # (h_num_* only on defaulted loans, h_den_* only where accrued), so requiring them
-    # non-null collapsed training to the ~1.7k defaulted loans (78,723 -> 743 records)
-    # and silently poisoned the b2 model the moment the h_* columns joined `indicators`.
-    from src.core.constants import HRI_OPTIONAL_COLUMNS
-
-    req_cols = variables + [c for c in indicators if c not in HRI_OPTIONAL_COLUMNS]
+    # Completeness follows what the fit needs: the model features and the selected target's own outcome
+    # pair (audit 2026-10-31 F2). Listwise deletion over every configured indicator let a missing
+    # auxiliary column (e.g. an optional H3 pair) drop loans with complete H6 outcomes — changing a
+    # monitoring column changed the fitted surface. Other indicators are summed with NaN skipped, as
+    # the optimizer's aggregation already does. The HRI pair is sparse BY DESIGN (h_num_* only on
+    # defaulted loans, h_den_* only where accrued), so an HRI fit requires only the features.
+    target_pair = [] if target_var == "hri_h6" else ["todu_30ever_h6", "todu_amt_pile_h6"]
+    req_cols = variables + [c for c in target_pair if c in indicators]
     booked_data = booked_data.dropna(subset=req_cols)
 
     # Per-loan hurdle training targets (audit #6). `_hurdle_r` = per-loan b2 ratio (= 0 for
