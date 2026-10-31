@@ -1,5 +1,5 @@
 # User requested exclusions
-data/
+/data/
 data_backup/
 images/
 models/
