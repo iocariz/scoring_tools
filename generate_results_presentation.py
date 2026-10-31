@@ -27,9 +27,9 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
 
-from plot_risk_surface import _discover_segments, _load_unit, _reporting_supersegments
 from src.report import presentation_charts as pc
 from src.report.risk_surface import aggregate_to_cells, build_risk_surface_figure, classify_cells
+from src.report.risk_surface_batch import _discover_segments, _load_unit, _reporting_supersegments
 
 NAVY = RGBColor(0x2C, 0x3E, 0x50)
 WHITE = RGBColor(0xFF, 0xFF, 0xFF)

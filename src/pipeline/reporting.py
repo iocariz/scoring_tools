@@ -1,7 +1,7 @@
 """
 Pipeline orchestration layer for HTML report generation.
 
-Thin wrappers called from ``main.py`` (single segment) and ``run_batch.py``
+Thin wrappers called from ``src.pipeline.segment_runner`` (single segment) and ``src.pipeline.batch``
 (multi-segment).  All heavy lifting is in :mod:`src.report.reporting`.
 """
 

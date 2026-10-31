@@ -61,7 +61,7 @@ def _resolve_segment_filter(segment: str, segments_config_path: str) -> str:
     value — with a warning — when the segment isn't found, so a directly-passed filter still works.
     """
     try:
-        from run_batch import load_segments_config
+        from src.pipeline.batch_config import load_segments_config
 
         segs = load_segments_config(segments_config_path)
     except Exception as e:  # noqa: BLE001 — missing/unreadable config → fall back, don't crash the gate
@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # Re-run the segment end-to-end (base scenario only) into run_dir.
-    from main import main as run_main_pipeline
+    from src.pipeline.segment_runner import run_pipeline as run_main_pipeline
 
     # Resolve the segment's REAL filter from segments.toml (the -s value is a name, not the filter).
     segment_filter = _resolve_segment_filter(segment, args.segments_config)

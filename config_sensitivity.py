@@ -158,7 +158,7 @@ def extract_metrics(out: OutputPaths) -> tuple[float, float, frozenset]:
 
 def run_pipeline(cfg: dict, run_dir: Path, model_path: str | None, preloaded=None) -> tuple[float, float, frozenset]:
     """Write the config, run the pipeline into run_dir, and extract headline metrics."""
-    from main import main as run_main
+    from src.pipeline.segment_runner import run_pipeline as run_main
 
     run_dir.mkdir(parents=True, exist_ok=True)
     cfg_path = run_dir / "config.toml"
@@ -175,20 +175,20 @@ def run_pipeline(cfg: dict, run_dir: Path, model_path: str | None, preloaded=Non
     return extract_metrics(out)
 
 
-def preload_data(data_path: str):
-    """Load + standardize the SAS file once (run_batch's pattern) for reuse across runs."""
-    from run_batch import load_and_standardize_data
+def preload_data(prep_cfg: dict):
+    """Load + standardize the configured SAS file once (path + sas_encoding) for reuse across runs."""
+    from src.data.data_manager import load_configured_data
 
-    data = load_and_standardize_data(data_path)
+    data = load_configured_data(prep_cfg)
     if data is None:
-        raise RuntimeError(f"Failed to load/standardize data from {data_path}")
+        raise RuntimeError(f"Failed to load/standardize data from {prep_cfg.get('data_path')}")
     logger.info(f"Preloaded data: {data.shape[0]:,} rows x {data.shape[1]} cols")
     return data
 
 
 def train_shared_model(cfg: dict, workdir: Path, preloaded=None) -> str | None:
     """Train once on the base config; return the saved model dir for reuse."""
-    from main import main as run_main
+    from src.pipeline.segment_runner import run_pipeline as run_main
 
     train_dir = workdir / "_shared_train"
     train_dir.mkdir(parents=True, exist_ok=True)
@@ -347,8 +347,8 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
 
-    data_path = base_cfg.get("preprocessing", {}).get("data_path")
-    preloaded = preload_data(data_path) if args.preload and data_path else None
+    prep_cfg = base_cfg.get("preprocessing", {})
+    preloaded = preload_data(prep_cfg) if args.preload and prep_cfg.get("data_path") else None
 
     model_path = train_shared_model(base_cfg, workdir, preloaded) if args.reuse_model else None
 

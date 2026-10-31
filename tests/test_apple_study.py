@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from run_apple_study import (
+from src.studies.apple.study import (
     ALWAYS_REJECT,
     DEMAND_STATES,
     SWAP_CATEGORIES,

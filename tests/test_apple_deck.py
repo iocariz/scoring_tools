@@ -12,8 +12,8 @@ matplotlib = pytest.importorskip("matplotlib")
 pytest.importorskip("pptx")
 
 from generate_apple_deck import BIN_EDGES, build, span, translate_outputs  # noqa: E402
-from run_apple_study import SAME_BASE_LABEL  # noqa: E402
 from src.studies.apple import deck_charts as ac  # noqa: E402
+from src.studies.apple.study import SAME_BASE_LABEL  # noqa: E402
 
 
 @pytest.fixture

@@ -13,7 +13,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 import pandas as pd
 
-import run_score_metrics as rsm
+import src.report.score_metrics as rsm
 
 
 def _booked_df(n: int, *, with_risk_score: bool, seed: int = 42) -> pd.DataFrame:

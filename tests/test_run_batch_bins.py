@@ -9,10 +9,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 import pandas as pd
 
-from run_batch import (
+from src.data.bin_learning import learn_supersegment_bin_edges
+from src.pipeline.batch_config import (
     _inject_learned_bin_edges,
     _segment_pins_bin_edges,
-    learn_supersegment_bin_edges,
     validate_supersegment_edge_consistency,
 )
 

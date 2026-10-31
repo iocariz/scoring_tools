@@ -1,6 +1,6 @@
 """Charts for the Apple deck — extending the Equifax score from e-commerce to stores.
 
-Reads the outputs of ``run_apple_study.py`` and returns matplotlib figures ready for PNG.
+Reads the outputs of the study (``src.studies.apple.study`` via ``run_apple_study.py``) and returns matplotlib figures ready for PNG.
 
 Design decisions (dataviz skill), in case someone reviews them:
 

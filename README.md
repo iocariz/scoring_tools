@@ -1504,6 +1504,9 @@ new_efx_clus = [5, 6, 8]
 
 | Module | Purpose |
 |:-------|:--------|
+| `segment_runner.py` | `run_pipeline` (one segment end to end, called by `main.py` and the batch) and `run_resimulation` |
+| `batch.py` | Supersegment model training and sequential/parallel segment runs (called by `run_batch.py`) |
+| `batch_config.py` | Load/merge `config.toml` + `segments.toml`, inject learned bin edges, topological order, write `config_segment.toml` |
 | `config_loader.py` | Config loading, validation, and annual coefficient computation |
 | `preprocessing.py` | Orchestrates DQ checks, filtering, binning, stress factor (global/per-bin/disabled), transformation rate (global/per-bin) |
 | `inference.py` | Orchestrates model training or loading |
@@ -1511,7 +1514,7 @@ new_efx_clus = [5, 6, 8]
 
 #### Core Modules (`src/<package>/`)
 
-Layered packages (each imports only from the ones listed before it): `core` → `data` → `model` → `optimize` → `analysis` → `governance` → `report`, with `pipeline/` orchestrating them.
+Layered packages `core` → `data` → `model` → `optimize` → `analysis` → `governance` → `report`, with `pipeline/` orchestrating them; no import cycles. Root scripts are thin CLIs over these modules.
 
 | Module | Purpose |
 |:-------|:--------|
@@ -1536,8 +1539,11 @@ Layered packages (each imports only from the ones listed before it): `core` → 
 | `governance/lineage.py` | Data lineage / provenance capture (M2): data SHA-256, git, config hash, assumptions |
 | `governance/backtest.py` | Out-of-time backtest of frozen cutoffs (M4): `load_frozen_policy`, `apply_policy`, realized metrics + noise-aware drift flag |
 | `governance/reproducibility.py` | Golden-numbers reproducibility (M5): `Headline`, `extract_headline`, `compare_headline` |
+| `governance/backtest_runner.py` | `backtest_all`: M4 backtest over every frozen segment (used by `run_backtest.py` and `run_batch.py`) |
 | `governance/policy_registry.py` | Policy registry + champion/challenger: `PolicyEntry`, registry I/O, `compare_policies` (reuses M4/M5) |
 | `report/risk_surface.py` | Continuous 3D risk surfaces: `classify_cells`, `aggregate_to_cells` (one category per cell), `build_risk_surface_figure` |
+| `report/risk_surface_batch.py` | Risk surfaces for every segment / reporting supersegment of a run |
+| `report/score_metrics.py` | Score discriminance report (used by `run_score_metrics.py`, `run_batch.py`, selection-bias analysis) |
 | `report/presentation_charts.py` | Management summary charts (matplotlib) + 2D heatmap + 3D PNG export for the results deck |
 | `optimize/global_optimizer.py` | MILP and greedy global portfolio allocation |
 | `optimize/portfolio_owner.py` | Policy/cutoff tables and allocation constraint narratives for `run_allocation.py` |
@@ -1546,6 +1552,7 @@ Layered packages (each imports only from the ones listed before it): `core` → 
 | `report/styles.py` | Consistent plot styling and color palette |
 | `core/utils.py` | `calculate_b2_ever_h6`, supersegment resolvers, `calculate_annual_coef`, `optimize_dtypes` |
 | `data/stress.py` | Global and per-bin stress factors |
+| `data/bin_learning.py` | Global and supersegment bin-edge learning for batch runs |
 | `model/training.py` | Dataset preparation (`process_dataset`) and CV helpers shared by model selection and Optuna |
 | `optimize/cutoff_summary.py` | Cell-level acceptance grids (`generate_cutoff_summary`, wide formatting, consolidation) |
 | `analysis/mr_extrapolation.py` | H3→H6 extrapolation: `extrapolate_h3_to_h6`, `fit_h3_extrapolation_curve` |
