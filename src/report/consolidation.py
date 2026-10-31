@@ -25,6 +25,7 @@ from plotly.subplots import make_subplots
 from src.analysis.audit import audit_production_kpis, reconcile_risk_production_summary_with_audit
 from src.core.constants import DEFAULT_RISK_MULTIPLIER, DEFAULT_RISK_MULTIPLIER_H3
 from src.core.utils import calculate_b2_ever_h6, resolve_reporting_supersegment
+from src.report.acceptance_grid import acceptance_pivot, slice_groups, strip_counts
 
 # ---------------------------------------------------------------------------
 # Last-resort default variable list (todo #65)
@@ -3172,24 +3173,6 @@ def _resolve_income_threshold(
 # =============================================================================
 
 
-def _sort_pivot(pivot):
-    """Sort pivot index and columns numerically where possible."""
-    try:
-        pivot = pivot.sort_index(key=lambda x: pd.to_numeric(x, errors="coerce"))
-    except (TypeError, ValueError):
-        pass
-    try:
-        pivot = pivot[
-            sorted(
-                pivot.columns,
-                key=lambda x: float(x) if str(x).replace(".", "").replace("-", "").isdigit() else x,
-            )
-        ]
-    except (TypeError, ValueError):
-        pass
-    return pivot
-
-
 def _audit_slice_for_income_bin(audit_df: pd.DataFrame, income_val: Any) -> pd.DataFrame:
     if "income_bin" not in audit_df.columns:
         return pd.DataFrame()
@@ -3377,11 +3360,7 @@ def _write_acceptance_strip_1d(ws, cutoff_df, seg_name, start_row, scenario="bas
     scen_sorted = scen_df.sort_values(var_col)
     bins = scen_sorted[var_col].values
     accepted = scen_sorted["accepted"].values
-    n_accepted = int(np.nansum(accepted))  # NaN = unobserved cell, not accepted
-    # Rate over OBSERVED cells only — an N/A (phantom) cell is neither accepted nor rejected,
-    # so counting it in the denominator understated the acceptance rate.
-    n_observed = int((~pd.isna(accepted)).sum())
-    pct = 100 * n_accepted / n_observed if n_observed > 0 else 0.0
+    n_accepted, n_observed, pct = strip_counts(accepted)  # NaN = unobserved: neither accepted nor rejected
 
     # Section header
     ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=max(len(bins) + 1, 12))
@@ -3548,31 +3527,19 @@ def _write_acceptance_grid(ws, cutoff_df, seg_name, start_row, scenario="base"):
     ws.row_dimensions[start_row].height = 28
     start_row += 1
 
-    # Build list of (label, slice_df) pairs
-    if slice_vars:
-        groups = scen_df.groupby(slice_vars, sort=True)
-        group_items = list(groups)[:12]  # cap at 12 sub-grids
-    else:
-        group_items = [(None, scen_df)]
-
     # Lay out sub-grids side by side (horizontally)
     col_offset = 0
     grid_bottom = start_row
-    for slice_key, slice_df in group_items:
+    for label, slice_df in slice_groups(scen_df, slice_vars, f"segment '{seg_name}'"):
         try:
-            pivot = slice_df.pivot_table(index=row_var, columns=col_var, values="accepted", aggfunc="first")
-            pivot = _sort_pivot(pivot)
+            pivot = acceptance_pivot(slice_df, col_var, row_var)
         except (TypeError, ValueError, KeyError):
             continue
         if pivot.empty:
             continue
 
         # Slice label above the sub-grid
-        if slice_key is not None:
-            if isinstance(slice_key, tuple):
-                label = ", ".join(f"{v}={k}" for v, k in zip(slice_vars, slice_key))
-            else:
-                label = f"{slice_vars[0]}={slice_key}"
+        if label is not None:
             lbl_cell = ws.cell(row=start_row, column=col_offset + 1)
             lbl_cell.value = label
             lbl_cell.font = Font(bold=True, color=_CLR_ACCENT, size=9, name=_FN)

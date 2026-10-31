@@ -21,6 +21,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from loguru import logger
 
 from src.core.config import OutputPaths, PreprocessingSettings
+from src.report.acceptance_grid import acceptance_pivot, slice_groups, strip_counts
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -511,38 +512,14 @@ def _build_acceptance_matrices(df: pd.DataFrame, variable_cols: list[str], scena
         row_var = seg_vars[1]  # rows of the pivot
         slice_vars = seg_vars[2:]  # additional dimensions → sub-tables
 
-        if slice_vars:
-            # dropna=False so a slice value of NaN still forms a (visible) group instead of
-            # silently dropping those cells.
-            slice_groups = list(seg_df.groupby(slice_vars, sort=True, dropna=False))
-            if len(slice_groups) > 12:
-                logger.warning(
-                    f"Acceptance matrix: segment '{seg_name}' has {len(slice_groups)} slices; showing the first 12."
-                )
-            group_items = slice_groups[:12]
-        else:
-            group_items = [(None, seg_df)]
-
         parts.append('<div class="matrix-grid">')
-        for slice_key, slice_df in group_items:
-            if slice_key is not None:
-                if isinstance(slice_key, tuple):
-                    label = ", ".join(f"{v}={k}" for v, k in zip(slice_vars, slice_key))
-                else:
-                    label = f"{slice_vars[0]}={slice_key}"
+        for label, slice_df in slice_groups(seg_df, slice_vars, f"segment '{seg_name}'"):
+            if label is not None:
                 parts.append(f'<div class="matrix-cell"><div class="matrix-label">{label}</div>')
             else:
                 parts.append('<div class="matrix-cell">')
 
-            pivot = slice_df.pivot_table(index=row_var, columns=col_var, values="accepted", aggfunc="first")
-            # Sort index and columns numerically if possible
-            try:
-                pivot = pivot.sort_index(key=lambda x: pd.to_numeric(x, errors="coerce"))
-                pivot = pivot[sorted(pivot.columns, key=lambda x: pd.to_numeric(x, errors="coerce"))]
-            except (TypeError, ValueError):
-                pass
-
-            parts.append(_render_acceptance_pivot(pivot, col_var, row_var))
+            parts.append(_render_acceptance_pivot(acceptance_pivot(slice_df, col_var, row_var), col_var, row_var))
             parts.append("</div>")
         parts.append("</div>")
 
@@ -562,12 +539,7 @@ def _build_acceptance_strip_1d(df: pd.DataFrame, var_col: str) -> str:
         accepted = seg_sorted["accepted"].values
 
         # Three-state: NaN = unobserved (phantom) cell — neither accepted nor rejected.
-        # pandas .sum() skips NaN (raw ndarray .sum() returned NaN → int(NaN) CRASHED) and the
-        # rate is over OBSERVED cells only (counting N/A in the denominator understated it).
-        acc_series = pd.Series(accepted)
-        n_accepted = int(acc_series.sum())
-        n_observed = int(acc_series.notna().sum())
-        pct = 100 * n_accepted / n_observed if n_observed > 0 else 0.0
+        n_accepted, n_observed, pct = strip_counts(accepted)
 
         # Summary line
         parts.append(f'<div class="strip-summary">{n_accepted}/{n_observed} bins accepted ({pct:.0f}%)</div>')

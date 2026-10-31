@@ -30,7 +30,6 @@ reference; this file is the operational guide you keep open while working.
 ```bash
 # Install (editable)
 uv pip install -e .                 # or: make setup
-uv pip install -e ".[ga]"           # + pymoo, the genetic-algorithm fallback for N>2 grids
 uv sync --group dev                 # dev tools: ruff, pytest, python-docx/-pptx
 
 # Docker (reproducible environment)
@@ -601,7 +600,7 @@ mature H6), `h3_extrapolated`, `main_imputed`, or `model_fallback`.
   `--skip-dq-checks` to bypass entirely (not for production).
 - **Risk implausibly high after parceling.** Double-counted bias — set `stress_mode = "disabled"`.
 - **MILP infeasible.** Constraints too tight (aggressive `optimum_risk` + tight swap-in caps).
-  Loosen a constraint; for N>2 install `.[ga]` so the pymoo fallback can run.
+  Loosen a constraint (there is no fallback optimizer: an infeasible MILP stops the segment).
 - **Re-runs slow.** `--reuse-models` (skip retraining), `--resimulate` (re-score only),
   `--base-only`, `-s` to scope segments.
 - **Income/3rd dimension looks flat.** Under quantile bins that means no signal — don't reach for

@@ -335,7 +335,7 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
             [
                 "5",
                 "Optimization",
-                "MILP over monotonic cutoff combinations at ~50 risk targets; Pareto filter; optional GA fallback for N>2 if infeasible",
+                "MILP over monotonic cutoff combinations at ~50 risk targets; Pareto filter; infeasible -> explicit error",
                 "Globally optimal policies under explicit constraints — not greedy heuristics.",
             ],
             [
@@ -1122,35 +1122,16 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         "those constraints; (b) the dashboard's Pin Mode lets analysts cycle cells through "
         "unpinned -> accept -> reject and re-run the MILP interactively to see the impact.",
     )
-    _add_heading(doc, "9.7 Solver and fallbacks", 2)
+    _add_heading(doc, "9.7 Solver and infeasibility", 2)
     _add_paragraph(
         doc,
         "The MILP is solved by scipy.optimize.milp (HiGHS backend) with a configurable time limit "
-        "(milp_time_limit, default 30 seconds). If the solver returns infeasible — typically because "
-        "of an aggressive risk target combined with tight swap-in caps — the platform falls back:",
-    )
-    _add_table(
-        doc,
-        ["Case", "Fallback", "Why"],
-        [
-            [
-                "N > 2 dimensions, infeasible",
-                "Genetic algorithm via pymoo (NSGA-II)",
-                "Handles large combinatorial spaces; produces a near-optimal Pareto frontier rather than a single point.",
-            ],
-            [
-                "N = 2 dimensions, infeasible",
-                "Legacy enumeration over all monotonic combinations",
-                "The 2D space is small enough to brute-force; produces the exact frontier.",
-            ],
-            ["MILP returns optimal", "Use directly", "Standard path"],
-        ],
-    )
-    _add_paragraph(
-        doc,
-        "Every fallback is logged so reviewers can see when and why the exact solver did not "
-        "return a solution. Fallback frequency is itself a methodology indicator: a segment that "
-        "frequently falls back is signalling that its constraint set is over-binding.",
+        "(milp_time_limit, default 30 seconds). There is no fallback optimizer: if no risk target "
+        "is feasible — typically an aggressive target combined with tight swap-in caps, cell pins "
+        "or cutoff-ordering constraints — the segment stops with an explicit error naming the "
+        "active constraints. A heuristic fallback would either drop constraints or return a "
+        "non-optimal frontier, so failing loudly is the safer governance behaviour; the analyst "
+        "loosens a constraint and re-runs.",
     )
 
     # ====================================================================
