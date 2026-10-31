@@ -79,7 +79,7 @@ uv run python main.py [OPTIONS]
 | `--base-only` | | Run only the base scenario (skip pessimistic/optimistic); still runs optimization (unlike `--baseline`) |
 | `--skip-dq-checks` | | Skip data quality checks |
 | `--log-file PATH` | | Capture logs to a file (DEBUG level) in addition to the console |
-| `--resimulate R [R ...]` | | Resimulation mode: skip data loading/preprocessing/training/optimization, reload cached artifacts, and re-run scenario analysis at the given risk target(s) in % (e.g. `--resimulate 0.8 1.2 1.6`) |
+| `--resimulate R [R ...]` | | Resimulation mode: skip data loading/preprocessing/training/optimization, reload cached artifacts, and re-run scenario analysis at the given risk target(s) in % (e.g. `--resimulate 0.8 1.2 1.6`). Refused if the effective config of the full run (CLI overrides such as `--baseline` included) differs in anything but the risk targets, `log_level`, `base_scenario_only` or `dq_allow_warnings` — re-run the full pipeline instead |
 
 **Examples:**
 
@@ -282,6 +282,7 @@ Trains a polynomial surface model on the score grid (uses the first 2 variables 
 
 - **Feature sets tested**: for the 2-variable grid — `simple` (2 features), `base` (3: + interaction), `polynomial` (+ squared/cubic terms), `full`. For N > 2 variables, `PolynomialFeatures`-derived sets at `degree_1` / `degree_2` / `degree_3`. The simplest set within one SE of the best CV RMSE is chosen.
 - **Estimators evaluated**: `LinearRegression`, `Ridge`, `Lasso`, `ElasticNet`, `TweedieGLM`, `XGBoost`, `LightGBM` (via Optuna hyperparameter tuning). A two-part `HurdleRegressor` is available as an **opt-in** candidate (`model_hurdle_per_loan = true`, default off): it is trained on **per-loan** data — where the default indicator has real zero mass — with exposure-weighted severity, and scored on the same bin-level CV RMSE as the other models. On the bin-aggregated target it would degenerate to plain Ridge/Lasso, so it is not offered by default; it is also skipped automatically when the per-loan zero mass is degenerate (∉ [2%, 99.9%]).
+- **Training rows**: booked loans with the model features and the selected target's outcome pair (`todu_30ever_h6` / `todu_amt_pile_h6` for b2; the sparse-by-design HRI pair is not required). Other indicators (H3, `oa_amt_h0`, …) are summed with missing values skipped and never drop a loan.
 - **Cross-Validation Strategy**:
   - **Feature Selection & Tuning**: Uses 5-Fold Cross-Validation. *Crucially, validation folds are physically split on the raw unaggregated data first*. Aggregation and outlier filtering are then performed independently on the train and validation sets to prevent target leakage.
   - **Selection Metric**: Models and feature sets are ranked by weighted CV RMSE. The **one-standard-error rule** is applied relative to the lowest mean RMSE, selecting the simplest eligible candidate. CV R² is reported for diagnostics where available, but it is not the primary selector.
@@ -389,7 +390,7 @@ Key points:
 
 - `optimum_risk` (b2 units, ×7 multiplier) and `optimum_hri` (plain ratio) are **separate fields on different scales** — never reuse one as the other. `risk_step` and `--resimulate` targets follow the *selected* indicator's units.
 - In hri mode the MILP constraint, Pareto ordering and scenario selection run on `hri_h6`; an HRI model pair (rate + denominator) trains alongside the b2 models to fill repesca cells, and reject-inference uplift + stress apply to `h_num_h6` exactly as they do to the b2 numerator. Both indicators stay reported.
-- Hard guardrails (never silent degradation): missing `h_*` columns → load error; `--model-path`/`--reuse-models` refused; the MR period keeps the frozen main mask; b2-basis bootstrap/selection CIs are skipped with a warning (HRI has no CI yet).
+- Hard guardrails (never silent degradation): missing `h_*` columns → load error; `--model-path`/`--reuse-models` refused; `run_ri_optimizer = true` refused at config validation (its trials evaluate RI parameters on the b2 basis); the MR period keeps the frozen main mask; b2-basis bootstrap/selection CIs are skipped with a warning (HRI has no CI yet).
 - Governance: the knob and target are recorded in run lineage and the workbook's assumptions registry; flipping `risk_indicator` changes cutoffs and requires validation like any Expert toggle.
 
 ### N-Dimensional Binning
@@ -678,6 +679,8 @@ Three operating points are selected from the Pareto frontier:
 
 For each scenario, the system generates cutoff summaries, bootstrap confidence intervals, MR validation, and stability metrics.
 
+By default a scenario takes the highest-production frontier point whose **point** risk is within the target. With `selection_risk_basis = "ci_upper"` (Expert, default off) the candidate's bootstrap risk **CI upper bound** must be within the target instead. When no candidate qualifies (or the bootstrap is unavailable) the point rule is applied with a warning, and the scenario summary records `selection_basis_requested`, `selection_basis_applied` and `ci_upper_feasible = False`; the segment report shows a "CI-upper selection NOT applied" banner and the consolidated workbook lists the affected segments. `Feasible` alone only means the point risk met the target.
+
 ### Out-of-Time Validation (MR Period)
 
 When a separate validation period is configured, the system validates the selected cutoffs on data not used during optimization.
@@ -694,6 +697,19 @@ For each bin, the pipeline selects a risk estimate by evaluating these condition
 | 4 | `model_fallback` | Bin absent from the main period (`b2_main` is NaN) with no usable MR H6 or H3 | Inferred via the trained risk model |
 
 Note that **observed mature MR H6 takes precedence over H3 extrapolation** — extrapolation only fills bins where direct H6 evidence is still too thin. Each bin's selected source is logged in the `risk_source` column for auditability.
+
+#### Account-Level Reconstruction (tiers)
+
+The MR risk surface is then rebuilt per booked account by maturity (`_assign_tiered_risk`), and the account numerators are re-aggregated per cell:
+
+| Tier | Accounts | Risk |
+|:-----|:---------|:-----|
+| 1 | Seasoned ≥ `mr_maturity_months` with observed H6 | Their actual H6 numerator and exposure |
+| 2 | Seasoned ≥ 3 months (but < `mr_maturity_months`) with observed H3, in a bin whose H3 passes the reliability gate | Bin H3→H6 forecast allocated to the accounts (below) |
+| 3 | Other booked accounts with a per-bin rate | The bin's risk from the priority table above |
+| 4 | Still unresolved | Model fallback |
+
+For tier 2 the curve is evaluated **once per bin**, on the cohort's Σnum/Σden H3: `t = max(extrapolate(H3_bin), H3_bin)` (H6 ≥ H3 floor at the bin level). Each account then gets `H3_account × t / (oa-weighted mean of account H3)`. The H6 exposure of these accounts is pro-rated by `oa_amt` within the bin, so the reconstructed bin rate equals `t` whatever the mix of H3 and H6 exposures, while accounts keep their relative risk. (Until 2026-10-31 each account's sparse H3 went through the curve individually — a nonlinear curve averaged over accounts does not reproduce the curve at the bin H3 — and even the linear ratio drifted with the defaulters' `oa`/H3-exposure mix.)
 
 #### H3 → H6 Extrapolation
 

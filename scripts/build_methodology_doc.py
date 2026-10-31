@@ -1320,6 +1320,16 @@ def build_document() -> Document:  # noqa: PLR0915 - long but linear document bu
         "multiplier (default 3.0) caps extrapolated risk relative to main; mr_extrapolation_hard_"
         "cap (default 15%) caps absolute extrapolated risk.",
     )
+    _add_paragraph(
+        doc,
+        "Account-level reconstruction. The MR surface is rebuilt per booked account by maturity: seasoned "
+        "accounts keep their observed H6; accounts with 3 to 5 months of seasoning (tier 2) receive the bin's "
+        "H3 -> H6 forecast. That forecast is evaluated once per bin on the cohort's aggregate H3, "
+        "t = max(curve(H3_bin), H3_bin), and allocated to the accounts in proportion to their own H3, "
+        "normalised by the production-weighted mean H3 so the reconstructed bin rate equals t (the accounts' "
+        "H6 exposure is pro-rated by production). Applying the nonlinear curve to each account's sparse H3 and "
+        "averaging would not reproduce the curve at the bin level; this was corrected on 2026-10-31.",
+    )
     _add_heading(doc, "11.3 Risk production summary on MR", 2)
     _add_paragraph(
         doc,

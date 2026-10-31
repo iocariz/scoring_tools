@@ -46,6 +46,12 @@ is the maturity anchor; `use_mr_outcomes` is validation-only (M3a).
    production pooled-`total` numbers are validated via M4 + #7, not by this golden check directly.
 5. **Maturity / extrapolation.** Realized H6 needs ≥6-month seasoning; the most recent cohorts are necessarily excluded
    from realized backtesting (no H3 extrapolation in the M4 headline — by design).
+6. **MR reconstruction changed after sign-off (2026-10-31).** The second-verifier audit
+   (`code_audit_2026_10_31.md`, F1) corrected how H3→H6 extrapolation is allocated to tier-2 MR accounts (#265, #266).
+   Main-period cutoffs and headline are unchanged; MR-period figures move slightly and conservatively on the validation
+   snapshot (MR "Actual" risk +0.00–0.02 pp; the re-optimised MR mask flips 15 cells in no_premium_cd and 6 in premium).
+   **Condition:** re-confirm the MR-period figures quoted in any sign-off pack, and measure the effect on extracts with
+   more early defaults (ecom/inftel, Apple) before relying on their MR numbers.
 
 ## 5. Conditions for live / automated-cutoff use
 - [ ] Reproducibility check **PASS** on the current snapshot (`run_reproducibility.py`).
