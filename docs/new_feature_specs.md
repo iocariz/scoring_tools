@@ -5,7 +5,7 @@
 
 ## Current state (verified 2026-08-12)
 
-- Membership is resolved **per segment**: `resolve_reporting_supersegment(seg_config)` (`src/utils.py`) returns exactly one group name; `consolidation.py:1069-1074` builds `segment_to_supersegment` from it. Overlapping/nested groups are not expressible in config.
+- Membership is resolved **per segment**: `resolve_reporting_supersegment(seg_config)` (`src/core/utils.py`) returns exactly one group name; `consolidation.py:1069-1074` builds `segment_to_supersegment` from it. Overlapping/nested groups are not expressible in config.
 - The aggregation math is already composable: `aggregate_metrics(member_metrics_list)` (`consolidation.py:845`) pools risk numerators/denominators (`Σ todu_30ever_h6 / Σ todu_amt_pile_h6 × multiplier`) and production over any member list — a subtotal for any tree node is one call. The limitation is purely the grouping model.
 - Aggregate rows are named `supersegment_<name>` (`consolidation.py:1108`); member rows `"{ss}/{seg}"`, standalone `"segment_<seg>"` (`:1150-1158`). Downstream consumers rely on these prefixes:
   - deck charts exclude `supersegment_*` + TOTAL (`presentation_charts.py`, audit fix #24 — prevents double-counting);

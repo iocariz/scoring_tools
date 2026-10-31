@@ -258,7 +258,7 @@ uv run python interactive_allocator.py [OPTIONS]
 
 ## Pipeline Phases
 
-When `main.py` runs, the pipeline executes these phases sequentially:
+Each segment runs these phases sequentially in `src/pipeline/segment_runner.run_pipeline` — called by `main.py` for a single segment and once per segment by `run_batch.py` (via `src/pipeline/batch.py`):
 
 ### Phase 1: Configuration
 
@@ -299,6 +299,9 @@ Trains a polynomial surface model on the score grid (uses the first 2 variables 
 2. **KPI Calculation**: For each solution computes production (`oa_amt_h0`), risk (`b2_ever_h6`), swap-in, and swap-out metrics.
 3. **Reject Inference** (optional): Adjusts predicted risk for score-rejected bins based on per-bin acceptance rates, with configurable parceling method (linear/power/sigmoid), optional Bayesian smoothing, and monotonicity enforcement.
 4. **Pareto Frontier**: Identifies non-dominated solutions (maximum production for each risk level).
+5. **Fixed cutoffs / baseline**: skip the MILP; the prescribed (or accept-all) mask goes through the same `evaluate_solution` KPI path, for any number of variables.
+
+If no risk target is feasible the segment stops with an explicit error naming the constraints to relax — there is no fallback optimizer.
 
 ### Phase 6: Scenario Analysis
 
@@ -638,10 +641,9 @@ Two optional constraints limit the contribution of repesca to the optimized port
 
 Both are added as inequality rows alongside risk and monotonicity constraints. When `None`, the MILP behaves as before. If too tight, the solver returns infeasible.
 
-#### Solver and Fallbacks
+#### Solver and Infeasibility
 
-The MILP is solved using `scipy.optimize.milp` with a configurable time limit (default 30 seconds). If infeasible, the system falls back to:
-- **Legacy enumeration** (2 variables) — brute-force evaluation of all monotonic combinations
+The MILP is solved using `scipy.optimize.milp` (HiGHS) with a configurable time limit (default 30 seconds). There is no fallback optimizer (the GA and the 2-variable brute-force enumeration were removed in 2026-10): when no risk target is feasible, the segment fails with a `RuntimeError` that names the active constraints (cell pins, `min_accepted_bin_by_variable`, swap-in caps, cutoff ordering) so the analyst can loosen one and re-run.
 
 **Output Translation**: `mask_to_cutoffs()` translates the binary vector `x` back into actionable business rules. For 2D grids, it determines the maximum accepted external score bin per internal score bin. For N>2 grids, it returns: `_cells` (lossless cell-level dict preserving the full mask), `_marginal_{var}` (per-dimension acceptance), and conditional cutoffs for the last dimension.
 
