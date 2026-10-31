@@ -724,7 +724,6 @@ def slide_optimization(prs):
     tf3 = _add_textbox(slide, Inches(7), Inches(4.4), Inches(6), Inches(2.5), "", font_size=13)
     _section_heading(tf3, "Solver & Fallback", font_size=16)
     _bullet(tf3, "scipy.optimize.milp (configurable timeout, default 30s)", bold_prefix="Primary:", font_size=12)
-    _bullet(tf3, "pymoo Genetic Algorithm (N > 2 variables)", bold_prefix="Fallback:", font_size=12)
     _bullet(tf3, "Legacy brute-force enumeration (2 variables)", bold_prefix="Legacy:", font_size=12)
     _add_para(
         tf3,
@@ -1218,7 +1217,6 @@ def slide_reporting(prs):
                 "interactive_allocator.py (Dash, port 8051)",
                 "Real-time portfolio allocation, per-segment risk sliders",
             ],
-            ["Gradio UI", "gradio_dashboard.py", "Simplified results exploration"],
         ],
         font_size=10,
         header_font_size=11,

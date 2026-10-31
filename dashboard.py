@@ -84,8 +84,7 @@ def get_data_dir(segment: str | None = None) -> Path:
 
     Thin wrapper around :func:`src.report.dashboard_data.get_data_dir` bound to
     this module's ``OUTPUT_BASE`` (set at startup from CLI args). Logic
-    lives in ``src/dashboard_data.py`` so ``gradio_dashboard.py`` and
-    future dashboards share it — see todo #64.
+    lives in ``src/report/dashboard_data.py`` so other dashboards share it — see todo #64.
     """
     return _shared_get_data_dir(OUTPUT_BASE, segment)
 

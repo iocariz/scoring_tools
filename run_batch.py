@@ -116,6 +116,210 @@ def list_segments(segments_path: str = "segments.toml") -> None:
         print()
 
 
+def _run_resimulation_mode(args, base_config, segments, all_supersegments, used_supersegments) -> int:
+    """``--resimulate``: re-run scenarios at new risk targets on completed segment runs (no retraining)."""
+    from src.pipeline.segment_runner import run_resimulation
+
+    # Parse risk targets: either a TOML file or inline float values
+    # Result: per_segment_risks = {seg_name: [risk1, risk2, ...]} or None for global
+    per_segment_risks: dict[str, list[float]] | None = None
+    global_risks: list[float] | None = None
+
+    if len(args.resimulate) == 1 and args.resimulate[0].endswith(".toml"):
+        # TOML file with per-segment targets
+        toml_path = args.resimulate[0]
+        if not Path(toml_path).exists():
+            print(f"Error: resimulation TOML file not found: {toml_path}")
+            return 1
+        resim_config = tomllib.loads(Path(toml_path).read_text(encoding="utf-8"))
+        per_segment_risks = {}
+        for seg_name, val in resim_config.items():
+            if isinstance(val, (int, float)):
+                per_segment_risks[seg_name] = [float(val)]
+            elif isinstance(val, list):
+                per_segment_risks[seg_name] = [float(v) for v in val]
+            else:
+                logger.warning(f"Skipping invalid entry in resimulation TOML: {seg_name} = {val}")
+        print(f"\n{'=' * 60}")
+        print(f"Resimulation Mode — per-segment targets from {toml_path}")
+        for sn, rv in per_segment_risks.items():
+            print(f"  {sn}: {rv}")
+        print(f"{'=' * 60}")
+    elif len(args.resimulate) == 0:
+        print("Error: --resimulate requires risk values or a TOML file path")
+        return 1
+    else:
+        # Inline float values applied to all segments
+        try:
+            global_risks = [float(v) for v in args.resimulate]
+        except ValueError:
+            print(f"Error: --resimulate values must be numbers or a .toml file path, got: {args.resimulate}")
+            return 1
+        print(f"\n{'=' * 60}")
+        print(f"Resimulation Mode — risk targets: {global_risks}")
+        print(f"{'=' * 60}")
+
+    failed_segments = []
+    segments_to_run = list(per_segment_risks.keys()) if per_segment_risks else list(segments.keys())
+    for seg_name in segments_to_run:
+        if seg_name not in segments:
+            logger.warning(f"[{seg_name}] Not in segments.toml, skipping")
+            failed_segments.append(seg_name)
+            continue
+        seg_output_dir = Path(args.output) / seg_name
+        if not seg_output_dir.exists():
+            logger.warning(f"[{seg_name}] No output directory found, skipping resimulation")
+            failed_segments.append(seg_name)
+            continue
+        seg_config_path = seg_output_dir / "config_segment.toml"
+        if not seg_config_path.exists():
+            logger.warning(f"[{seg_name}] No config_segment.toml found, skipping")
+            failed_segments.append(seg_name)
+            continue
+
+        risk_values = per_segment_risks[seg_name] if per_segment_risks else global_risks
+
+        # Skip segments whose requested risk matches the original optimum_risk
+        # (no point re-running if nothing changed — avoids MR drift from code updates).
+        if per_segment_risks:
+            try:
+                _seg_cfg = tomllib.loads(seg_config_path.read_text(encoding="utf-8"))
+                _orig_risk = _seg_cfg.get("preprocessing", _seg_cfg).get("optimum_risk")
+                if _orig_risk is not None and risk_values == [float(_orig_risk)]:
+                    logger.info(f"[{seg_name}] Risk unchanged ({risk_values[0]}), skipping resimulation")
+                    continue
+            except Exception:
+                pass  # proceed with resimulation if config can't be read
+
+        try:
+            seg_output = OutputPaths(base_dir=seg_output_dir)
+            run_resimulation(
+                config_path=str(seg_config_path),
+                resimulate_risk=risk_values,
+                output=seg_output,
+            )
+        except Exception as e:
+            logger.error(f"[{seg_name}] Resimulation failed: {e}")
+            failed_segments.append(seg_name)
+
+    # Generate consolidated report — exclude segments whose resimulation
+    # failed (#48/#61): their on-disk artifacts are the PREVIOUS run's, so
+    # consolidating them would present stale targets as "resimulated".
+    consolidation_segments = {n: c for n, c in segments.items() if n not in failed_segments}
+    try:
+        consolidated_df, _ = generate_consolidation_report(
+            output_base=args.output,
+            segments=consolidation_segments,
+            supersegments=all_supersegments,
+            output_path=args.output,
+            multiplier=base_config.get("multiplier", 7),
+            multiplier_h3=base_config.get("multiplier_h3", 4),
+        )
+    except Exception as e:
+        logger.error(f"Consolidation failed: {e}")
+
+    if failed_segments:
+        print(f"\nFailed segments (excluded from consolidation): {failed_segments}")
+        return 1
+    print(f"\nResimulation complete for {len(segments_to_run)} segment(s)")
+    return 0
+
+
+def _post_run_outputs(args, base_config, segments, all_supersegments, preloaded_data, results) -> None:
+    """After the segment runs: OOT backtest, consolidated report, HTML reports, score discriminance."""
+    # Out-of-time backtest (M4) — runs before consolidation so the report's OOT sheet is populated.
+    # Reuses the already-loaded SAS data; skipped under --training-only / --no-backtest / no data.
+    if not args.no_backtest and not args.training_only and preloaded_data is not None:
+        successful_segments = [name for name, ok in results.items() if ok]
+        if successful_segments:
+            print(f"\n{'=' * 60}")
+            print("Out-of-time backtest (frozen cutoffs vs held-out cohort)")
+            print(f"{'=' * 60}")
+            try:
+                from src.governance.backtest_runner import backtest_all
+
+                backtest_all(
+                    preloaded_data,
+                    data_dir=args.output,
+                    out_dir=str(Path(args.output) / "backtest"),
+                    scenario="base",
+                    segments=successful_segments,
+                )
+            except Exception:
+                logger.exception("Out-of-time backtest step failed (non-fatal; consolidated report continues)")
+
+    # Generate consolidated report
+    if not args.no_consolidation and not args.training_only:
+        successful_segments = {name: config for name, config in segments.items() if results.get(name, False)}
+        if successful_segments:
+            print(f"\n{'=' * 60}")
+            print("Generating Consolidated Report")
+            print(f"{'=' * 60}")
+            try:
+                consolidated_df, _ = generate_consolidation_report(
+                    output_base=args.output,
+                    segments=successful_segments,
+                    supersegments=all_supersegments,
+                    output_path=args.output,
+                    multiplier=base_config.get("multiplier", 7),
+                    multiplier_h3=base_config.get("multiplier_h3", 4),
+                )
+                print("\nConsolidated report saved to:")
+                print(f"  - {args.output}/consolidated_risk_production.csv")
+                print(f"  - {args.output}/consolidated_risk_production.html")
+            except Exception as e:
+                logger.error(f"Error generating consolidated report: {e}")
+                logger.exception("Full traceback:")
+        else:
+            print("\nNo successful segments to consolidate.")
+
+    # Generate HTML reports
+    if not args.no_consolidation and not args.training_only and not args.no_report:
+        print(f"\n{'=' * 60}")
+        print("Generating HTML Reports")
+        print(f"{'=' * 60}")
+        try:
+            from src.pipeline.reporting import generate_batch_reports
+
+            report_paths = generate_batch_reports(
+                output_base=args.output,
+                segments=segments,
+                supersegments=all_supersegments,
+                segment_results=results,
+            )
+            if report_paths:
+                print(f"\nHTML reports generated ({len(report_paths)}):")
+                for name, path in report_paths.items():
+                    print(f"  - {name}: {path}")
+            else:
+                print("\nNo HTML reports generated (no successful segments or artifacts).")
+        except Exception as e:
+            logger.error(f"Report generation failed: {e}")
+
+    # Generate score discriminance report
+    if not args.no_consolidation and not args.training_only and preloaded_data is not None:
+        print(f"\n{'=' * 60}")
+        print("Generating Score Discriminance Report")
+        print(f"{'=' * 60}")
+        try:
+            from src.report.score_metrics import generate_score_discriminance_report
+
+            disc_df = generate_score_discriminance_report(
+                preloaded_data=preloaded_data,
+                segments=segments,
+                supersegments=all_supersegments,
+                base_config=base_config,
+                output_path=args.output,
+            )
+            if not disc_df.empty:
+                print(f"\nScore discriminance report saved to: {args.output}/score_discriminance.csv")
+            else:
+                print("\nNo score discriminance metrics computed.")
+        except Exception as e:
+            logger.error(f"Error generating score discriminance report: {e}")
+            logger.exception("Full traceback:")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run scoring pipeline for multiple segments",
@@ -298,111 +502,7 @@ def main():
 
     # Handle resimulation mode
     if args.resimulate is not None:
-        from src.pipeline.segment_runner import run_resimulation
-
-        # Parse risk targets: either a TOML file or inline float values
-        # Result: per_segment_risks = {seg_name: [risk1, risk2, ...]} or None for global
-        per_segment_risks: dict[str, list[float]] | None = None
-        global_risks: list[float] | None = None
-
-        if len(args.resimulate) == 1 and args.resimulate[0].endswith(".toml"):
-            # TOML file with per-segment targets
-            toml_path = args.resimulate[0]
-            if not Path(toml_path).exists():
-                print(f"Error: resimulation TOML file not found: {toml_path}")
-                return 1
-            resim_config = tomllib.loads(Path(toml_path).read_text(encoding="utf-8"))
-            per_segment_risks = {}
-            for seg_name, val in resim_config.items():
-                if isinstance(val, (int, float)):
-                    per_segment_risks[seg_name] = [float(val)]
-                elif isinstance(val, list):
-                    per_segment_risks[seg_name] = [float(v) for v in val]
-                else:
-                    logger.warning(f"Skipping invalid entry in resimulation TOML: {seg_name} = {val}")
-            print(f"\n{'=' * 60}")
-            print(f"Resimulation Mode — per-segment targets from {toml_path}")
-            for sn, rv in per_segment_risks.items():
-                print(f"  {sn}: {rv}")
-            print(f"{'=' * 60}")
-        elif len(args.resimulate) == 0:
-            print("Error: --resimulate requires risk values or a TOML file path")
-            return 1
-        else:
-            # Inline float values applied to all segments
-            try:
-                global_risks = [float(v) for v in args.resimulate]
-            except ValueError:
-                print(f"Error: --resimulate values must be numbers or a .toml file path, got: {args.resimulate}")
-                return 1
-            print(f"\n{'=' * 60}")
-            print(f"Resimulation Mode — risk targets: {global_risks}")
-            print(f"{'=' * 60}")
-
-        failed_segments = []
-        segments_to_run = list(per_segment_risks.keys()) if per_segment_risks else list(segments.keys())
-        for seg_name in segments_to_run:
-            if seg_name not in segments:
-                logger.warning(f"[{seg_name}] Not in segments.toml, skipping")
-                failed_segments.append(seg_name)
-                continue
-            seg_output_dir = Path(args.output) / seg_name
-            if not seg_output_dir.exists():
-                logger.warning(f"[{seg_name}] No output directory found, skipping resimulation")
-                failed_segments.append(seg_name)
-                continue
-            seg_config_path = seg_output_dir / "config_segment.toml"
-            if not seg_config_path.exists():
-                logger.warning(f"[{seg_name}] No config_segment.toml found, skipping")
-                failed_segments.append(seg_name)
-                continue
-
-            risk_values = per_segment_risks[seg_name] if per_segment_risks else global_risks
-
-            # Skip segments whose requested risk matches the original optimum_risk
-            # (no point re-running if nothing changed — avoids MR drift from code updates).
-            if per_segment_risks:
-                try:
-                    _seg_cfg = tomllib.loads(seg_config_path.read_text(encoding="utf-8"))
-                    _orig_risk = _seg_cfg.get("preprocessing", _seg_cfg).get("optimum_risk")
-                    if _orig_risk is not None and risk_values == [float(_orig_risk)]:
-                        logger.info(f"[{seg_name}] Risk unchanged ({risk_values[0]}), skipping resimulation")
-                        continue
-                except Exception:
-                    pass  # proceed with resimulation if config can't be read
-
-            try:
-                seg_output = OutputPaths(base_dir=seg_output_dir)
-                run_resimulation(
-                    config_path=str(seg_config_path),
-                    resimulate_risk=risk_values,
-                    output=seg_output,
-                )
-            except Exception as e:
-                logger.error(f"[{seg_name}] Resimulation failed: {e}")
-                failed_segments.append(seg_name)
-
-        # Generate consolidated report — exclude segments whose resimulation
-        # failed (#48/#61): their on-disk artifacts are the PREVIOUS run's, so
-        # consolidating them would present stale targets as "resimulated".
-        consolidation_segments = {n: c for n, c in segments.items() if n not in failed_segments}
-        try:
-            consolidated_df, _ = generate_consolidation_report(
-                output_base=args.output,
-                segments=consolidation_segments,
-                supersegments=all_supersegments,
-                output_path=args.output,
-                multiplier=base_config.get("multiplier", 7),
-                multiplier_h3=base_config.get("multiplier_h3", 4),
-            )
-        except Exception as e:
-            logger.error(f"Consolidation failed: {e}")
-
-        if failed_segments:
-            print(f"\nFailed segments (excluded from consolidation): {failed_segments}")
-            return 1
-        print(f"\nResimulation complete for {len(segments_to_run)} segment(s)")
-        return 0
+        return _run_resimulation_mode(args, base_config, segments, all_supersegments, used_supersegments)
 
     print(f"\nProcessing {len(segments)} segment(s): {list(segments.keys())}")
     if used_supersegments:
@@ -541,97 +641,7 @@ def main():
     # Print summary
     print_summary(results)
 
-    # Out-of-time backtest (M4) — runs before consolidation so the report's OOT sheet is populated.
-    # Reuses the already-loaded SAS data; skipped under --training-only / --no-backtest / no data.
-    if not args.no_backtest and not args.training_only and preloaded_data is not None:
-        successful_segments = [name for name, ok in results.items() if ok]
-        if successful_segments:
-            print(f"\n{'=' * 60}")
-            print("Out-of-time backtest (frozen cutoffs vs held-out cohort)")
-            print(f"{'=' * 60}")
-            try:
-                from src.governance.backtest_runner import backtest_all
-
-                backtest_all(
-                    preloaded_data,
-                    data_dir=args.output,
-                    out_dir=str(Path(args.output) / "backtest"),
-                    scenario="base",
-                    segments=successful_segments,
-                )
-            except Exception:
-                logger.exception("Out-of-time backtest step failed (non-fatal; consolidated report continues)")
-
-    # Generate consolidated report
-    if not args.no_consolidation and not args.training_only:
-        successful_segments = {name: config for name, config in segments.items() if results.get(name, False)}
-        if successful_segments:
-            print(f"\n{'=' * 60}")
-            print("Generating Consolidated Report")
-            print(f"{'=' * 60}")
-            try:
-                consolidated_df, _ = generate_consolidation_report(
-                    output_base=args.output,
-                    segments=successful_segments,
-                    supersegments=all_supersegments,
-                    output_path=args.output,
-                    multiplier=base_config.get("multiplier", 7),
-                    multiplier_h3=base_config.get("multiplier_h3", 4),
-                )
-                print("\nConsolidated report saved to:")
-                print(f"  - {args.output}/consolidated_risk_production.csv")
-                print(f"  - {args.output}/consolidated_risk_production.html")
-            except Exception as e:
-                logger.error(f"Error generating consolidated report: {e}")
-                logger.exception("Full traceback:")
-        else:
-            print("\nNo successful segments to consolidate.")
-
-    # Generate HTML reports
-    if not args.no_consolidation and not args.training_only and not args.no_report:
-        print(f"\n{'=' * 60}")
-        print("Generating HTML Reports")
-        print(f"{'=' * 60}")
-        try:
-            from src.pipeline.reporting import generate_batch_reports
-
-            report_paths = generate_batch_reports(
-                output_base=args.output,
-                segments=segments,
-                supersegments=all_supersegments,
-                segment_results=results,
-            )
-            if report_paths:
-                print(f"\nHTML reports generated ({len(report_paths)}):")
-                for name, path in report_paths.items():
-                    print(f"  - {name}: {path}")
-            else:
-                print("\nNo HTML reports generated (no successful segments or artifacts).")
-        except Exception as e:
-            logger.error(f"Report generation failed: {e}")
-
-    # Generate score discriminance report
-    if not args.no_consolidation and not args.training_only and preloaded_data is not None:
-        print(f"\n{'=' * 60}")
-        print("Generating Score Discriminance Report")
-        print(f"{'=' * 60}")
-        try:
-            from src.report.score_metrics import generate_score_discriminance_report
-
-            disc_df = generate_score_discriminance_report(
-                preloaded_data=preloaded_data,
-                segments=segments,
-                supersegments=all_supersegments,
-                base_config=base_config,
-                output_path=args.output,
-            )
-            if not disc_df.empty:
-                print(f"\nScore discriminance report saved to: {args.output}/score_discriminance.csv")
-            else:
-                print("\nNo score discriminance metrics computed.")
-        except Exception as e:
-            logger.error(f"Error generating score discriminance report: {e}")
-            logger.exception("Full traceback:")
+    _post_run_outputs(args, base_config, segments, all_supersegments, preloaded_data, results)
 
     # Cleanup global log sink
     if global_sink_id is not None:

@@ -93,7 +93,9 @@ def test_baseline_keeps_actual_booked_production(booked, monkeypatch, tmp_path):
     assert result.data_summary.iloc[0].oa_amt_h0 == 10100.0
 
 
-def test_empty_frontier_cannot_reenter_unrestricted_legacy_enumeration(booked, monkeypatch, tmp_path):
+def test_empty_frontier_fails_instead_of_bypassing_evidence_exclusions(booked, monkeypatch, tmp_path):
+    """An empty MILP frontier must stop the segment: there is no unrestricted fallback
+    that could accept cells without usable risk evidence."""
     monkeypatch.setattr(
         phase,
         "trace_pareto_frontier",
@@ -103,15 +105,7 @@ def test_empty_frontier_cannot_reenter_unrestricted_legacy_enumeration(booked, m
             [],
         ),
     )
-
-    def unsafe_legacy(*args, **kwargs):
-        pytest.fail("Legacy enumeration must not bypass risk-evidence exclusions")
-
-    monkeypatch.setattr(phase, "get_fact_sol", unsafe_legacy)
-    monkeypatch.setattr(
-        "src.optimize.optimization_utils._ga_pareto_fallback", lambda grid, *a, **kw: (pd.DataFrame(), grid, [])
-    )
-    with pytest.raises(RuntimeError, match="Both MILP and GA produced no solutions"):
+    with pytest.raises(RuntimeError, match="no feasible solution"):
         _run_phase(booked, monkeypatch, tmp_path, ["a", "b"])
 
 

@@ -573,29 +573,53 @@ def run_pipeline(
             )
             return data_clean, data_booked, data_demand, risk_inference, reg_todu_amt_pile
 
-        # Step 5: Optimization (MILP Pareto frontier or fixed cutoffs)
-        opt = run_optimization_phase(
-            data_booked,
-            data_demand,
-            risk_inference,
-            reg_todu_amt_pile,
-            stress_factor,
-            tasa_fin,
-            settings,
-            annual_coef,
-            output=output,
-            per_bin_stress=per_bin_stress,
-            per_bin_tasa_fin=per_bin_tasa_fin,
-            floor_cells_path=floor_cells_path,
-            floor_cells_mode=floor_cells_mode,
-        )
-        data_summary_desagregado = opt.data_summary_desagregado
-        data_summary = opt.data_summary
-        data_summary_sample_no_opt = opt.data_summary_sample_no_opt
-        values_per_var = opt.values_per_var
-        grid = opt.grid
-        pareto_masks = opt.pareto_masks
-        floor_fixed_cells = opt.floor_fixed_cells
+        # Step 5: Optimization (MILP Pareto frontier or fixed cutoffs). Re-run in 6d with tuned RI params.
+        def optimize():
+            return run_optimization_phase(
+                data_booked,
+                data_demand,
+                risk_inference,
+                reg_todu_amt_pile,
+                stress_factor,
+                tasa_fin,
+                settings,
+                annual_coef,
+                output=output,
+                per_bin_stress=per_bin_stress,
+                per_bin_tasa_fin=per_bin_tasa_fin,
+                floor_cells_path=floor_cells_path,
+                floor_cells_mode=floor_cells_mode,
+            )
+
+        def analyze_scenarios(opt) -> None:
+            cutoff_summaries = [
+                run_scenario_analysis(
+                    scenario_risk,
+                    scenario_name,
+                    data_summary=opt.data_summary,
+                    data_summary_desagregado=opt.data_summary_desagregado,
+                    data_summary_sample_no_opt=opt.data_summary_sample_no_opt,
+                    data_clean=data_clean,
+                    data_booked=data_booked,
+                    settings=settings,
+                    risk_inference=risk_inference,
+                    reg_todu_amt_pile=reg_todu_amt_pile,
+                    stress_factor=stress_factor,
+                    tasa_fin=tasa_fin,
+                    annual_coef_mr=annual_coef_mr,
+                    values_per_var=opt.values_per_var,
+                    grid=opt.grid,
+                    pareto_masks=opt.pareto_masks,
+                    output=output,
+                    total_demand=total_demand,
+                    per_bin_stress=per_bin_stress,
+                    per_bin_tasa_fin=per_bin_tasa_fin,
+                )
+                for scenario_risk, scenario_name in scenarios
+            ]
+            save_cutoff_summaries(cutoff_summaries, settings, output=output)
+
+        opt = optimize()
 
         # Compute total demand (booked + rejected, excluding canceled)
         if "status_name" in data_demand.columns and "oa_amt_h0" in data_demand.columns:
@@ -615,33 +639,7 @@ def run_pipeline(
         # non-canonical target_X.XX names and covers accepted_cells/audit (#48).
         cleanup_stale_scenarios(output, {name for _, name in scenarios}, segment)
 
-        cutoff_summaries = []
-        for scenario_risk, scenario_name in scenarios:
-            summary = run_scenario_analysis(
-                scenario_risk,
-                scenario_name,
-                data_summary=data_summary,
-                data_summary_desagregado=data_summary_desagregado,
-                data_summary_sample_no_opt=data_summary_sample_no_opt,
-                data_clean=data_clean,
-                data_booked=data_booked,
-                settings=settings,
-                risk_inference=risk_inference,
-                reg_todu_amt_pile=reg_todu_amt_pile,
-                stress_factor=stress_factor,
-                tasa_fin=tasa_fin,
-                annual_coef_mr=annual_coef_mr,
-                values_per_var=values_per_var,
-                grid=grid,
-                pareto_masks=pareto_masks,
-                output=output,
-                total_demand=total_demand,
-                per_bin_stress=per_bin_stress,
-                per_bin_tasa_fin=per_bin_tasa_fin,
-            )
-            cutoff_summaries.append(summary)
-
-        save_cutoff_summaries(cutoff_summaries, settings, output=output)
+        analyze_scenarios(opt)
 
         # Step 6c: Reject inference parameter optimization (optional, non-blocking, skipped in baseline mode)
         best_ri_params = None
@@ -675,59 +673,14 @@ def run_pipeline(
                 )
                 settings.reject_uplift_factor = new_uplift
                 settings.reject_max_risk_multiplier = new_max_mult
-
-                opt = run_optimization_phase(
-                    data_booked,
-                    data_demand,
-                    risk_inference,
-                    reg_todu_amt_pile,
-                    stress_factor,
-                    tasa_fin,
-                    settings,
-                    annual_coef,
-                    output=output,
-                    per_bin_stress=per_bin_stress,
-                    per_bin_tasa_fin=per_bin_tasa_fin,
-                    floor_cells_path=floor_cells_path,
-                    floor_cells_mode=floor_cells_mode,
-                )
-                data_summary_desagregado = opt.data_summary_desagregado
-                data_summary = opt.data_summary
-                data_summary_sample_no_opt = opt.data_summary_sample_no_opt
-                values_per_var = opt.values_per_var
-                grid = opt.grid
-                pareto_masks = opt.pareto_masks
-                floor_fixed_cells = opt.floor_fixed_cells
-
-                cutoff_summaries = []
-                for scenario_risk, scenario_name in scenarios:
-                    summary = run_scenario_analysis(
-                        scenario_risk,
-                        scenario_name,
-                        data_summary=data_summary,
-                        data_summary_desagregado=data_summary_desagregado,
-                        data_summary_sample_no_opt=data_summary_sample_no_opt,
-                        data_clean=data_clean,
-                        data_booked=data_booked,
-                        settings=settings,
-                        risk_inference=risk_inference,
-                        reg_todu_amt_pile=reg_todu_amt_pile,
-                        stress_factor=stress_factor,
-                        tasa_fin=tasa_fin,
-                        annual_coef_mr=annual_coef_mr,
-                        values_per_var=values_per_var,
-                        grid=grid,
-                        pareto_masks=pareto_masks,
-                        output=output,
-                        total_demand=total_demand,
-                        per_bin_stress=per_bin_stress,
-                        per_bin_tasa_fin=per_bin_tasa_fin,
-                    )
-                    cutoff_summaries.append(summary)
-
-                save_cutoff_summaries(cutoff_summaries, settings, output=output)
+                opt = optimize()
+                analyze_scenarios(opt)
             else:
                 logger.info(f"[{segment}] RI optimizer confirmed current params are optimal")
+
+        data_summary_desagregado = opt.data_summary_desagregado
+        data_summary = opt.data_summary
+        floor_fixed_cells = opt.floor_fixed_cells
 
         # Step 6e: Sensitivity analysis (optional, non-blocking, skipped in baseline mode).
         # #55: runs AFTER the RI optimizer's re-optimization (6d) so it describes the

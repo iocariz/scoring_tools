@@ -29,10 +29,6 @@ Usage (Flask / Dash):
         install_basic_auth(app.server, creds)
     app.run(host=host, port=args.port)
 
-Usage (Gradio):
-
-    creds = enforce_bind_auth_policy(host)
-    app.launch(server_name=host, server_port=port, auth=creds)  # None → no auth
 """
 
 from __future__ import annotations

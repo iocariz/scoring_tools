@@ -406,95 +406,14 @@ class TestRunInferencePhase:
 
 
 class TestRunOptimizationPhase:
-    def test_uses_fixed_cutoff_legacy_path(self, monkeypatch, tmp_path):
-        settings = make_settings(
-            fixed_cutoffs={
-                "sc_octroi_new_clus": [1.0, 2.0],
-                "new_efx_clus": [1.0, 2.0],
-            }
-        )
-        output = OutputPaths(base_dir=tmp_path)
-        output.ensure_dirs()
-        captured = {}
-        summary_desagregado = pd.DataFrame(
-            {
-                "sc_octroi_new_clus": [1, 2],
-                "new_efx_clus": [1, 2],
-                "oa_amt_h0": [1000.0, 2000.0],
-                "todu_30ever_h6": [10.0, 20.0],
-                "todu_amt_pile_h6": [100.0, 200.0],
-            }
-        )
-
-        monkeypatch.setattr(
-            optimization_module,
-            "run_optimization_pipeline",
-            lambda **kwargs: summary_desagregado.copy(),
-        )
-
-        def fake_create_fixed_cutoff_solution(**kwargs):
-            captured["create_fixed_cutoff_solution"] = kwargs
-            return pd.DataFrame({"sol_fac": [0], "1": [1.0], "2": [2.0]})
-
-        def fake_kpi_of_fact_sol(**kwargs):
-            captured["kpi_of_fact_sol"] = kwargs
-            return pd.DataFrame(
-                {
-                    "sol_fac": [0],
-                    "oa_amt_h0": [2500.0],
-                    "todu_30ever_h6": [25.0],
-                    "todu_amt_pile_h6": [250.0],
-                    "b2_ever_h6": [70.0],
-                }
-            )
-
-        def fail_trace_pareto_frontier(**kwargs):
-            raise AssertionError("trace_pareto_frontier should not run for fixed cutoffs")
-
-        monkeypatch.setattr(optimization_module, "create_fixed_cutoff_solution", fake_create_fixed_cutoff_solution)
-        monkeypatch.setattr(optimization_module, "kpi_of_fact_sol", fake_kpi_of_fact_sol)
-        monkeypatch.setattr(optimization_module, "trace_pareto_frontier", fail_trace_pareto_frontier)
-
-        result = optimization_module.run_optimization_phase(
-            data_booked=pd.DataFrame(),
-            data_demand=pd.DataFrame(),
-            risk_inference={},
-            reg_todu_amt_pile="reg",
-            stress_factor=1.0,
-            tasa_fin=1.0,
-            settings=settings,
-            annual_coef=1.0,
-            output=output,
-        )
-
-        data_summary_desagregado, data_summary, data_summary_sample_no_opt, values_per_var, grid, pareto_masks, _ = (
-            result
-        )
-        assert list(values_per_var["sc_octroi_new_clus"]) == [1, 2]
-        # Regression (2-var fixed-cutoff grid): the legacy kpi_of_fact_sol path
-        # must still build a CellGrid + per-cell mask, else downstream loses the
-        # acceptance/score grid, accepted_cells, and the cutoff_summary
-        # `accepted` column (all gated on grid/mask being non-None in
-        # scenarios.py). This previously asserted grid is None / pareto_masks [].
-        assert grid is not None
-        assert len(pareto_masks) == 1
-        assert len(pareto_masks[0]) == len(grid.cell_data)
-        assert data_summary_sample_no_opt.equals(data_summary)
-        assert "b2_ever_h6" in data_summary_desagregado.columns
-        assert "text" in data_summary_desagregado.columns
-        assert data_summary["sol_fac"].tolist() == [0]
-        assert captured["create_fixed_cutoff_solution"]["inv_var1"] is False
-        assert Path(output.pareto_solutions_csv).exists()
-
     def test_fixed_cutoff_2var_builds_grid_and_mask(self, monkeypatch, tmp_path):
         """Regression: a 2-var fixed-cutoff run returns a real CellGrid + per-cell mask.
 
         The acceptance/score grid, accepted_cells_base.csv, and the
         cutoff_summary_wide.csv ``accepted`` column are all gated downstream on
         ``grid is not None and selected_mask is not None`` (scenarios.py). The
-        legacy 2-var ``kpi_of_fact_sol`` branch used to leave grid=None, which
-        silently dropped every one of those artifacts for fixed-cutoff segments.
-        The per-octroi-bin cutoffs must actually be applied to the mask.
+        per-octroi-bin cutoffs must actually be applied to the mask, and the KPIs
+        must describe that same mask.
         """
         # octroi 1 -> accept efx <= 1 ; octroi 2 -> accept efx <= 2 (inv_vars empty)
         settings = make_settings(
@@ -519,25 +438,10 @@ class TestRunOptimizationPhase:
             "run_optimization_pipeline",
             lambda **kwargs: summary_desagregado.copy(),
         )
-        # The KPIs come from the (validated) legacy path — mock them out so the
-        # test pins only the grid/mask construction, the actual regression.
         monkeypatch.setattr(
             optimization_module,
-            "create_fixed_cutoff_solution",
-            lambda **kwargs: pd.DataFrame({"sol_fac": [0], "1": [1.0], "2": [2.0]}),
-        )
-        monkeypatch.setattr(
-            optimization_module,
-            "kpi_of_fact_sol",
-            lambda **kwargs: pd.DataFrame(
-                {
-                    "sol_fac": [0],
-                    "oa_amt_h0": [6000.0],
-                    "todu_30ever_h6": [60.0],
-                    "todu_amt_pile_h6": [600.0],
-                    "b2_ever_h6": [70.0],
-                }
-            ),
+            "trace_pareto_frontier",
+            lambda **kwargs: pytest.fail("trace_pareto_frontier must not run for fixed cutoffs"),
         )
 
         result = optimization_module.run_optimization_phase(
@@ -558,6 +462,8 @@ class TestRunOptimizationPhase:
         assert len(mask) == len(result.grid.cell_data)
         # (1,1) accept, (1,2) reject, (2,1) accept, (2,2) accept -> 3 of 4 cells.
         assert int(mask.sum()) == 3
+        # KPIs come from the same mask (evaluate_solution): production of the 3 accepted cells.
+        assert result.data_summary["oa_amt_h0"].iloc[0] == pytest.approx(1000.0 + 3000.0 + 4000.0)
 
     def test_uses_trace_pareto_frontier_for_non_fixed_path(self, monkeypatch, tmp_path):
         settings = make_settings(
@@ -623,204 +529,32 @@ class TestRunOptimizationPhase:
         assert captured["trace_pareto_frontier"]["milp_time_limit"] == pytest.approx(12.0)
         assert Path(output.pareto_solutions_csv).exists()
 
-    def test_legacy_enumeration_runtime_error_falls_back_to_ga(self, monkeypatch, tmp_path):
-        """If legacy enumeration would explode, pipeline should try GA instead of crashing."""
-        settings = make_settings(pareto_n_points=5)
-        output = OutputPaths(base_dir=tmp_path)
-        output.ensure_dirs()
-
-        # Minimal base surface for values_per_var (used before the failing enumeration)
-        summary_desagregado = pd.DataFrame(
-            {
-                "sc_octroi_new_clus": [1, 2],
-                "new_efx_clus": [1, 2],
-                "oa_amt_h0": [1200.0, 1800.0],
-                "todu_30ever_h6": [12.0, 18.0],
-                "todu_amt_pile_h6": [120.0, 180.0],
-            }
-        )
-
-        monkeypatch.setattr(
-            optimization_module,
-            "run_optimization_pipeline",
-            lambda **kwargs: summary_desagregado.copy(),
-        )
-
-        # Force Pareto sweep to return nothing → triggers legacy enumeration.
-        dummy_grid = optimization_module.CellGrid.from_summary(summary_desagregado, settings.variables)
-        monkeypatch.setattr(
-            optimization_module,
-            "trace_pareto_frontier",
-            lambda **kwargs: (pd.DataFrame(), dummy_grid, []),
-        )
-
-        # Legacy enumeration should fail fast.
-        monkeypatch.setattr(
-            optimization_module,
-            "get_fact_sol",
-            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("too many combinations")),
-        )
-
-        # Mock GA fallback and add_bin_columns to avoid depending on pymoo/grid internals.
-        fake_pareto_df = pd.DataFrame({"sol_fac": [0], "oa_amt_h0": [999.0], "b2_ever_h6": [1.23]})
-        fake_masks = [[1, 0]]
-
-        import src.optimize.optimization_utils as optimization_utils_module
-
-        monkeypatch.setattr(
-            optimization_utils_module,
-            "_ga_pareto_fallback",
-            lambda grid, inv_vars, multiplier, indicators, n_points, **kwargs: (fake_pareto_df, dummy_grid, fake_masks),
-        )
-
-        def fake_add_bin_columns(df, pareto_masks, grid, inv_vars):
-            out = df.copy()
-            out["1"] = [2.0]  # backward compat column
-            return out
-
-        monkeypatch.setattr(optimization_module, "add_bin_columns", fake_add_bin_columns)
-
-        result = optimization_module.run_optimization_phase(
-            data_booked=pd.DataFrame(),
-            data_demand=pd.DataFrame(),
-            risk_inference={},
-            reg_todu_amt_pile="reg",
-            stress_factor=1.0,
-            tasa_fin=1.0,
-            settings=settings,
-            annual_coef=1.0,
-            output=output,
-        )
-
-        _, data_summary, data_summary_sample_no_opt, _, grid, pareto_masks, _ = result
-        assert data_summary_sample_no_opt.empty
-        assert grid is dummy_grid
-        assert pareto_masks == fake_masks
-        assert "b2_ever_h6" in data_summary.columns
-        assert Path(output.pareto_solutions_csv).exists()
-
 
 class TestInvVar1ReachesKpiEvaluation:
-    def test_fixed_cutoff_path_passes_inv_var1(self, monkeypatch, tmp_path):
-        """Audit #37: with variables[1] inverted, the fixed-cutoff path computed
-        inv_var1 for solution VALIDATION but not for the KPI evaluation — the
-        frontier KPIs summed the var1 <= cutoff side while audit/bootstrap/MR
-        classified var1 >= cutoff."""
+    def test_fixed_cutoff_kpis_use_inverted_side(self, monkeypatch, tmp_path):
+        """Audit #37: with variables[1] inverted, the fixed-cutoff KPIs must sum the
+        var1 >= cutoff side — the same policy audit/bootstrap/MR classify."""
         settings = make_settings(
             fixed_cutoffs={
                 "sc_octroi_new_clus": [1.0, 2.0],
-                "new_efx_clus": [1.0, 2.0],
+                "new_efx_clus": [2.0, 1.0],  # non-increasing: valid for an inverted var
             },
             inv_vars=["new_efx_clus"],  # variables[1] inverted
         )
         output = OutputPaths(base_dir=tmp_path)
         output.ensure_dirs()
-        captured = {}
         summary_desagregado = pd.DataFrame(
             {
-                "sc_octroi_new_clus": [1, 2],
-                "new_efx_clus": [1, 2],
-                "oa_amt_h0": [1000.0, 2000.0],
-                "todu_30ever_h6": [10.0, 20.0],
-                "todu_amt_pile_h6": [100.0, 200.0],
+                "sc_octroi_new_clus": [1, 1, 2, 2],
+                "new_efx_clus": [1, 2, 1, 2],
+                "oa_amt_h0": [1000.0, 2000.0, 3000.0, 4000.0],
+                "todu_30ever_h6": [10.0, 20.0, 30.0, 40.0],
+                "todu_amt_pile_h6": [100.0, 200.0, 300.0, 400.0],
             }
         )
         monkeypatch.setattr(
             optimization_module, "run_optimization_pipeline", lambda **kwargs: summary_desagregado.copy()
         )
-        monkeypatch.setattr(
-            optimization_module,
-            "create_fixed_cutoff_solution",
-            lambda **kwargs: pd.DataFrame({"sol_fac": [0], "1": [1.0], "2": [2.0]}),
-        )
-
-        def fake_kpi_of_fact_sol(**kwargs):
-            captured["kpi"] = kwargs
-            return pd.DataFrame(
-                {
-                    "sol_fac": [0],
-                    "oa_amt_h0": [2500.0],
-                    "todu_30ever_h6": [25.0],
-                    "todu_amt_pile_h6": [250.0],
-                    "b2_ever_h6": [70.0],
-                }
-            )
-
-        monkeypatch.setattr(optimization_module, "kpi_of_fact_sol", fake_kpi_of_fact_sol)
-
-        optimization_module.run_optimization_phase(
-            data_booked=pd.DataFrame(),
-            data_demand=pd.DataFrame(),
-            risk_inference={},
-            reg_todu_amt_pile="reg",
-            stress_factor=1.0,
-            tasa_fin=1.0,
-            settings=settings,
-            annual_coef=1.0,
-            output=output,
-        )
-
-        assert captured["kpi"].get("inv_var1") is True, (
-            "inv_var1 must reach the KPI evaluation (audit #37) — without it the "
-            "frontier sums the wrong side of the cutoff for inverted var1"
-        )
-
-
-class TestLegacyEnumerationSkippedWithConstraints:
-    def test_2var_with_swapin_cap_skips_constraint_blind_legacy_enum(self, monkeypatch, tmp_path):
-        """Audit #36: the legacy 2-var enumeration cannot express cell pins or
-        swap-in caps; with such constraints active the empty-MILP fallback must
-        go to the constraint-aware GA instead."""
-        settings = make_settings(pareto_n_points=5, max_swapin_production_pct=30.0)
-        output = OutputPaths(base_dir=tmp_path)
-        output.ensure_dirs()
-
-        summary_desagregado = pd.DataFrame(
-            {
-                "sc_octroi_new_clus": [1, 2],
-                "new_efx_clus": [1, 2],
-                "oa_amt_h0": [1200.0, 1800.0],
-                "todu_30ever_h6": [12.0, 18.0],
-                "todu_amt_pile_h6": [120.0, 180.0],
-            }
-        )
-        monkeypatch.setattr(
-            optimization_module,
-            "run_optimization_pipeline",
-            lambda **kwargs: summary_desagregado.copy(),
-        )
-
-        dummy_grid = object()
-        monkeypatch.setattr(
-            optimization_module,
-            "trace_pareto_frontier",
-            lambda **kwargs: (pd.DataFrame(), dummy_grid, []),
-        )
-
-        def legacy_must_not_run(*args, **kwargs):
-            raise AssertionError("legacy enumeration must not run with swap-in caps active")
-
-        monkeypatch.setattr(optimization_module, "get_fact_sol", legacy_must_not_run)
-
-        captured_ga = {}
-        fake_pareto_df = pd.DataFrame({"sol_fac": [0], "oa_amt_h0": [999.0], "b2_ever_h6": [1.23]})
-        fake_masks = [[1, 0]]
-
-        import src.optimize.optimization_utils as optimization_utils_module
-
-        def fake_ga(grid, inv_vars, multiplier, indicators, n_points, **kwargs):
-            captured_ga.update(kwargs)
-            return fake_pareto_df, dummy_grid, fake_masks
-
-        monkeypatch.setattr(optimization_utils_module, "_ga_pareto_fallback", fake_ga)
-
-        def fake_add_bin_columns(df, pareto_masks, grid, inv_vars):
-            out = df.copy()
-            out["1"] = [2.0]
-            return out
-
-        monkeypatch.setattr(optimization_module, "add_bin_columns", fake_add_bin_columns)
-
         result = optimization_module.run_optimization_phase(
             data_booked=pd.DataFrame(),
             data_demand=pd.DataFrame(),
@@ -832,13 +566,43 @@ class TestLegacyEnumerationSkippedWithConstraints:
             annual_coef=1.0,
             output=output,
         )
+        # octroi 1: efx >= 2 -> (1,2); octroi 2: efx >= 1 -> (2,1), (2,2)
+        assert result.data_summary["oa_amt_h0"].iloc[0] == pytest.approx(2000.0 + 3000.0 + 4000.0)
 
-        _, _, _, _, grid, pareto_masks, _ = result
-        assert grid is dummy_grid
-        assert pareto_masks == fake_masks
-        # the GA fallback received the constraints the MILP path was given
-        assert captured_ga["max_swapin_production_pct"] == pytest.approx(30.0)
-        assert "fixed_cells" in captured_ga
+
+class TestEmptyFrontierFailsLoudly:
+    def test_no_feasible_milp_solution_raises(self, monkeypatch, tmp_path):
+        """No GA / legacy-enumeration fallback: an infeasible MILP stops the segment with
+        an actionable error instead of optimizing under dropped constraints (audit #36)."""
+        settings = make_settings(pareto_n_points=5, max_swapin_production_pct=30.0)
+        output = OutputPaths(base_dir=tmp_path)
+        output.ensure_dirs()
+        summary_desagregado = pd.DataFrame(
+            {
+                "sc_octroi_new_clus": [1, 2],
+                "new_efx_clus": [1, 2],
+                "oa_amt_h0": [1200.0, 1800.0],
+                "todu_30ever_h6": [12.0, 18.0],
+                "todu_amt_pile_h6": [120.0, 180.0],
+            }
+        )
+        monkeypatch.setattr(
+            optimization_module, "run_optimization_pipeline", lambda **kwargs: summary_desagregado.copy()
+        )
+        grid = optimization_module.CellGrid.from_summary(summary_desagregado, settings.variables)
+        monkeypatch.setattr(optimization_module, "trace_pareto_frontier", lambda **kwargs: (pd.DataFrame(), grid, []))
+        with pytest.raises(RuntimeError, match="no feasible solution"):
+            optimization_module.run_optimization_phase(
+                data_booked=pd.DataFrame(),
+                data_demand=pd.DataFrame(),
+                risk_inference={},
+                reg_todu_amt_pile="reg",
+                stress_factor=1.0,
+                tasa_fin=1.0,
+                settings=settings,
+                annual_coef=1.0,
+                output=output,
+            )
 
 
 class TestPipelineReportingWrappers:

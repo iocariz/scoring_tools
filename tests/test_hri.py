@@ -112,26 +112,6 @@ def test_evaluate_solution_computes_hri_without_multiplier():
     assert np.isnan(result["hri_h6_rep"])
 
 
-def test_kpi_of_fact_sol_keeps_hri_rep_nan():
-    # Build the final_result frame path directly through kpi computation on a tiny df
-    from src.optimize.optimization_utils import (
-        calculate_b2_ever_h6,  # noqa: F401 (import sanity)
-        kpi_of_fact_sol,
-    )
-
-    cell = _cell_grid_with_hri()
-    sols = pd.DataFrame({"sol_fac": [0], "1": [1], "2": [1]})
-    try:
-        out = kpi_of_fact_sol(
-            sols, cell.rename(columns={"v1": "octroi"}), ["octroi"], multiplier=7.0, multiplier_h3=None
-        )
-    except TypeError:
-        pytest.skip("kpi_of_fact_sol signature differs; covered by evaluate_solution test")
-    if "hri_h6" in out.columns:
-        assert out["hri_h6"].notna().any()
-        assert out["hri_h6_rep"].isna().all()  # deliberate: no fillna(0) for HRI
-
-
 # ---------------------------------------------------------------------------
 # MR summary table
 # ---------------------------------------------------------------------------

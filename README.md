@@ -359,7 +359,7 @@ A complementary 3-month metric (**b2_ever_h3**) uses `multiplier_h3 = 4` and the
 
 Risk is always non-negative (clipped at 0). Division by zero exposure yields NaN, indicating cells with no volume.
 
-**Risk evidence gate (audit F8).** Optimization only accepts cells with a finite, non-negative numerator and positive, finite exposure for the selected risk indicator. A cell with production but no usable risk outcomes is forced to reject; its production remains in the source summaries. This applies to MILP, GA and frontier fallbacks. Conflicting must-accept floors and fixed cutoffs fail explicitly. Measured zero-default cells remain eligible. Baseline mode still reports the existing book as-is.
+**Risk evidence gate (audit F8).** Optimization only accepts cells with a finite, non-negative numerator and positive, finite exposure for the selected risk indicator. A cell with production but no usable risk outcomes is forced to reject; its production remains in the source summaries. This applies to the MILP and its last-resort floor/upper-bound frontier rows. Conflicting must-accept floors and fixed cutoffs fail explicitly. Measured zero-default cells remain eligible. Baseline mode still reports the existing book as-is.
 
 ### Harmonized Risk Indicator (HRI)
 
@@ -386,7 +386,7 @@ Key points:
 
 - `optimum_risk` (b2 units, ×7 multiplier) and `optimum_hri` (plain ratio) are **separate fields on different scales** — never reuse one as the other. `risk_step` and `--resimulate` targets follow the *selected* indicator's units.
 - In hri mode the MILP constraint, Pareto ordering and scenario selection run on `hri_h6`; an HRI model pair (rate + denominator) trains alongside the b2 models to fill repesca cells, and reject-inference uplift + stress apply to `h_num_h6` exactly as they do to the b2 numerator. Both indicators stay reported.
-- Hard guardrails (never silent degradation): missing `h_*` columns → load error; `--model-path`/`--reuse-models` refused; GA/legacy fallbacks refused; the MR period keeps the frozen main mask; b2-basis bootstrap/selection CIs are skipped with a warning (HRI has no CI yet).
+- Hard guardrails (never silent degradation): missing `h_*` columns → load error; `--model-path`/`--reuse-models` refused; the MR period keeps the frozen main mask; b2-basis bootstrap/selection CIs are skipped with a warning (HRI has no CI yet).
 - Governance: the knob and target are recorded in run lineage and the workbook's assumptions registry; flipping `risk_indicator` changes cutoffs and requires validation like any Expert toggle.
 
 ### N-Dimensional Binning
@@ -641,7 +641,6 @@ Both are added as inequality rows alongside risk and monotonicity constraints. W
 #### Solver and Fallbacks
 
 The MILP is solved using `scipy.optimize.milp` with a configurable time limit (default 30 seconds). If infeasible, the system falls back to:
-- **Genetic algorithm** (N > 2 variables) via `pymoo` — near-optimal Pareto frontiers
 - **Legacy enumeration** (2 variables) — brute-force evaluation of all monotonic combinations
 
 **Output Translation**: `mask_to_cutoffs()` translates the binary vector `x` back into actionable business rules. For 2D grids, it determines the maximum accepted external score bin per internal score bin. For N>2 grids, it returns: `_cells` (lossless cell-level dict preserving the full mask), `_marginal_{var}` (per-dimension acceptance), and conditional cutoffs for the last dimension.
@@ -1498,7 +1497,6 @@ new_efx_clus = [5, 6, 8]
 | `generate_presentation.py` | Methodology presentation (.pptx / .pdf) — how the pipeline works |
 | `dashboard.py` | Interactive Dash results dashboard |
 | `interactive_allocator.py` | Interactive allocation dashboard |
-| `gradio_dashboard.py` | Gradio web UI for results exploration |
 
 #### Pipeline Orchestration (`src/pipeline/`)
 
@@ -1563,7 +1561,7 @@ Layered packages `core` → `data` → `model` → `optimize` → `analysis` →
 | `report/reporting.py` | Self-contained per-segment HTML report rendering (Jinja2 + embedded Plotly), with HTML-escaping of user-influenced values |
 | `analysis/selection_bias.py` | Selection-bias diagnostics (Thorndike correction, reject-inference Gini, score discriminance on the rejected population) |
 | `report/selection_bias_plots.py` | Plotting helpers for the selection-bias analysis |
-| `report/dashboard_data.py` | Shared data-loading / path-resolution helpers used by `dashboard.py` and `gradio_dashboard.py` (segment/scenario discovery, coefficient parsing) |
+| `report/dashboard_data.py` | Shared data-loading / path-resolution helpers used by `dashboard.py` and `interactive_allocator.py` (segment/scenario discovery, coefficient parsing) |
 | `report/web_auth.py` | HTTP Basic Auth + bind-policy enforcement for the web dashboards (`enforce_bind_auth_policy`) |
 
 ---

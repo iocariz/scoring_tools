@@ -1,6 +1,6 @@
 """Shared data-loading helpers for the dashboards (R2 todo #64).
 
-Before this module existed, ``dashboard.py``, ``gradio_dashboard.py``, and
+Before this module existed, ``dashboard.py``, a Gradio dashboard (removed 2026-10) and
 ``interactive_allocator.py`` each redefined near-identical versions of
 ``get_data_dir`` / ``get_images_dir`` / ``get_available_segments`` /
 ``get_scenarios`` / ``_resolve_supersegment`` / ``parse_coefficients``. The

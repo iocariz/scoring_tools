@@ -1,7 +1,6 @@
-"""Unit tests for src/dashboard_data.py (R2 todo #64).
+"""Unit tests for src/report/dashboard_data.py (R2 todo #64).
 
-Covers the shared data-loading helpers that dashboard.py and
-gradio_dashboard.py both import. Each helper is exercised against a
+Covers the shared data-loading helpers the dashboards import. Each helper is exercised against a
 synthetic output tree so behaviour is pinned regardless of which
 dashboard runs it.
 """

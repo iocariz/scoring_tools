@@ -18,11 +18,7 @@ from src.optimize.optimization_utils import (
     CellGrid,
     add_bin_columns,
     create_fixed_cutoff_mask,
-    create_fixed_cutoff_solution,
     evaluate_solution,
-    get_fact_sol,
-    get_optimal_solutions,
-    kpi_of_fact_sol,
     trace_pareto_frontier,
 )
 
@@ -139,10 +135,6 @@ def run_optimization_phase(
     # Build values_per_var dict for all variables
     values_per_var = {var: sorted(data_summary_desagregado[var].unique()) for var in settings.variables}
 
-    # Shorthand for 2-var backward compat
-    values_var0 = values_per_var[settings.variables[0]]
-    values_var1 = values_per_var[settings.variables[1]] if len(settings.variables) > 1 else []
-
     # Check for fixed cutoffs (skip optimization if provided)
     fixed_cutoffs = settings.fixed_cutoffs
     use_fixed_cutoffs = fixed_cutoffs is not None and len(fixed_cutoffs) > 0
@@ -201,73 +193,22 @@ def run_optimization_phase(
         # Get validation settings from config
         strict_validation = fixed_cutoffs.get("strict_validation", False)
 
-        if len(settings.variables) != 2:
-            # N!=2 fixed cutoffs → mask-based path
-            grid, fixed_mask = create_fixed_cutoff_mask(
-                fixed_cutoffs=fixed_cutoffs,
-                variables=settings.variables,
-                data_summary_desagregado=data_summary_desagregado,
-                inv_vars=settings.inv_vars,
-                strict_validation=strict_validation,
-            )
-            kpis = evaluate_solution(
-                fixed_mask, grid, settings.indicators, settings.multiplier, multiplier_h3=settings.multiplier_h3
-            )
-            data_summary = pd.DataFrame([{**kpis, "sol_fac": 0}])
-            pareto_masks = [fixed_mask]
-            data_summary = add_bin_columns(data_summary, pareto_masks, grid, settings.inv_vars)
-            data_summary_sample_no_opt = data_summary.copy()
-        else:
-            # 2-var fixed cutoffs → legacy path
-            inv_var1 = settings.variables[1] in settings.inv_vars
-
-            # Create single solution from fixed cutoffs with enhanced validation
-            df_v = create_fixed_cutoff_solution(
-                fixed_cutoffs=fixed_cutoffs,
-                variables=settings.variables,
-                values_var0=values_var0,
-                values_var1=values_var1,
-                strict_validation=strict_validation,
-                inv_var1=inv_var1,
-            )
-
-            # Calculate KPIs for the fixed cutoff solution. inv_var1 must reach
-            # the KPI evaluation too (audit #37): without it the sums ran on the
-            # var1 <= cutoff side while audit/bootstrap/MR classified var1 >= cutoff
-            # — the same run described two different policies.
-            data_summary = kpi_of_fact_sol(
-                df_v=df_v,
-                values_var0=values_var0,
-                data_sumary_desagregado=data_summary_desagregado,
-                variables=settings.variables,
-                indicadores=settings.indicators,
-                inv_var1=inv_var1,
-                chunk_size=100000,
-                multiplier=settings.multiplier,
-                multiplier_h3=settings.multiplier_h3,
-            )
-
-            # Merge df_v (with bin columns) into data_summary (with KPIs)
-            data_summary = data_summary.merge(df_v, on="sol_fac", how="left")
-
-            # For fixed cutoffs, there's only one solution (no sampling needed)
-            data_summary_sample_no_opt = data_summary.copy()
-
-            # Build a CellGrid + mask for the same fixed cutoffs so downstream
-            # consumers get a real grid/mask (2-var fixed runs previously left
-            # grid=None, which silently dropped the acceptance/score grid,
-            # accepted_cells_base.csv, and the cutoff-summary `accepted` column —
-            # all gated on `grid is not None and selected_mask is not None`).
-            # KPIs still come from kpi_of_fact_sol above (validated, unchanged);
-            # the mask is consistent with it via the same fixed_cutoffs + inv_vars.
-            grid, fixed_mask = create_fixed_cutoff_mask(
-                fixed_cutoffs=fixed_cutoffs,
-                variables=settings.variables,
-                data_summary_desagregado=data_summary_desagregado,
-                inv_vars=settings.inv_vars,
-                strict_validation=strict_validation,
-            )
-            pareto_masks = [fixed_mask]
+        # Same mask + evaluate_solution path as every other mode, for any number of variables
+        # (the 2-var legacy enumeration KPIs were dropped in the 2026-10 simplification).
+        grid, fixed_mask = create_fixed_cutoff_mask(
+            fixed_cutoffs=fixed_cutoffs,
+            variables=settings.variables,
+            data_summary_desagregado=data_summary_desagregado,
+            inv_vars=settings.inv_vars,
+            strict_validation=strict_validation,
+        )
+        kpis = evaluate_solution(
+            fixed_mask, grid, settings.indicators, settings.multiplier, multiplier_h3=settings.multiplier_h3
+        )
+        data_summary = pd.DataFrame([{**kpis, "sol_fac": 0}])
+        pareto_masks = [fixed_mask]
+        data_summary = add_bin_columns(data_summary, pareto_masks, grid, settings.inv_vars)
+        data_summary_sample_no_opt = data_summary.copy()
 
         # A fixed policy must not silently count production whose target risk is
         # unknown. Refuse the conflict rather than changing the prescribed mask.
@@ -432,114 +373,17 @@ def run_optimization_phase(
             target_multiplier=target_ind.multiplier(settings),
         )
 
-        if pareto_df.empty and settings.risk_indicator != "b2_ever_h6":
-            # Neither the GA fallback nor the legacy 2-var enumeration can target a
-            # non-b2 indicator — failing loudly beats optimizing the wrong metric.
-            raise RuntimeError(
-                f"[{segment}] MILP produced no solutions and the fallback optimizers only "
-                f"support the b2 basis (risk_indicator={settings.risk_indicator})."
-            )
-
         if pareto_df.empty:
-            # Fallback depending on number of variables. The GA fallback honors
-            # cell pins + swap-in caps; the legacy 2-var enumeration CANNOT
-            # express either, so it is only used when no such constraint is
-            # active (audit #36 — fallbacks must not silently drop constraints).
-            has_side_constraints = (
-                bool(floor_fixed_cells)
-                or any(v is not None for v in (settings.max_swapin_production_pct, settings.max_swapin_risk))
-                or bool((grid.observed & ~grid.usable_risk_mask()).any())
+            raise RuntimeError(
+                f"[{segment}] MILP produced no feasible solution ({len(settings.variables)} variables, "
+                f"risk_indicator={settings.risk_indicator}). Loosen the active constraints (cell pins, "
+                "min_accepted_bin_by_variable, swap-in caps, cutoff ordering) or check the risk evidence."
             )
-            if len(settings.variables) != 2 or has_side_constraints:
-                if len(settings.variables) == 2:
-                    logger.warning(
-                        f"[{segment}] MILP produced no solutions; risk-evidence exclusions / cell pins / swap-in caps apply, "
-                        "so the constraint-blind legacy enumeration is skipped — trying GA fallback"
-                    )
-                else:
-                    logger.warning(f"[{segment}] MILP produced no solutions for N!=2, trying GA fallback")
-                from src.optimize.optimization_utils import _ga_pareto_fallback
+        # Add bin columns for 2-var backward compat (cutoff extraction, viz, bootstrap)
+        data_summary = add_bin_columns(pareto_df, pareto_masks, grid, settings.inv_vars)
 
-                pareto_df, grid, pareto_masks = _ga_pareto_fallback(
-                    grid,
-                    settings.inv_vars,
-                    settings.multiplier,
-                    settings.indicators,
-                    settings.pareto_n_points,
-                    monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
-                    monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
-                    monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
-                    fixed_cells=floor_fixed_cells,
-                    max_swapin_production_pct=settings.max_swapin_production_pct,
-                    max_swapin_risk=settings.max_swapin_risk,
-                )
-                if pareto_df.empty:
-                    raise RuntimeError(
-                        f"[{segment}] Both MILP and GA produced no solutions "
-                        f"({len(settings.variables)} variables"
-                        f"{', with cell pins / swap-in caps active' if has_side_constraints else ''})."
-                    )
-                data_summary = add_bin_columns(pareto_df, pareto_masks, grid, settings.inv_vars)
-                data_summary_sample_no_opt = pd.DataFrame(columns=["oa_amt_h0", "b2_ever_h6"])
-            else:
-                logger.warning(f"[{segment}] MILP produced no solutions, falling back to legacy enumeration")
-                try:
-                    # inv_var1 must reach BOTH the enumeration (sentinel/ordering)
-                    # and the KPI evaluation (>= vs <= side) — audit #37.
-                    legacy_inv_var1 = settings.variables[1] in settings.inv_vars
-                    df_v = get_fact_sol(
-                        values_var0=values_var0,
-                        values_var1=values_var1,
-                        inv_var1=legacy_inv_var1,
-                        chunk_size=10000,
-                    )
-                    data_summary = kpi_of_fact_sol(
-                        df_v=df_v,
-                        values_var0=values_var0,
-                        data_sumary_desagregado=data_summary_desagregado,
-                        variables=settings.variables,
-                        indicadores=settings.indicators,
-                        inv_var1=legacy_inv_var1,
-                        chunk_size=100000,
-                        multiplier=settings.multiplier,
-                        multiplier_h3=settings.multiplier_h3,
-                    )
-                    data_summary_sample_no_opt = data_summary.sample(min(10000, len(data_summary)))
-                    data_summary = get_optimal_solutions(df_v=df_v, data_sumary=data_summary, chunk_size=100000)
-                    grid = None
-                    pareto_masks = []
-                except RuntimeError as e:
-                    # Legacy enumeration can blow up in memory when the grid is large.
-                    # If it fails, fall back to GA-based search (if pymoo is available)
-                    # rather than crashing.
-                    logger.warning(f"[{segment}] Legacy enumeration failed ({e}). Trying GA fallback instead.")
-                    from src.optimize.optimization_utils import _ga_pareto_fallback
-
-                    pareto_df, grid, pareto_masks = _ga_pareto_fallback(
-                        grid,
-                        settings.inv_vars,
-                        settings.multiplier,
-                        settings.indicators,
-                        settings.pareto_n_points,
-                        monotonicity_relaxation_enabled=settings.monotonicity_relaxation_enabled,
-                        monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
-                        monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
-                        fixed_cells=floor_fixed_cells,
-                        max_swapin_production_pct=settings.max_swapin_production_pct,
-                        max_swapin_risk=settings.max_swapin_risk,
-                    )
-                    if pareto_df.empty:
-                        raise RuntimeError(
-                            f"[{segment}] Legacy enumeration failed and GA fallback produced no solutions."
-                        ) from e
-                    data_summary = add_bin_columns(pareto_df, pareto_masks, grid, settings.inv_vars)
-                    data_summary_sample_no_opt = pd.DataFrame(columns=["oa_amt_h0", "b2_ever_h6"])
-        else:
-            # Add bin columns for 2-var backward compat (cutoff extraction, viz, bootstrap)
-            data_summary = add_bin_columns(pareto_df, pareto_masks, grid, settings.inv_vars)
-
-            # MILP doesn't enumerate all solutions, so non-optimal sample is empty
-            data_summary_sample_no_opt = pd.DataFrame(columns=["oa_amt_h0", "b2_ever_h6"])
+        # MILP doesn't enumerate all solutions, so non-optimal sample is empty
+        data_summary_sample_no_opt = pd.DataFrame(columns=["oa_amt_h0", "b2_ever_h6"])
 
         # Save all Pareto-optimal solutions
         data_summary.to_csv(output.pareto_solutions_csv, index=False)
