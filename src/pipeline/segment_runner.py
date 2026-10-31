@@ -63,6 +63,21 @@ def _config_hash(settings) -> str:
     return hashlib.md5(key_fields.encode()).hexdigest()[:12]
 
 
+#: Settings a resimulation may legitimately change: the risk targets it re-selects at, and logging.
+#: Every other field shapes the population, risk surface or frontier the resimulation reloads.
+_RESIM_ALLOWED_CHANGES = frozenset({"optimum_risk", "optimum_hri", "risk_step", "log_level", "base_scenario_only"})
+
+
+def _config_snapshot(settings) -> dict:
+    """Canonical JSON-safe view of the validated config, minus the fields resimulation may change."""
+    dumped = settings.model_dump(exclude=set(_RESIM_ALLOWED_CHANGES))
+    return json.loads(json.dumps(dumped, sort_keys=True, default=str))
+
+
+def _config_fingerprint(snapshot: dict) -> str:
+    return hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def _save_resimulation_artifacts(
     output: OutputPaths,
     data_clean: pd.DataFrame,
@@ -73,8 +88,13 @@ def _save_resimulation_artifacts(
     settings,
     per_bin_stress: pd.DataFrame | None = None,
     per_bin_tasa_fin: pd.DataFrame | None = None,
+    config_snapshot: dict | None = None,
 ) -> None:
-    """Save artifacts needed for resimulation mode."""
+    """Save artifacts needed for resimulation mode.
+
+    ``config_snapshot`` is the validated config as loaded (before CLI overrides and optional-column
+    stripping), so a resimulation reloading the same config file reproduces its fingerprint.
+    """
     data_clean.to_parquet(output.data_clean_parquet, index=False)
     data_booked.to_parquet(output.data_booked_parquet, index=False)
     meta = {
@@ -83,6 +103,9 @@ def _save_resimulation_artifacts(
         "annual_coef": annual_coef,
         "config_hash": _config_hash(settings),
     }
+    if config_snapshot is not None:
+        meta["config_fingerprint"] = _config_fingerprint(config_snapshot)
+        meta["config_snapshot"] = config_snapshot
     Path(output.resimulation_meta_json).write_text(json.dumps(meta, indent=2))
     if per_bin_stress is not None and not per_bin_stress.empty:
         per_bin_stress.to_csv(output.per_bin_stress_csv, index=False)
@@ -284,13 +307,27 @@ def run_resimulation(
     tasa_fin = meta["tasa_fin"]
     annual_coef = meta.get("annual_coef", annual_coef)
 
-    # Staleness check
-    current_hash = _config_hash(settings)
-    if meta.get("config_hash") and meta["config_hash"] != current_hash:
+    # Staleness check (audit 2026-10-31 F5): the saved frontier, cell summaries and populations were
+    # built under the full-run config, so any change beyond the risk targets is refused.
+    if "config_fingerprint" in meta:
+        current = _config_snapshot(settings)
+        if _config_fingerprint(current) != meta["config_fingerprint"]:
+            saved = meta.get("config_snapshot", {})
+            changed = sorted(k for k in set(saved) | set(current) if saved.get(k) != current.get(k))
+            raise ResimulationError(
+                f"[{segment}] Config changed since the last full run ({', '.join(changed) or 'unknown fields'}). "
+                "Resimulation only re-selects risk targets on the saved frontier; run the full pipeline "
+                "to apply other changes."
+            )
+    elif meta.get("config_hash") and meta["config_hash"] != _config_hash(settings):
+        raise ResimulationError(
+            f"[{segment}] Config changed since the last full run (variables / multiplier / data_path / bin edges). "
+            "Run the full pipeline to regenerate artifacts."
+        )
+    else:
         logger.warning(
-            f"[{segment}] Config has changed since the last full run (hash mismatch). "
-            "Resimulation uses the saved Pareto frontier — results may not reflect config changes. "
-            "Run a full pipeline to regenerate artifacts."
+            f"[{segment}] This run predates the full config fingerprint: only variables, multiplier, data_path and "
+            "bin edges could be verified. Re-run the full pipeline to enable the complete check."
         )
 
     # 4. Load data artifacts
@@ -489,6 +526,7 @@ def run_pipeline(
             raise ConfigLoadError(f"Error loading configuration from '{config_path}'") from e
 
         segment = settings.segment_filter
+        config_snapshot = _config_snapshot(settings)  # as validated, before overrides (resimulation identity)
         if baseline_mode:
             settings.baseline_mode = True
         if base_scenario_only:
@@ -554,6 +592,7 @@ def run_pipeline(
                 settings,
                 per_bin_stress,
                 per_bin_tasa_fin,
+                config_snapshot=config_snapshot,
             )
         except Exception as e:
             logger.warning(f"[{segment}] Failed to save resimulation artifacts (non-blocking): {e}")

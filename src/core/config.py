@@ -819,6 +819,15 @@ class PreprocessingSettings(BaseModel):
                 raise ValueError(
                     f"risk_indicator='hri_h6' requires the HRI source columns in `indicators`; missing: {missing}"
                 )
+            if self.run_ri_optimizer:
+                # The RI optimizer's trials solve and calibrate on the b2 basis without the HRI
+                # multiplier the final run applies, so its "best" parameters would describe a
+                # different workflow (audit 2026-10-31 F4). Refuse until trials share the HRI path.
+                raise ValueError(
+                    "risk_indicator='hri_h6' is not supported with run_ri_optimizer=true: the optimizer's "
+                    "trials evaluate reject-inference parameters on the b2 basis. Set run_ri_optimizer=false "
+                    "and fix reject_uplift_factor / reject_max_risk_multiplier explicitly."
+                )
         return self
 
     @property

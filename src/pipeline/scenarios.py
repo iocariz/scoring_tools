@@ -84,6 +84,43 @@ def _mirror_mr_artifacts(output: OutputPaths, src_suffix: str, dst_suffix: str) 
                 logger.warning(f"MR artifact mirror {src} -> {dst} failed (non-blocking): {e}")
 
 
+def _resolve_selection(
+    selection_risk_basis: str, sel_boot, current_risk: float, segment: str
+) -> tuple[int | None, str, bool | None]:
+    """Resolve the scenario's selection rule -> ``(target_sol_fac, basis_applied, ci_upper_feasible)``.
+
+    ``"point"`` (default): the visualizer picks the max-production frontier point with point risk <= target
+    (``target_sol_fac=None``). ``"ci_upper"`` (audit #28 Phase C, Expert): the candidate's bootstrap risk
+    CI upper bound must be <= target; when no candidate qualifies (or the bootstrap is unavailable) it
+    falls back LOUDLY to the point rule. The applied basis and CI feasibility are returned so the summary
+    row records that the requested margin was not met (audit 2026-10-31 F6).
+    """
+    if selection_risk_basis != "ci_upper":
+        return None, "point", None
+    if sel_boot is None:
+        logger.warning(
+            f"[{segment}] selection_risk_basis='ci_upper' requested but the selection-aware "
+            "bootstrap is unavailable (no frontier masks/grid) — falling back to the point rule."
+        )
+        return None, "point", False
+    from src.analysis.selection_uncertainty import select_with_ci_margin
+
+    j = select_with_ci_margin(sel_boot, current_risk)
+    if j is None:
+        logger.warning(
+            f"[{segment}] ci_upper selection: NO candidate has risk CI-upper <= "
+            f"{current_risk:.2f}% — falling back to the point rule (loud: the noise margin "
+            "is unattainable at this target)."
+        )
+        return None, "point", False
+    logger.info(
+        f"[{segment}] ci_upper selection: candidate sol_fac={j} chosen "
+        f"(risk {sel_boot.candidate_risk_orig[j]:.4f}%, "
+        f"ci_upper {sel_boot.candidate_risk_ci_upper[j]:.4f}% <= {current_risk:.2f}%)"
+    )
+    return j, "ci_upper", True
+
+
 def run_scenario_analysis(
     scenario_risk: float,
     scenario_name: str,
@@ -198,33 +235,9 @@ def run_scenario_analysis(
                 f"re-selection in {sel_boot.reselect_pct:.0f}% of replicates"
             )
 
-    # Optional noise-margin selection (audit #28 Phase C — Expert, default off):
-    # require the candidate's risk CI UPPER bound under the target instead of
-    # the point estimate. More conservative by construction.
-    target_sol_fac = None
-    if settings.selection_risk_basis == "ci_upper":
-        if sel_boot is None:
-            logger.warning(
-                f"[{segment}] selection_risk_basis='ci_upper' requested but the selection-aware "
-                "bootstrap is unavailable (no frontier masks/grid) — falling back to the point rule."
-            )
-        else:
-            from src.analysis.selection_uncertainty import select_with_ci_margin
-
-            j = select_with_ci_margin(sel_boot, current_risk)
-            if j is None:
-                logger.warning(
-                    f"[{segment}] ci_upper selection: NO candidate has risk CI-upper <= "
-                    f"{current_risk:.2f}% — falling back to the point rule (loud: the noise margin "
-                    "is unattainable at this target)."
-                )
-            else:
-                target_sol_fac = j
-                logger.info(
-                    f"[{segment}] ci_upper selection: candidate sol_fac={j} chosen "
-                    f"(risk {sel_boot.candidate_risk_orig[j]:.4f}%, "
-                    f"ci_upper {sel_boot.candidate_risk_ci_upper[j]:.4f}% <= {current_risk:.2f}%)"
-                )
+    target_sol_fac, selection_basis_applied, ci_upper_feasible = _resolve_selection(
+        settings.selection_risk_basis, sel_boot, current_risk, segment
+    )
 
     visualizer = RiskProductionVisualizer(
         data_summary=data_summary,
@@ -441,6 +454,15 @@ def run_scenario_analysis(
             summary_table.loc[mask_opt, "risk_ci_sel_upper"] = sel_boot.risk_ci_sel_upper
             summary_table.loc[mask_opt, "selection_optimism_pp"] = sel_boot.selection_optimism_pp
             summary_table.loc[mask_opt, "selection_reselect_pct"] = sel_boot.reselect_pct
+
+    summary_table["selection_basis_requested"] = None
+    summary_table["selection_basis_applied"] = None
+    summary_table["ci_upper_feasible"] = None
+    mask_opt = summary_table["Metric"] == "Optimum selected"
+    if mask_opt.any():
+        summary_table.loc[mask_opt, "selection_basis_requested"] = settings.selection_risk_basis
+        summary_table.loc[mask_opt, "selection_basis_applied"] = selection_basis_applied
+        summary_table.loc[mask_opt, "ci_upper_feasible"] = ci_upper_feasible
 
     # Add swap-in risk adjustment diagnostics to summary table (Swap-in row only)
     for diag_col, diag_label in [

@@ -113,8 +113,9 @@ def tune_tree_models(
             X_train, y_train = train_agg[variables], train_agg[target_var]
             X_val, y_val = val_agg[variables], val_agg[target_var]
 
-            w_train = _get_regression_weights(train_agg)
-            w_val = _get_regression_weights(val_agg)
+            # Same exposure basis as feature selection and the final fit (h_den_h6 for HRI; audit 2026-10-31 F3).
+            w_train = _get_regression_weights(train_agg, target_var)
+            w_val = _get_regression_weights(val_agg, target_var)
 
             # Clone to avoid leaking fitted state across folds
             model_clone = sklearn_clone(model)
@@ -281,8 +282,9 @@ def tune_linear_models(
             X_val = prepare_model_input(val_agg, var_reg, model)
             y_train, y_val = train_agg[target_var], val_agg[target_var]
 
-            w_train = _get_regression_weights(train_agg)
-            w_val = _get_regression_weights(val_agg)
+            # Same exposure basis as feature selection and the final fit (h_den_h6 for HRI; audit 2026-10-31 F3).
+            w_train = _get_regression_weights(train_agg, target_var)
+            w_val = _get_regression_weights(val_agg, target_var)
 
             try:
                 model_clone = sklearn_clone(model)
