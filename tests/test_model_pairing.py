@@ -11,8 +11,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.config import BinConfig, OutputPaths, PreprocessingSettings
-from src.persistence import save_model_with_metadata
+from src.core.config import BinConfig, OutputPaths, PreprocessingSettings
+from src.model.persistence import save_model_with_metadata
 from src.pipeline.inference import run_inference_phase
 
 
@@ -77,7 +77,7 @@ def test_two_training_saves_reuse_original_exposure_pair(tmp_path, monkeypatch):
     import joblib
     from sklearn.linear_model import LinearRegression
 
-    from src.persistence import write_integrity_sidecar
+    from src.model.persistence import write_integrity_sidecar
 
     output = OutputPaths(base_dir=tmp_path / "run")
     monkeypatch.setenv("SCORING_TRUSTED_MODEL_ROOTS", str(tmp_path))

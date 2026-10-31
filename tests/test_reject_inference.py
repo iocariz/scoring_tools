@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.reject_inference import (
+from src.optimize.reject_inference import (
     _enforce_multiplier_monotonicity,
     _fix_partial_order_violations,
     apply_parceling_adjustment,
@@ -1145,7 +1145,7 @@ class TestApplyRejectInference:
 class TestConfigRejectInference:
     def test_default_values(self):
         """PreprocessingSettings has reject inference defaults."""
-        from src.config import PreprocessingSettings
+        from src.core.config import PreprocessingSettings
 
         settings = PreprocessingSettings(
             keep_vars=["authorization_id"],
@@ -1168,7 +1168,7 @@ class TestConfigRejectInference:
 
     def test_custom_values(self):
         """PreprocessingSettings accepts custom reject inference config."""
-        from src.config import PreprocessingSettings
+        from src.core.config import PreprocessingSettings
 
         settings = PreprocessingSettings(
             keep_vars=["authorization_id"],
@@ -1202,7 +1202,7 @@ class TestConfigRejectInference:
 
     def test_invalid_method_rejected(self):
         """Invalid reject_inference_method is rejected by pydantic."""
-        from src.config import PreprocessingSettings
+        from src.core.config import PreprocessingSettings
 
         with pytest.raises(ValueError):
             PreprocessingSettings(
@@ -1218,7 +1218,7 @@ class TestConfigRejectInference:
 
     def test_uplift_factor_bounds(self):
         """reject_uplift_factor respects ge=0 and le=10 bounds."""
-        from src.config import PreprocessingSettings
+        from src.core.config import PreprocessingSettings
 
         with pytest.raises(ValueError):
             PreprocessingSettings(
@@ -1234,7 +1234,7 @@ class TestConfigRejectInference:
 
     def test_max_multiplier_bounds(self):
         """reject_max_risk_multiplier respects ge=1 and le=10 bounds."""
-        from src.config import PreprocessingSettings
+        from src.core.config import PreprocessingSettings
 
         with pytest.raises(ValueError):
             PreprocessingSettings(
@@ -1250,7 +1250,7 @@ class TestConfigRejectInference:
 
     def test_sigmoid_parceling_method_accepted(self):
         """sigmoid is accepted as a valid parceling method."""
-        from src.config import PreprocessingSettings
+        from src.core.config import PreprocessingSettings
 
         settings = PreprocessingSettings(
             keep_vars=["authorization_id"],
@@ -1266,7 +1266,7 @@ class TestConfigRejectInference:
 
     def test_invalid_parceling_method_rejected(self):
         """Invalid parceling method is rejected by pydantic."""
-        from src.config import PreprocessingSettings
+        from src.core.config import PreprocessingSettings
 
         with pytest.raises(ValueError):
             PreprocessingSettings(
@@ -1282,7 +1282,7 @@ class TestConfigRejectInference:
 
     def test_calibration_gamma_bounds(self):
         """ri_calibration_gamma must be in (0, 1]."""
-        from src.config import PreprocessingSettings
+        from src.core.config import PreprocessingSettings
 
         with pytest.raises(ValueError):
             PreprocessingSettings(

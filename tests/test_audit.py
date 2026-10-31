@@ -9,12 +9,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.audit import (
+from src.analysis.audit import (
     generate_audit_summary,
     generate_audit_table,
     reconcile_risk_production_summary_with_audit,
 )
-from src.constants import StatusName
+from src.core.constants import StatusName
 
 
 class TestGenerateAuditTable:
@@ -223,7 +223,7 @@ class TestGenerateAuditTable:
         optimal_solution = pd.DataFrame({"sol_fac": [0], "acceptance_mask": ["1,0"]})
         variables = ["sc_octroi_new_clus", "new_efx_clus", "income_bin"]
 
-        from src.optimization_utils import CellGrid
+        from src.optimize.optimization_utils import CellGrid
 
         grid_df = pd.DataFrame(
             {
@@ -441,7 +441,7 @@ def test_set_baseline_system_rejection_rate_populates_actual_and_optimum():
     """Baseline mode skips reconcile, but the swap-invariant actual System Rejection Rate
     (se_decision_id=='ko' / demand) must still be set on Actual + Optimum (= Actual) rows,
     else it stays N/A and blanks the consolidated aggregate + TOTAL."""
-    from src.audit import set_baseline_system_rejection_rate
+    from src.analysis.audit import set_baseline_system_rejection_rate
 
     summary = pd.DataFrame(
         {
@@ -470,7 +470,7 @@ def test_set_baseline_system_rejection_rate_populates_actual_and_optimum():
 
 def test_set_baseline_system_rejection_rate_noop_without_se_decision_id():
     """No se_decision_id → stays N/A (graceful, matches the 'degrades to no value' contract)."""
-    from src.audit import set_baseline_system_rejection_rate
+    from src.analysis.audit import set_baseline_system_rejection_rate
 
     summary = pd.DataFrame({"Metric": ["Actual", "Optimum selected"], "System Rejection Rate (%)": [None, None]})
     audit = pd.DataFrame({"oa_amt_demand": [100.0], "oa_amt_h0": [100.0]})  # no se_decision_id

@@ -1,0 +1,181 @@
+import time
+
+import pandas as pd
+from loguru import logger
+
+from src.core.config import PreprocessingSettings
+from src.core.schema import DataValidationError, validate_raw_data
+from src.core.constants import (
+    H3_OPTIONAL_COLUMNS,
+    HRI_OPTIONAL_COLUMNS,
+    OPTIONAL_INDICATOR_COLUMNS,
+)
+
+
+# Columns that must NOT be value-coerced by standardize_columns_and_values (audit #19):
+# date columns and opaque identifier keys. Lowercasing/underscoring/categorizing these would
+# mangle string dates (e.g. "2024-01-01 00:00:00" -> "2024-01-01_00:00:00") and case-sensitive
+# IDs. On the current data these load as datetime64/numeric (not object), so excluding them is a
+# no-op; the protection guards against future files delivering them as strings.
+# NOTE: `se_decision_id` is intentionally NOT protected — it is a categorical filter ("ok"/"rv"/
+# "ko") whose downstream comparisons require the lowercased form.
+PROTECTED_FROM_COERCION = frozenset({"mis_date", "authorization_id"})
+
+
+def load_data(df_path: str, encoding: str = "latin-1") -> pd.DataFrame:
+    """Load data from SAS file (encoding configurable via settings.sas_encoding)."""
+    df = pd.read_sas(df_path, format="sas7bdat", encoding=encoding)
+    return df
+
+
+def standardize_columns_and_values(data: pd.DataFrame) -> pd.DataFrame:
+    """Lowercase/underscore column names and normalize categorical *values* in place.
+
+    Column names are always normalized (lowercase + spaces→underscores). Object/string/category
+    *values* are lowercased + underscored + cast to ``category`` — except for protected date and
+    identifier columns (``PROTECTED_FROM_COERCION`` or any ``*_date`` name), which are left verbatim
+    so dates and case-sensitive keys are never mangled (audit #19). Shared by both load paths
+    (``load_and_prepare_data`` and ``run_batch.load_and_standardize_data``) so they normalize
+    identically.
+    """
+    data.columns = data.columns.str.lower().str.replace(" ", "_")
+    for col in data.select_dtypes(include=["object", "category", "string"]).columns:
+        if col in PROTECTED_FROM_COERCION or col.endswith("_date"):
+            continue
+        data[col] = data[col].astype("string").str.lower().str.replace(" ", "_").astype("category")
+    return data
+
+
+def find_missing_columns(df: pd.DataFrame, required_columns: list[str]) -> list[str]:
+    """Return the required columns absent from ``df`` (case-SENSITIVE, audit #20).
+
+    The single source of truth for "are the required columns present", shared by
+    ``validate_data_columns`` (the hard gate) and ``data_quality.check_required_columns`` so the two
+    can never diverge. The match is case-sensitive because column names are standardized to lowercase
+    by ``standardize_columns_and_values`` and pandas ``df[col]`` access is itself case-sensitive — so
+    this exactly reflects what the pipeline requires (no false "all present" on mixed-case names).
+    Required names are returned verbatim.
+    """
+    data_columns = set(df.columns)
+    return [col for col in required_columns if col not in data_columns]
+
+
+def validate_data_columns(data: pd.DataFrame, required_columns: list[str], context: str = "data") -> list[str]:
+    """
+    Validate that required columns exist in the DataFrame.
+
+    Args:
+        data: DataFrame to validate
+        required_columns: List of required column names
+        context: Context for error messages
+
+    Returns:
+        List of missing columns (empty if all present)
+
+    Raises:
+        DataValidationError: If any required columns are missing
+    """
+    # Case-sensitive comparison (via the shared helper) — columns should already be standardized to
+    # lowercase by load_and_prepare_data before this is called.
+    missing = find_missing_columns(data, required_columns)
+
+    if missing:
+        raise DataValidationError(f"Missing required columns in {context}: {missing}")
+
+    return []
+
+
+def validate_data_not_empty(data: pd.DataFrame, context: str = "data") -> None:
+    """
+    Validate that DataFrame is not empty.
+
+    Args:
+        data: DataFrame to validate
+        context: Context for error messages
+
+    Raises:
+        DataValidationError: If DataFrame is empty
+    """
+    if data.empty:
+        raise DataValidationError(f"{context} is empty")
+
+
+def load_and_prepare_data(
+    settings: PreprocessingSettings, preloaded_data: pd.DataFrame | None = None
+) -> tuple[pd.DataFrame, PreprocessingSettings]:
+    """
+    Load data from file or use preloaded data, standardize columns and validate.
+
+    Args:
+        settings: Configuration settings object
+        preloaded_data: Optional pre-loaded and standardized DataFrame
+
+    Returns:
+        Prepared DataFrame
+
+    Raises:
+        DataValidationError: If data validation fails
+        FileNotFoundError: If data file is not found
+    """
+    t0 = time.perf_counter()
+
+    if preloaded_data is not None:
+        data = preloaded_data.copy()
+        logger.debug(f"Using pre-loaded data: {data.shape[0]:,} rows x {data.shape[1]} columns")
+    else:
+        data_path = settings.data_path
+        data = load_data(data_path, encoding=getattr(settings, "sas_encoding", "latin-1"))
+        validate_data_not_empty(data, "Input data")
+
+        # Standardize column names and categorical values (only when loading fresh data).
+        # Dates/IDs are protected from value coercion (audit #19).
+        data = standardize_columns_and_values(data)
+        logger.debug("Column names and categorical values standardized")
+
+    # Validate required columns exist after standardization.
+    # H3 and HRI source columns are optional — downstream code already handles their
+    # absence (e.g. mr_pipeline checks `"todu_30ever_h3_boo" in df.columns`; HRI uses
+    # src.core.risk_indicators.hri_available).
+    all_cols = list(dict.fromkeys(settings.keep_vars + settings.indicators))  # deduplicate, preserve order
+    required_cols = [c for c in all_cols if c not in OPTIONAL_INDICATOR_COLUMNS]
+    optional_cols = [c for c in all_cols if c in OPTIONAL_INDICATOR_COLUMNS]
+
+    validate_data_columns(data, required_cols, "input data")
+
+    missing_optional = [c for c in optional_cols if c not in data.columns]
+    if missing_optional:
+        missing_h3 = [c for c in missing_optional if c in H3_OPTIONAL_COLUMNS]
+        missing_hri = [c for c in missing_optional if c in HRI_OPTIONAL_COLUMNS]
+        if missing_h3:
+            logger.warning(f"Optional H3 columns not found in data (will be skipped): {missing_h3}")
+        if missing_hri:
+            # Hard guard: HRI columns are only OPTIONAL while HRI is display-only. When it is
+            # the OPTIMIZATION target, silently degrading would optimize on the wrong metric.
+            if getattr(settings, "risk_indicator", "b2_ever_h6") == "hri_h6" and any(
+                c in missing_hri for c in ("h_num_h6", "h_den_h6")
+            ):
+                raise DataValidationError(
+                    f"risk_indicator='hri_h6' but the HRI source columns are absent from the data: "
+                    f"{missing_hri}. An optimization target never silently degrades — use a dataset "
+                    "with h_num_h6/h_den_h6 or set risk_indicator='b2_ever_h6'."
+                )
+            logger.warning(f"Optional HRI columns not found in data (HRI disabled for this run): {missing_hri}")
+        # Remove missing optional columns from settings so all downstream code
+        # receives a clean list without columns that don't exist in the data.
+        # Use new lists to avoid mutating the caller's settings object in-place.
+        settings = settings.model_copy(
+            update={
+                "keep_vars": [c for c in settings.keep_vars if c not in missing_optional],
+                "indicators": [c for c in settings.indicators if c not in missing_optional],
+            }
+        )
+
+    # Schema validation: check types, value ranges, and categorical constraints
+
+    validate_raw_data(data, raise_on_error=True)
+
+    elapsed = time.perf_counter() - t0
+    source = "preloaded" if preloaded_data is not None else settings.data_path
+    logger.info(f"Data ready | {data.shape[0]:,} rows x {data.shape[1]} cols | source={source} | {elapsed:.1f}s")
+
+    return data, settings

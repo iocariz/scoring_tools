@@ -9,7 +9,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
-from src.risk_surface import (
+from src.report.risk_surface import (
     CATEGORY_CODE,
     CATEGORY_ORDER,
     aggregate_to_cells,

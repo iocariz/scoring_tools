@@ -11,9 +11,10 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from src.config import OutputPaths, PreprocessingSettings
-from src.inference_optimized import run_optimization_pipeline
-from src.optimization_utils import (
+from src.core.config import OutputPaths, PreprocessingSettings
+from src.core.utils import calculate_b2_ever_h6
+from src.model.inference_optimized import run_optimization_pipeline
+from src.optimize.optimization_utils import (
     CellGrid,
     add_bin_columns,
     create_fixed_cutoff_mask,
@@ -23,9 +24,6 @@ from src.optimization_utils import (
     get_optimal_solutions,
     kpi_of_fact_sol,
     trace_pareto_frontier,
-)
-from src.utils import (
-    calculate_b2_ever_h6,
 )
 
 
@@ -460,7 +458,7 @@ def run_optimization_phase(
                     )
                 else:
                     logger.warning(f"[{segment}] MILP produced no solutions for N!=2, trying GA fallback")
-                from src.optimization_utils import _ga_pareto_fallback
+                from src.optimize.optimization_utils import _ga_pareto_fallback
 
                 pareto_df, grid, pareto_masks = _ga_pareto_fallback(
                     grid,
@@ -515,7 +513,7 @@ def run_optimization_phase(
                     # If it fails, fall back to GA-based search (if pymoo is available)
                     # rather than crashing.
                     logger.warning(f"[{segment}] Legacy enumeration failed ({e}). Trying GA fallback instead.")
-                    from src.optimization_utils import _ga_pareto_fallback
+                    from src.optimize.optimization_utils import _ga_pareto_fallback
 
                     pareto_df, grid, pareto_masks = _ga_pareto_fallback(
                         grid,
@@ -563,7 +561,7 @@ def run_optimization_phase(
             as_percentage=True,
         )
     # Harmonized Risk Indicator (no multiplier) when source columns are available
-    from src.risk_indicators import hri_available, hri_h3_available
+    from src.core.risk_indicators import hri_available, hri_h3_available
 
     if hri_available(data_summary_desagregado):
         data_summary_desagregado["hri_h6"] = calculate_b2_ever_h6(

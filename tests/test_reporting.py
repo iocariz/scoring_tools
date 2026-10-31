@@ -10,8 +10,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.config import OutputPaths, PreprocessingSettings
-from src.reporting import (
+from src.core.config import OutputPaths, PreprocessingSettings
+from src.report.reporting import (
     ReportContext,
     ReportSection,
     _build_acceptance_matrices,

@@ -18,15 +18,15 @@ import pandas as pd
 from loguru import logger
 from sklearn.linear_model import LinearRegression
 
-from src.backtest import _realized_metrics
-from src.config import BinConfig, OutputPaths, PreprocessingSettings
-from src.estimators import HurdleRegressor
-from src.inference_optimized import compute_cell_level_ci, compute_pre_reject_inference_data
-from src.optimization_utils import CellGrid, evaluate_solution, milp_solve_cutoffs
-from src.persistence import validate_reused_model_config
+from src.core.config import BinConfig, OutputPaths, PreprocessingSettings
+from src.data.preprocess_improved import _apply_binning_from_config
+from src.governance.backtest import _realized_metrics
+from src.governance.policy_registry import build_policy_entry, compare_policies, get_champion, register_policy
+from src.model.estimators import HurdleRegressor
+from src.model.inference_optimized import compute_cell_level_ci, compute_pre_reject_inference_data
+from src.model.persistence import validate_reused_model_config
+from src.optimize.optimization_utils import CellGrid, evaluate_solution, milp_solve_cutoffs
 from src.pipeline.inference import run_inference_phase
-from src.policy_registry import build_policy_entry, compare_policies, get_champion, register_policy
-from src.preprocess_improved import _apply_binning_from_config
 
 logger.remove()
 results = {}
@@ -59,7 +59,7 @@ def missing_booked_h6():
     )
     inds = ["oa_amt", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"]
     risk_model = {"best_model_info": {"model": object()}, "features": ["a"]}
-    with patch("src.models.calculate_risk_values", side_effect=lambda df, *a, **k: df):
+    with patch("src.model.models.calculate_risk_values", side_effect=lambda df, *a, **k: df):
         booked, _ = compute_pre_reject_inference_data(
             data,
             data,

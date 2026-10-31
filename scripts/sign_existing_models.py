@@ -32,7 +32,7 @@ from pathlib import Path
 # Allow running as a standalone script from repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.persistence import ModelIntegrityError, write_integrity_sidecar  # noqa: E402
+from src.model.persistence import ModelIntegrityError, write_integrity_sidecar  # noqa: E402
 
 PICKLE_SUFFIXES = {".pkl", ".joblib"}
 

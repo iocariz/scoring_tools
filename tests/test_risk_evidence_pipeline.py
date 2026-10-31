@@ -4,9 +4,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.config import BinConfig, OutputPaths, PreprocessingSettings
-from src.inference_optimized import run_optimization_pipeline
-from src.optimization_utils import CellGrid, evaluate_solution, milp_solve_cutoffs
+from src.core.config import BinConfig, OutputPaths, PreprocessingSettings
+from src.model.inference_optimized import run_optimization_pipeline
+from src.optimize.optimization_utils import CellGrid, evaluate_solution, milp_solve_cutoffs
 from src.pipeline import cutoff_optimization as phase
 
 INDICATORS = ["oa_amt", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"]
@@ -31,7 +31,7 @@ def booked():
 @pytest.mark.parametrize("missing_den", [np.nan, 900.0])
 def test_all_missing_or_jointly_excluded_booked_cell_is_not_accepted(booked, monkeypatch, missing_den):
     booked.loc[1, "todu_amt_pile_h6"] = missing_den
-    monkeypatch.setattr("src.models.calculate_risk_values", lambda df, *args, **kwargs: df)
+    monkeypatch.setattr("src.model.models.calculate_risk_values", lambda df, *args, **kwargs: df)
     summary = run_optimization_pipeline(
         booked,
         booked,
@@ -108,7 +108,9 @@ def test_empty_frontier_cannot_reenter_unrestricted_legacy_enumeration(booked, m
         pytest.fail("Legacy enumeration must not bypass risk-evidence exclusions")
 
     monkeypatch.setattr(phase, "get_fact_sol", unsafe_legacy)
-    monkeypatch.setattr("src.optimization_utils._ga_pareto_fallback", lambda grid, *a, **kw: (pd.DataFrame(), grid, []))
+    monkeypatch.setattr(
+        "src.optimize.optimization_utils._ga_pareto_fallback", lambda grid, *a, **kw: (pd.DataFrame(), grid, [])
+    )
     with pytest.raises(RuntimeError, match="Both MILP and GA produced no solutions"):
         _run_phase(booked, monkeypatch, tmp_path, ["a", "b"])
 
@@ -120,7 +122,7 @@ def test_vacuous_phantom_floor_cells_are_dropped_not_fatal():
     failing the segment. A must-accept cell with REAL production and no usable risk
     still fails (guarded by test_fixed_cutoffs_refuse_accepted_cells_with_unknown_risk
     and the trace-time conflict raise)."""
-    from src.optimization_utils import trace_pareto_frontier
+    from src.optimize.optimization_utils import trace_pareto_frontier
 
     # 2x2 grid; combo (2,2) never occurs -> phantom cell (observed=False, all zeros)
     summary = pd.DataFrame(
@@ -152,7 +154,7 @@ def test_vacuous_phantom_floor_cells_are_dropped_not_fatal():
 
 
 def test_floor_cell_with_production_but_no_risk_still_fails():
-    from src.optimization_utils import trace_pareto_frontier
+    from src.optimize.optimization_utils import trace_pareto_frontier
 
     full = pd.DataFrame(
         {

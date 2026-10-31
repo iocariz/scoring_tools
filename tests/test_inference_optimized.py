@@ -6,8 +6,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 import pandas as pd
 
-from src.constants import Columns, RejectReason, StatusName
-from src.inference_optimized import (
+from src.core.constants import Columns, RejectReason, StatusName
+from src.model.inference_optimized import (
     compute_pre_reject_inference_data,
     run_optimization_pipeline,
     todu_average_inference,
@@ -20,7 +20,7 @@ def test_compute_pre_reject_inference_collapses_duplicate_per_bin_stress(monkeyp
 
     # Patch model-based risk calculation to a deterministic passthrough.
     monkeypatch.setattr(
-        "src.models.calculate_risk_values",
+        "src.model.models.calculate_risk_values",
         lambda df, *args, **kwargs: df.assign(todu_30ever_h6=df["todu_30ever_h6"]),
     )
 
@@ -91,7 +91,7 @@ def test_run_optimization_pipeline_collapses_duplicate_per_bin_tasa_fin(monkeypa
     )
 
     monkeypatch.setattr(
-        "src.inference_optimized.compute_pre_reject_inference_data",
+        "src.model.inference_optimized.compute_pre_reject_inference_data",
         lambda **kwargs: (booked_summary.copy(), repesca_summary.copy()),
     )
 
@@ -124,7 +124,7 @@ def test_tree_winner_cv_r2_is_nan_not_zero(monkeypatch):
     import numpy as np
     from sklearn.linear_model import LinearRegression
 
-    import src.inference_optimized as io
+    import src.model.inference_optimized as io
 
     tree_df = pd.DataFrame(
         [
@@ -174,7 +174,7 @@ def test_combined_selection_returns_combined_winner_not_linear_only(monkeypatch)
     Previously the else-branch reused the linear-only winner, returning the wrong model."""
     from sklearn.linear_model import LinearRegression, Ridge
 
-    import src.inference_optimized as io
+    import src.model.inference_optimized as io
 
     # Tree anchors the combined band low with a WIDE SE: 0.30 ± 0.20 → band up to 0.50.
     tree_df = pd.DataFrame(
@@ -249,7 +249,7 @@ def test_tuned_glm_winner_runs_step3_not_tree_branch(monkeypatch):
     branch and silently skipped feature selection."""
     from sklearn.linear_model import LinearRegression
 
-    import src.inference_optimized as io
+    import src.model.inference_optimized as io
 
     # XGBoost is a poor candidate; the tuned-GLM Tweedie wins the combined 1-SE.
     tree_df = pd.DataFrame(

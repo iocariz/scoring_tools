@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import pandas as pd
 from openpyxl import Workbook
 
-from src.consolidation import (
+from src.report.consolidation import (
     _ci_eur,
     _ci_pct,
     _read_backtest_consolidated,

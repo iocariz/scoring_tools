@@ -5,9 +5,9 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
-from src.config import OutputPaths, PreprocessingSettings
-from src.inference_optimized import inference_pipeline, todu_average_inference
-from src.persistence import load_model_for_prediction, safe_joblib_load, validate_reused_model_config
+from src.core.config import OutputPaths, PreprocessingSettings
+from src.model.inference_optimized import inference_pipeline, todu_average_inference
+from src.model.persistence import load_model_for_prediction, safe_joblib_load, validate_reused_model_config
 
 
 def run_inference_phase(
@@ -228,7 +228,7 @@ def run_inference_phase(
             try:
                 import joblib
 
-                from src.persistence import write_integrity_sidecar
+                from src.model.persistence import write_integrity_sidecar
 
                 paired_path = Path(saved_model_dir) / "todu_model.joblib"
                 joblib.dump(reg_todu_amt_pile, paired_path)

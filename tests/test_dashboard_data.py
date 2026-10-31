@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import pytest
 
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     SCENARIO_ORDER,
     get_available_segments,
     get_data_dir,

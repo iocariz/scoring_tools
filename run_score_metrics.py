@@ -28,7 +28,8 @@ from run_batch import (
     load_base_config,
     load_segments_config,
 )
-from src.metrics import (
+from src.core.utils import resolve_reporting_supersegment
+from src.model.metrics import (
     calculate_lift_table,
     combined_score_cv,
     compute_metrics,
@@ -36,8 +37,8 @@ from src.metrics import (
     compute_score_discriminance,
     delong_test,
 )
-from src.plots import plot_precision_recall_curve, plot_roc_curve, plot_score_distribution
-from src.styles import (
+from src.report.plots import plot_precision_recall_curve, plot_roc_curve, plot_score_distribution
+from src.report.styles import (
     COLOR_ACCENT,
     COLOR_PRIMARY,
     COLOR_PRODUCTION,
@@ -45,7 +46,6 @@ from src.styles import (
     COLOR_SECONDARY,
     apply_matplotlib_style,
 )
-from src.utils import resolve_reporting_supersegment
 
 
 def _load_reporting_supersegments(segments_path: str = "segments.toml") -> dict[str, dict]:

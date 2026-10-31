@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import pandas as pd
 
-from src.reproducibility import (
+from src.governance.reproducibility import (
     Headline,
     _accepted_set_hash,
     compare_headline,

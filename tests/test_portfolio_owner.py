@@ -1,7 +1,7 @@
 """Tests for portfolio-owner summaries (policy table + allocation narrative)."""
 
-from src.global_optimizer import AllocationResult, SegmentConstraints
-from src.portfolio_owner import (
+from src.optimize.global_optimizer import AllocationResult, SegmentConstraints
+from src.optimize.portfolio_owner import (
     allocation_constraint_narrative,
     policy_cutoff_table_from_allocation,
     what_if_dataframe_row,

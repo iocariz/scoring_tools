@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.consolidation import ConsolidatedMetrics, aggregate_metrics, extract_metrics_from_table
-from src.risk_indicators import HRI_H6, RISK_INDICATORS, hri_available, hri_h3_available
+from src.core.risk_indicators import HRI_H6, RISK_INDICATORS, hri_available, hri_h3_available
+from src.report.consolidation import ConsolidatedMetrics, aggregate_metrics, extract_metrics_from_table
 
 nan = float("nan")
 
@@ -41,7 +41,7 @@ def test_availability_predicates():
 
 
 def test_hri_columns_optional_warns_and_strips_settings(monkeypatch):
-    import src.data_manager as dm
+    import src.data.data_manager as dm
     from tests.test_data_manager import make_settings
 
     settings = make_settings(
@@ -58,7 +58,7 @@ def test_hri_columns_optional_warns_and_strips_settings(monkeypatch):
             "status_name": ["booked", "booked"],
         }
     )
-    monkeypatch.setattr("src.schema.validate_raw_data", lambda d, raise_on_error=True: None)
+    monkeypatch.setattr("src.data.data_manager.validate_raw_data", lambda d, raise_on_error=True: None)
     _, out_settings = dm.load_and_prepare_data(settings, preloaded_data=df)
     assert "h_num_h6" not in out_settings.indicators
     assert "h_den_h6" not in out_settings.indicators
@@ -94,7 +94,7 @@ def _cell_grid_with_hri():
 
 
 def test_evaluate_solution_computes_hri_without_multiplier():
-    from src.optimization_utils import CellGrid, evaluate_solution
+    from src.optimize.optimization_utils import CellGrid, evaluate_solution
 
     grid = CellGrid.from_summary(_cell_grid_with_hri(), ["v1"])
     indicators = [
@@ -114,7 +114,7 @@ def test_evaluate_solution_computes_hri_without_multiplier():
 
 def test_kpi_of_fact_sol_keeps_hri_rep_nan():
     # Build the final_result frame path directly through kpi computation on a tiny df
-    from src.optimization_utils import (
+    from src.optimize.optimization_utils import (
         calculate_b2_ever_h6,  # noqa: F401 (import sanity)
         kpi_of_fact_sol,
     )
@@ -157,12 +157,12 @@ def _mr_desagregado():
 
 
 def _mr_summary(df):
-    from src.mr_pipeline import calculate_metrics_from_cuts
+    from src.analysis.mr_pipeline import calculate_metrics_from_cuts
 
     optimal = pd.DataFrame({"v1": [1], "v2": [1], "sol_fac": [0]})
     mask = np.array([1, 0])  # accept cell 1, reject cell 2
 
-    from src.optimization_utils import CellGrid
+    from src.optimize.optimization_utils import CellGrid
 
     grid = CellGrid.from_summary(df, ["v1", "v2"])
     full_mask = np.zeros(grid.n_cells, dtype=int)
@@ -197,8 +197,8 @@ def test_h3_floor_clamp_never_touches_hri():
     df["todu_30ever_h3_rep"] = [0.0, 0.0]
     df["todu_amt_pile_h3_rep"] = [0.0, 0.0]
 
-    from src.mr_pipeline import calculate_metrics_from_cuts
-    from src.optimization_utils import CellGrid
+    from src.analysis.mr_pipeline import calculate_metrics_from_cuts
+    from src.optimize.optimization_utils import CellGrid
 
     grid = CellGrid.from_summary(df, ["v1", "v2"])
     full_mask = np.ones(grid.n_cells, dtype=int)
@@ -290,7 +290,7 @@ def test_consolidated_metrics_hri_properties_and_conditional_dict():
 
 
 def test_portfolio_metric_table_shows_hri_only_when_present():
-    from src.reporting import _build_portfolio_metric_table
+    from src.report.reporting import _build_portfolio_metric_table
 
     row = pd.Series(
         {
@@ -312,7 +312,7 @@ def test_portfolio_metric_table_shows_hri_only_when_present():
 def test_hri_excluded_raw_columns_in_segment_report():
     import inspect
 
-    import src.reporting as reporting_mod
+    import src.report.reporting as reporting_mod
 
     src_text = inspect.getsource(reporting_mod)
     assert '"h_num_h6"' in src_text  # raw components are excluded from HTML tables
@@ -324,8 +324,8 @@ def test_hri_excluded_raw_columns_in_segment_report():
 
 
 def test_schema_rejects_negative_hri_and_allows_absent():
-    from src.data_manager import DataValidationError
-    from src.schema import validate_raw_data
+    from src.core.schema import validate_raw_data
+    from src.data.data_manager import DataValidationError
 
     ok = pd.DataFrame({"status_name": pd.Categorical(["booked"]), "segment_cut_off": ["x"], "mis_date": ["2024-01-01"]})
     validate_raw_data(ok, raise_on_error=True)  # absent HRI columns: fine
@@ -344,7 +344,7 @@ def test_schema_rejects_negative_hri_and_allows_absent():
 def test_consolidate_segments_carries_hri_to_final_csv(tmp_path):
     """consolidate_segments ends with a hard-coded column whitelist that silently
     drops unknown columns — the HRI family must survive it end to end."""
-    from src.consolidation import consolidate_segments
+    from src.report.consolidation import consolidate_segments
 
     data_dir = tmp_path / "seg_a" / "data"
     data_dir.mkdir(parents=True)

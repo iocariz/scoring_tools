@@ -18,16 +18,16 @@ from loguru import logger
 from sklearn.linear_model import LinearRegression
 
 from run_policy_registry import compare_segment
-from src.backtest import _realized_metrics, apply_policy
-from src.config import BinConfig, OutputPaths, PreprocessingSettings
-from src.inference_optimized import run_optimization_pipeline
-from src.optimization_utils import CellGrid, evaluate_solution, milp_solve_cutoffs
-from src.persistence import save_model_with_metadata
+from src.core.config import BinConfig, OutputPaths, PreprocessingSettings
+from src.data.preprocess_improved import _apply_binning_from_config
+from src.governance.backtest import _realized_metrics, apply_policy
+from src.governance.policy_registry import build_policy_entry, register_policy
+from src.model.inference_optimized import run_optimization_pipeline
+from src.model.persistence import save_model_with_metadata
+from src.optimize.optimization_utils import CellGrid, evaluate_solution, milp_solve_cutoffs
+from src.optimize.reject_inference import apply_parceling_adjustment
 from src.pipeline.inference import run_inference_phase
 from src.pipeline.sensitivity import run_sensitivity_phase
-from src.policy_registry import build_policy_entry, register_policy
-from src.preprocess_improved import _apply_binning_from_config
-from src.reject_inference import apply_parceling_adjustment
 
 logger.remove()
 INDICATORS = ["oa_amt", "oa_amt_h0", "todu_30ever_h6", "todu_amt_pile_h6"]
@@ -107,7 +107,7 @@ def unobserved_booked_cell():
     )
     risk_model = {"best_model_info": {"model": object()}, "features": ["a"]}
     # No rejected loans; bypass the unused model prediction on that empty frame.
-    with patch("src.models.calculate_risk_values", side_effect=lambda df, *args, **kw: df):
+    with patch("src.model.models.calculate_risk_values", side_effect=lambda df, *args, **kw: df):
         booked = run_optimization_pipeline(
             data, data, risk_model, None, 1.0, 1.0, indicators=INDICATORS, variables=["a"], annual_coef=1
         )

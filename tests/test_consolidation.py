@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.consolidation import (
+from src.report.consolidation import (
     ConsolidatedMetrics,
     _get_total_row,
     _infeasible_segments,
@@ -193,7 +193,7 @@ class TestMapScenarioNames:
         middle collapses to 'base' (they overwrite each other). This must be WARNED, not silent."""
         import logging
 
-        from src import consolidation
+        from src.report import consolidation
 
         suffixes = ["_0.8", "_1.0", "_1.2", "_1.4"]  # two middles both -> base
         # loguru -> caplog bridge for this call
@@ -1425,7 +1425,7 @@ class TestClassificationGridTotalRisk:
     def _keep_total_risk(grid):
         import openpyxl
 
-        from src.consolidation import _write_classification_grid
+        from src.report.consolidation import _write_classification_grid
 
         wb = openpyxl.Workbook()
         _write_classification_grid(wb.active, grid, start_row=1)
@@ -1498,7 +1498,7 @@ def test_mr_grid_matches_main_skips_frozen_duplicate():
     → _mr_grid_matches_main True (grid skipped). A divergent (re-optimized) MR grid → False."""
     import pandas as pd
 
-    from src.consolidation import _mr_grid_matches_main
+    from src.report.consolidation import _mr_grid_matches_main
 
     main = pd.DataFrame(
         {
@@ -1528,7 +1528,7 @@ def test_impute_monotone_accept_fills_grey_by_monotone_side():
     reject region -> reject; observed cells are untouched."""
     import numpy as np
 
-    from src.consolidation import _impute_monotone_accept
+    from src.report.consolidation import _impute_monotone_accept
 
     nan = float("nan")
     acc = np.array(
@@ -1552,7 +1552,7 @@ def test_impute_monotone_accept_single_class_fills_grey_with_that_class():
     an all-reject grid draws no frontier at all."""
     import numpy as np
 
-    from src.consolidation import _impute_monotone_accept
+    from src.report.consolidation import _impute_monotone_accept
 
     nan = float("nan")
     out = _impute_monotone_accept(np.array([[1, 1], [1, nan]], dtype=float))

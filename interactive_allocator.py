@@ -23,8 +23,8 @@ import plotly.express as px
 from dash import Input, Output, State, dash_table, dcc, html
 from loguru import logger
 
-from src.global_optimizer import GlobalAllocator, SegmentConstraints
-from src.styles import COLOR_RISK, apply_plotly_style
+from src.optimize.global_optimizer import GlobalAllocator, SegmentConstraints
+from src.report.styles import COLOR_RISK, apply_plotly_style
 
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.FLATLY])
 
@@ -624,7 +624,7 @@ if __name__ == "__main__":
     effective_debug = debug_requested and debug_allowed
 
     # Auth policy (todo #50): non-localhost binds require env credentials.
-    from src.web_auth import DashboardAuthError, enforce_bind_auth_policy, install_basic_auth
+    from src.report.web_auth import DashboardAuthError, enforce_bind_auth_policy, install_basic_auth
 
     try:
         creds = enforce_bind_auth_policy(args.host)

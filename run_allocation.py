@@ -38,8 +38,8 @@ from loguru import logger
 # Ensure src is in path
 sys.path.append(".")
 
-from src.global_optimizer import GlobalAllocator, SegmentConstraints
-from src.portfolio_owner import (
+from src.optimize.global_optimizer import GlobalAllocator, SegmentConstraints
+from src.optimize.portfolio_owner import (
     allocation_constraint_narrative,
     policy_cutoff_table_from_allocation,
     what_if_dataframe_row,

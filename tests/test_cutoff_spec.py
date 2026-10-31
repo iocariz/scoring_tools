@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.optimization_utils import CellGrid, CutoffSpec, classify_by_mask
+from src.optimize.optimization_utils import CellGrid, CutoffSpec, classify_by_mask
 
 
 class TestConstruction:
@@ -176,7 +176,7 @@ class TestBootstrapBackwardCompat:
     while internally converting to CutoffSpec (todo #65 migration)."""
 
     def test_legacy_cut_map_still_works(self):
-        from src.utils import calculate_bootstrap_intervals
+        from src.analysis.bootstrap import calculate_bootstrap_intervals
 
         np.random.seed(42)
         booked = pd.DataFrame(
@@ -201,7 +201,7 @@ class TestBootstrapBackwardCompat:
 
     def test_explicit_spec_matches_legacy_result(self):
         """Passing `spec=` must produce the same CI as the legacy kwargs."""
-        from src.utils import calculate_bootstrap_intervals
+        from src.analysis.bootstrap import calculate_bootstrap_intervals
 
         np.random.seed(42)
         booked = pd.DataFrame(
@@ -235,7 +235,7 @@ class TestBootstrapBackwardCompat:
             assert pytest.approx(legacy[key]) == via_spec[key]
 
     def test_no_spec_no_legacy_raises(self):
-        from src.utils import calculate_bootstrap_intervals
+        from src.analysis.bootstrap import calculate_bootstrap_intervals
 
         booked = pd.DataFrame(
             {
@@ -290,7 +290,7 @@ class TestBootstrapRepescaBasis:
         return booked, rejected, rep_cells, spec, variables
 
     def _ci(self, with_rep=True, **kwargs):
-        from src.utils import calculate_bootstrap_intervals
+        from src.analysis.bootstrap import calculate_bootstrap_intervals
 
         booked, rejected, rep_cells, spec, variables = self._fixture(**kwargs)
         return calculate_bootstrap_intervals(
@@ -334,7 +334,7 @@ class TestBootstrapRepescaBasis:
     def test_blend_math_exact_with_annual_coef(self):
         """Identical rejected loans → every replicate's ratio is 1, so the
         blended risk is deterministic: mult*(coef*bn + rn)/(coef*bd + rd)."""
-        from src.utils import calculate_bootstrap_intervals
+        from src.analysis.bootstrap import calculate_bootstrap_intervals
 
         booked, _, rep_cells, spec, variables = self._fixture()
         rejected = pd.DataFrame({"v0": 1.0, "v1": 1.0, "oa_amt_h0": np.full(30, 500.0)})

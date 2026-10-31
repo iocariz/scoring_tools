@@ -48,7 +48,7 @@ import pandas as pd
 import tomli_w
 from loguru import logger
 
-from src.config import OutputPaths
+from src.core.config import OutputPaths
 
 
 @dataclass

@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src import selection_bias_plots as sbp
+from src.report import selection_bias_plots as sbp
 
 
 @pytest.fixture(autouse=True)

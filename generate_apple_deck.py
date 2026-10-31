@@ -8,7 +8,7 @@ the backtest has no mature cohort.
 
 Reads the outputs of ``run_apple_study.py`` (``output/apple_study/*.csv``, written
 with Spanish labels for the analyst) and writes a 16-slide ``.pptx`` in English.
-Charts come from :mod:`src.apple_deck_charts`.
+Charts come from :mod:`src.studies.apple.deck_charts`.
 
 Usage:
     uv run python run_apple_study.py && uv run python generate_apple_deck.py
@@ -31,8 +31,8 @@ from pptx.enum.text import PP_ALIGN
 from pptx.util import Emu, Inches, Pt
 
 from run_apple_study import BIN_EDGES, DEMAND_STATES, SAME_BASE_LABEL, SWAP_CATEGORIES  # one definition, the study's
-from src import apple_deck_charts as ac
-from src.apple_deck_charts import (
+from src.studies.apple import deck_charts as ac
+from src.studies.apple.deck_charts import (
     CURRENT_GRID,
     SHIFTED_GRID,
     SINGLE_CUTOFF,

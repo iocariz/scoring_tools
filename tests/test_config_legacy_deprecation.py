@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import pytest
 
-from src.config import BinConfig, PreprocessingSettings
+from src.core.config import BinConfig, PreprocessingSettings
 
 _BASE_KWARGS: dict = {
     "variables": ["sc_octroi_new_clus", "new_efx_clus"],

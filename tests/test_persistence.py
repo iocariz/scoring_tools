@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 from sklearn.linear_model import LinearRegression, Ridge
 
-from src.persistence import (
+from src.model.persistence import (
     load_model_for_prediction,
     predict_on_new_data,
     save_model_with_metadata,
@@ -119,7 +119,7 @@ class TestSaveModelWithMetadata:
     ):
         """Two saves in the same wall-clock second must land in DISTINCT dirs — the first
         model's .pkl must not be silently overwritten."""
-        import src.persistence as persistence_mod
+        import src.model.persistence as persistence_mod
 
         class _FixedDatetime:
             @staticmethod
@@ -307,7 +307,7 @@ class TestPredictOnNewData:
         prediction run. It must now degrade gracefully and still return predictions."""
         from sklearn.dummy import DummyClassifier
 
-        from src.estimators import HurdleRegressor
+        from src.model.estimators import HurdleRegressor
 
         rng = np.random.RandomState(0)
         X = pd.DataFrame({"f1": rng.randn(30), "f2": rng.randn(30)})
@@ -420,7 +420,7 @@ class TestPickleIntegrity:
 
     def test_load_refuses_without_sidecar(self, saved_model_path):
         """Deleting the sidecar makes load refuse the pickle."""
-        from src.persistence import ModelIntegrityError
+        from src.model.persistence import ModelIntegrityError
 
         sidecar = os.path.join(saved_model_path, "model.pkl.sha256")
         os.remove(sidecar)
@@ -429,7 +429,7 @@ class TestPickleIntegrity:
 
     def test_load_refuses_on_sha256_mismatch(self, saved_model_path):
         """Tampering with the pickle after signing makes load refuse it."""
-        from src.persistence import ModelIntegrityError
+        from src.model.persistence import ModelIntegrityError
 
         pkl = os.path.join(saved_model_path, "model.pkl")
         with open(pkl, "ab") as f:
@@ -439,7 +439,7 @@ class TestPickleIntegrity:
 
     def test_load_refuses_malformed_sidecar(self, saved_model_path):
         """A sidecar that is not a 64-char hex digest is rejected."""
-        from src.persistence import ModelIntegrityError
+        from src.model.persistence import ModelIntegrityError
 
         sidecar = os.path.join(saved_model_path, "model.pkl.sha256")
         with open(sidecar, "w") as f:
@@ -451,7 +451,7 @@ class TestPickleIntegrity:
         self, tmp_path, fitted_linear_model, sample_features, sample_metadata, monkeypatch
     ):
         """A model saved outside the trusted-roots allowlist cannot be loaded."""
-        from src.persistence import ModelIntegrityError
+        from src.model.persistence import ModelIntegrityError
 
         # Save into a directory that will NOT be in the allowlist below.
         untrusted_dir = tmp_path / "untrusted"
@@ -477,7 +477,7 @@ class TestPickleIntegrity:
         loads them from a segment's working directory. The default allowlist must
         cover that cross-directory access. Regression test for the post-R0
         allowlist fix."""
-        import src.persistence as persistence
+        import src.model.persistence as persistence
 
         model, _, _ = fitted_linear_model
 

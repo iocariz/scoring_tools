@@ -33,28 +33,29 @@ from dash.dependencies import MATCH
 from flask import abort, send_from_directory
 from loguru import logger
 
-from src.dashboard_data import (
+from src.core.utils import calculate_b2_ever_h6
+from src.report.dashboard_data import (
     SCENARIO_ORDER,
 )
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     get_available_segments as _shared_get_available_segments,
 )
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     get_data_dir as _shared_get_data_dir,
 )
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     get_images_dir as _shared_get_images_dir,
 )
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     get_scenarios as _shared_get_scenarios,
 )
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     parse_coefficients as _shared_parse_coefficients,
 )
-from src.dashboard_data import (
+from src.report.dashboard_data import (
     resolve_supersegment as _shared_resolve_supersegment,
 )
-from src.styles import (
+from src.report.styles import (
     COLOR_BAD,
     COLOR_GOOD,
     COLOR_NEUTRAL,
@@ -63,7 +64,6 @@ from src.styles import (
     COLOR_RISK,
     apply_plotly_style,
 )
-from src.utils import calculate_b2_ever_h6
 
 IFRAME_STYLE: dict[str, Any] = {"width": "100%", "height": "800px", "border": "none", "marginBottom": "20px"}
 
@@ -80,7 +80,7 @@ CURRENT_SEGMENT: str | None = None
 def get_data_dir(segment: str | None = None) -> Path:
     """Get the data directory for a segment.
 
-    Thin wrapper around :func:`src.dashboard_data.get_data_dir` bound to
+    Thin wrapper around :func:`src.report.dashboard_data.get_data_dir` bound to
     this module's ``OUTPUT_BASE`` (set at startup from CLI args). Logic
     lives in ``src/dashboard_data.py`` so ``gradio_dashboard.py`` and
     future dashboards share it — see todo #64.
@@ -117,7 +117,7 @@ def get_scenarios(segment: str | None = None) -> list[str]:
 
     Scenarios are named ``pessimistic`` / ``base`` / ``optimistic``, or
     numeric (legacy). Returned list is ordered per
-    :data:`src.dashboard_data.SCENARIO_ORDER`.
+    :data:`src.report.dashboard_data.SCENARIO_ORDER`.
     """
     return _shared_get_scenarios(OUTPUT_BASE, segment)
 
@@ -200,7 +200,7 @@ def file_exists_for_viz(viz_path: str, segment: str | None = None) -> bool:
 def _resolve_supersegment(segment: str | None) -> str | None:
     """Look up the supersegment name for *segment* (shared helper).
 
-    Wraps :func:`src.dashboard_data.resolve_supersegment` with
+    Wraps :func:`src.report.dashboard_data.resolve_supersegment` with
     ``OUTPUT_BASE`` as the secondary lookup root.
     """
     return _shared_resolve_supersegment(segment, output_base=OUTPUT_BASE)
@@ -579,7 +579,7 @@ def _load_story_data(scenario: str, segment: str | None = None) -> dict[str, Any
         logger.warning(f"Story tab: could not load optimal solution: {e}")
 
     try:
-        from src.config import PreprocessingSettings
+        from src.core.config import PreprocessingSettings
 
         config_candidates = []
         if segment:
@@ -1407,7 +1407,7 @@ def load_cutoff_data(
                   inv_vars, multiplier, cell_ci, optimal_mask)
         optimal_mask is a decoded acceptance mask list for N>2, or None for 2-var.
     """
-    from src.config import PreprocessingSettings
+    from src.core.config import PreprocessingSettings
 
     # Extract variables, inv_vars and multiplier from configuration, preferring the segment's own config.
     # inv_vars is populated at runtime by preprocessing (_infer_monotonicity) and is never
@@ -1485,7 +1485,7 @@ def load_cutoff_data(
         and not optimal_solution.empty
         and "acceptance_mask" in optimal_solution.columns
     ):
-        from src.optimization_utils import decode_mask
+        from src.optimize.optimization_utils import decode_mask
 
         mask_str = str(optimal_solution["acceptance_mask"].iloc[0])
         optimal_mask = decode_mask(mask_str).tolist()
@@ -1764,7 +1764,7 @@ def _build_nd_acceptance_table_rows(
     pinned_cells: dict[str, int] | None,
     multiplier: float,
 ) -> list[dict[str, Any]]:
-    from src.optimization_utils import CellGrid
+    from src.optimize.optimization_utils import CellGrid
 
     grid = CellGrid.from_summary(summary_data, variables)
     pins = pinned_cells or {}
@@ -1888,7 +1888,7 @@ def _frontier_shapes(acc: np.ndarray, color: str = "#1B2A4A") -> list[dict[str, 
     drawn wherever an accept-side cell faces a non-accept-side neighbour (or the
     grid border). Coordinates are category indices, valid on categorical axes.
     """
-    from src.consolidation import _impute_monotone_accept
+    from src.report.consolidation import _impute_monotone_accept
 
     bnd = _impute_monotone_accept(np.asarray(acc, dtype=float))
     nr, nc = bnd.shape
@@ -1926,7 +1926,7 @@ def _build_nd_slice_grid_figure(
 ) -> go.Figure:
     """Build a 2D heatmap slice for any N>=3, fixing *fixed_vars* and using
     *grid_x_var* / *grid_y_var* as the two displayed axes."""
-    from src.optimization_utils import CellGrid
+    from src.optimize.optimization_utils import CellGrid
 
     if len(variables) < 3:
         return go.Figure()
@@ -2112,7 +2112,7 @@ def _build_nd_slice_grid_panel(
     grid axes and iterates over all unique combinations of variables[2:]."""
     from itertools import product as iterproduct
 
-    from src.optimization_utils import CellGrid
+    from src.optimize.optimization_utils import CellGrid
 
     if len(variables) < 3:
         return []
@@ -2302,7 +2302,7 @@ def calculate_metrics_from_mask(
     Thin wrapper around CellGrid + evaluate_solution, returning the same dict
     shape as calculate_metrics_from_custom_cuts().
     """
-    from src.optimization_utils import CellGrid, evaluate_solution
+    from src.optimize.optimization_utils import CellGrid, evaluate_solution
 
     mask_arr = np.asarray(mask, dtype=int)
     grid = CellGrid.from_summary(data, variables)
@@ -2529,7 +2529,7 @@ def create_cutoff_explorer_layout(scenario: str, segment: str | None = None) -> 
     # 1D and N>2 path: acceptance DataTable + mask store
     # ------------------------------------------------------------------
     else:
-        from src.optimization_utils import CellGrid
+        from src.optimize.optimization_utils import CellGrid
 
         grid = CellGrid.from_summary(summary_data, variables)
 
@@ -3513,7 +3513,7 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
         )
 
         # Heatmap / acceptance strip
-        from src.optimization_utils import CellGrid
+        from src.optimize.optimization_utils import CellGrid
 
         grid = CellGrid.from_summary(summary_data, variables)
         mask_arr = np.asarray(current_mask, dtype=int)
@@ -3563,7 +3563,7 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
             # Marginal impact: simple bar chart per bin
             fig_marginal = go.Figure()
             try:
-                from src.sensitivity import compute_cell_marginal_impact
+                from src.analysis.sensitivity import compute_cell_marginal_impact
 
                 marginal_df = compute_cell_marginal_impact(
                     grid, mask_arr, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], multiplier
@@ -3749,7 +3749,7 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
         # Marginal impact: horizontal bar chart sorted by magnitude
         fig_marginal = go.Figure()
         try:
-            from src.sensitivity import compute_cell_marginal_impact
+            from src.analysis.sensitivity import compute_cell_marginal_impact
 
             marginal_df = compute_cell_marginal_impact(
                 grid, mask_arr, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], multiplier
@@ -3786,7 +3786,7 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
         try:
             from plotly.subplots import make_subplots
 
-            from src.sensitivity import compute_cell_marginal_impact as _compute_marginal
+            from src.analysis.sensitivity import compute_cell_marginal_impact as _compute_marginal
 
             marginal_df = _compute_marginal(
                 grid, mask_arr, ["todu_30ever_h6", "todu_amt_pile_h6", "oa_amt_h0"], multiplier
@@ -3995,8 +3995,8 @@ def update_cutoff_analysis(slider_values, store_data, show_uncertainty, pinned_c
     # Marginal impact heatmap (analytical O(N))
     fig_marginal = go.Figure()
     try:
-        from src.optimization_utils import CellGrid
-        from src.sensitivity import compute_cell_marginal_impact
+        from src.analysis.sensitivity import compute_cell_marginal_impact
+        from src.optimize.optimization_utils import CellGrid
 
         grid = CellGrid.from_summary(summary_data, [var0_col, var1_col])
 
@@ -4181,7 +4181,7 @@ def toggle_nd_slice_grid_cell(click_data_list, store_data, current_mask, pinned_
     if not paths["summary_data"].exists():
         return dash.no_update, dash.no_update
 
-    from src.optimization_utils import CellGrid
+    from src.optimize.optimization_utils import CellGrid
 
     summary_data = pd.read_csv(paths["summary_data"])
     grid = CellGrid.from_summary(summary_data, variables)
@@ -4300,7 +4300,7 @@ def update_cutoffs_from_buttons(reset_clicks, apply_clicks, store_data, risk_val
             closest_solution = min(pareto_solutions, key=lambda s: abs(s.get("b2_ever_h6", 0) - risk_value))
             mask_str = closest_solution.get("acceptance_mask")
             if mask_str:
-                from src.optimization_utils import decode_mask
+                from src.optimize.optimization_utils import decode_mask
 
                 return current_values, decode_mask(str(mask_str)).tolist()
             return current_values, dash.no_update
@@ -4458,7 +4458,7 @@ def handle_cell_pin(click_data, pin_mode, pinned_cells, store_data, current_mask
         if not base_mask:
             return dash.no_update, dash.no_update
 
-        from src.optimization_utils import CellGrid
+        from src.optimize.optimization_utils import CellGrid
 
         scenario = store_data["scenario"]
         segment = store_data.get("segment")
@@ -4512,7 +4512,7 @@ def reoptimize_with_pins(n_clicks, store_data, pinned_cells, risk_value, current
         )
 
     try:
-        from src.optimization_utils import CellGrid, mask_to_cutoffs, solve_with_fixed_cells
+        from src.optimize.optimization_utils import CellGrid, mask_to_cutoffs, solve_with_fixed_cells
 
         scenario = store_data["scenario"]
         segment = store_data.get("segment")
@@ -4668,7 +4668,7 @@ def handle_nd_cell_pin(active_cell, table_rows, pin_mode, pinned_cells, store_da
     if not base_mask:
         return dash.no_update, dash.no_update
 
-    from src.optimization_utils import CellGrid
+    from src.optimize.optimization_utils import CellGrid
 
     scenario = store_data["scenario"]
     segment = store_data.get("segment")
@@ -4846,7 +4846,7 @@ if __name__ == "__main__":
 
     # Auth policy (todo #50): non-localhost binds require env credentials;
     # loopback binds allow optional Basic Auth if credentials are set.
-    from src.web_auth import DashboardAuthError, enforce_bind_auth_policy, install_basic_auth
+    from src.report.web_auth import DashboardAuthError, enforce_bind_auth_policy, install_basic_auth
 
     try:
         creds = enforce_bind_auth_policy(args.host)

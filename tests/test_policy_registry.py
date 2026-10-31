@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.policy_registry import (
+from src.governance.policy_registry import (
     PolicyComparison,
     PolicyEntry,
     _risk_verdict,
@@ -125,7 +125,7 @@ def test_build_policy_entry_refuses_empty_bins(tmp_path):
 
 
 def test_unfrozen_bin_vars():
-    from src.policy_registry import unfrozen_bin_vars
+    from src.governance.policy_registry import unfrozen_bin_vars
 
     ok = SimpleNamespace(bins={"a": SimpleNamespace(bin_edges=[0.0, 1.0, 2.0])})
     assert unfrozen_bin_vars(ok) == []
@@ -441,7 +441,7 @@ def test_better_blocked_when_added_cell_has_only_incomplete_h6():
 
 
 def test_bin_edges_match_guard():
-    from src.policy_registry import bin_edges_match
+    from src.governance.policy_registry import bin_edges_match
 
     inf = float("inf")
     a = {"income_bin": [-inf, 2000.0, inf], "x": [0.0, 1.0]}

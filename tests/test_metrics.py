@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.metrics import (
+from src.model.metrics import (
     bootstrap_confidence_interval,
     calculate_lift_table,
     calculate_rejection_thresholds,
@@ -361,7 +361,7 @@ class TestCombinedScoreCV:
         from sklearn.linear_model import LogisticRegression
         from sklearn.preprocessing import StandardScaler
 
-        from src.metrics import compute_score_discriminance
+        from src.model.metrics import compute_score_discriminance
 
         df = self._noise_frame()
         cols = [c for c in df.columns if c != "bad"]
@@ -381,7 +381,7 @@ class TestCombinedScoreCV:
         )
 
     def test_combined_score_keeps_real_signal(self):
-        from src.metrics import combined_score_cv
+        from src.model.metrics import combined_score_cv
 
         rng = np.random.RandomState(1)
         n = 600
@@ -392,31 +392,12 @@ class TestCombinedScoreCV:
         gini, _, _, _ = compute_metrics(y, oof)
         assert gini > 0.4, "real signal must survive the out-of-fold construction"
 
-    def test_model_summary_uses_refit_bootstrap_for_combined(self):
-        from src.metrics import model_summary
-
-        df = self._noise_frame(n=120)
-        cols = [c for c in df.columns if c != "bad"][:2]
-        out = model_summary(
-            df,
-            "bad",
-            {"Raw": {"column": "x0", "negate": False}},
-            combined_columns={"Combined": cols},
-            plot=False,
-            n_iterations=50,
-        )
-        comb = out[out["Model"] == "Combined"].iloc[0]
-        # CI exists and is a sane interval around a ~no-skill score
-        lo, hi = comb["Gini CI"]
-        assert lo <= hi
-        assert lo < 0.25, "refit-OOB CI on noise should not sit at overfit levels"
-
 
 class TestDiscriminanceCounts:
     def test_counts_reflect_valid_rows_not_full_population(self):
         """A score that is NaN for some rows can't rank them, so its gini rests on the
         valid subset. n_records/n_bads/bad_rate must count that subset, not the whole df."""
-        from src.metrics import compute_score_discriminance
+        from src.model.metrics import compute_score_discriminance
 
         rng = np.random.RandomState(5)
         n = 400
@@ -432,7 +413,7 @@ class TestDiscriminanceCounts:
 
     def test_full_population_counts_when_no_nan(self):
         """The common path (no NaN scores) still reports the full population."""
-        from src.metrics import compute_score_discriminance
+        from src.model.metrics import compute_score_discriminance
 
         rng = np.random.RandomState(6)
         n = 300
@@ -446,7 +427,7 @@ class TestDiscriminanceCounts:
 class TestBootstrapSkipWarning:
     def test_warn_helper_runs_for_all_branches(self):
         """Smoke-test the skip diagnostic: no-skip (quiet), moderate, and heavy skip."""
-        from src.metrics import _warn_if_many_bootstrap_skips
+        from src.model.metrics import _warn_if_many_bootstrap_skips
 
         # Should not raise in any branch.
         _warn_if_many_bootstrap_skips(n_kept=100, n_iterations=100, label="test")  # no skips

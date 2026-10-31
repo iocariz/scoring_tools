@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 from loguru import logger
 
-from src.optimization_utils import (
+from src.optimize.optimization_utils import (
     CellGrid,
     _build_monotonicity_constraints,
     _ga_pareto_fallback,
@@ -753,7 +753,7 @@ class TestMILPSolver:
         construction; recovering it beats dropping the frontier point."""
         from types import SimpleNamespace
 
-        from src import optimization_utils as ou
+        from src.optimize import optimization_utils as ou
 
         df = _make_summary_2d(2, 2)
         grid = CellGrid.from_summary(df, ["var0", "var1"])
@@ -769,7 +769,7 @@ class TestMILPSolver:
         """status==1 but no feasible incumbent (x is None) → None (point dropped)."""
         from types import SimpleNamespace
 
-        from src import optimization_utils as ou
+        from src.optimize import optimization_utils as ou
 
         df = _make_summary_2d(2, 2)
         grid = CellGrid.from_summary(df, ["var0", "var1"])
@@ -780,7 +780,7 @@ class TestMILPSolver:
         """status==2 (infeasible) → None regardless of any x attribute (only timeouts recover)."""
         from types import SimpleNamespace
 
-        from src import optimization_utils as ou
+        from src.optimize import optimization_utils as ou
 
         df = _make_summary_2d(2, 2)
         grid = CellGrid.from_summary(df, ["var0", "var1"])
@@ -951,7 +951,7 @@ class TestRiskEvidenceExclusions:
             )
 
     def test_last_resort_frontier_cannot_restore_unmeasured_production(self, monkeypatch):
-        monkeypatch.setattr("src.optimization_utils.milp_solve_cutoffs", lambda *args, **kwargs: None)
+        monkeypatch.setattr("src.optimize.optimization_utils.milp_solve_cutoffs", lambda *args, **kwargs: None)
         frontier, _, masks = trace_pareto_frontier(
             self.summary(),
             ["a"],
@@ -1298,7 +1298,7 @@ class TestParetoFrontier:
 
         call_state = {"i": 0}
 
-        import src.optimization_utils as optimization_utils_module
+        import src.optimize.optimization_utils as optimization_utils_module
 
         def fake_milp_solve_cutoffs(_grid, target_risk, inv_vars, multiplier, **kwargs):
             # First call returns the zero-denominator mask (NaN b2_ever_h6),
@@ -1510,7 +1510,7 @@ class TestAddBinColumns:
 class TestGAFallback:
     def test_missing_pymoo_returns_empty(self):
         """Without pymoo, GA fallback should return empty DataFrame gracefully."""
-        from src.optimization_utils import _ga_pareto_fallback
+        from src.optimize.optimization_utils import _ga_pareto_fallback
 
         df = _make_summary_2d(2, 2)
         grid = CellGrid.from_summary(df, ["var0", "var1"])
@@ -1660,7 +1660,7 @@ class TestClassifyByMask:
 class TestLearnQuantileBins:
     def test_basic_splitting_2_bins(self):
         """With max_bins=2, should produce edges at the median."""
-        from src.preprocess_improved import learn_quantile_bins
+        from src.data.preprocess_improved import learn_quantile_bins
 
         rng = np.random.RandomState(42)
         n = 2000
@@ -1676,7 +1676,7 @@ class TestLearnQuantileBins:
 
     def test_basic_splitting_3_bins(self):
         """With max_bins=3, should produce 4 edges at terciles."""
-        from src.preprocess_improved import learn_quantile_bins
+        from src.data.preprocess_improved import learn_quantile_bins
 
         rng = np.random.RandomState(42)
         n = 3000
@@ -1693,7 +1693,7 @@ class TestLearnQuantileBins:
 
     def test_missing_column_raises(self):
         """Should raise ValueError if required column is missing."""
-        from src.preprocess_improved import learn_quantile_bins
+        from src.data.preprocess_improved import learn_quantile_bins
 
         data = pd.DataFrame({"other": [1, 2, 3]})
         with pytest.raises(ValueError, match="Missing required columns"):
@@ -1701,7 +1701,7 @@ class TestLearnQuantileBins:
 
     def test_too_few_records_raises(self):
         """Should raise ValueError when data is too small."""
-        from src.preprocess_improved import learn_quantile_bins
+        from src.data.preprocess_improved import learn_quantile_bins
 
         data = pd.DataFrame({"income_t1_m": [100]})
         with pytest.raises(ValueError, match="only 1 valid records"):
@@ -1716,7 +1716,7 @@ class TestLearnQuantileBins:
 class TestAssessBinningGini:
     def test_basic_gini(self):
         """Gini retention should be between 0 and 100%."""
-        from src.preprocess_improved import assess_binning_gini
+        from src.data.preprocess_improved import assess_binning_gini
 
         rng = np.random.RandomState(42)
         n = 1000
@@ -1735,7 +1735,7 @@ class TestAssessBinningGini:
 
     def test_single_class_target(self):
         """Should handle single-class target gracefully."""
-        from src.preprocess_improved import assess_binning_gini
+        from src.data.preprocess_improved import assess_binning_gini
 
         data = pd.DataFrame({"raw": [1, 2, 3], "binned": [1, 1, 2], "target": [0, 0, 0]})
         result = assess_binning_gini(data, "raw", "binned", "target")
@@ -2691,7 +2691,7 @@ class TestMilpTimeoutLogging:
     def _run(self, monkeypatch, status):
         import logging
 
-        import src.optimization_utils as ou
+        import src.optimize.optimization_utils as ou
 
         class _Res:
             success = False

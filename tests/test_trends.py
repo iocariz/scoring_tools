@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
-from src.trends import compute_monthly_metrics, detect_trend_changes, plot_metric_trends
+from src.analysis.trends import compute_monthly_metrics, detect_trend_changes, plot_metric_trends
 
 
 def _make_monthly_data(n_months: int = 12, seed: int = 42) -> pd.DataFrame:

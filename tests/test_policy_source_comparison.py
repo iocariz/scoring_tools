@@ -7,9 +7,9 @@ import pandas as pd
 import pytest
 
 import run_policy_registry as runner
-from src.config import BinConfig, PreprocessingSettings
-from src.policy_registry import build_policy_entry, register_policy
-from src.preprocess_improved import _apply_binning_from_config
+from src.core.config import BinConfig, PreprocessingSettings
+from src.data.preprocess_improved import _apply_binning_from_config
+from src.governance.policy_registry import build_policy_entry, register_policy
 
 
 @pytest.fixture

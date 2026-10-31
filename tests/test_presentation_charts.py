@@ -11,7 +11,7 @@ import pandas as pd
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from src import presentation_charts as pc
+from src.report import presentation_charts as pc
 
 
 def _consolidated():

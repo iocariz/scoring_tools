@@ -236,7 +236,7 @@ uv run python dashboard.py [OPTIONS]
 |:-----|:------|:------------|
 | `--output DIR` | | Output location (auto-detects structure) |
 | `--segment NAME` | `-s` | Initial segment to display |
-| `--host HOST` | | Bind address (default: `127.0.0.1`, loopback only). Binding to a non-localhost address requires the `DASHBOARD_AUTH_USER` / `DASHBOARD_AUTH_PASS` env vars (HTTP Basic Auth, enforced by `src/web_auth.py`) |
+| `--host HOST` | | Bind address (default: `127.0.0.1`, loopback only). Binding to a non-localhost address requires the `DASHBOARD_AUTH_USER` / `DASHBOARD_AUTH_PASS` env vars (HTTP Basic Auth, enforced by `src/report/web_auth.py`) |
 | `--port PORT` | `-p` | Port (default: `8050`) |
 | `--debug` | | Debug mode (refused on non-localhost binds unless `DASHBOARD_DEBUG_ALLOWED=1`) |
 
@@ -370,7 +370,7 @@ hri_h6 = h_num_h6 / h_den_h6        (no multiplier)
 hri_h3 = h_num_h3 / h_den_h3
 ```
 
-The `h_*` source columns are **optional**: present in newer extracts, absent in older ones. When missing, they are stripped with one warning and HRI simply doesn't appear (registry + fail-soft gates in `src/risk_indicators.py`). Repesca/swap-in HRI shows "—" when no model fills it — rejected loans carry no HRI outcomes.
+The `h_*` source columns are **optional**: present in newer extracts, absent in older ones. When missing, they are stripped with one warning and HRI simply doesn't appear (registry + fail-soft gates in `src/core/risk_indicators.py`). Repesca/swap-in HRI shows "—" when no model fills it — rejected loans carry no HRI outcomes.
 
 #### Selecting the indicator to optimize
 
@@ -683,7 +683,7 @@ When a separate validation period is configured, the system validates the select
 
 #### Risk Source Priority
 
-For each bin, the pipeline selects a risk estimate by evaluating these conditions **in order — first match wins** (`np.select` over `[mature MR H6, extrapolable H3]`, with two fallbacks; `src/mr_pipeline.py`):
+For each bin, the pipeline selects a risk estimate by evaluating these conditions **in order — first match wins** (`np.select` over `[mature MR H6, extrapolable H3]`, with two fallbacks; `src/analysis/mr_pipeline.py`):
 
 | Priority | Source | Condition | Method |
 |:---------|:-------|:----------|:-------|
@@ -993,7 +993,7 @@ Two complementary rejection rates are reported side by side, both €-weighted o
 | **Rejection Rate (%)** | final **rejected** status (booked-status basis) | Actual = everything rejected; Optimum = fails the new cutoff **or** is a non-score rejection that stays out regardless of score |
 | **System Rejection Rate (%)** | upstream scoring-system decision `se_decision_id == ko` | Actual = system KOs; Optimum simulates the new cutoff: below-cutoff `ok`/`rv` → `KO`, above-cutoff `ko` with reason `09-score` → `OK`, above-cutoff non-score `ko` stays `KO` |
 
-System Rejection Rate tracks what the **scoring system** declines rather than what was finally booked, so it isolates the score policy from downstream booking effects. It appears wherever Rejection Rate does: the Executive Summary KPI cards (next to Rejection Rate), the Scenario Overview and Top Segment Opportunities tables, every per-segment RP sheet, and both HTML reports (Main + MR, Actual + simulated). Computed from the loan-level audit table in `src/audit.py`; falls back gracefully (no value) when `se_decision_id` is unavailable.
+System Rejection Rate tracks what the **scoring system** declines rather than what was finally booked, so it isolates the score policy from downstream booking effects. It appears wherever Rejection Rate does: the Executive Summary KPI cards (next to Rejection Rate), the Scenario Overview and Top Segment Opportunities tables, every per-segment RP sheet, and both HTML reports (Main + MR, Actual + simulated). Computed from the loan-level audit table in `src/analysis/audit.py`; falls back gracefully (no value) when `se_decision_id` is unavailable.
 
 ### Bootstrap Confidence Intervals
 
@@ -1014,7 +1014,7 @@ Cells observed in fewer than 2 folds receive NaN intervals. Results are saved to
 Individual cells can be pinned as forced-accept or forced-reject before re-optimization. The MILP solver enforces these by setting `lb = ub = value` for pinned cells, while monotonicity and risk constraints remain active. If the constraints are contradictory, the solver returns `None`.
 
 Available through:
-- **`solve_with_fixed_cells()`** in `src/optimization_utils.py` for programmatic use.
+- **`solve_with_fixed_cells()`** in `src/optimize/optimization_utils.py` for programmatic use.
 - **Pin Mode** in the dashboard Cutoff Explorer: click cells to cycle through unpinned → accept → reject → unpinned, then re-optimize.
 
 ### Baseline Mode
@@ -1509,48 +1509,55 @@ new_efx_clus = [5, 6, 8]
 | `inference.py` | Orchestrates model training or loading |
 | `optimization.py` | Orchestrates optimization, scenario analysis, MR, stability |
 
-#### Core Modules (`src/`)
+#### Core Modules (`src/<package>/`)
+
+Layered packages (each imports only from the ones listed before it): `core` → `data` → `model` → `optimize` → `analysis` → `governance` → `report`, with `pipeline/` orchestrating them.
 
 | Module | Purpose |
 |:-------|:--------|
-| `config.py` | `PreprocessingSettings` (Pydantic) and `OutputPaths` definitions |
-| `data_manager.py` | SAS data loading and column standardization |
-| `data_quality.py` | Schema validation, outlier detection, quality checks |
-| `preprocess_improved.py` | Date/segment filtering, feature engineering, binning (quantile and optimization-aware) |
-| `inference_optimized.py` | Model training pipeline with feature selection and CV |
-| `models.py` | Variable transformations and risk calculations |
-| `estimators.py` | Custom estimators: `HurdleRegressor`, `TweedieGLM` |
-| `optuna_tuning.py` | Optuna hyperparameter tuning for tree and linear models |
-| `persistence.py` | Model serialization with metadata (save/load) |
-| `optimization_utils.py` | `CellGrid`, MILP solver, Pareto filtering, `mask_to_cutoffs`, fixed-cell constraints |
-| `sensitivity.py` | Sensitivity analysis, risk perturbation, cell flip thresholds, marginal impact |
-| `reject_inference.py` | Acceptance rate computation, parceling (linear/power/sigmoid), Bayesian smoothing, monotonicity enforcement, per-bin confidence |
-| `reject_inference_optimizer.py` | Grid search and Optuna TPE optimization over RI parameters, power-corrected calibration, MR out-of-time validation |
-| `mr_pipeline.py` | MR period validation and metrics |
-| `stability.py` | PSI/CSI drift detection |
-| `trends.py` | Monthly metrics aggregation and anomaly detection |
-| `audit.py` | Record-level classification (keep/swap-in/swap-out/rejected) |
-| `consolidation.py` | Multi-segment aggregation and consolidated reporting |
-| `lineage.py` | Data lineage / provenance capture (M2): data SHA-256, git, config hash, assumptions |
-| `backtest.py` | Out-of-time backtest of frozen cutoffs (M4): `load_frozen_policy`, `apply_policy`, realized metrics + noise-aware drift flag |
-| `reproducibility.py` | Golden-numbers reproducibility (M5): `Headline`, `extract_headline`, `compare_headline` |
-| `policy_registry.py` | Policy registry + champion/challenger: `PolicyEntry`, registry I/O, `compare_policies` (reuses M4/M5) |
-| `risk_surface.py` | Continuous 3D risk surfaces: `classify_cells`, `aggregate_to_cells` (one category per cell), `build_risk_surface_figure` |
-| `presentation_charts.py` | Management summary charts (matplotlib) + 2D heatmap + 3D PNG export for the results deck |
-| `global_optimizer.py` | MILP and greedy global portfolio allocation |
-| `portfolio_owner.py` | Policy/cutoff tables and allocation constraint narratives for `run_allocation.py` |
-| `metrics.py` | Gini, lift, precision-recall, ROC, DeLong test |
-| `plots.py` | `RiskProductionVisualizer` and Plotly chart generation |
-| `styles.py` | Consistent plot styling and color palette |
-| `utils.py` | `calculate_b2_ever_h6`, `extrapolate_h3_to_h6`, `fit_h3_extrapolation_curve`, bootstrap CI, cutoff summary generation |
-| `constants.py` | Enums (`StatusName`, `RejectReason`, `Columns`), numeric defaults (`DEFAULT_N_BOOTSTRAPS`, `DEFAULT_SENSITIVITY_LEVELS`) |
-| `schema.py` | Pandera data schema validators |
-| `alerts.py` | Alert generation for drift anomalies |
-| `reporting.py` | Self-contained per-segment HTML report rendering (Jinja2 + embedded Plotly), with HTML-escaping of user-influenced values |
-| `selection_bias.py` | Selection-bias diagnostics (Thorndike correction, reject-inference Gini, score discriminance on the rejected population) |
-| `selection_bias_plots.py` | Plotting helpers for the selection-bias analysis |
-| `dashboard_data.py` | Shared data-loading / path-resolution helpers used by `dashboard.py` and `gradio_dashboard.py` (segment/scenario discovery, coefficient parsing) |
-| `web_auth.py` | HTTP Basic Auth + bind-policy enforcement for the web dashboards (`enforce_bind_auth_policy`) |
+| `core/config.py` | `PreprocessingSettings` (Pydantic) and `OutputPaths` definitions |
+| `data/data_manager.py` | SAS data loading and column standardization |
+| `data/data_quality.py` | Schema validation, outlier detection, quality checks |
+| `data/preprocess_improved.py` | Date/segment filtering, feature engineering, binning (quantile and optimization-aware) |
+| `model/inference_optimized.py` | Model training pipeline with feature selection and CV |
+| `model/models.py` | Variable transformations and risk calculations |
+| `model/estimators.py` | Custom estimators: `HurdleRegressor`, `TweedieGLM` |
+| `model/optuna_tuning.py` | Optuna hyperparameter tuning for tree and linear models |
+| `model/persistence.py` | Model serialization with metadata (save/load) |
+| `optimize/optimization_utils.py` | `CellGrid`, MILP solver, Pareto filtering, `mask_to_cutoffs`, fixed-cell constraints |
+| `analysis/sensitivity.py` | Sensitivity analysis, risk perturbation, cell flip thresholds, marginal impact |
+| `optimize/reject_inference.py` | Acceptance rate computation, parceling (linear/power/sigmoid), Bayesian smoothing, monotonicity enforcement, per-bin confidence |
+| `optimize/reject_inference_optimizer.py` | Grid search and Optuna TPE optimization over RI parameters, power-corrected calibration, MR out-of-time validation |
+| `analysis/mr_pipeline.py` | MR period validation and metrics |
+| `analysis/stability.py` | PSI/CSI drift detection |
+| `analysis/trends.py` | Monthly metrics aggregation and anomaly detection |
+| `analysis/audit.py` | Record-level classification (keep/swap-in/swap-out/rejected) |
+| `report/consolidation.py` | Multi-segment aggregation and consolidated reporting |
+| `governance/lineage.py` | Data lineage / provenance capture (M2): data SHA-256, git, config hash, assumptions |
+| `governance/backtest.py` | Out-of-time backtest of frozen cutoffs (M4): `load_frozen_policy`, `apply_policy`, realized metrics + noise-aware drift flag |
+| `governance/reproducibility.py` | Golden-numbers reproducibility (M5): `Headline`, `extract_headline`, `compare_headline` |
+| `governance/policy_registry.py` | Policy registry + champion/challenger: `PolicyEntry`, registry I/O, `compare_policies` (reuses M4/M5) |
+| `report/risk_surface.py` | Continuous 3D risk surfaces: `classify_cells`, `aggregate_to_cells` (one category per cell), `build_risk_surface_figure` |
+| `report/presentation_charts.py` | Management summary charts (matplotlib) + 2D heatmap + 3D PNG export for the results deck |
+| `optimize/global_optimizer.py` | MILP and greedy global portfolio allocation |
+| `optimize/portfolio_owner.py` | Policy/cutoff tables and allocation constraint narratives for `run_allocation.py` |
+| `model/metrics.py` | Gini, lift, precision-recall, ROC, DeLong test, score discriminance |
+| `report/plots.py` | `RiskProductionVisualizer` and Plotly chart generation |
+| `report/styles.py` | Consistent plot styling and color palette |
+| `core/utils.py` | `calculate_b2_ever_h6`, supersegment resolvers, `calculate_annual_coef`, `optimize_dtypes` |
+| `data/stress.py` | Global and per-bin stress factors |
+| `model/training.py` | Dataset preparation (`process_dataset`) and CV helpers shared by model selection and Optuna |
+| `optimize/cutoff_summary.py` | Cell-level acceptance grids (`generate_cutoff_summary`, wide formatting, consolidation) |
+| `analysis/mr_extrapolation.py` | H3→H6 extrapolation: `extrapolate_h3_to_h6`, `fit_h3_extrapolation_curve` |
+| `analysis/bootstrap.py` | Bootstrap CIs for a fixed acceptance mask (booked + reject-inferred) |
+| `core/constants.py` | Enums (`StatusName`, `RejectReason`, `Columns`), numeric defaults (`DEFAULT_N_BOOTSTRAPS`, `DEFAULT_SENSITIVITY_LEVELS`) |
+| `core/schema.py` | Pandera data schema validators and `DataValidationError` |
+| `analysis/alerts.py` | Alert generation for drift anomalies |
+| `report/reporting.py` | Self-contained per-segment HTML report rendering (Jinja2 + embedded Plotly), with HTML-escaping of user-influenced values |
+| `analysis/selection_bias.py` | Selection-bias diagnostics (Thorndike correction, reject-inference Gini, score discriminance on the rejected population) |
+| `report/selection_bias_plots.py` | Plotting helpers for the selection-bias analysis |
+| `report/dashboard_data.py` | Shared data-loading / path-resolution helpers used by `dashboard.py` and `gradio_dashboard.py` (segment/scenario discovery, coefficient parsing) |
+| `report/web_auth.py` | HTTP Basic Auth + bind-policy enforcement for the web dashboards (`enforce_bind_auth_policy`) |
 
 ---
 

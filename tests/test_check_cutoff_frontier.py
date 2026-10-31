@@ -15,7 +15,7 @@ import openpyxl
 import pandas as pd
 import pytest
 
-from src.consolidation import _write_single_pivot_grid
+from src.report.consolidation import _write_single_pivot_grid
 
 _SPEC = importlib.util.spec_from_file_location(
     "check_cutoff_frontier", Path(__file__).parents[1] / "scripts" / "check_cutoff_frontier.py"
@@ -130,7 +130,7 @@ def test_check_workbook_end_to_end(tmp_path):
 
 def _render_strip(accepted: list):
     """Write *accepted* through the real 1-D strip writer, re-read it with the checker."""
-    from src.consolidation import _write_acceptance_strip_1d
+    from src.report.consolidation import _write_acceptance_strip_1d
 
     df = pd.DataFrame({"new_efx_clus": range(1, len(accepted) + 1), "accepted": accepted})
     ws = openpyxl.Workbook().active

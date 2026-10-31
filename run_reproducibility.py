@@ -30,8 +30,8 @@ from pathlib import Path
 import tomli_w
 from loguru import logger
 
-from src.config import OutputPaths, PreprocessingSettings
-from src.reproducibility import (
+from src.core.config import OutputPaths, PreprocessingSettings
+from src.governance.reproducibility import (
     REFERENCE_DIR,
     compare_headline,
     extract_headline,

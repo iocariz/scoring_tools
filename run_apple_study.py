@@ -36,8 +36,8 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from src.constants import DEFAULT_RISK_MULTIPLIER, Columns, RejectReason, StatusName, SystemDecision
-from src.data_manager import load_data, standardize_columns_and_values
+from src.core.constants import DEFAULT_RISK_MULTIPLIER, Columns, RejectReason, StatusName, SystemDecision
+from src.data.data_manager import load_data, standardize_columns_and_values
 
 _BOOKED_COL = "b2_pct_contratados"  # curva sin corregir por selección; ver apply_reject_inference
 
@@ -281,14 +281,14 @@ def apply_reject_inference(curve: pd.DataFrame, demand: pd.DataFrame, **kwargs) 
     aceptación de un tramo, más seleccionado está y mayor el multiplicador.
 
     Se reutilizan ``compute_acceptance_rates`` y ``apply_parceling_adjustment`` de
-    :mod:`src.reject_inference` —no una versión propia— para que el estudio y la corrida
+    :mod:`src.optimize.reject_inference` —no una versión propia— para que el estudio y la corrida
     definitiva usen exactamente el mismo ajuste.
 
     El resultado NO es un recargo plano sobre el tramo: dentro de cada uno se mezcla la
     parte ya contratada (a su riesgo realizado) con la que entraría nueva (al riesgo
     corregido), en proporción a la tasa de aceptación observada.
     """
-    from src.reject_inference import apply_parceling_adjustment, compute_acceptance_rates
+    from src.optimize.reject_inference import apply_parceling_adjustment, compute_acceptance_rates
 
     rates = compute_acceptance_rates(
         demand,

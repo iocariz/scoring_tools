@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import pandas as pd
 import pytest
 
-from src.backtest import (
+from src.core.utils import calculate_b2_ever_h6
+from src.governance.backtest import (
     BacktestError,
     BacktestResult,
     _acceptance_rate,
@@ -21,7 +22,6 @@ from src.backtest import (
     write_backtest_report,
     write_consolidated_report,
 )
-from src.utils import calculate_b2_ever_h6
 
 
 def _settings(date_fin="2025-05-01"):
@@ -230,7 +230,7 @@ class TestDriftFlag:
 
 
 def test_bootstrap_risk_ci_brackets_point_estimate():
-    from src.backtest import _bootstrap_risk_ci
+    from src.governance.backtest import _bootstrap_risk_ci
 
     # 100 loans, ~5% with a default; CI should bracket the point b2 and be a (lo<=hi) tuple.
     rng = pd.Series(range(100))

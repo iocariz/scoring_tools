@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.global_optimizer import (
+from src.optimize.global_optimizer import (
     AllocationResult,
     GlobalAllocator,
     SegmentConstraints,

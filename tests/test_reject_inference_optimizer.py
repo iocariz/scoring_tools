@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.config import PreprocessingSettings
-from src.reject_inference_optimizer import (
+from src.core.config import PreprocessingSettings
+from src.optimize.reject_inference_optimizer import (
     OptimizerInputs,
     _compute_calibration_error,
     _make_early_stopping_callback,
@@ -406,7 +406,7 @@ class TestCalibrationRobustness:
 
     def test_min_effective_acceptance_rate_is_shared(self):
         """#58: one constant, referenced by both the runtime and the optimizer."""
-        from src import reject_inference, reject_inference_optimizer
+        from src.optimize import reject_inference, reject_inference_optimizer
 
         assert reject_inference.MIN_EFFECTIVE_ACCEPTANCE_RATE == 0.01
         assert (
@@ -457,7 +457,7 @@ class TestOptunaOptimizer:
     def test_optuna_returns_results(self, inputs):
         """Optuna optimizer should return (DataFrame, dict) tuple."""
         pytest.importorskip("optuna")
-        from src.reject_inference_optimizer import run_reject_inference_optimization_optuna
+        from src.optimize.reject_inference_optimizer import run_reject_inference_optimization_optuna
 
         results_df, best_params = run_reject_inference_optimization_optuna(inputs, risk_target=20.0, n_trials=10)
         assert isinstance(results_df, pd.DataFrame)
@@ -466,7 +466,7 @@ class TestOptunaOptimizer:
     def test_optuna_expected_columns(self, inputs):
         """Optuna results should have expected columns."""
         pytest.importorskip("optuna")
-        from src.reject_inference_optimizer import run_reject_inference_optimization_optuna
+        from src.optimize.reject_inference_optimizer import run_reject_inference_optimization_optuna
 
         results_df, _ = run_reject_inference_optimization_optuna(inputs, risk_target=20.0, n_trials=10)
         expected_cols = {"uplift_factor", "max_risk_multiplier", "feasible", "calibration_error"}
@@ -475,7 +475,7 @@ class TestOptunaOptimizer:
     def test_optuna_n_trials(self, inputs):
         """Number of results should match n_trials."""
         pytest.importorskip("optuna")
-        from src.reject_inference_optimizer import run_reject_inference_optimization_optuna
+        from src.optimize.reject_inference_optimizer import run_reject_inference_optimization_optuna
 
         results_df, _ = run_reject_inference_optimization_optuna(inputs, risk_target=20.0, n_trials=15)
         assert len(results_df) == 15
@@ -483,7 +483,7 @@ class TestOptunaOptimizer:
     def test_optuna_single_best(self, inputs):
         """Exactly one row should be marked as best (if feasible)."""
         pytest.importorskip("optuna")
-        from src.reject_inference_optimizer import run_reject_inference_optimization_optuna
+        from src.optimize.reject_inference_optimizer import run_reject_inference_optimization_optuna
 
         results_df, best_params = run_reject_inference_optimization_optuna(inputs, risk_target=20.0, n_trials=20)
         if best_params:

@@ -40,12 +40,13 @@ from run_score_metrics import (
     _filter_booked_period,
     _load_reporting_supersegments,
 )
-from src.metrics import compute_metrics
-from src.selection_bias import (
+from src.analysis.selection_bias import (
     compute_acceptance_gini_correlation,
     compute_selection_bias_report,
 )
-from src.selection_bias_plots import (
+from src.core.utils import resolve_reporting_supersegment
+from src.model.metrics import compute_metrics
+from src.report.selection_bias_plots import (
     plot_all_truncation_panels,
     plot_bad_rate_by_decile,
     plot_booked_vs_rejected_discriminance,
@@ -58,7 +59,6 @@ from src.selection_bias_plots import (
     plot_thorndike_correction,
     plot_truncation_comparison,
 )
-from src.utils import resolve_reporting_supersegment
 
 
 # ---------------------------------------------------------------------------
