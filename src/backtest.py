@@ -130,11 +130,6 @@ class BacktestResult:
 # --------------------------------------------------------------------------- #
 
 
-def _maturity_months(mis_date: pd.Series, reference_date: pd.Timestamp) -> pd.Series:
-    """Months between booking and *reference_date* (parity with mr_pipeline._compute_account_maturity)."""
-    return (reference_date.year - mis_date.dt.year) * 12 + (reference_date.month - mis_date.dt.month)
-
-
 def derive_holdout_window(
     data_clean: pd.DataFrame,
     settings: PreprocessingSettings,

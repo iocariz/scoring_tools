@@ -10,7 +10,7 @@
 #   smoothing, time-decay, monotonicity relaxation, per-bin tasa_fin.
 # Add those back one at a time (see config.toml — the full/advanced example)
 # only when you need them. Sensitivity ranking that motivates this split is in
-# todo-list.md (M3).
+# docs/todo-list.md (M3).
 # =============================================================================
 
 [preprocessing]

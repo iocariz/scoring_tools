@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from sklearn.metrics import roc_auc_score
-from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 from src.constants import (
     DEFAULT_RANDOM_STATE,
@@ -289,218 +288,6 @@ def learn_quantile_bins(
     return edges
 
 
-def learn_income_bins(
-    data_booked: pd.DataFrame,
-    source_col: str = "income_t1_m",
-    target_col: str = "early_bad",
-    max_bins: int = 2,
-    min_samples_leaf: int = 500,
-) -> list[float]:
-    """Learn optimal bin edges for an income variable using a supervised decision tree.
-
-    .. deprecated::
-        Use :func:`learn_quantile_bins` instead to avoid target-based feature
-        engineering circularity.  This function is kept for backward
-        compatibility and can be invoked explicitly via ``bin_method = "supervised"``.
-
-    Fits a ``DecisionTreeClassifier`` on *booked* data to find the split thresholds
-    that best separate ``target_col`` (typically ``early_bad``).
-
-    Parameters
-    ----------
-    data_booked : pd.DataFrame
-        Booked population with both ``source_col`` and ``target_col``.
-    source_col : str
-        Raw income column name (default ``"income_t1_m"``).
-    target_col : str
-        Binary target column (default ``"early_bad"``).
-    max_bins : int
-        Maximum number of bins (2 or 3). The tree is fitted with
-        ``max_leaf_nodes=max_bins``.
-    min_samples_leaf : int
-        Minimum samples per leaf node (guards against tiny bins).
-
-    Returns
-    -------
-    list[float]
-        Bin edges suitable for ``pd.cut``, e.g. ``[-inf, threshold, inf]``.
-
-    Raises
-    ------
-    ValueError
-        If required columns are missing or the tree produces no valid splits.
-    """
-    validate_dataframe_columns(data_booked, [source_col, target_col], "learn_income_bins")
-
-    n_before = len(data_booked)
-    valid = data_booked[[source_col, target_col]].dropna()
-    n_dropped = n_before - len(valid)
-    if n_dropped > 0:
-        logger.info(
-            f"learn_income_bins: dropped {n_dropped:,} NaN rows ({n_dropped / n_before:.1%}) from '{source_col}'/'{target_col}'"
-        )
-    if len(valid) < min_samples_leaf * 2:
-        raise ValueError(f"learn_income_bins: only {len(valid)} valid records — need at least {min_samples_leaf * 2}")
-
-    X = valid[[source_col]].values
-    y = valid[target_col].values.astype(int)
-
-    tree = DecisionTreeClassifier(
-        max_leaf_nodes=max_bins,
-        min_samples_leaf=min_samples_leaf,
-        random_state=DEFAULT_RANDOM_STATE,
-    )
-    tree.fit(X, y)
-
-    # Extract split thresholds from tree internals
-    thresholds = sorted(
-        {t for t in tree.tree_.threshold if t != -2.0}  # -2.0 = leaf node sentinel
-    )
-
-    if not thresholds:
-        raise ValueError(
-            f"learn_income_bins: tree produced no splits for '{source_col}' → '{target_col}'. "
-            "Check data quality or reduce min_samples_leaf."
-        )
-
-    edges = [-np.inf] + thresholds + [np.inf]
-    logger.info(
-        f"learn_income_bins: {len(thresholds)} split(s) found for '{source_col}' "
-        f"(max_bins={max_bins}): thresholds={thresholds}"
-    )
-    logger.info(f"  Bin edges: {edges}")
-    return edges
-
-
-def learn_optimization_bins(
-    data_booked: pd.DataFrame,
-    source_col: str = "income_t1_m",
-    target_col: str = "early_bad",
-    weight_col: str = "oa_amt_h0",
-    max_bins: int = 2,
-    min_samples_leaf: int = 500,
-) -> list[float]:
-    """Learn bin edges that maximize production-weighted risk differentiation.
-
-    .. deprecated::
-        No longer used by the pipeline.  This method fits bin edges on the
-        same risk target (``early_bad``) that the downstream optimizer later
-        maximizes (``b2_ever_h6``), so the bins are tuned to in-sample risk
-        separation and the resulting risk/production frontier looks better than
-        it generalizes (target leakage / circularity).  The pipeline now always
-        uses unsupervised :func:`learn_quantile_bins`; configs requesting
-        ``method = "optimization"`` fall back to quantile with a warning.  This
-        function is retained for backward compatibility only.
-
-    Fits a ``DecisionTreeRegressor`` on *booked* data with ``sample_weight``
-    set to the production column (``oa_amt_h0``), so the split maximizes the
-    production-weighted variance reduction in the risk target.  This gives the
-    MILP optimizer maximal leverage from the income dimension.
-
-    Parameters
-    ----------
-    data_booked : pd.DataFrame
-        Booked population with ``source_col``, ``target_col``, and optionally
-        ``weight_col``.
-    source_col : str
-        Raw column name (default ``"income_t1_m"``).
-    target_col : str
-        Risk target column (default ``"early_bad"``).
-    weight_col : str
-        Production weight column (default ``"oa_amt_h0"``).
-    max_bins : int
-        Maximum number of bins (default 2).
-    min_samples_leaf : int
-        Minimum samples per leaf node (default 500).
-
-    Returns
-    -------
-    list[float]
-        Bin edges suitable for ``pd.cut``, e.g. ``[-inf, threshold, inf]``.
-
-    Raises
-    ------
-    ValueError
-        If required columns are missing or the tree produces no valid splits.
-    """
-    validate_dataframe_columns(data_booked, [source_col, target_col], "learn_optimization_bins")
-
-    n_before = len(data_booked)
-    valid = data_booked[[source_col, target_col]].dropna()
-    n_dropped = n_before - len(valid)
-    if n_dropped > 0:
-        logger.info(
-            f"learn_optimization_bins: dropped {n_dropped:,} NaN rows ({n_dropped / n_before:.1%}) from '{source_col}'/'{target_col}'"
-        )
-
-    # Determine sample weights
-    weights = None
-    if weight_col in data_booked.columns:
-        weight_values = data_booked.loc[valid.index, weight_col].fillna(0.0)
-        if weight_values.sum() > 0:
-            weights = weight_values.values
-            logger.info(f"learn_optimization_bins: using production weights from '{weight_col}'")
-        else:
-            logger.warning(f"learn_optimization_bins: '{weight_col}' is all zeros, falling back to unweighted")
-    else:
-        logger.warning(f"learn_optimization_bins: '{weight_col}' not found, falling back to unweighted")
-
-    if len(valid) < min_samples_leaf * 2:
-        raise ValueError(
-            f"learn_optimization_bins: only {len(valid)} valid records — need at least {min_samples_leaf * 2}"
-        )
-
-    X = valid[[source_col]].values
-    y = valid[target_col].values.astype(float)
-
-    tree = DecisionTreeRegressor(
-        max_leaf_nodes=max_bins,
-        min_samples_leaf=min_samples_leaf,
-        random_state=DEFAULT_RANDOM_STATE,
-    )
-    tree.fit(X, y, sample_weight=weights)
-
-    # Extract split thresholds from tree internals
-    thresholds = sorted(
-        {t for t in tree.tree_.threshold if t != -2.0}  # -2.0 = leaf node sentinel
-    )
-
-    if not thresholds:
-        raise ValueError(
-            f"learn_optimization_bins: tree produced no splits for '{source_col}' → '{target_col}'. "
-            "Check data quality or reduce min_samples_leaf."
-        )
-
-    edges: list[float] = [-np.inf] + thresholds + [np.inf]
-    logger.info(
-        f"learn_optimization_bins: {len(thresholds)} split(s) found for '{source_col}' "
-        f"(max_bins={max_bins}): thresholds={thresholds}"
-    )
-    logger.info(f"  Bin edges: {edges}")
-
-    # Holdout stability validation: check that bin edges differentiate risk on unseen data
-    if len(valid) >= min_samples_leaf * 3:
-        from sklearn.model_selection import train_test_split
-
-        train_fold, holdout_fold = train_test_split(valid, test_size=0.2, random_state=DEFAULT_RANDOM_STATE + 1)
-        train_binned = pd.cut(train_fold[source_col], bins=edges, labels=False)
-        holdout_binned = pd.cut(holdout_fold[source_col], bins=edges, labels=False)
-        train_risk = train_fold.groupby(train_binned, observed=True)[target_col].mean()
-        holdout_risk = holdout_fold.groupby(holdout_binned, observed=True)[target_col].mean()
-        logger.info(
-            f"  Bin stability: train_risk={train_risk.round(4).to_dict()}, holdout_risk={holdout_risk.round(4).to_dict()}"
-        )
-        if len(train_risk) >= 2 and len(holdout_risk) >= 2:
-            train_diff = float(train_risk.iloc[-1] - train_risk.iloc[0])
-            holdout_diff = float(holdout_risk.iloc[-1] - holdout_risk.iloc[0])
-            if train_diff * holdout_diff < 0:
-                logger.warning("  Bin edges may be overfit: risk ordering reversed on holdout fold")
-            else:
-                logger.info("  Bin stability OK: risk ordering consistent between train and holdout")
-
-    return edges
-
-
 def assess_binning_gini(
     data: pd.DataFrame,
     raw_col: str,
@@ -555,29 +342,18 @@ def assess_binning_gini(
     return {"gini_raw": gini_raw, "gini_binned": gini_binned, "gini_retention_pct": retention}
 
 
-def apply_binning_transformations(
-    data: pd.DataFrame,
-    octroi_bins: list[float] | None = None,
-    efx_bins: list[float] | None = None,
-    *,
-    bins_config: dict[str, "BinConfig"] | None = None,
-) -> pd.DataFrame:
+def apply_binning_transformations(data: pd.DataFrame, bins_config: dict[str, "BinConfig"]) -> pd.DataFrame:
     """
     Apply binning transformations to the data.
-
-    Supports both the legacy 2-variable interface (octroi_bins/efx_bins) and
-    the new N-variable interface (bins_config dict).
 
     Parameters
     ----------
     data : pd.DataFrame
         Input data
-    octroi_bins : list[float], optional
-        Legacy bin edges for octroi score (mutually exclusive with bins_config)
-    efx_bins : list[float], optional
-        Legacy bin edges for efx (risk) score (mutually exclusive with bins_config)
-    bins_config : dict[str, BinConfig], optional
+    bins_config : dict[str, BinConfig]
         N-variable binning configuration mapping output column names to BinConfig.
+        Legacy ``octroi_bins``/``efx_bins`` settings are converted into this dict by
+        ``PreprocessingSettings``.
 
     Returns
     -------
@@ -589,28 +365,7 @@ def apply_binning_transformations(
     ValueError
         If required columns are missing or binning fails
     """
-    if bins_config is not None:
-        return _apply_binning_from_config(data, bins_config)
-
-    # Legacy path — original 2-variable behavior
-    if octroi_bins is None or efx_bins is None:
-        raise ValueError("Either bins_config or both octroi_bins/efx_bins must be provided")
-
-    from src.config import BinConfig
-
-    legacy_config = {
-        "sc_octroi_new_clus": BinConfig(
-            source_col="score_rf",
-            output_col="sc_octroi_new_clus",
-            bin_edges=octroi_bins,
-        ),
-        "new_efx_clus": BinConfig(
-            source_col="risk_score_rf",
-            output_col="new_efx_clus",
-            bin_edges=efx_bins,
-        ),
-    }
-    return _apply_binning_from_config(data, legacy_config)
+    return _apply_binning_from_config(data, bins_config)
 
 
 def _apply_binning_from_config(
@@ -1055,7 +810,7 @@ def _run_data_transformations(df: pd.DataFrame, settings: "PreprocessingSettings
         logger.info("\n" + "=" * 80)
         logger.info("Step 2: Binning transformations")
         logger.info("=" * 80)
-        data_clean = apply_binning_transformations(data_clean, bins_config=settings.bins)
+        data_clean = apply_binning_transformations(data_clean, settings.bins)
 
         # Gini assessment for variables that used supervised edge learning
         for var_name, bc in settings.bins.items():
@@ -1072,11 +827,6 @@ def _run_data_transformations(df: pd.DataFrame, settings: "PreprocessingSettings
                         f"binned={gini_result['gini_binned']:.4f}, "
                         f"retention={gini_result['gini_retention_pct']:.1f}%"
                     )
-    elif settings.octroi_bins and settings.efx_bins:
-        logger.info("\n" + "=" * 80)
-        logger.info("Step 2: Binning transformations (legacy)")
-        logger.info("=" * 80)
-        data_clean = apply_binning_transformations(data_clean, settings.octroi_bins, settings.efx_bins)
     else:
         logger.warning("Skipping binning transformations (bins not provided)")
 

@@ -160,6 +160,7 @@ Makefile shortcuts: `make run`, `make run-batch`, `make test`, `make lint`, `mak
   - Analysis: `mr_pipeline.py`, `stability.py`, `sensitivity.py`, `trends.py`, `alerts.py`, `audit.py`, `selection_bias.py`, `selection_bias_plots.py`
   - Validation & governance: `lineage.py` (M2 data lineage), `backtest.py` (M4 out-of-time backtest), `reproducibility.py` (M5 golden-numbers), `policy_registry.py` (policy registry + champion/challenger)
   - Output: `consolidation.py`, `reporting.py`, `plots.py`, `styles.py`, `metrics.py`, `utils.py`, `portfolio_owner.py`
+- `docs/` — working notes (`todo-list.md` audit/finding log, `instructions.md`, `new_feature_specs.md`) and `methodology.docx` (rebuilt by `scripts/build_methodology_doc.py`); `examples/` — starter configs (`simple.toml` Core-only template, `scenarios_example.toml` for `--resimulate`)
 - Entry points: `main.py` (single segment), `run_batch.py` (multi-segment with global bin learning + supersegment model sharing), `run_allocation.py` (MILP allocation with segment constraints/locking), `run_backtest.py` (out-of-time backtest of frozen cutoffs, M4), `run_reproducibility.py` (golden-numbers reproducibility check, M5), `run_policy_registry.py` (policy registry + champion/challenger comparison), `generate_presentation.py` (PowerPoint/PDF output), `run_score_metrics.py` (score discriminance), `run_selection_bias_analysis.py` (selection bias diagnostics), `dashboard.py` / `interactive_allocator.py` (Dash web UIs), `gradio_dashboard.py` (Gradio web UI)
 
 ### Key Design Patterns

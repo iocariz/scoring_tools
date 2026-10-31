@@ -22,14 +22,14 @@ is the maturity anchor; `use_mr_outcomes` is validation-only (M3a).
 ## 3. Validation activities performed
 | Activity | Artifact | Result |
 |---|---|---|
-| Decision-critical findings cleared (M1) | `todo-list.md` #1–#21 + sub-findings | All resolved, real-data verified |
+| Decision-critical findings cleared (M1) | `docs/todo-list.md` #1–#21 + sub-findings | All resolved, real-data verified |
 | Data-quality hard gate (M2) | `src/data_quality.py`, lineage | Fail-closed by default; `--allow-dq-warnings` escape hatch |
 | Data-snapshot pinning (M2) | `run_lineage.json` | SHA-256 / mtime / rows / git / config hash / assumptions per run |
 | Config-complexity / sensitivity (M3) | `reports/sensitivity/` | Knob tiering; defaults safe; `multiplier` fixed; materiality segment-dependent |
 | Out-of-time backtest (M4) | `run_backtest.py`, backtest reports | Realized vs predicted on held-out cohort |
 | Reproducibility (M5) | `run_reproducibility.py`, golden reference | Headline reproduces from pinned inputs (see validation report) |
 | Independent reproduction & challenge (M5) | `model_validation_report.md` | See report |
-| Model-selection change (#7) | `todo-list.md` #7 + 2026-05-31 validation | **Validated** multi-segment on the pooled `total` model (pre-#7 Lasso α≈0 vs post-#7 Linear Regression — near-identical; aggregate −0.42%) |
+| Model-selection change (#7) | `docs/todo-list.md` #7 + 2026-05-31 validation | **Validated** multi-segment on the pooled `total` model (pre-#7 Lasso α≈0 vs post-#7 Linear Regression — near-identical; aggregate −0.42%) |
 
 ## 4. Residual risks & limitations
 1. **Out-of-time risk drift (INCONCLUSIVE — monitor).** The M4 backtest point estimates *look* like upward drift for the

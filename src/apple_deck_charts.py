@@ -102,12 +102,6 @@ def _style(ax, *, ylabel: str = "", xlabel: str = "", hgrid: bool = True) -> Non
         ax.set_xlabel(xlabel, fontsize=9, labelpad=6)
 
 
-def _bar_width(n_slots: int, fig_width_in: float, dpi: int = 100) -> float:
-    """Bar width in data units, capped at 24 px so the band breathes."""
-    px_per_slot = fig_width_in * dpi / max(n_slots, 1)
-    return min(0.82, BAR_MAX_PX / px_per_slot)
-
-
 # --------------------------------------------------------------------------- #
 # 1. The risk curve: the engine of the whole study
 # --------------------------------------------------------------------------- #

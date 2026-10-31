@@ -1709,58 +1709,6 @@ class TestLearnQuantileBins:
 
 
 # =============================================================================
-# learn_income_bins Tests (deprecated, kept for backward compat)
-# =============================================================================
-
-
-class TestLearnIncomeBins:
-    def test_basic_splitting(self):
-        """Should produce bin edges with splits between classes."""
-        from src.preprocess_improved import learn_income_bins
-
-        rng = np.random.RandomState(42)
-        n = 2000
-        income = np.concatenate([rng.normal(2000, 500, n // 2), rng.normal(5000, 500, n // 2)])
-        bad = np.concatenate([np.ones(n // 2), np.zeros(n // 2)])
-        data = pd.DataFrame({"income_t1_m": income, "early_bad": bad})
-
-        edges = learn_income_bins(data, max_bins=2, min_samples_leaf=100)
-        assert len(edges) == 3  # [-inf, threshold, inf]
-        assert edges[0] == -np.inf
-        assert edges[-1] == np.inf
-        # Threshold should be somewhere between the two distributions
-        assert 2500 < edges[1] < 4500
-
-    def test_max_bins_3(self):
-        """With max_bins=3, should produce 4 edges."""
-        from src.preprocess_improved import learn_income_bins
-
-        rng = np.random.RandomState(42)
-        n = 3000
-        income = np.concatenate(
-            [
-                rng.normal(1000, 200, n // 3),
-                rng.normal(3000, 200, n // 3),
-                rng.normal(6000, 200, n // 3),
-            ]
-        )
-        bad = np.concatenate([np.ones(n // 3), np.zeros(n // 3), np.zeros(n // 3)])
-        data = pd.DataFrame({"income_t1_m": income, "early_bad": bad})
-
-        edges = learn_income_bins(data, max_bins=3, min_samples_leaf=100)
-        assert len(edges) >= 3  # At least 3 edges (2 bins)
-        assert len(edges) <= 4  # At most 4 edges (3 bins)
-
-    def test_missing_column_raises(self):
-        """Should raise ValueError if required columns are missing."""
-        from src.preprocess_improved import learn_income_bins
-
-        data = pd.DataFrame({"other": [1, 2, 3]})
-        with pytest.raises(ValueError, match="Missing required columns"):
-            learn_income_bins(data)
-
-
-# =============================================================================
 # assess_binning_gini Tests
 # =============================================================================
 

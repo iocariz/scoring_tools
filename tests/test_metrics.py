@@ -4,15 +4,12 @@ import pytest
 
 from src.metrics import (
     bootstrap_confidence_interval,
-    calc_iv,
     calculate_lift_table,
-    calculate_psi_by_period,
     calculate_rejection_thresholds,
     compute_metrics,
     compute_precision_recall,
     delong_test,
     ks_statistic,
-    train_logistic_regression,
 )
 
 # =============================================================================
@@ -163,223 +160,6 @@ class TestCalculateRejectionThresholds:
         assert result["5%"] <= result["10%"]
         assert result["10%"] <= result["20%"]
         assert result["20%"] <= result["50%"]
-
-
-# =============================================================================
-# calculate_psi_by_period Tests (metrics.py version)
-# =============================================================================
-
-
-class TestCalculatePsiMetrics:
-    def _make_data(self, ref_scores, act_scores, ref_dates, act_dates):
-        ref_df = pd.DataFrame({"date": ref_dates, "score": ref_scores})
-        act_df = pd.DataFrame({"date": act_dates, "score": act_scores})
-        return pd.concat([ref_df, act_df], ignore_index=True)
-
-    def test_identical_distributions(self):
-        np.random.seed(42)
-        scores = np.random.normal(500, 100, 200)
-        ref_dates = [pd.Timestamp("2023-01-15")] * 200
-        act_dates = [pd.Timestamp("2023-06-15")] * 200
-
-        data = self._make_data(scores, scores, ref_dates, act_dates)
-        result = calculate_psi_by_period(
-            data,
-            date_column="date",
-            score_column="score",
-            start_date_ref=pd.Timestamp("2023-01-01"),
-            end_date_ref=pd.Timestamp("2023-02-01"),
-            start_date_act=pd.Timestamp("2023-06-01"),
-            end_date_act=pd.Timestamp("2023-07-01"),
-            buckets=5,
-            show_plots=False,
-        )
-        assert isinstance(result, pd.DataFrame)
-        # Identical distributions -> PSI close to 0
-        assert result["PSI"].sum() < 0.1
-
-    def test_invalid_date_type_raises(self):
-        data = pd.DataFrame({"date": ["2023-01-01"], "score": [500]})
-        with pytest.raises(ValueError, match="pd.Timestamp"):
-            calculate_psi_by_period(
-                data,
-                date_column="date",
-                score_column="score",
-                start_date_ref="2023-01-01",
-                end_date_ref="2023-02-01",
-                start_date_act="2023-06-01",
-                end_date_act="2023-07-01",
-                buckets=5,
-            )
-
-    def test_no_buckets_or_breakpoints_raises(self):
-        data = pd.DataFrame({"date": [pd.Timestamp("2023-01-01")], "score": [500]})
-        with pytest.raises(ValueError, match="Either buckets or breakpoints"):
-            calculate_psi_by_period(
-                data,
-                date_column="date",
-                score_column="score",
-                start_date_ref=pd.Timestamp("2023-01-01"),
-                end_date_ref=pd.Timestamp("2023-02-01"),
-                start_date_act=pd.Timestamp("2023-06-01"),
-                end_date_act=pd.Timestamp("2023-07-01"),
-            )
-
-    def test_with_breakpoints(self):
-        np.random.seed(42)
-        ref_scores = np.random.normal(500, 100, 100)
-        act_scores = np.random.normal(520, 100, 100)
-        ref_dates = [pd.Timestamp("2023-01-15")] * 100
-        act_dates = [pd.Timestamp("2023-06-15")] * 100
-
-        data = self._make_data(ref_scores, act_scores, ref_dates, act_dates)
-        result = calculate_psi_by_period(
-            data,
-            date_column="date",
-            score_column="score",
-            start_date_ref=pd.Timestamp("2023-01-01"),
-            end_date_ref=pd.Timestamp("2023-02-01"),
-            start_date_act=pd.Timestamp("2023-06-01"),
-            end_date_act=pd.Timestamp("2023-07-01"),
-            breakpoints=[200, 400, 600, 800],
-            show_plots=False,
-        )
-        assert isinstance(result, pd.DataFrame)
-        assert "PSI" in result.columns
-
-    def test_low_cardinality_no_crash(self):
-        """Audit #12: a low-cardinality score makes np.percentile emit duplicate breakpoints,
-        which used to crash np.histogram. De-dup + guard now returns a frame instead of raising."""
-        ref_scores = [0, 0, 0, 0, 1] * 20  # two distinct values, heavy ties
-        act_scores = [0, 1, 1, 1, 1] * 20
-        data = self._make_data(
-            ref_scores, act_scores, [pd.Timestamp("2023-01-15")] * 100, [pd.Timestamp("2023-06-15")] * 100
-        )
-        result = calculate_psi_by_period(
-            data,
-            date_column="date",
-            score_column="score",
-            start_date_ref=pd.Timestamp("2023-01-01"),
-            end_date_ref=pd.Timestamp("2023-02-01"),
-            start_date_act=pd.Timestamp("2023-06-01"),
-            end_date_act=pd.Timestamp("2023-07-01"),
-            buckets=10,
-            show_plots=False,
-        )
-        assert isinstance(result, pd.DataFrame)
-        assert "PSI" in result.columns  # no exception raised
-
-    def test_empty_window_returns_nan_not_crash(self):
-        """An empty reference/actual window (after the date filter) used to divide by zero.
-        Now it returns a single-row NaN PSI instead of inf/NaN percentages or a crash."""
-        data = self._make_data(
-            [500] * 50, [500] * 50, [pd.Timestamp("2023-01-15")] * 50, [pd.Timestamp("2023-06-15")] * 50
-        )
-        result = calculate_psi_by_period(
-            data,
-            date_column="date",
-            score_column="score",
-            start_date_ref=pd.Timestamp("2023-01-01"),
-            end_date_ref=pd.Timestamp("2023-02-01"),
-            # Actual window matches no rows -> empty actual.
-            start_date_act=pd.Timestamp("2024-06-01"),
-            end_date_act=pd.Timestamp("2024-07-01"),
-            buckets=5,
-            show_plots=False,
-        )
-        assert np.isnan(result["PSI"]).all()
-
-    def test_nan_scores_do_not_deflate_psi(self):
-        """NaN scores are dropped from both windows before counting, so bucket percentages
-        still sum to 1 (denominator = non-NaN count). Injecting NaNs into an otherwise
-        shifted actual must not push PSI toward 0 via a deflated denominator."""
-        np.random.seed(7)
-        ref_scores = np.random.normal(500, 100, 200)
-        act_scores = np.random.normal(560, 100, 200)  # a real shift
-        act_with_nan = np.concatenate([act_scores, [np.nan] * 200])  # half the actual is NaN
-        clean = self._make_data(
-            ref_scores, act_scores, [pd.Timestamp("2023-01-15")] * 200, [pd.Timestamp("2023-06-15")] * 200
-        )
-        noisy = self._make_data(
-            ref_scores, act_with_nan, [pd.Timestamp("2023-01-15")] * 200, [pd.Timestamp("2023-06-15")] * 400
-        )
-        kw = dict(
-            date_column="date",
-            score_column="score",
-            start_date_ref=pd.Timestamp("2023-01-01"),
-            end_date_ref=pd.Timestamp("2023-02-01"),
-            start_date_act=pd.Timestamp("2023-06-01"),
-            end_date_act=pd.Timestamp("2023-07-01"),
-            buckets=10,
-            show_plots=False,
-        )
-        psi_clean = calculate_psi_by_period(clean, **kw)["PSI"].sum()
-        psi_noisy = calculate_psi_by_period(noisy, **kw)["PSI"].sum()
-        # Same non-NaN distribution -> essentially the same PSI (NaNs were dropped, not deflating).
-        assert psi_noisy == pytest.approx(psi_clean, rel=1e-9)
-        # Percentages sum to 1 on the non-NaN denominator.
-        res = calculate_psi_by_period(noisy, **kw)
-        assert res["Actual Percent"].sum() == pytest.approx(1.0)
-
-
-# =============================================================================
-# calc_iv Tests
-# =============================================================================
-
-
-class TestCalcIV:
-    def test_basic_iv(self):
-        df = pd.DataFrame({"var": ["A", "A", "A", "B", "B", "B", "C", "C", "C"], "target": [1, 0, 0, 0, 0, 0, 1, 1, 0]})
-        iv = calc_iv(df, "var", "target")
-        assert isinstance(iv, float)
-        assert iv >= 0
-
-    def test_high_iv_good_predictor(self):
-        """Variable perfectly separating targets should have high IV."""
-        df = pd.DataFrame(
-            {
-                "var": ["good"] * 100 + ["bad"] * 100,
-                "target": [0] * 100 + [1] * 100,
-            }
-        )
-        iv = calc_iv(df, "var", "target")
-        assert iv > 0.3  # Strong predictive power
-
-    def test_random_variable_low_iv(self):
-        np.random.seed(42)
-        n = 1000
-        df = pd.DataFrame(
-            {
-                "var": np.random.choice(["A", "B", "C"], n),
-                "target": np.random.randint(0, 2, n),
-            }
-        )
-        iv = calc_iv(df, "var", "target")
-        assert iv < 0.1  # Weak or no predictive power
-
-
-# =============================================================================
-# train_logistic_regression Tests
-# =============================================================================
-
-
-class TestTrainLogisticRegression:
-    def test_basic_training(self):
-        np.random.seed(42)
-        X = pd.DataFrame({"x1": np.random.randn(100), "x2": np.random.randn(100)})
-        y = (X["x1"] + X["x2"] > 0).astype(int)
-        model, X_standardized = train_logistic_regression(X, y)
-        assert hasattr(model, "predict")
-        assert X_standardized.shape == X.shape
-
-    def test_standardized_output(self):
-        np.random.seed(42)
-        X = pd.DataFrame({"x1": np.random.randn(50) * 100, "x2": np.random.randn(50) * 0.01})
-        y = np.random.randint(0, 2, 50)
-        _, X_standardized = train_logistic_regression(X, y)
-        # Standardized data should have mean ~0 and std ~1
-        assert abs(X_standardized[:, 0].mean()) < 0.5
-        assert abs(X_standardized[:, 1].mean()) < 0.5
 
 
 # =============================================================================
@@ -578,13 +358,17 @@ class TestCombinedScoreCV:
         return df
 
     def test_combined_score_on_noise_has_no_skill(self):
-        from src.metrics import compute_score_discriminance, train_logistic_regression
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.preprocessing import StandardScaler
+
+        from src.metrics import compute_score_discriminance
 
         df = self._noise_frame()
         cols = [c for c in df.columns if c != "bad"]
 
         # the OLD in-sample construction shows material (overfit) skill on noise
-        log_reg, X_std = train_logistic_regression(df[cols], df["bad"])
+        X_std = StandardScaler().fit_transform(df[cols])
+        log_reg = LogisticRegression().fit(X_std, df["bad"])
         in_sample = (log_reg.coef_[0] * X_std).sum(axis=1)
         gini_in, _, _, _ = compute_metrics(df["bad"], in_sample)
         assert gini_in > 0.30, "fixture sanity: in-sample fit must overfit the noise"

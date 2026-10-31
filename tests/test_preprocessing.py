@@ -12,7 +12,6 @@ from src.preprocess_improved import (
     apply_binning_transformations,
     complete_preprocessing_pipeline,
     filter_by_date,
-    learn_optimization_bins,
     learn_quantile_bins,
     preprocess_data,
     update_oa_amt_h0,
@@ -131,12 +130,20 @@ def binning_data():
     )
 
 
+def _two_var_bins(octroi_edges, efx_edges):
+    """The classic octroi × EFX grid as a ``bins_config`` dict."""
+    return {
+        "sc_octroi_new_clus": BinConfig(source_col="score_rf", output_col="sc_octroi_new_clus", bin_edges=octroi_edges),
+        "new_efx_clus": BinConfig(source_col="risk_score_rf", output_col="new_efx_clus", bin_edges=efx_edges),
+    }
+
+
 def test_apply_binning_basic(binning_data):
     """Test basic binning transformation."""
     octroi_bins = [-np.inf, 350, 400, 450, np.inf]
     efx_bins = [-np.inf, 25, 50, 75, np.inf]
 
-    result = apply_binning_transformations(binning_data, octroi_bins, efx_bins)
+    result = apply_binning_transformations(binning_data, _two_var_bins(octroi_bins, efx_bins))
 
     assert "sc_octroi_new_clus" in result.columns
     assert "new_efx_clus" in result.columns
@@ -151,7 +158,7 @@ def test_apply_binning_preserves_data(binning_data):
     octroi_bins = [-np.inf, 350, 400, 450, np.inf]
     efx_bins = [-np.inf, 25, 50, 75, np.inf]
 
-    result = apply_binning_transformations(binning_data, octroi_bins, efx_bins)
+    result = apply_binning_transformations(binning_data, _two_var_bins(octroi_bins, efx_bins))
 
     # Original columns should be preserved
     assert "score_rf" in result.columns
@@ -170,7 +177,7 @@ def test_apply_binning_handles_edge_values():
     octroi_bins = [-np.inf, 350, 400, 450, np.inf]
     efx_bins = [-np.inf, 25, 50, 75, np.inf]
 
-    result = apply_binning_transformations(data, octroi_bins, efx_bins)
+    result = apply_binning_transformations(data, _two_var_bins(octroi_bins, efx_bins))
 
     # Should not raise and should produce valid bins
     assert not result["sc_octroi_new_clus"].isna().any()
@@ -182,7 +189,7 @@ def test_apply_binning_missing_columns():
     data = pd.DataFrame({"other_col": [1, 2, 3]})
 
     with pytest.raises(ValueError, match="Missing required columns"):
-        apply_binning_transformations(data, [0, 1], [0, 1])
+        apply_binning_transformations(data, _two_var_bins([0, 1], [0, 1]))
 
 
 # =============================================================================
@@ -556,7 +563,7 @@ def test_binning_with_nan_values_raises_when_above_threshold():
     efx_bins = [-np.inf, 25, 50, np.inf]
 
     with pytest.raises(ValueError, match="exceeds 1% threshold"):
-        apply_binning_transformations(data, octroi_bins, efx_bins)
+        apply_binning_transformations(data, _two_var_bins(octroi_bins, efx_bins))
 
 
 # audit #21: out-of-range handling with FINITE edges (unreachable on the standard ±inf config).
@@ -571,7 +578,9 @@ def _binning_frame(score_vals):
 
 def test_out_of_range_below_snapped_to_first_bin():
     # 199 in-range + 1 below-range (0.5% < 1%): the below row snaps to the first bin (1-indexed = 1), kept.
-    result = apply_binning_transformations(_binning_frame([60.0] * 199 + [-10.0]), _FINITE_OCTROI, _FINITE_EFX)
+    result = apply_binning_transformations(
+        _binning_frame([60.0] * 199 + [-10.0]), _two_var_bins(_FINITE_OCTROI, _FINITE_EFX)
+    )
     assert len(result) == 200  # snapped, not dropped
     assert not result["sc_octroi_new_clus"].isna().any()
     assert result["sc_octroi_new_clus"].iloc[-1] == 1  # below-range -> first bin
@@ -579,14 +588,18 @@ def test_out_of_range_below_snapped_to_first_bin():
 
 def test_out_of_range_above_snapped_to_last_bin():
     # 199 in-range + 1 above-range: snaps to the last bin (2 bins -> 1-indexed 2), kept.
-    result = apply_binning_transformations(_binning_frame([60.0] * 199 + [200.0]), _FINITE_OCTROI, _FINITE_EFX)
+    result = apply_binning_transformations(
+        _binning_frame([60.0] * 199 + [200.0]), _two_var_bins(_FINITE_OCTROI, _FINITE_EFX)
+    )
     assert len(result) == 200
     assert result["sc_octroi_new_clus"].iloc[-1] == 2  # above-range -> last bin
 
 
 def test_nan_source_dropped_separately_from_oob():
     # 199 in-range + 1 NaN-source: the NaN row is dropped (not snapped); OOD rows would be kept.
-    result = apply_binning_transformations(_binning_frame([60.0] * 199 + [np.nan]), _FINITE_OCTROI, _FINITE_EFX)
+    result = apply_binning_transformations(
+        _binning_frame([60.0] * 199 + [np.nan]), _two_var_bins(_FINITE_OCTROI, _FINITE_EFX)
+    )
     assert len(result) == 199  # NaN-source dropped
     assert not result["sc_octroi_new_clus"].isna().any()
 
@@ -594,7 +607,9 @@ def test_nan_source_dropped_separately_from_oob():
 def test_out_of_range_over_threshold_still_raises():
     # >1% out of range with finite edges -> hard fail (behavior preserved).
     with pytest.raises(ValueError, match="exceeds 1% threshold"):
-        apply_binning_transformations(_binning_frame([60.0] * 90 + [-10.0] * 10), _FINITE_OCTROI, _FINITE_EFX)
+        apply_binning_transformations(
+            _binning_frame([60.0] * 90 + [-10.0] * 10), _two_var_bins(_FINITE_OCTROI, _FINITE_EFX)
+        )
 
 
 def test_filter_by_date_with_nat():
@@ -803,99 +818,6 @@ def test_bin_method_optimization_falls_back_to_quantile():
     # Fallback: optimization yields the same edges as quantile.
     assert opt_edges == quantile_edges
     assert np.isclose(opt_edges[1], pd.Series(values).quantile(0.5))
-
-
-# =============================================================================
-# learn_optimization_bins Tests
-# =============================================================================
-
-
-def test_learn_optimization_bins_basic():
-    """Test that optimization bins finds a meaningful split."""
-    rng = np.random.RandomState(42)
-    n = 2000
-    income = rng.uniform(1000, 10000, n)
-    # Low-income group has higher risk rate
-    risk = (income < 5000).astype(float)
-    risk += rng.normal(0, 0.05, n)
-    risk = np.clip(risk, 0, 1)
-    production = rng.uniform(5000, 50000, n)
-
-    df = pd.DataFrame(
-        {
-            "income_t1_m": income,
-            "early_bad": risk,
-            "oa_amt_h0": production,
-        }
-    )
-
-    edges = learn_optimization_bins(df, source_col="income_t1_m", min_samples_leaf=100)
-
-    assert edges[0] == -np.inf
-    assert edges[-1] == np.inf
-    assert len(edges) == 3  # [-inf, threshold, inf]
-    # Threshold should be near 5000
-    assert 3000 < edges[1] < 7000
-
-
-def test_learn_optimization_bins_fallback_no_weight_col():
-    """Test fallback when weight column is missing."""
-    rng = np.random.RandomState(42)
-    n = 2000
-    income = rng.uniform(1000, 10000, n)
-    risk = (income < 5000).astype(float)
-
-    df = pd.DataFrame(
-        {
-            "income_t1_m": income,
-            "early_bad": risk,
-        }
-    )
-
-    edges = learn_optimization_bins(df, source_col="income_t1_m", min_samples_leaf=100)
-    assert len(edges) == 3
-    assert edges[0] == -np.inf
-    assert edges[-1] == np.inf
-
-
-def test_learn_optimization_bins_fallback_zero_weights():
-    """Test fallback when weight column is all zeros."""
-    rng = np.random.RandomState(42)
-    n = 2000
-    income = rng.uniform(1000, 10000, n)
-    risk = (income < 5000).astype(float)
-
-    df = pd.DataFrame(
-        {
-            "income_t1_m": income,
-            "early_bad": risk,
-            "oa_amt_h0": np.zeros(n),
-        }
-    )
-
-    edges = learn_optimization_bins(df, source_col="income_t1_m", min_samples_leaf=100)
-    assert len(edges) == 3
-
-
-def test_learn_optimization_bins_too_few_records():
-    """Test that too few records raises ValueError."""
-    df = pd.DataFrame(
-        {
-            "income_t1_m": [1000, 2000],
-            "early_bad": [0, 1],
-        }
-    )
-
-    with pytest.raises(ValueError, match="only 2 valid records"):
-        learn_optimization_bins(df, source_col="income_t1_m", min_samples_leaf=500)
-
-
-def test_learn_optimization_bins_missing_column():
-    """Test that missing source column raises ValueError."""
-    df = pd.DataFrame({"other_col": [1, 2, 3], "early_bad": [0, 1, 0]})
-
-    with pytest.raises(ValueError, match="Missing required columns"):
-        learn_optimization_bins(df, source_col="income_t1_m")
 
 
 class TestInferDirectionFromBins:

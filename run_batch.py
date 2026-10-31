@@ -102,8 +102,8 @@ def learn_global_bin_edges(data: pd.DataFrame, base_config: dict[str, Any]) -> d
     (unsupervised quantiles) from data.  In batch mode we want a single set of
     edges shared across all segments, so we learn them here on the full demand
     population (all statuses, date-filtered to the observation window) before
-    any segment run.  ``method = "optimization"`` is deprecated and falls back
-    to quantile (see :func:`src.preprocess_improved.learn_optimization_bins`).
+    any segment run.  ``method = "optimization"`` is deprecated (target leakage)
+    and falls back to quantile with a warning.
 
     Parameters
     ----------
