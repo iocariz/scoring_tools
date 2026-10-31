@@ -157,54 +157,6 @@ class TestPlotShapSummaryHTMLWrite:
         assert out_path.exists()
 
 
-class TestPlotIncomeBinTrends:
-    def test_returns_figure_and_writes_html(self, tmp_path):
-        rng = np.random.RandomState(42)
-        n = 90
-        df = pd.DataFrame(
-            {
-                "mis_date": pd.to_datetime(pd.date_range("2024-01-01", periods=n, freq="D")),
-                "income_bin": rng.choice([1, 2, 3], n),
-                "early_bad": rng.randint(0, 2, n),
-                "oa_amt": rng.uniform(500, 2500, n),
-            }
-        )
-        out_path = tmp_path / "trends.html"
-        fig = plots.plot_income_bin_trends(df, "income_bin", output_path=str(out_path))
-        assert fig is not None
-        assert out_path.exists()
-
-
-class TestPlotGroupStatistics:
-    def test_produces_figure(self):
-        df = pd.DataFrame(
-            {
-                "group": ["a", "a", "b", "b", "c", "c"],
-                "outcome": [0, 1, 1, 0, 0, 0],
-            }
-        )
-        fig = plots.plot_group_statistics(df, "group", "outcome")
-        assert fig is not None
-
-
-class TestPlot3dGraphMarginalization:
-    def test_returns_figure_for_more_than_2_vars(self):
-        rng = np.random.RandomState(42)
-        n = 30
-        data_train = pd.DataFrame(
-            {
-                "v0": rng.randint(1, 4, n),
-                "v1": rng.randint(1, 4, n),
-                "v2": rng.randint(1, 4, n),
-                "target": rng.rand(n),
-            }
-        )
-        data_surf = data_train.copy()
-        data_surf["target_pred"] = data_surf["target"] + rng.normal(0, 0.01, n)
-        fig = plots.plot_3d_graph(data_train, data_surf, ["v0", "v1", "v2"], "target")
-        assert fig is not None
-
-
 class TestPlotAcceptanceGridNd:
     def test_returns_empty_figure_for_2_vars(self):
         class FakeGrid:

@@ -357,43 +357,6 @@ def calculate_stability_report(
     return report
 
 
-def plot_psi_comparison(result: PSIResult, title: str | None = None) -> go.Figure:
-    """
-    Create a bar chart comparing baseline vs comparison distributions.
-
-    Args:
-        result: PSIResult with bin details
-        title: Optional custom title
-
-    Returns:
-        Plotly Figure
-    """
-    df = result.bin_details
-
-    if title is None:
-        title = f"{result.variable} - PSI: {result.psi_value:.4f} ({result.status.value})"
-
-    fig = go.Figure()
-
-    # Baseline bars
-    fig.add_trace(go.Bar(name="Baseline", x=df["bin"], y=df["baseline_pct"], marker_color="steelblue", opacity=0.7))
-
-    # Comparison bars
-    fig.add_trace(go.Bar(name="Comparison", x=df["bin"], y=df["comparison_pct"], marker_color="coral", opacity=0.7))
-
-    fig.update_layout(
-        title=title,
-        xaxis_title="Bin",
-        yaxis_title="Percentage",
-        barmode="group",
-        yaxis_tickformat=".1%",
-        legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99),
-        template="plotly_white",
-    )
-
-    return fig
-
-
 def plot_stability_dashboard(report: StabilityReport, top_n: int = 10) -> go.Figure:
     """
     Create a dashboard showing PSI values for all variables.

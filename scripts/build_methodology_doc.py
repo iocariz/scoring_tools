@@ -14,7 +14,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
-OUTPUT_PATH = Path(__file__).resolve().parent.parent / "methodology.docx"
+OUTPUT_PATH = Path(__file__).resolve().parent.parent / "docs" / "methodology.docx"
 
 PRIMARY = RGBColor(0x14, 0x3D, 0x6B)
 ACCENT = RGBColor(0x4A, 0x6F, 0xA5)
@@ -102,17 +102,6 @@ def _add_formula(doc: Document, text: str) -> None:
     run.bold = True
     run.font.color.rgb = ACCENT
     p.paragraph_format.space_before = Pt(4)
-    p.paragraph_format.space_after = Pt(8)
-
-
-def _add_code_block(doc: Document, text: str) -> None:
-    p = doc.add_paragraph()
-    for line in text.splitlines():
-        run = p.add_run(line + "\n")
-        run.font.name = "Consolas"
-        run.font.size = Pt(10)
-        run.font.color.rgb = MUTED
-    p.paragraph_format.left_indent = Cm(0.6)
     p.paragraph_format.space_after = Pt(8)
 
 

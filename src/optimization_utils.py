@@ -1307,38 +1307,6 @@ def mask_to_cutoffs(
     return result
 
 
-def mask_to_solution_df(
-    mask: np.ndarray,
-    grid: CellGrid,
-    inv_vars: list[str],
-    kpis: dict,
-    sol_fac: int = 0,
-) -> pd.DataFrame:
-    """Convert a mask + KPIs into a solution DataFrame compatible with legacy format.
-
-    For 2-var case: columns are [sol_fac, bin1, bin2, ..., KPI columns].
-    """
-    cutoffs = mask_to_cutoffs(mask, grid, inv_vars)
-
-    if len(grid.variables) == 2:
-        var0 = grid.variables[0]
-        row_data = {"sol_fac": sol_fac}
-        for bin_val, cutoff_val in cutoffs[var0].items():
-            row_data[bin_val] = cutoff_val
-        # Add KPI columns
-        for k, v in kpis.items():
-            if k not in ("_mask", "_mask_arr") and not isinstance(v, np.ndarray):
-                row_data[k] = v
-        return pd.DataFrame([row_data])
-    else:
-        # N-var: store acceptance mask info
-        row_data = {"sol_fac": sol_fac}
-        for k, v in kpis.items():
-            if k not in ("_mask", "_mask_arr") and not isinstance(v, np.ndarray):
-                row_data[k] = v
-        return pd.DataFrame([row_data])
-
-
 def add_bin_columns(
     pareto_df: pd.DataFrame,
     masks: list[np.ndarray],

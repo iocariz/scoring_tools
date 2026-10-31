@@ -511,7 +511,7 @@ class PreprocessingSettings(BaseModel):
     monotonicity_uncertainty_min_exposure: float = Field(default=0.0, ge=0.0)
     monotonicity_uncertainty_z_threshold: float = Field(default=1.0, ge=0.0)
 
-    # --- Knob tiers (M3 config-complexity audit; see todo-list.md M3) ---
+    # --- Knob tiers (M3 config-complexity audit; see docs/todo-list.md M3) ---
     # The defaults below ARE the simple/safe path: every fragile feature defaults
     # off (RI "none", optimizer off, MR off, smoothing off, decay None, monotonicity
     # strict, extrapolation "linear", gamma 1.0). The complexity lives in config.toml,

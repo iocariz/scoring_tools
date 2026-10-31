@@ -470,33 +470,6 @@ def fit_h3_curvature_within_bin_temporal(
     return (alpha, {"alpha": alpha, "se": se, "n_bins": n_bins_used, "n_pairs": n_pairs})
 
 
-def get_data_information(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Display DataFrame information and return a DataFrame with variable details.
-    """
-    # Display DataFrame information
-    logger.info(f"Number of rows/records: {df.shape[0]}")
-    logger.info(f"Number of columns/variables: {df.shape[1]}")
-    logger.info("-" * 50)
-
-    # Create a DataFrame with variable information
-    variables_df = pd.DataFrame(
-        {
-            "Variable": df.columns,
-            "Number of unique values": df.nunique(),
-            "Variable Type": df.dtypes,
-            "Number of missing values": df.isnull().sum(),
-            "Percentage missing values": df.isnull().mean() * 100,
-        }
-    )
-
-    # Sort variables by percentage of missing values
-    variables_df = variables_df.sort_values(by="Percentage missing values", ascending=False)
-
-    # Return the DataFrame with variable information
-    return variables_df
-
-
 def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     """Optimize DataFrame memory usage by choosing appropriate integer dtypes.
 

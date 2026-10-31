@@ -169,13 +169,10 @@ def run_inference_phase(
         inference_vars = settings.inference_variables
 
         # Build bins tuple filtered to inference variables only
-        if settings.bins:
-            missing_inference_bins = [var for var in inference_vars if var not in settings.bins]
-            if missing_inference_bins:
-                raise ValueError(f"Missing bin configuration for inference variables: {missing_inference_bins}")
-            bins_tuple = tuple(settings.bins[var].bin_edges for var in inference_vars)
-        else:
-            bins_tuple = (settings.octroi_bins, settings.efx_bins)
+        missing_inference_bins = [var for var in inference_vars if var not in settings.bins]
+        if missing_inference_bins:
+            raise ValueError(f"Missing bin configuration for inference variables: {missing_inference_bins}")
+        bins_tuple = tuple(settings.bins[var].bin_edges for var in inference_vars)
 
         if inference_vars != settings.variables:
             logger.info(

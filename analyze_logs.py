@@ -1047,11 +1047,6 @@ def _round_up(value: float, step: float) -> float:
     return round(math.ceil(value / step) * step, 2)
 
 
-def _round_down(value: float, step: float) -> float:
-    """Round value down to the nearest step."""
-    return round(math.floor(value / step) * step, 2)
-
-
 def generate_alternative_segments_toml(
     segments: dict[str, SegmentMetrics],
     current_segments_path: Path | None = None,

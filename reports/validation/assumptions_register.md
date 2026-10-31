@@ -46,7 +46,7 @@ optimism; #32b) and is never used for selection; the M4 backtest is the unbiased
 tuned-vs-untuned comparison is non-nested CV — best-of-N-trials configs keep some winner's-curse optimism vs untuned
 models. On cd-only training the #32/#33 fixes flip the selection Linear Regression → Lasso (α≈0.7), production +4.5%
 at ~flat risk; validate the pooled `total` selection at the next M5 re-pin. See the #7/#32/#33 entries in
-`todo-list.md`.
+`docs/todo-list.md`.
 
 ## Reproducing the snapshot these values pin to
 Each run writes `output/<segment>/data/run_lineage.json` (M2) capturing the data file **SHA-256**, mtime, row count, git

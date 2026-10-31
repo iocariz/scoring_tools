@@ -13,7 +13,6 @@ Key functions:
 - calculate_risk_values: Calculate inferred risk values using trained models
 """
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from loguru import logger
@@ -69,65 +68,6 @@ def optimal_splits_using_tree(data_frame, numeric_variable, binary_outcome, num_
     return result
 
 
-def calculate_financing_rates(data, date_ini_demand, lm=6, plot_output_path: str | None = None):
-    """
-    Calculates financing rates based on given data and displays the results.
-
-    Args:
-        data (pd.DataFrame): Input data with columns:
-            - 'se_decision_id'
-            - 'status_name'
-            - 'oa_amt'
-            - 'mis_date'
-        date_ini_demand (datetime): Start date for analysis.
-        lm (int, optional): Number of last months to consider (default=6).
-        plot_output_path (str | None, optional): If provided, save the plot to this path.
-
-    Returns:
-        float: Selected (mean) financing rate.
-    """
-
-    # Filter data once for efficiency
-    relevant_data = data[data[Columns.SE_DECISION_ID] == "ok"]
-
-    # Use loc for filtering for better readability
-    booked_data = relevant_data.loc[relevant_data[Columns.STATUS_NAME] == StatusName.BOOKED.value]
-
-    # Group and calculate rates (no need to reset_index)
-    numerator = booked_data.groupby(Columns.MIS_DATE)[Columns.OA_AMT].sum()
-    denominator = relevant_data.groupby(Columns.MIS_DATE)[Columns.OA_AMT].sum()
-    financing_rate_by_month = numerator.div(denominator, fill_value=0)
-
-    # Calculate recent financing rates
-    recent_data = relevant_data.loc[relevant_data[Columns.MIS_DATE] >= date_ini_demand]
-    recent_booked_data = recent_data.loc[recent_data[Columns.STATUS_NAME] == StatusName.BOOKED.value]
-    recent_total = recent_data[Columns.OA_AMT].sum()
-    financing_rate_UM = recent_booked_data[Columns.OA_AMT].sum() / recent_total if recent_total > 0 else np.nan
-
-    # Plotting (use more descriptive labels and better formatting)
-    plt.figure(figsize=(10, 6))  # Adjust figure size
-    financing_rate_by_month.plot(title=f"Financing Rate Over Time (since {date_ini_demand.strftime('%Y-%m')})")
-    plt.ylabel("Financing Rate (%)")
-    plt.xlabel("Month")
-    plt.grid(axis="y")
-    plt.tight_layout()
-    # Avoid blocking in headless/CI environments; save optionally and close.
-    if plot_output_path:
-        plt.savefig(plot_output_path, bbox_inches="tight")
-    plt.close()
-
-    # Calculate and display results with consistent rounding
-    mean_financing_rate = np.round(financing_rate_by_month.tail(lm).mean() * 100, 1)
-    logger.info(f"Financing Rate (Mean of last {lm} months): {mean_financing_rate:.1f}%")
-    logger.info(f"Financing Rate (Weighted for last {lm} months): {np.round(financing_rate_UM * 100, 1):.1f}%")
-
-    # Indicate selected rate more clearly
-    logger.info("--------------------------------")
-    logger.info(f"Selected Financing Rate: {mean_financing_rate:.1f}%")
-
-    return mean_financing_rate / 100
-
-
 def transform_variables(df: pd.DataFrame, variables: list[str], degree: int = 3) -> pd.DataFrame:
     """
     Apply polynomial and interaction transformations to create regression features.
@@ -144,27 +84,6 @@ def transform_variables(df: pd.DataFrame, variables: list[str], degree: int = 3)
         DataFrame with original columns plus all transformed features.
     """
     return _transform_variables_nd(df, variables, degree)
-
-
-def _transform_variables_2d(df: pd.DataFrame, variables: list[str]) -> pd.DataFrame:
-    """Standard 2-variable transform.
-
-    Note: polynomial features on integer bin indices (1..N) create high
-    multicollinearity (VIF). This is acceptable for prediction but coefficient
-    estimates may be unstable. Use regularized models (Ridge/Lasso) when possible.
-    """
-    var0, var1 = variables
-
-    df[f"{var0}_{var1}"] = df[var0] * df[var1]
-    df[f"{var0}^2"] = df[var0] ** 2
-    df[f"{var1}^2"] = df[var1] ** 2
-    df[f"{var0}^3"] = df[var0] ** 3
-    df[f"{var1}^3"] = df[var1] ** 3
-
-    df[f"{var0}^2 x {var1}"] = df[var0] ** 2 * df[var1]
-    df[f"{var0} x {var1}^2"] = df[var0] * df[var1] ** 2
-
-    return df
 
 
 def _transform_variables_nd(df: pd.DataFrame, variables: list[str], degree: int = 3) -> pd.DataFrame:

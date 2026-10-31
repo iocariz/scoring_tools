@@ -19,7 +19,6 @@ from src.utils import (
     fit_h3_extrapolation_curve,
     format_cutoff_summary_table,
     generate_cutoff_summary,
-    get_data_information,
     optimize_dtypes,
     resolve_modelling_supersegment,
     resolve_reporting_supersegment,
@@ -297,26 +296,6 @@ class TestOptimizeDtypes:
         df = pd.DataFrame({"a": pd.array([0, 4_294_967_295], dtype="int64")})
         result = optimize_dtypes(df)
         assert result["a"].dtype == np.uint32
-
-
-# =============================================================================
-# get_data_information Tests
-# =============================================================================
-
-
-class TestGetDataInformation:
-    def test_returns_dataframe(self):
-        df = pd.DataFrame({"a": [1, 2, 3], "b": [4, None, 6]})
-        result = get_data_information(df)
-        assert isinstance(result, pd.DataFrame)
-        assert "Variable" in result.columns
-        assert "Number of missing values" in result.columns
-
-    def test_missing_values_reported(self):
-        df = pd.DataFrame({"a": [1, None, 3], "b": [4, 5, 6]})
-        result = get_data_information(df)
-        a_row = result[result["Variable"] == "a"]
-        assert a_row["Number of missing values"].values[0] == 1
 
 
 # =============================================================================

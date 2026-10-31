@@ -4,11 +4,9 @@ Statistical metrics and model evaluation functions for credit risk scoring.
 This module provides functions for evaluating credit risk model performance:
 - Classification metrics (Gini, AUC, KS statistic)
 - Precision-Recall metrics
-- Population Stability Index (PSI) calculation
 - Bootstrap confidence intervals
 - Rejection threshold analysis
 - Lift and cumulative gains analysis
-- Information Value (IV) calculation
 - DeLong test for AUC comparison
 - Comprehensive model summary reports
 
@@ -16,17 +14,14 @@ Key functions:
 - compute_metrics: Calculate Gini, AUC, KS, and CAP curve
 - compute_precision_recall: Calculate precision, recall, and average precision
 - bootstrap_confidence_interval: Compute CI for Gini and KS via bootstrap
-- calculate_psi_by_period: Population Stability Index with visualization (date-based)
 - calculate_lift_table: Decile-level lift and cumulative gains analysis
 - model_summary: Generate comprehensive model performance report
-- calc_iv: Calculate Information Value for feature selection
 - delong_test: Statistical test for comparing two AUC values
 """
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from loguru import logger
 from scipy import stats
 from scipy.stats import rankdata
@@ -35,20 +30,7 @@ from sklearn.metrics import auc, average_precision_score, precision_recall_curve
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 
-from src.constants import DEFAULT_N_BOOTSTRAPS, DEFAULT_RANDOM_STATE, PSI_EPSILON
-
-
-def train_logistic_regression(X, y):
-    """Train logistic regression on standardized data.
-
-    NOTE (audit #35): scoring this model on its own training rows inflates the
-    combined score's Gini/AUC/KS relative to the raw (unfitted) scores it is
-    compared against. Use :func:`combined_score_cv` for evaluation.
-    """
-    scaler = StandardScaler()
-    X_standardized = scaler.fit_transform(X)
-    log_reg = LogisticRegression().fit(X_standardized, y)
-    return log_reg, X_standardized
+from src.constants import DEFAULT_N_BOOTSTRAPS, DEFAULT_RANDOM_STATE
 
 
 def combined_score_cv(X: pd.DataFrame, y, n_splits: int = 5, random_state: int = DEFAULT_RANDOM_STATE) -> np.ndarray:
@@ -258,160 +240,6 @@ def _nan_psi_frame() -> pd.DataFrame:
     )
 
 
-def calculate_psi_by_period(
-    data: pd.DataFrame,
-    date_column: str,
-    score_column: str,
-    start_date_ref: pd.Timestamp,
-    end_date_ref: pd.Timestamp,
-    start_date_act: pd.Timestamp,
-    end_date_act: pd.Timestamp,
-    buckets: int | None = None,
-    breakpoints: list | None = None,
-    show_plots: bool = False,
-) -> pd.DataFrame:
-    """
-    Calculate Population Stability Index (PSI) between reference and actual periods.
-
-    PSI measures how much a score distribution has shifted between two time periods.
-    Values are interpreted as:
-    - PSI < 0.1: No significant change
-    - 0.1 <= PSI < 0.25: Moderate change, investigate
-    - PSI >= 0.25: Significant change, action required
-
-    Zero handling (audit #11): epsilon protects only the log term; the difference term keeps the true
-    proportions. This variant is symmetric in appearing/disappearing bins and equals the textbook
-    epsilon-in-both-terms PSI to O(epsilon), so the thresholds above remain valid.
-
-    Args:
-        data: DataFrame containing scores and dates.
-        date_column: Name of the date column.
-        score_column: Name of the score column to analyze.
-        start_date_ref: Start date for reference (expected) period.
-        end_date_ref: End date for reference period.
-        start_date_act: Start date for actual period.
-        end_date_act: End date for actual period.
-        buckets: Number of equal-frequency buckets (mutually exclusive with breakpoints).
-        breakpoints: Custom breakpoints for buckets (mutually exclusive with buckets).
-        show_plots: Whether to display KDE and CDF comparison plots.
-
-    Returns:
-        DataFrame with PSI calculation by bucket, including breakpoints, counts, and PSI values.
-
-    Raises:
-        ValueError: If dates are not pd.Timestamp or neither buckets nor breakpoints provided.
-    """
-    # Ensure valid inputs
-    if not all(isinstance(i, pd.Timestamp) for i in [start_date_ref, end_date_ref, start_date_act, end_date_act]):
-        raise ValueError("Date inputs should be of type pd.Timestamp")
-    if buckets is None and breakpoints is None:
-        raise ValueError("Either buckets or breakpoints should be provided")
-
-    # Filter data for expected and actual
-    expected = data.loc[(data[date_column] >= start_date_ref) & (data[date_column] <= end_date_ref)]
-    actual = data.loc[(data[date_column] >= start_date_act) & (data[date_column] <= end_date_act)]
-
-    # Drop NaN scores from BOTH windows before counting. Two failure modes otherwise:
-    #  - np.histogram silently omits NaN, but the denominator len(window) still counts
-    #    those rows → every bucket's percent is deflated → PSI understated.
-    #  - np.percentile propagates NaN, so a single NaN in the reference poisons every
-    #    breakpoint → an unwarranted all-NaN PSI.
-    expected = expected[expected[score_column].notna()]
-    actual = actual[actual[score_column].notna()]
-
-    # Empty window → PSI undefined (avoid the 0/0 that used to produce inf/NaN percentages).
-    if len(expected) == 0 or len(actual) == 0:
-        logger.warning(
-            f"PSI by period: empty {'reference' if len(expected) == 0 else 'actual'} window "
-            f"for '{score_column}' (after date filter + NaN drop). Returning NaN."
-        )
-        return _nan_psi_frame()
-
-    # Create buckets
-    if breakpoints is None:
-        breakpoints = np.percentile(expected[score_column], np.linspace(0, 100, buckets + 1))
-    # Drop duplicate edges (audit #12): on a low-cardinality score np.percentile yields repeated
-    # breakpoints, which would make np.histogram raise "bins must increase monotonically".
-    breakpoints = np.unique(breakpoints)
-    if len(breakpoints) < 2:
-        # Near-constant reference: PSI undefined. Return a NaN result (not a crash, not a 0 that
-        # would read as "stable").
-        logger.warning(f"PSI by period: fewer than 2 distinct score breakpoints for '{score_column}'. Returning NaN.")
-        return _nan_psi_frame()
-    # Extend edges to (-inf, +inf) so out-of-range actual values are captured
-    # (mirrors stability.calculate_psi behaviour).
-    breakpoints = list(breakpoints)
-    breakpoints[0] = -np.inf
-    breakpoints[-1] = np.inf
-    breakpoints = np.array(breakpoints)
-    buckets = len(breakpoints) - 1
-
-    # Calculate bucket counts for expected and actual data
-    initial_counts = np.histogram(expected[score_column], breakpoints)[0]
-    new_counts = np.histogram(actual[score_column], breakpoints)[0]
-
-    # Generate dataframe
-    df = pd.DataFrame(
-        {
-            "Bucket": np.arange(1, buckets + 1),
-            "Breakpoint Value": breakpoints[1:],
-            "Expected Count": initial_counts,
-            "Actual Count": new_counts,
-        }
-    )
-
-    df["Expected Percent"] = df["Expected Count"] / len(expected)
-    df["Actual Percent"] = df["Actual Count"] / len(actual)
-
-    # Apply epsilon only in the log term to avoid log(0) without distorting
-    # the actual distributions (re-normalizing would change divergence scale).
-    epsilon = PSI_EPSILON
-    expected_safe = df["Expected Percent"].where(df["Expected Percent"] > 0, epsilon)
-    actual_safe = df["Actual Percent"].where(df["Actual Percent"] > 0, epsilon)
-
-    # Compute PSI (use original percentages for the difference, epsilon only in log)
-    df["PSI"] = (df["Actual Percent"] - df["Expected Percent"]) * np.log(actual_safe / expected_safe)
-    total_psi = df["PSI"].sum()
-
-    # Plotting
-    if show_plots:
-        fig, axes = plt.subplots(ncols=2, figsize=(12, 6))
-
-        # Set the global title for the entire figure
-        fig.suptitle(
-            f"Population Stability Report\nExpected: {start_date_ref.strftime('%Y-%m-%d')} to {end_date_ref.strftime('%Y-%m-%d')}\nActual: {start_date_act.strftime('%Y-%m-%d')} to {end_date_act.strftime('%Y-%m-%d')}",
-            fontsize=16,
-            fontweight="bold",
-            y=1.08,
-        )
-
-        # KDE Plot
-        sns.set_style("whitegrid")
-        sns.kdeplot(data=actual, x=score_column, fill=True, label="Actual", ax=axes[0], legend=True)
-        sns.kdeplot(data=expected, x=score_column, fill=True, label="Expected", ax=axes[0], legend=True)
-        axes[0].set_title("Kernel Density Plot of Scores")
-        axes[0].tick_params(labelsize=12)
-        axes[0].legend()
-        sns.despine(left=True, ax=axes[0])
-
-        # CDF plot
-        sorted_actual_scores = np.sort(actual[score_column])
-        sorted_expected_scores = np.sort(expected[score_column])
-        p_actual = np.arange(1, len(sorted_actual_scores) + 1) / len(sorted_actual_scores)
-        p_expected = np.arange(1, len(sorted_expected_scores) + 1) / len(sorted_expected_scores)
-        axes[1].plot(sorted_actual_scores, p_actual, marker=".", linestyle="none", label="Actual")
-        axes[1].plot(sorted_expected_scores, p_expected, marker=".", linestyle="none", label="Expected")
-        axes[1].set_title(f"CDF Plot of Scores (PSI = {total_psi:.5f})")
-        axes[1].set_xlabel(score_column)
-        axes[1].set_ylabel("CDF")
-        axes[1].legend()
-
-        plt.tight_layout()
-        plt.show()
-
-    return df
-
-
 def model_summary(
     df: pd.DataFrame,
     target_column: str,
@@ -593,54 +421,6 @@ def compute_score_discriminance(
         )
 
     return pd.DataFrame(rows)
-
-
-def calc_iv(df: pd.DataFrame, var: str, target: str) -> float:
-    """
-    Calculate Information Value (IV) for a categorical variable.
-
-    IV measures the predictive power of a variable for binary classification.
-    Interpretation:
-    - IV < 0.02: Not useful for prediction
-    - 0.02 <= IV < 0.1: Weak predictive power
-    - 0.1 <= IV < 0.3: Medium predictive power
-    - IV >= 0.3: Strong predictive power
-
-    Args:
-        df: DataFrame containing the variable and target.
-        var: Name of the categorical variable to evaluate.
-        target: Name of the binary target column (1=bad, 0=good).
-
-    Returns:
-        Information Value as a float.
-    """
-    df_tmp = df.groupby(var).agg({target: ["sum", "count"]})
-    df_tmp.columns = ["sum", "count"]
-    df_tmp = df_tmp.reset_index()
-
-    total_bad = df_tmp["sum"].sum()
-    total_good = df_tmp["count"].sum() - total_bad
-
-    # Guard against degenerate cases (all-bad or all-good)
-    if total_bad == 0 or total_good == 0:
-        return 0.0
-
-    # Laplace smoothing: add 0.5 to bad and good counts per bin to stabilize
-    # WOE for zero-event bins, instead of epsilon substitution which produces
-    # extreme WOE values that inflate IV (#13).
-    n_bins = len(df_tmp)
-    bad_smooth = df_tmp["sum"] + 0.5
-    good_smooth = (df_tmp["count"] - df_tmp["sum"]) + 0.5
-    total_bad_smooth = total_bad + 0.5 * n_bins
-    total_good_smooth = total_good + 0.5 * n_bins
-
-    df_tmp["perc_bad"] = bad_smooth / total_bad_smooth
-    df_tmp["perc_good"] = good_smooth / total_good_smooth
-    df_tmp["woe"] = np.log(df_tmp["perc_good"] / df_tmp["perc_bad"])
-    df_tmp["iv"] = (df_tmp["perc_good"] - df_tmp["perc_bad"]) * df_tmp["woe"]
-    iv = df_tmp["iv"].sum()
-
-    return iv
 
 
 def compute_precision_recall(

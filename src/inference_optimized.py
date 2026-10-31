@@ -202,50 +202,6 @@ def _generate_regression_variables(variables: list[str]) -> tuple[list[str], dic
     return _generate_regression_variables_nd(variables)
 
 
-def _generate_regression_variables_2d(variables: list[str]) -> tuple[list[str], dict[str, list[str]]]:
-    """Standard 2-variable feature set generation."""
-    var0, var1 = variables
-
-    var_reg = [
-        f"{var1}",
-        f"{var0}",
-        f"{var0}_{var1}",
-    ]
-
-    squared_terms = [
-        f"{var1}^2",
-        f"{var0}^2",
-    ]
-
-    cubic_terms = [
-        f"{var1}^3",
-        f"{var0}^3",
-    ]
-
-    extra_interactions = [
-        f"{var0}^2 x {var1}",
-        f"{var0} x {var1}^2",
-    ]
-
-    var_simple = [
-        f"{var1}",
-        f"{var0}",
-    ]
-
-    feature_sets = {
-        "original": list(variables),
-        "simple": var_simple,
-        "base": var_reg,
-        "base + squared": var_reg + squared_terms,
-        "base + cubic": var_reg + cubic_terms,
-        "base + all_poly": var_reg + squared_terms + cubic_terms,
-        "base + interactions": var_reg + extra_interactions,
-        "full": var_reg + squared_terms + cubic_terms + extra_interactions,
-    }
-
-    return var_reg, feature_sets
-
-
 def _generate_regression_variables_nd(variables: list[str]) -> tuple[list[str], dict[str, list[str]]]:
     """N-variable feature set generation using PolynomialFeatures naming."""
     from sklearn.preprocessing import PolynomialFeatures
@@ -299,7 +255,7 @@ def process_dataset(
 
     Args:
         data: Dataset to process (caller must pre-filter to booked records).
-        bins: Tuple of (octroi_bins, efx_bins) for variable binning.
+        bins: Tuple of bin edges, one per variable.
         variables: List of two grouping variable names (bin columns).
         indicators: Indicator columns to aggregate (summed per group).
         target_var: Name of the target variable to compute from aggregated indicators.
@@ -1556,7 +1512,7 @@ def inference_pipeline(
 
     Args:
         data: Raw input data containing all records.
-        bins: Tuple of (octroi_bins, efx_bins) for variable binning.
+        bins: Tuple of bin edges, one per variable.
         variables: List of variable names for modeling.
         indicators: List of indicator column names for calculations.
         target_var: Name of the target variable to predict.
