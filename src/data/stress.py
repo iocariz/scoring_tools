@@ -1,18 +1,9 @@
 """Stress factors (global and per-bin) applied to the booked risk during preprocessing."""
 
-import numpy as np
 import pandas as pd
-from joblib import Parallel, delayed
 from loguru import logger
 
-from src.core.constants import DEFAULT_N_BOOTSTRAPS, DEFAULT_RISK_MULTIPLIER
-from src.core.utils import (
-    MAX_PARALLEL_JOBS,
-    calculate_annual_coef,
-    calculate_b2_ever_h6,
-    calculate_todu_30ever_from_b2,
-    mask_incomplete_outcome_pairs,
-)
+from src.core.constants import DEFAULT_RISK_MULTIPLIER
 
 
 def calculate_stress_factor(
