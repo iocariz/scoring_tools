@@ -2,8 +2,8 @@
   "F1_mr_nonlinear_aggregation": {
     "0.5": {
       "bin_curve_risk_pct": 0.2,
-      "loan_reconstruction_risk_pct": 0.1,
-      "ratio": 0.5
+      "loan_reconstruction_risk_pct": 0.2,
+      "ratio": 1.0
     },
     "1.0": {
       "bin_curve_risk_pct": 0.2,
@@ -12,15 +12,15 @@
     },
     "2.0": {
       "bin_curve_risk_pct": 0.2,
-      "loan_reconstruction_risk_pct": 20.0,
-      "ratio": 100.0
+      "loan_reconstruction_risk_pct": 0.2,
+      "ratio": 1.0
     }
   },
   "F2_auxiliary_missingness": {
     "h6_valid_rows": 3,
-    "rows_after_enabling_h3_columns": 2,
+    "rows_after_enabling_h3_columns": 3,
     "h6_default_numerator_before": 10.0,
-    "h6_default_numerator_after": 0.0
+    "h6_default_numerator_after": 10.0
   },
   "F3_hri_tuning_weights": {
     "weighting_targets_observed_during_hri_tree_tuning": [

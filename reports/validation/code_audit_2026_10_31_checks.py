@@ -2,9 +2,7 @@
 
 Run: uv run python reports/validation/code_audit_2026_10_31_checks.py
 
-F3-F6 are fixed: their checks assert the CORRECTED behavior. F1 (MR per-loan nonlinear extrapolation)
-and F2 (auxiliary-indicator listwise deletion) are still open; their checks characterize the current
-implementation and will flip when those fixes land.
+All six findings are fixed; every check asserts the CORRECTED behavior (F3-F6 in PR #264, F1/F2 after it).
 """
 
 from __future__ import annotations
@@ -92,8 +90,8 @@ def check_mr_nonlinear_aggregation() -> dict:
             "loan_reconstruction_risk_pct": actual * 100,
             "ratio": actual / expected,
         }
-    assert np.isclose(results["0.5"]["ratio"], 0.5)
-    assert np.isclose(results["2.0"]["ratio"], 100.0)
+    # Fixed (F1): the curve is evaluated once on the bin H3, so the reconstruction matches it at every curvature.
+    assert all(np.isclose(r["ratio"], 1.0) for r in results.values())
     return results
 
 
@@ -115,7 +113,8 @@ def check_auxiliary_missingness() -> dict:
     b, _, _ = _prepare_pipeline_data(
         data, (), ["x", "y"], required + ["todu_30ever_h3", "todu_amt_pile_h3"], "b2_ever_h6", 1.0
     )
-    assert len(a) == 3 and len(b) == 2 and b["todu_30ever_h6"].sum() == 0
+    # Fixed (F2): an auxiliary H3 pair no longer drops loans with complete H6 outcomes.
+    assert len(a) == 3 and len(b) == 3 and b["todu_30ever_h6"].sum() == 10.0
     return {
         "h6_valid_rows": len(a),
         "rows_after_enabling_h3_columns": len(b),
