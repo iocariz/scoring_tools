@@ -35,6 +35,7 @@ import pandas as pd
 
 from src.backtest import (
     MIN_DEFAULTS_FOR_DRIFT,
+    _fmt,
     _realized_metrics,
     apply_policy,
     load_frozen_policy,
@@ -667,7 +668,3 @@ def write_comparison_consolidated(
     md_path = out_dir / f"policy_compare_summary{suffix}.md"
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"consolidated": csv_path, "summary": md_path}
-
-
-def _fmt(v: float | None, nd: int = 3) -> str:
-    return "n/a" if v is None else f"{v:.{nd}f}"

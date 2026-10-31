@@ -909,12 +909,9 @@ def patch_consolidated_production_from_segment_audits(
     # swap-in classifications meaningless — skip audit patching for those).
     def _is_baseline_segment(seg_name_local: str) -> bool:
         try:
-            import tomllib
-
-            cfg_path = output_base / seg_name_local / "config_segment.toml"
-            if cfg_path.exists():
-                cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
-                return bool(cfg.get("preprocessing", cfg).get("baseline_mode", False))
+            prep = _read_segment_prep(output_base, seg_name_local)
+            if prep is not None:
+                return bool(prep.get("baseline_mode", False))
         except Exception:
             logger.warning(
                 f"_is_baseline_segment: failed to read config for '{seg_name_local}'; treating as non-baseline",
@@ -3049,6 +3046,31 @@ def _build_top_movers_df(source_df, *, period: str) -> pd.DataFrame:
 # function body shrinks further and these are independently testable.
 
 
+def _read_segment_prep(output_base: str | Path, seg_name: str) -> dict[str, Any] | None:
+    """Return the ``[preprocessing]`` table of a segment's saved ``config_segment.toml``.
+
+    ``None`` when the file does not exist. Parse errors propagate so each caller keeps its own
+    fallback + warning.
+    """
+    import tomllib
+
+    path = Path(output_base) / seg_name / "config_segment.toml"
+    if not path.exists():
+        return None
+    cfg = tomllib.loads(path.read_text(encoding="utf-8"))
+    return cfg.get("preprocessing", cfg)
+
+
+def _read_global_prep() -> dict[str, Any] | None:
+    """Return the ``[preprocessing]`` table of the global ``config.toml`` (CWD), or ``None`` if absent."""
+    import tomllib
+
+    path = Path("config.toml")
+    if not path.exists():
+        return None
+    return tomllib.loads(path.read_text(encoding="utf-8")).get("preprocessing", {})
+
+
 def _load_segment_settings(output_base: Path, seg_name_local: str) -> dict[str, Any]:
     """Load multiplier, multiplier_h3, inv_vars, baseline_mode from the segment's saved config."""
     defaults: dict[str, Any] = {
@@ -3058,12 +3080,8 @@ def _load_segment_settings(output_base: Path, seg_name_local: str) -> dict[str, 
         "baseline_mode": False,
     }
     try:
-        import tomllib
-
-        seg_cfg_path = output_base / seg_name_local / "config_segment.toml"
-        if seg_cfg_path.exists():
-            cfg = tomllib.loads(seg_cfg_path.read_text(encoding="utf-8"))
-            prep = cfg.get("preprocessing", cfg)
+        prep = _read_segment_prep(output_base, seg_name_local)
+        if prep is not None:
             if "multiplier" in prep:
                 defaults["multiplier"] = float(prep["multiplier"])
             if "multiplier_h3" in prep:
@@ -3104,12 +3122,8 @@ def _resolve_income_threshold(
 ) -> float | None:
     # 0) Segment run config snapshot (contains learned/injected edges in batch mode)
     try:
-        import tomllib
-
-        seg_cfg_path = output_base / seg_name_local / "config_segment.toml"
-        if seg_cfg_path.exists():
-            cfg = tomllib.loads(seg_cfg_path.read_text(encoding="utf-8"))
-            prep = cfg.get("preprocessing", cfg)
+        prep = _read_segment_prep(output_base, seg_name_local)
+        if prep is not None:
             seg_file_edges = prep.get("bins", {}).get("income_bin", {}).get("bin_edges")
             th = _extract_binary_income_threshold(seg_file_edges)
             if th is not None:
@@ -3138,10 +3152,9 @@ def _resolve_income_threshold(
 
     # 3) Global config fallback (config.toml)
     try:
-        cfg_path = Path("config.toml")
-        if cfg_path.exists():
-            cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
-            global_edges = cfg.get("preprocessing", {}).get("bins", {}).get("income_bin", {}).get("bin_edges")
+        global_prep = _read_global_prep()
+        if global_prep is not None:
+            global_edges = global_prep.get("bins", {}).get("income_bin", {}).get("bin_edges")
             th = _extract_binary_income_threshold(global_edges)
             if th is not None:
                 return th
@@ -4042,7 +4055,7 @@ def _write_per_segment_rp_sheets(
         seg_vars_full = _resolve_segment_variables(output_base, segments, seg_name)
 
         # Resolve income threshold for labels
-        _income_th = _resolve_segment_income_threshold(output_base, segments, supersegments, seg_name)
+        _income_th = _resolve_income_threshold(output_base, segments, supersegments, seg_name)
 
         # --- Main period ---
         csv_path = output_base / seg_name / "data" / "risk_production_summary_table_base.csv"
@@ -4156,12 +4169,8 @@ def _resolve_segment_variables(
     """
     seg_vars_full: list[str] | None = None
     try:
-        import tomllib as _tomllib
-
-        _seg_cfg_path = output_base / seg_name / "config_segment.toml"
-        if _seg_cfg_path.exists():
-            _scfg = _tomllib.loads(_seg_cfg_path.read_text(encoding="utf-8"))
-            _prep = _scfg.get("preprocessing", _scfg)
+        _prep = _read_segment_prep(output_base, seg_name)
+        if _prep is not None:
             seg_vars_full = _prep.get("variables") or _prep.get("inference_variables")
             if seg_vars_full:
                 seg_vars_full = list(seg_vars_full)
@@ -4180,12 +4189,9 @@ def _resolve_segment_variables(
         seg_vars_full = seg_cfg.get("variables")
     if not seg_vars_full:
         try:
-            import tomllib as _tomllib
-
-            _gcfg_path = Path("config.toml")
-            if _gcfg_path.exists():
-                _gcfg = _tomllib.loads(_gcfg_path.read_text(encoding="utf-8"))
-                seg_vars_full = _gcfg.get("preprocessing", {}).get("variables")
+            _gprep = _read_global_prep()
+            if _gprep is not None:
+                seg_vars_full = _gprep.get("variables")
         except Exception:
             logger.warning(
                 f"Failed to read variables from global config.toml for '{seg_name}'; will use hardcoded default list",
@@ -4194,47 +4200,6 @@ def _resolve_segment_variables(
     if not seg_vars_full:
         seg_vars_full = list(_FALLBACK_REPORTING_VARIABLES)
     return seg_vars_full
-
-
-def _resolve_segment_income_threshold(
-    output_base: Path,
-    segments: dict[str, dict[str, Any]],
-    supersegments: dict[str, dict[str, Any]],
-    seg_name: str,
-) -> float | None:
-    """Resolve the binary income-bin threshold for segment labels via
-    segment config then reporting supersegment. Returns None if neither
-    source yields a single finite edge.
-
-    Extracted from export_consolidated_excel in R2b-iii step 14.
-    """
-    _income_th: float | None = None
-    try:
-        import tomllib as _tomllib
-
-        _seg_cfg_path2 = output_base / seg_name / "config_segment.toml"
-        if _seg_cfg_path2.exists():
-            _scfg2 = _tomllib.loads(_seg_cfg_path2.read_text(encoding="utf-8"))
-            _edges = _scfg2.get("preprocessing", _scfg2).get("bins", {}).get("income_bin", {}).get("bin_edges")
-            if _edges and isinstance(_edges, list) and len(_edges) >= 3:
-                finite = [float(e) for e in _edges if np.isfinite(float(e))]
-                if len(finite) == 1:
-                    _income_th = finite[0]
-    except Exception:
-        logger.warning(
-            f"Failed to resolve income threshold from segment config for '{seg_name}'; "
-            f"will try reporting supersegment edges next",
-            exc_info=True,
-        )
-    if _income_th is None:
-        _rs = segments.get(seg_name, {}).get("reporting_supersegment") or segments.get(seg_name, {}).get("supersegment")
-        if _rs and _rs in supersegments:
-            _edges = supersegments[_rs].get("bin_edges", {}).get("income_bin")
-            if _edges and isinstance(_edges, list) and len(_edges) >= 3:
-                finite = [float(e) for e in _edges if np.isfinite(float(e))]
-                if len(finite) == 1:
-                    _income_th = finite[0]
-    return _income_th
 
 
 def _batch_provenance_suffix(output_base: str | Path, segments: dict[str, dict[str, Any]]) -> str:
@@ -4457,10 +4422,7 @@ def _collect_frontier_specs(output_base: Path, segments: dict, suffix: str) -> t
             pass
         target = None
         try:
-            import tomllib
-
-            cfg = tomllib.loads((Path(output_base) / seg / "config_segment.toml").read_text(encoding="utf-8"))
-            target = float(cfg.get("preprocessing", cfg).get("optimum_risk"))
+            target = float(_read_segment_prep(output_base, seg).get("optimum_risk"))
         except Exception:
             pass
         specs.append(

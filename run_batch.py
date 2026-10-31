@@ -37,7 +37,7 @@ from tqdm import tqdm
 
 from src.config import OutputPaths
 from src.consolidation import generate_consolidation_report
-from src.data_manager import standardize_columns_and_values
+from src.data_manager import load_data, standardize_columns_and_values
 from src.lineage import git_provenance
 from src.utils import resolve_modelling_supersegment, resolve_reporting_supersegment
 
@@ -75,9 +75,8 @@ def load_and_standardize_data(data_path: str, encoding: str = "latin-1") -> pd.D
     """
     try:
         logger.info(f"Attempting to preload data from {data_path}...")
-        # Encoding configurable + unified with data_manager.load_data (audit #19): both read sites
-        # use the same encoding (default latin-1) instead of the old latin-1/utf-8 split.
-        data = pd.read_sas(data_path, format="sas7bdat", encoding=encoding)
+        # Same reader + encoding as the per-segment path (audit #19).
+        data = load_data(data_path, encoding=encoding)
         logger.info(f"Data loaded: {data.shape[0]:,} rows × {data.shape[1]} columns")
 
         # Standardize column names + categorical values via the shared helper (protects dates/IDs).
