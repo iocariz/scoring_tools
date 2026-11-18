@@ -496,11 +496,21 @@ def slide_title(prs, f: dict, today: str) -> None:
     )
 
 
-def slide_chart(prs, kicker: str, title: str, period: str, img: Path, notes: list[tuple[str, str]]) -> None:
+def slide_chart(
+    prs,
+    kicker: str,
+    title: str,
+    period: str,
+    img: Path,
+    notes: list[tuple[str, str]],
+    max_h: float = 4.25,
+    size: float = 12,
+) -> None:
+    """``max_h`` (pulgadas) acorta el gráfico cuando la slide lleva más texto debajo."""
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     y = _header(slide, title, kicker, period)
-    bottom = _picture(slide, img, MARGIN, y, W - 2 * MARGIN, Inches(4.25))
-    _bullets(slide, MARGIN, bottom + Inches(0.15), W - 2 * MARGIN, notes, size=12)
+    bottom = _picture(slide, img, MARGIN, y, W - 2 * MARGIN, Inches(max_h))
+    _bullets(slide, MARGIN, bottom + Inches(0.15), W - 2 * MARGIN, notes, size=size)
 
 
 def slide_scenarios(prs, picks: pd.DataFrame, sens: pd.DataFrame, f: dict, period: str) -> None:
@@ -876,6 +886,13 @@ def build(data_dir: Path, out_path: Path, today: str | None = None) -> Path:
         charts["drift"],
         [
             (
+                "Cómo se calcula el esperado.",
+                f"Con la cartera de {f['online_window']} se mide la tasa de mora de cada tramo de score (en tienda, de "
+                "cada grupo de cliente) y se aplica a la exposición que cada trimestre tiene en cada tramo. No es el "
+                "riesgo promedio del periodo: cambia con la composición de lo contratado, así que el índice solo "
+                "recoge que haya más o menos mora a igual score.",
+            ),
+            (
                 "Online.",
                 f"A seis meses, las cohortes de 2026 van en {es(idx('online', 'h6', '2026Q1'), 2)}; a tres meses el segundo "
                 f"trimestre va en {es(idx('online', 'h3', '2026Q2'), 2)}, cuando un año antes estaba en "
@@ -888,6 +905,8 @@ def build(data_dir: Path, out_path: Path, today: str | None = None) -> Path:
                 "meses). Julio repunta, pero queda por debajo de julio de 2025.",
             ),
         ],
+        max_h=3.4,
+        size=11,
     )
     slide_scenarios(prs, picks, data["sens"], f, both_p)
     slide_chart(
