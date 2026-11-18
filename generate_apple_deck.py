@@ -344,7 +344,7 @@ def slide_title(prs, online, stores, today: str) -> None:
         Inches(4.25),
         Inches(8.6),
         Inches(1.2),
-        "Applying the Apple Online grid to Apple Stores raises system approval and lowers risk at the same time. "
+        "Applying the Apple Online grid to Apple Stores raises system approval at a similar level of risk. "
         "Store risk is still an estimate, but its level is now anchored to the delinquency stores have "
         "actually had: the only assumption left is that the score ranks the same way, not how much risk there is.",
         size=15,
@@ -446,7 +446,7 @@ def slide_exec(prs, online, stores, picks, stores_img: Path, meta: dict, facts: 
         y2,
         right_w,
         Inches(0.4),
-        "Stores: the e-commerce grid improves both",
+        "Stores: more approval at a similar risk",
         size=15,
         bold=True,
     )
@@ -608,8 +608,8 @@ def slide_method_seasonal(prs, meta: dict, facts: dict, period: str) -> None:
                 "Effective months instead of calendar months",
                 "The run-rate is divided not by the number of months but by the sum of the seasonal index over the "
                 "months covered. A full calendar year sums to 12.00 and changes nothing; the stores window "
-                f"({facts['stores_window']}) sums to {ac.num(facts['stores_eff_months'], 2)} and corrects for falling "
-                "in weak store months.",
+                f"({facts['stores_window']}) sums to {ac.num(facts['stores_eff_months'], 2)} and corrects for its "
+                "months not being average store months.",
                 "CORRECTED",
             ),
             (
@@ -689,9 +689,11 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, meta: dict, period: str 
         split = (
             f"That gap has two parts: the grid (+{money(base_prod - same_prod)}/mo on the same base, "
             f"{money(same_prod)} → {money(base_prod)}) and volume "
-            f"({'+' if same_prod >= today_prod else '−'}{money(abs(same_prod - today_prod))}: store demand in "
-            f"{stores_window} runs {ac.num(meta.get('demanda_tienda_vs_ventana_pct', float('nan')), 0)}% above "
-            "the average of the 'today' window)."
+            f"({'+' if same_prod >= today_prod else '−'}{money(abs(same_prod - today_prod))}: against the average "
+            f"of the 'today' window, store demand in {stores_window} runs "
+            f"{ac.num(meta.get('demanda_tienda_vs_ventana_pct', float('nan')), 0)}% higher and Online's since "
+            f"{month_label(meta.get('online_volumen_desde', meta['online_hasta']))} "
+            f"{ac.num(meta.get('online_volumen_vs_ventana_pct', 0.0), 0)}% higher)."
         )
     else:
         split = f"It is therefore the stores gain, measured on {stores_window} against the full 'today' window."
@@ -701,10 +703,17 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, meta: dict, period: str 
     same_risk = float(same_rows.iloc[0]["riesgo_total_pct"]) if not same_rows.empty else float("nan")
     grid_today_basis = meta.get("riesgo_parrilla_base_hoy_pct", float("nan"))
     ri_margin = meta.get("ri_margen_online_pp", float("nan"))
+    drift = float(meta.get("online_factor_riesgo", 1.0) or 1.0)
+    drift_note = (
+        f" Every other row carries Online's risk ×{ac.num(drift, 2)}: at equal score, its 2026 cohorts run above "
+        "the window the curve was estimated on."
+        if abs(drift - 1) > 1e-9
+        else ""
+    )
     if pd.notna(same_risk) and pd.notna(grid_today_basis) and pd.notna(ri_margin):
         ri_note = (
             "\n\nScenario risks carry the reject-inference uplift, a conservative margin that also falls on "
-            f"Online's own book (+{ac.num(ri_margin, 2)} pp vs realized); the two 'today' rows are realized. Like "
+            f"Online's own book (+{ac.num(ri_margin, 2)} pp vs realized); 'Today (measured)' is realized.{drift_note} Like "
             f"for like, the current grid moves risk by {grid_today_basis - same_risk:+.2f} pp."
         )
     else:
@@ -733,8 +742,8 @@ def slide_frontier(prs, img: Path, picks: pd.DataFrame, meta: dict, period: str 
         f"{ac.num(meta['online_parrilla_pct'], 1, '%')} of demand; the engine approved "
         f"{ac.num(meta['online_aprobado_real_pct'], 1, '%')}: swap-in {ac.num(meta['online_swap_in_pct'], 1, '%')}, "
         f"swap-out {ac.num(meta['online_swap_out_pct'], 1, '%')}) and every accepted application converts at the "
-        f"take-up rate of its actual decision. Modelled and measured Online coincide: the gap between "
-        f"{money(base_prod)} and {money(today_prod)} per month is stores. {split}",
+        f"take-up rate of its actual decision. Modelled Online reproduces its measured rates: the gap between "
+        f"{money(base_prod)} and {money(today_prod)} per month is the store grid plus volume. {split}",
         size=11,
         color=MUTED,
         spacing=1.2,
@@ -768,7 +777,7 @@ def slide_scenarios_by_channel(prs, picks: pd.DataFrame, meta: dict, period: str
     wanted = [TODAY_MEASURED, TODAY_SAME_BASE, CURRENT_GRID] + [f"{t:g}% · {SHIFTED_GRID}" for t in targets]
     short = {
         TODAY_MEASURED: "Today (measured)",
-        TODAY_SAME_BASE: "Today, current store demand",
+        TODAY_SAME_BASE: "Today, current demand",
         CURRENT_GRID: "Online grid in both",
     }
     sel = picks.set_index("escenario").reindex([w for w in wanted if w in set(picks["escenario"])])
@@ -820,7 +829,8 @@ def slide_scenarios_by_channel(prs, picks: pd.DataFrame, meta: dict, period: str
     same_risk = sel.loc[TODAY_SAME_BASE, "online_riesgo_pct"] if TODAY_SAME_BASE in sel.index else float("nan")
     if unscored_n and pd.notna(same_risk):
         unscored_note = (
-            f" Online's 'Today, current store demand' risk ({pct_or_dash(same_risk, 2)}) is on the scored book: "
+            f" Online's 'Today, current demand' risk ({pct_or_dash(same_risk, 2)}) is the scored book's realized "
+            "risk times that drift: "
             f"{unscored_n} contracts booked without an Equifax call (no score, "
             f"{ac.num(meta['online_contratados_sin_efx_produccion_pct'], 2, '%')} of production, "
             f"{ac.num(meta['online_contratados_sin_efx_riesgo_pct'], 1, '%')} realized risk) enter the measured "
@@ -836,8 +846,10 @@ def slide_scenarios_by_channel(prs, picks: pd.DataFrame, meta: dict, period: str
         w,
         H - y3 - Inches(0.2),
         f"Stores: 'Today (measured)' is the {stores_today} window with the internal score; every other row is "
-        f"{stores_scored}, the only period with an EFX score. Online is always {stores_today}. Online's risk "
-        "in the grid rows carries the reject-inference uplift on its own book (realized "
+        f"{stores_scored}, the only period with an EFX score. Online's rates are always {stores_today}; outside "
+        f"'Today (measured)' its volume is its current run-rate and its risk carries the drift at equal score "
+        f"(×{ac.num(float(meta.get('online_factor_riesgo', 1.0) or 1.0), 2)}). Online's risk "
+        "in the grid rows also carries the reject-inference uplift on its own book (realized "
         f"{pct_or_dash(measured_risk, 2)}).{unscored_note}",
         size=10,
         color=MUTED,
@@ -902,7 +914,7 @@ def slide_closing(prs, meta: dict, facts: dict) -> None:
         [
             (
                 "Store risk is estimated.",
-                "Store contracts with EFX are 0–2 months old and have no observable performance yet. "
+                f"Store contracts with EFX are 0–{facts['stores_n_months']} months old and have no observable performance yet. "
                 f"H3 around {facts['h3_month']}, H6 around {facts['h6_month']}.",
             ),
             (
@@ -913,7 +925,14 @@ def slide_closing(prs, meta: dict, facts: dict) -> None:
             (
                 "Weak low bins.",
                 f"Bins 1-{facts['low_bins']} carry under 0.5% of production each, and that is where the selection uplift "
-                f"weighs most ({ac.num(facts['max_uplift'], 1)}x). They are the ones that open the loosest scenario.",
+                f"weighs most ({ac.num(facts['max_uplift'], 1)}x). They open the loosest scenario, and the fall in store risk "
+                "under the grid rests on them (the swap-out): 'similar risk' is the robust reading, not 'lower'.",
+            ),
+            (
+                "No trend in the curve.",
+                f"Risk by score is estimated on a mature window; Online's central case is rescaled "
+                f"×{ac.num(float(meta.get('online_factor_riesgo', 1.0) or 1.0), 2)} for the drift measured at equal "
+                "score on its 2026 cohorts. Stores show no drift in the data to Jul 2026 and carry none.",
             ),
             (
                 f"Only {facts['stores_window']} in stores.",
@@ -1107,7 +1126,7 @@ def slide_store_demand(
         Inches(2.4),
         f"Window totals become a run-rate by dividing by effective months: {money(accepted['produccion_est_eur'].sum())} "
         f"over {facts['stores_window']} ÷ {ac.num(eff, 2)} = {money(bl.loc['tienda', 'produccion_mensual_eur'])}/mo — not ÷ "
-        f"{facts['stores_n_months']}, because {facts['stores_months_short']} are weak store months (index "
+        f"{facts['stores_n_months']}, because {facts['stores_months_short']} are not average store months (index "
         f"{facts['stores_idx_txt']}). Risk blends by expected H6 exposure, the base of b2: stores are "
         f"{ac.num(bl.loc['tienda', 'demanda_mensual_eur'] / bl.loc['total', 'demanda_mensual_eur'] * 100, 0)}% of "
         f"demand but {ac.num(bl.loc['tienda', 'peso_exposicion_pct'], 0)}% of exposure, because stores book "
@@ -1159,6 +1178,11 @@ def slide_store_demand(
     )
 
 
+def _enumerate(names: list[str]) -> str:
+    """'Aug and Sep', 'Aug, Sep and Oct': the stores window grows a month with each extract."""
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
 def deck_facts(curve, p2, stores_actuals, grids, index, meta) -> dict:
     """The figures the deck's prose cites, computed from the study outputs.
 
@@ -1208,8 +1232,8 @@ def deck_facts(curve, p2, stores_actuals, grids, index, meta) -> dict:
         "stores_last_month": month(last_stores_month),
         "stores_window": span(meta["tienda_desde"], meta["tienda_hasta"]),
         "stores_n_months": len(stores_months),
-        "stores_months_txt": " and ".join(MONTHS_LONG[p.month - 1] for p in stores_months),
-        "stores_months_short": " and ".join(MONTHS[p.month - 1] for p in stores_months),
+        "stores_months_txt": _enumerate([MONTHS_LONG[p.month - 1] for p in stores_months]),
+        "stores_months_short": _enumerate([MONTHS[p.month - 1] for p in stores_months]),
         "stores_idx_txt": " / ".join(ac.num(v, 2) for v in stores_idx),
         "online_idx_txt": " / ".join(ac.num(v, 2) for v in online_idx),
         "stores_eff_months": float(sum(stores_idx)),

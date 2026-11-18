@@ -44,7 +44,7 @@ BAR_MAX_PX = 24
 # Scenario labels as the deck renders them (the study writes Spanish labels; the deck
 # translates them once, on load, and every chart matches on these).
 TODAY_MEASURED = "Today (measured)"
-TODAY_SAME_BASE = "Today, at current store demand"
+TODAY_SAME_BASE = "Today, at current demand"
 CURRENT_GRID = "Online grid in both channels"
 SINGLE_CUTOFF = "single cutoff"
 SHIFTED_GRID = "shifted grid"
@@ -277,7 +277,7 @@ def chart_stores_swap(grid: pd.DataFrame, compact: bool = False) -> plt.Figure:
         )
     if not compact:
         fig.suptitle(
-            "In stores, switching to the EFX score raises system approval and lowers risk at once",
+            "In stores, switching to the EFX score raises system approval at a similar risk",
             fontsize=13,
             fontweight="bold",
             x=0.085,

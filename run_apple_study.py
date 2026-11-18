@@ -18,6 +18,10 @@ definitivos: aquí NO hay reject inference (se asume que quien entra en un tramo
 denegado se comporta como los contratados de ese tramo, lo cual es optimista), ni
 intervalos de confianza, ni auditoría swap-in/swap-out.
 
+Además escribe las tablas de seguimiento ``b1``–``b4`` (distribución por score, deriva del
+riesgo a igual score, CESP, ingresos × score; ver ``src/studies/apple/followup.py``), que
+son descriptivas y no cambian ninguna cifra de los puntos 1-3.
+
 Uso:
     uv run python run_apple_study.py
     uv run python run_apple_study.py --main-from 2024-06-01     # ventana de 21 meses
@@ -36,6 +40,18 @@ import pandas as pd
 from loguru import logger
 
 from src.core.constants import DEFAULT_RISK_MULTIPLIER, Columns
+from src.studies.apple.followup import (
+    cesp_score_distribution,
+    cesp_summary,
+    cesp_swap,
+    cesp_trend,
+    demand_profile,
+    drift_sensitivity,
+    income_risk,
+    income_score_table,
+    risk_drift,
+    score_distribution,
+)
 from src.studies.apple.study import (
     _BOOKED_COL,
     CHANNEL_COL,
@@ -80,7 +96,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="2026-08-01",
         help="Inicio ventana tienda. Default agosto-2026: primer mes con score EFX en tienda",
     )
-    p.add_argument("--stores-to", default="2026-10-01", help="Fin exclusivo. Default: hasta septiembre-2026 incluido")
+    p.add_argument("--stores-to", default="2026-11-01", help="Fin exclusivo. Default: hasta octubre-2026 incluido")
     p.add_argument(
         "--cutoff",
         action="append",
@@ -95,6 +111,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Reescala el nivel de riesgo de tienda. Por defecto se calcula del dato "
         "(morosidad real de tienda / imputada). Pasar 1.0 desactiva el anclaje.",
+    )
+    p.add_argument(
+        "--online-risk-factor",
+        type=float,
+        default=1.15,
+        help="Deriva del riesgo de Online a igual score frente a la ventana de la curva (índice H6 de las "
+        "cohortes de 2026 en b2_deriva_riesgo.csv: 1,14-1,16). Reescala el riesgo de Online en todas las filas "
+        "modeladas. 1.0 = curva tal cual (estudio anterior al 18-11-2026).",
+    )
+    p.add_argument(
+        "--online-window-volume",
+        action="store_true",
+        help="Online entra en el total con el run-rate de su ventana, no con el de los meses posteriores "
+        "(estudio anterior al 18-11-2026: mezclaba el volumen de Online de hace un año con el actual de tienda).",
     )
     p.add_argument("--multiplier", type=float, default=float(DEFAULT_RISK_MULTIPLIER))
     p.add_argument(
@@ -166,6 +196,24 @@ def main(argv: list[str] | None = None) -> int:
     eff_stores = effective_months(args.stores_from, args.stores_to, idx_stores)
     logger.info(f"Meses efectivos: Online {eff_ecom:.2f} | tienda {eff_stores:.2f}")
 
+    # Volumen ACTUAL de Online. Sus tasas y su curva salen de la ventana madura, pero tienda
+    # entra en el total con su demanda de los meses con score: dejar a Online con el volumen
+    # de la ventana mezcla dos fechas y le quita peso en la exposición (y en el riesgo total).
+    # Se reescala solo el run-rate, con la demanda por mes efectivo de los meses posteriores a
+    # la ventana, sobre la población extraída de forma homogénea (sin estudio ligero).
+    recent_ecom = all_ecom[(all_ecom[Columns.MIS_DATE] >= args.main_to) & ~all_ecom[LIGHT_COL]]
+    online_volume_factor, recent_to = 1.0, args.main_to
+    if not args.online_window_volume and not recent_ecom.empty:
+        recent_to = (recent_ecom[Columns.MIS_DATE].max() + pd.offsets.MonthBegin(1)).strftime("%Y-%m-%d")
+        online_volume_factor = (
+            recent_ecom[Columns.OA_AMT].sum() / effective_months(args.main_to, recent_to, idx_ecom)
+        ) / (ecom.loc[~ecom[LIGHT_COL], Columns.OA_AMT].sum() / eff_ecom)
+    eff_ecom_window, eff_ecom = eff_ecom, eff_ecom / online_volume_factor
+    logger.info(
+        f"Online: demanda por mes efectivo de {args.main_to} a {recent_to} = {online_volume_factor:.3f} x la de la "
+        f"ventana; riesgo x {args.online_risk_factor:.2f} (deriva a igual score)"
+    )
+
     # Tienda se mide sobre su propio histórico, sin score: para un realizado no hace falta.
     # Misma ventana que Online, para que el nivel realizado de tienda sea UNA sola cifra
     # en todo el estudio (el ancla y la slide de situación actual deben coincidir).
@@ -231,14 +279,19 @@ def main(argv: list[str] | None = None) -> int:
         f"{fidelity['aprobado_real_pct']:.1f} | parrilla {fidelity['parrilla_pct']:.1f} | "
         f"swap-in {fidelity['swap_in_pct']:.1f} | swap-out {fidelity['swap_out_pct']:.1f}"
     )
-    ladder, ladder_grid = scenario_ladders(ecom, stores, curve, cutoffs, eff_ecom, eff_stores, level_factor)
-    baseline = policy_kpis(ecom, stores, curve, cutoffs, eff_ecom, eff_stores, level_factor)
-    blend = channel_blend(ecom, stores, curve, cutoffs, eff_ecom, eff_stores, level_factor)
+    drift = args.online_risk_factor
+    ladder, ladder_grid = scenario_ladders(ecom, stores, curve, cutoffs, eff_ecom, eff_stores, level_factor, drift)
+    baseline = policy_kpis(ecom, stores, curve, cutoffs, eff_ecom, eff_stores, level_factor, drift)
+    blend = channel_blend(ecom, stores, curve, cutoffs, eff_ecom, eff_stores, level_factor, drift)
     take_up = {"online": take_up_by_decision(ecom), "tienda": take_up_by_decision(stores)}
     measured = measured_status_quo(
-        ecom, stores_window, eff_ecom, effective_months(args.main_from, args.main_to, idx_stores), args.multiplier
+        ecom,
+        stores_window,
+        eff_ecom_window,
+        effective_months(args.main_from, args.main_to, idx_stores),
+        args.multiplier,
     )
-    same_base = same_base_status_quo(ecom, stores, curve, eff_ecom, eff_stores, level_factor)
+    same_base = same_base_status_quo(ecom, stores, curve, eff_ecom, eff_stores, level_factor, drift)
     # Cuánto más demanda trae tienda en los meses con score que en la ventana de "hoy":
     # es la parte de la diferencia entre ambas filas que es volumen y no política.
     stores_window_months = effective_months(args.main_from, args.main_to, idx_stores)
@@ -260,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
     # en la MISMA base que "hoy" para que el deck no venda como efecto de la parrilla lo
     # que es diferencia de base.
     booked_curve = curve.assign(b2_pct=curve[_BOOKED_COL])
-    grid_on_today_basis = policy_kpis(ecom, stores, booked_curve, cutoffs, eff_ecom, eff_stores, level_factor)
+    grid_on_today_basis = policy_kpis(ecom, stores, booked_curve, cutoffs, eff_ecom, eff_stores, level_factor, drift)
     online_under_grid = policy_kpis(ecom, ecom.iloc[0:0], curve, cutoffs, eff_ecom, 1.0, 1.0)
     ri_margin_online_pp = online_under_grid["riesgo_total_pct"] - float(
         actuals.set_index("segmento").loc["TOTAL", "riesgo_real_pct"]
@@ -309,6 +362,10 @@ def main(argv: list[str] | None = None) -> int:
             "riesgo_online_historico_pct": round(float(history_total["riesgo_real_pct"]), 4),
             **{k: round(v, 2) for k, v in weights.items()},
             "demanda_tienda_vs_ventana_pct": round(stores_volume_vs_window_pct, 2),
+            "online_factor_riesgo": round(drift, 4),
+            "online_volumen_vs_ventana_pct": round(100 * (online_volume_factor - 1), 2),
+            "online_volumen_desde": args.main_to,
+            "online_volumen_hasta": recent_to,
             "estudio_ligero_tienda_desde": light_from["tienda"],
             "estudio_ligero_online_desde": light_from["online"],
             "estudio_ligero_meses_ventana_tienda": int(
@@ -352,6 +409,32 @@ def main(argv: list[str] | None = None) -> int:
         ("p0_demanda_por_estado", breakdown),
         ("p2b_tienda_swap", swap),
         ("p3b_mezcla_canales", blend),
+        # Seguimiento (dudas de la dirección de riesgos, 18-11-2026): descriptivo, no mueve nada de lo anterior.
+        ("b1_tienda_distribucion_score", score_distribution(stores, ecom, curve)),
+        (
+            "b2_deriva_riesgo",
+            pd.concat(
+                [
+                    risk_drift(all_ecom, ["bin"], args.main_from, args.main_to, "online"),
+                    risk_drift(all_stores, [SEGMENT_COL], args.main_from, args.main_to, "tienda"),
+                ],
+                ignore_index=True,
+            ),
+        ),
+        (
+            "b2_perfil_demanda",
+            pd.concat(
+                [demand_profile(all_ecom, cutoffs, "online"), demand_profile(all_stores, cutoffs, "tienda")],
+                ignore_index=True,
+            ),
+        ),
+        ("b2_sensibilidad_deriva", drift_sensitivity(ladder_grid, args.targets, online_applied=drift)),
+        ("b3_tienda_cesp", cesp_summary({"ventana": stores_window, "meses_con_score": stores}, cutoffs)),
+        ("b3_tienda_cesp_trimestre", cesp_trend(all_stores)),
+        ("b3_tienda_cesp_score", cesp_score_distribution(stores)),
+        ("b3_tienda_cesp_swap", cesp_swap(stores, curve, cutoffs, level_factor)),
+        ("b4_ingresos_score", income_score_table(stores, cutoffs)),
+        ("b4_ingresos_riesgo", income_risk(ecom, stores_window)),
     ):
         frame.to_csv(out / f"{name}.csv", index=False)
     logger.info(f"Resultados en {out}/")

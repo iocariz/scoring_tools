@@ -483,3 +483,28 @@ class TestChannelBlend:
         assert blend.loc["total", "produccion_mensual_eur"] == pytest.approx(kpis["produccion_mensual_eur"])
         assert blend.loc[["online", "tienda"], "peso_exposicion_pct"].sum() == pytest.approx(100.0)
         assert blend.loc["tienda", "riesgo_pct"] == pytest.approx(1.5 * blend.loc["online", "riesgo_pct"])
+
+
+class TestOnlineRiskFactor:
+    """La deriva de Online reescala su RIESGO (no su peso) en todas las filas modeladas."""
+
+    @staticmethod
+    def _channel():
+        df = _stores([["New", 60.0, "ok", None, 1000.0, 13.0], ["New", 80.0, "ok", None, 1000.0, 17.0]])
+        df["acct_booked_h0"], df["oa_amt_h0"] = 1.0, df["oa_amt"]
+        return df
+
+    def test_factor_scales_online_risk_and_leaves_stores_alone(self):
+        curve = pd.DataFrame(
+            {"b2_pct": [6.0, 2.0], "exposure_ratio": [6.5, 6.5], "b2_pct_contratados": [6.0, 2.0]}, index=[13.0, 17.0]
+        )
+        ch, cut = self._channel(), {"New": 27.0}
+        plain = policy_kpis(ch, ch, curve, cut, 1.0, 1.0, 1.0)
+        drift = policy_kpis(ch, ch, curve, cut, 1.0, 1.0, 1.0, online_factor=1.15)
+        assert drift["online_riesgo_pct"] == pytest.approx(1.15 * plain["online_riesgo_pct"])
+        assert drift["tienda_riesgo_pct"] == pytest.approx(plain["tienda_riesgo_pct"])
+        # mismos pesos de exposición: el total es la media de los dos canales
+        assert drift["riesgo_total_pct"] == pytest.approx((1.15 + 1) / 2 * plain["riesgo_total_pct"])
+        assert drift["produccion_mensual_eur"] == pytest.approx(plain["produccion_mensual_eur"])
+        same = same_base_status_quo(ch, ch, curve, 1.0, 1.0, 1.0, online_factor=1.15)
+        assert same["online_riesgo_pct"] == pytest.approx(1.15 * same["tienda_riesgo_pct"])
