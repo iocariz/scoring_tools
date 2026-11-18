@@ -65,7 +65,7 @@ _LIGHT_CATEGORY = "intacta: rechazada en estudio ligero (sin llamada a Equifax)"
 # Scenario rows: (label in the e-mail, row in p3). The e-mail quotes the displaced grid.
 _SCENARIO_ROWS = (
     ("Hoy, medido en la ventana", "Hoy (medido)"),
-    ("Hoy, con la demanda actual", "Hoy, con la demanda actual de tienda"),
+    ("Hoy, con la demanda actual", "Hoy, con la demanda actual"),
     ("2,5%", "2.5% · parrilla desplazada"),
     ("3,0%", "3% · parrilla desplazada"),
     ("3,5%", "3.5% · parrilla desplazada"),
@@ -273,10 +273,9 @@ class EmailChecker:
             r = self.p3.loc[key]
             if "Hoy" in label:
                 grid = "vigente"
-            elif label == "4,0%":
-                grid = "sin cambios"
             else:
-                grid = r.corte
+                # "+0 puntos" se escribe "sin cambios": la parrilla vigente ya cumple ese objetivo
+                grid = "sin cambios" if r.corte == "+0 puntos" else r.corte
             self.check_row(
                 f"escenario total {label}",
                 self.row(label, width=6),
@@ -306,7 +305,7 @@ class EmailChecker:
             self.check_row(f"parrilla {key}", self.row(label, width=6), [self.p4.loc[key, c] for c in _GRID_COLUMNS])
 
     def headline(self) -> None:
-        base = self.p3.loc["Hoy, con la demanda actual de tienda"]
+        base = self.p3.loc["Hoy, con la demanda actual"]
         grid = self.p3.loc["Parrilla Online en ambos canales"]
         meas = self.p3.loc["Hoy (medido)"]
         grid_effect = (grid.produccion_mensual_eur - base.produccion_mensual_eur) / 1e6

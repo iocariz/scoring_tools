@@ -598,6 +598,7 @@ def channel_blend(
     months_ecom: float,
     months_stores: float,
     level_factor: float,
+    online_factor: float = 1.0,
 ) -> pd.DataFrame:
     """Cómo se mezclan los dos canales en el riesgo total: una fila por canal y el total.
 
@@ -609,7 +610,7 @@ def channel_blend(
     """
     rows = []
     for name, channel, months, factor in (
-        ("online", ecom, months_ecom, 1.0),
+        ("online", ecom, months_ecom, online_factor),
         ("tienda", stores, months_stores, level_factor),
     ):
         rows.append(
@@ -695,8 +696,13 @@ def policy_kpis(
     months_ecom: float,
     months_stores: float,
     level_factor: float,
+    online_factor: float = 1.0,
 ) -> dict[str, float]:
     """KPIs de Apple bajo una política cualquiera, expresada como corte por grupo.
+
+    ``online_factor`` reescala el NIVEL de riesgo de Online (deriva a igual score desde la
+    ventana en que se estimó la curva; 1.0 = la curva tal cual), igual que ``level_factor``
+    ancla el de tienda: sobre el valor, nunca sobre el peso.
 
     Devuelve **dos tasas de aceptación distintas**, porque miden cosas distintas y
     confundirlas da lecturas muy equivocadas:
@@ -710,7 +716,7 @@ def policy_kpis(
     parts = {
         name: _channel_under_policy(channel, months, factor, curve, cutoffs)
         for name, channel, months, factor in (
-            ("online", ecom, months_ecom, 1.0),
+            ("online", ecom, months_ecom, online_factor),
             ("tienda", stores, months_stores, level_factor),
         )
     }
@@ -746,6 +752,7 @@ def scenario_ladders(
     months_ecom: float,
     months_stores: float,
     level_factor: float,
+    online_factor: float = 1.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Dos instrumentos alternativos para alcanzar un objetivo de riesgo.
 
@@ -755,7 +762,7 @@ def scenario_ladders(
       al mismo riesgo.
     """
     pos = (ecom, stores, curve)
-    rest = (months_ecom, months_stores, level_factor)
+    rest = (months_ecom, months_stores, level_factor, online_factor)
     uniform = pd.DataFrame(
         [
             {"corte_tramo": int(cut), "corte_score": BIN_EDGES[int(cut) - 1]}
@@ -842,7 +849,7 @@ def booked_without_bin(channel: pd.DataFrame, multiplier: float) -> dict[str, fl
     }
 
 
-SAME_BASE_LABEL = "Hoy, con la demanda actual de tienda"
+SAME_BASE_LABEL = "Hoy, con la demanda actual"
 
 
 def same_base_status_quo(
@@ -852,8 +859,13 @@ def same_base_status_quo(
     months_ecom: float,
     months_stores: float,
     level_factor: float,
+    online_factor: float = 1.0,
 ) -> dict[str, float]:
     """La política de hoy sobre LA MISMA base que los escenarios.
+
+    Desde el 18-11-2026 esa base es la demanda ACTUAL de los dos canales (Online entra con
+    su run-rate reciente vía ``months_ecom``, no con el de la ventana) y el riesgo de Online
+    lleva ``online_factor`` (deriva a igual score), igual que las filas de parrilla.
 
     ``measured_status_quo`` mide tienda sobre la ventana completa; los escenarios la
     evalúan sobre los meses con score, donde la demanda es otra (en ago-sep 2026 va muy
@@ -873,7 +885,7 @@ def same_base_status_quo(
     """
     parts: dict[str, dict[str, float]] = {}
     for name, channel, months, factor in (
-        ("online", ecom, months_ecom, 1.0),
+        ("online", ecom, months_ecom, online_factor),
         ("tienda", stores, months_stores, level_factor),
     ):
         by_bin = _booked(channel).groupby("bin")[Columns.OA_AMT_H0].sum() / months
