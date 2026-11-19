@@ -173,9 +173,9 @@ def chart_risk_drift(drift: pd.DataFrame) -> plt.Figure:
 
 
 def chart_cesp_trend(trend: pd.DataFrame) -> plt.Figure:
-    """Riesgo de tienda por trimestre de originación, PDV con CESP frente al resto."""
+    """Riesgo de tienda por trimestre de originación, operaciones con CESP frente al resto."""
     fig, axes = plt.subplots(1, 2, figsize=(12.2, 4.2))
-    names = {"cesp": ("PDV con CESP", RISK), "no_cesp": ("PDV sin CESP", CURRENT)}
+    names = {"cesp": ("Con CESP", RISK), "no_cesp": ("Sin CESP", CURRENT)}
     for ax, (column, title) in zip(
         axes, (("riesgo_h6_pct", "Riesgo a 6 meses (H6)"), ("riesgo_h3_pct", "Riesgo a 3 meses (H3)")), strict=True
     ):
@@ -209,7 +209,7 @@ def chart_cesp_trend(trend: pd.DataFrame) -> plt.Figure:
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, frameon=False, fontsize=9.5, loc="upper right", ncol=2, bbox_to_anchor=(0.98, 0.9))
     fig.suptitle(
-        "Las tiendas con CESP tenían la mitad de riesgo; desde mediados de 2025 igualan o superan al resto",
+        "Las operaciones con CESP tenían la mitad de riesgo; desde mediados de 2025 la diferencia se ha estrechado",
         fontsize=13,
         fontweight="bold",
         x=0.06,
@@ -220,11 +220,11 @@ def chart_cesp_trend(trend: pd.DataFrame) -> plt.Figure:
 
 
 def chart_cesp_income(risk: pd.DataFrame) -> plt.Figure:
-    """Riesgo H6 de tienda por ingresos declarados: el gradiente se invierte en las tiendas con CESP."""
+    """Riesgo H6 de tienda por ingresos declarados: el gradiente se invierte en las operaciones con CESP."""
     fig, ax = plt.subplots(figsize=(6.6, 4.3))
     stores = risk[(risk["canal"] == "tienda") & risk["ingresos"].isin(INCOME_LABELS)]
     x = np.arange(len(INCOME_LABELS))
-    for offset, key, name, color in ((-0.2, "no_cesp", "PDV sin CESP", CURRENT), (0.2, "cesp", "PDV con CESP", RISK)):
+    for offset, key, name, color in ((-0.2, "no_cesp", "Sin CESP", CURRENT), (0.2, "cesp", "Con CESP", RISK)):
         values = stores[stores["poblacion"] == key].set_index("ingresos")["riesgo_h6_pct"].reindex(INCOME_LABELS)
         ax.bar(x + offset, values, 0.38, color=color, label=name)
         for xi, v in zip(x + offset, values, strict=True):
@@ -394,6 +394,7 @@ def deck_facts(data: dict[str, pd.DataFrame], meta: dict) -> dict:
     months = (pd.Period(meta["tienda_hasta"], "M") - pd.Period(meta["tienda_desde"], "M")).n
     online_risk = risk[(risk["canal"] == "online")].set_index(["ingresos", "rango_score"])["riesgo_h6_pct"]
     target = sens["objetivo_pct"].max()
+    share = data["trend"][data["trend"]["poblacion"] == "cesp"].sort_values("trimestre")
     top = sens[sens["objetivo_pct"] == target].set_index(["factor_online", "factor_tienda"])
     return {
         "cutoff_score": cutoff_score,
@@ -410,6 +411,8 @@ def deck_facts(data: dict[str, pd.DataFrame], meta: dict) -> dict:
         "swap_in_share_cesp": float(by_cat.loc[("cesp", swap_in), "pct_categoria"]),
         "kept_share_cesp": float(by_cat.loc[("cesp", kept), "pct_categoria"]),
         "accepted_share_cesp": 100 * float(accepted["cesp"] / accepted["total"]),
+        "cesp_share_first": (quarter_label(share["trimestre"].iloc[0]), float(share["pct_demanda"].iloc[0])),
+        "cesp_share_last": (quarter_label(share["trimestre"].iloc[-1]), float(share["pct_demanda"].iloc[-1])),
         "high_swap_out_n": int(high["swap_out_n"].sum()),
         "high_swap_out_month": high["swap_out_n"].sum() / months,
         "stores_months": months,
@@ -471,10 +474,12 @@ def slide_title(prs, f: dict, today: str) -> None:
                 "En tienda el dato, hasta julio, todavía no muestra la subida.",
             ),
             (
-                "3 · Tiendas con CESP.",
-                "El score Equifax no las distingue de las demás, su riesgo ha convergido con el del resto y su ingreso "
-                f"declarado no ordena el riesgo. La parrilla dejaría entrar más: son el {es(f['swap_in_share_cesp'], 0)}% "
-                "del swap-in.",
+                "3 · Operaciones con CESP.",
+                f"Son el {es(f['scored'].loc['cesp', 'pct_demanda'], 0)}% de la demanda de tienda y puntúan mejor en "
+                f"Equifax (mediana {es(f['scored'].loc['cesp', 'score_mediano'], 0)} frente a "
+                f"{es(f['scored'].loc['no_cesp', 'score_mediano'], 0)}), pero su riesgo se ha acercado al del resto y su "
+                "ingreso declarado no ordena el riesgo. La parrilla no cambia su peso: son el "
+                f"{es(f['swap_in_share_cesp'], 0)}% del swap-in.",
             ),
             (
                 "4 · Ingresos altos con score bajo.",
@@ -601,12 +606,12 @@ def slide_scenarios(prs, picks: pd.DataFrame, sens: pd.DataFrame, f: dict, perio
 
 def slide_cesp_profile(prs, f: dict, img: Path, period: str) -> None:
     slide = prs.slides.add_slide(prs.slide_layouts[6])
-    y = _header(slide, "Equifax no distingue a las tiendas con CESP, y allí el ingreso no informa", "3 · CESP", period)
+    y = _header(slide, "Con CESP el score Equifax es mejor, pero el ingreso declarado no informa", "3 · CESP", period)
     half = (W - 2 * MARGIN - Inches(0.4)) / 2
     _picture(slide, img, MARGIN, y, int(half), Inches(4.6))
     s, w = f["scored"], f["window"]
     rows = [
-        ["tienda", "PDV con CESP", "PDV sin CESP"],
+        ["tienda", "con CESP", "sin CESP"],
         [
             f"% de la demanda, {f['online_window']}",
             es(w.loc["cesp", "pct_demanda"], 0, "%"),
@@ -647,9 +652,9 @@ def slide_cesp_profile(prs, f: dict, img: Path, period: str) -> None:
         bottom + Inches(0.2),
         half,
         Inches(1.6),
-        f"Aprobación, rechazo y score: {f['stores_window']}. La marca CESP es del punto de venta: en esas tiendas no "
-        "se verifica el ingreso y los requisitos son más livianos. El score Equifax da la misma distribución en "
-        "los dos tipos de tienda, y el ingreso declarado solo ordena el riesgo donde se verifica.",
+        f"Aprobación, rechazo y score: {f['stores_window']}. La CESP se aplica a la operación: el comercio "
+        "puede tenerla, pero el cliente puede optar por aportar nómina. Con CESP no se verifica el ingreso. Estas "
+        "operaciones puntúan mejor en Equifax, y el ingreso declarado solo ordena el riesgo donde se verifica.",
         size=11.5,
         color=C_MUTED,
         spacing=1.15,
@@ -658,7 +663,7 @@ def slide_cesp_profile(prs, f: dict, img: Path, period: str) -> None:
 
 def slide_cesp_swap(prs, swap: pd.DataFrame, f: dict, period: str) -> None:
     slide = prs.slides.add_slide(prs.slide_layouts[6])
-    y = _header(slide, "La parrilla dejaría entrar más solicitudes de tiendas con CESP", "3 · CESP", period)
+    y = _header(slide, "La parrilla no cambia el peso de las operaciones con CESP", "3 · CESP", period)
     names = [
         "se mantiene aprobada",
         "swap-in: hoy rechazada por score interno",
@@ -693,25 +698,26 @@ def slide_cesp_swap(prs, swap: pd.DataFrame, f: dict, period: str) -> None:
         W - 2 * MARGIN,
         [
             (
-                "Por qué.",
-                "El score interno rechaza hoy más a las tiendas con CESP; como Equifax no las distingue, la parrilla las "
-                f"recupera. Pasan del {es(f['kept_share_cesp'], 0)}% de lo que se mantiene al "
-                f"{es(f['accepted_share_cesp'], 0)}% de lo aceptado.",
+                "Mismo efecto.",
+                f"El swap-in es el {es(f['swap_in_cesp_pct'], 1)}% de la demanda con CESP y el "
+                f"{es(f['swap_in_no_cesp_pct'], 1)}% de la demanda sin CESP. Las operaciones con CESP son el "
+                f"{es(f['kept_share_cesp'], 0)}% de lo que se mantiene y el {es(f['accepted_share_cesp'], 0)}% de lo "
+                "aceptado con la parrilla.",
             ),
             (
                 "Riesgo imputado.",
-                "A ese swap-in se le imputa el riesgo de la curva de Online, donde no existe el fraude de situación "
-                "laboral: para estas tiendas probablemente se queda corto.",
+                "Sale de la curva de Online por score. Las operaciones con CESP puntúan mejor que el resto y aun así "
+                "su riesgo reciente es parecido: para ellas el riesgo imputado probablemente se queda corto.",
             ),
             (
                 "Opción A.",
-                "Aplicar la parrilla Equifax solo a las tiendas sin CESP y mantener en las demás la regla actual "
-                "(score interno y verificación con la Seguridad Social).",
+                "Aplicar la parrilla Equifax a todas las operaciones, con un nivel de riesgo propio para las de CESP "
+                "calibrado con su morosidad reciente.",
             ),
             (
                 "Opción B.",
-                "Aplicarla a todas con un nivel de riesgo propio para las tiendas con CESP, calibrado con su "
-                "morosidad reciente.",
+                "Aplicarla solo a las operaciones sin CESP y mantener en las de CESP la regla actual (score interno y "
+                "verificación con la Seguridad Social) hasta tener su comportamiento con score.",
             ),
         ],
         size=12.5,
@@ -759,7 +765,7 @@ def slide_income(prs, inc: pd.DataFrame, f: dict, img: Path, period: str) -> Non
             ),
             (
                 "Excepción posible.",
-                "Un corte algo más bajo para ingresos altos, solo en tiendas sin CESP, que es donde el ingreso se verifica.",
+                "Un corte algo más bajo para ingresos altos, solo en operaciones sin CESP, donde el ingreso se verifica.",
             ),
         ],
         size=12,
@@ -784,12 +790,12 @@ def slide_closing(prs, f: dict) -> None:
                 "A confirmar si ese es el nivel adecuado.",
             ),
             (
-                "Tiendas con CESP.",
-                "Simular la parrilla solo en tiendas sin CESP y compararla con la versión para todas.",
+                "Operaciones con CESP.",
+                "Simular la parrilla con un nivel de riesgo propio para CESP y compararla con dejarlas en la regla actual.",
             ),
             (
                 "Ingresos altos.",
-                "Simular un corte reducido en tiendas sin CESP: cuánta demanda recupera y a qué riesgo.",
+                "Simular un corte reducido en operaciones sin CESP: cuánta demanda recupera y a qué riesgo.",
             ),
         ],
         size=13,
@@ -813,8 +819,10 @@ def slide_closing(prs, f: dict) -> None:
                 "indicadores más recientes, este extracto aún no los trae.",
             ),
             (
-                "CESP es una marca de tienda.",
-                "La comparación es entre tiendas, no entre clientes: parte de las diferencias puede venir del tipo de tienda.",
+                "CESP la elige el cliente.",
+                "Quien no aporta nómina se autoselecciona, y su peso en la demanda de tienda cae del "
+                f"{es(f['cesp_share_first'][1], 0)}% ({f['cesp_share_first'][0]}) al {es(f['cesp_share_last'][1], 0)}% "
+                f"({f['cesp_share_last'][0]}): los trimestres no comparan la misma población.",
             ),
             (
                 "Poca muestra en el extremo.",
@@ -912,14 +920,16 @@ def build(data_dir: Path, out_path: Path, today: str | None = None) -> Path:
     slide_chart(
         prs,
         "3 · CESP",
-        "Tiendas con CESP frente al resto: cómo ha evolucionado su riesgo",
+        "Operaciones con CESP frente al resto: cómo ha evolucionado su riesgo",
         "tienda, por trimestre de originación",
         charts["cesp_trend"],
         [
             (
                 "Convergencia.",
-                "Hasta mediados de 2025 las tiendas con CESP tenían en torno a la mitad del riesgo del resto; desde "
-                "entonces igualan o superan. En la ventana completa siguen por debajo "
+                "Hasta mediados de 2025 las operaciones con CESP tenían en torno a la mitad del riesgo del resto; desde "
+                "entonces la diferencia se ha estrechado, con dos cruces (T3 25 y abril de 2026), y a tres meses van por "
+                "encima casi todos los trimestres. En la "
+                "ventana completa siguen por debajo "
                 f"({es(f['window'].loc['cesp', 'riesgo_h6_pct'], 2)}% frente a "
                 f"{es(f['window'].loc['no_cesp', 'riesgo_h6_pct'], 2)}%), así que el nivel medio todavía no lo refleja.",
             ),
