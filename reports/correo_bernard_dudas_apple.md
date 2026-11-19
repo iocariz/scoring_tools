@@ -1,7 +1,7 @@
 # Borrador de correo — Respuesta a las dudas de Bernard (estudio Apple)
 
-> Generado el 18-11-2026 con el extracto del 17-11 (tienda con score Equifax en agosto, septiembre y octubre
-> de 2026). Todas las cifras salen de `output/apple_study/b1_*.csv` … `b4_*.csv`, que escribe
+> Generado el 18-11-2026 y rehecho el 19-11 con el extracto de ese día, que trae la marca CESP redefinida
+> (tienda con score Equifax en agosto, septiembre y octubre de 2026). Todas las cifras salen de `output/apple_study/b1_*.csv` … `b4_*.csv`, que escribe
 > `run_apple_study.py` (funciones en `src/studies/apple/followup.py`). Este correo no tiene verificador
 > automático: si se vuelve a correr el estudio, repasar las cifras contra esos CSV antes de enviar.
 
@@ -17,7 +17,7 @@ Te contesto punto por punto, ya con octubre de tienda incluido (tres meses con s
 
 1. La demanda de tienda está cargada hacia los scores altos y no tiene ningún punto de concentración.
 2. La curva no lleva tendencia. En Online el riesgo a igual score va un 15% por encima de la ventana del estudio (30% en las cohortes más recientes), y ya lo he factorizado: con ese 15% el objetivo del 4% deja de cumplirse sin cambios y pide 5 puntos más de corte. En tienda el dato que tengo, hasta julio, todavía no muestra la subida.
-3. El score Equifax no distingue a los CESP: su distribución es idéntica a la de los no CESP. Y la parrilla dejaría entrar más CESP de los que entran hoy, así que conviene tratarlos aparte.
+3. Las operaciones con CESP son ya solo una cuarta parte de la demanda de tienda y puntúan mejor en Equifax que el resto, pero su riesgo se ha acercado al de las demás y su ingreso declarado no ordena el riesgo. La parrilla no cambia su peso en lo aceptado.
 4. Los ingresos altos con score bajo existen pero son pocos, unas 30 solicitudes al mes que hoy se aprueban. En Online, los que hay tienen cuatro veces el riesgo de su tramo de ingresos.
 
 ## 1. Distribución de la demanda y la producción de tienda por score
@@ -85,40 +85,41 @@ Y la sensibilidad al factor, que es lo que preguntabas:
 
 Es decir: la conclusión anterior de que el 4% se cumplía sin tocar nada dependía de que el riesgo no hubiera subido. Con el +15% que ya se mide en Online hacen falta 5 puntos más de corte, a un coste pequeño (0,4 M€/mes). El +30% lo dejo como estrés, y tienda sin factor mientras no tengamos el dato; si preferís prudencia, la fila con los dos canales al +15% da la referencia.
 
-## 3. Clientes de puntos de venta con CESP
+## 3. Operaciones con CESP
 
-Los he separado con la marca del extracto, que va por punto de venta: CESP son las solicitudes de los puntos de venta con CESP, y no CESP las del resto de tiendas. Es por tanto una comparación entre tiendas, no entre clientes de una misma tienda. En las tiendas con CESP no se pide verificación de ingresos y los requisitos son más livianos, y eso es lo que se ve en los datos.
+Las he separado con la marca del extracto, que va por operación: CESP son las solicitudes a las que se aplicó la condición especial, sin verificación de ingresos. El comercio puede tener CESP y el cliente optar por aportar la nómina; esas solicitudes cuentan como no CESP.
 
 | tienda | CESP | no CESP |
 |---|---:|---:|
-| % de la demanda, mar-25 → feb-26 | 58% | 42% |
-| % de la demanda, ago-oct 26 | 42% | 58% |
-| aprobación del sistema, ago-oct 26 | 42% | 62% |
-| rechazo por score interno, ago-oct 26 | 22% | 16% |
-| riesgo H6, mar-25 → feb-26 | 3,20% | 4,22% |
-| score EFX mediano, ago-oct 26 | 74 | 72 |
-| % bajo el corte EFX, ago-oct 26 | 5,3% | 5,2% |
+| % de la demanda, mar-25 → feb-26 | 43% | 57% |
+| % de la demanda, ago-oct 26 | 26% | 74% |
+| aprobación del sistema, ago-oct 26 | 54% | 54% |
+| rechazo por score interno, ago-oct 26 | 18% | 19% |
+| riesgo H6, mar-25 → feb-26 | 3,18% | 4,15% |
+| score EFX mediano, ago-oct 26 | 76 | 71 |
+| % bajo el corte EFX, ago-oct 26 | 3,4% | 5,9% |
 
-- **El score Equifax no los distingue.** La distribución por tramo es idéntica en las dos poblaciones (diferencias de décimas en los 20 tramos; `b3_tienda_cesp_score.csv`). Encaja con lo que dices: es un fraude que el score no ve.
-- **El deterioro relativo de CESP se ve en la serie.** Hasta mediados de 2025 los CESP tenían en torno a la mitad del riesgo de los no CESP (H6 de 2024: 1,6-3,3% frente a 3,6-5,8%). Desde el tercer trimestre de 2025 están igualados o por encima: 5,28% frente a 5,19% en 2025 T3; a tres meses, 1,92% frente a 1,23% en 2026 T2 y 2,85% frente a 2,45% en julio. En la ventana completa siguen por debajo (3,20% frente a 4,22%), así que el nivel medio todavía no lo refleja.
+- **Cada vez son menos.** Las operaciones con CESP eran el 61% de la demanda de tienda a principios de 2024, el 43% en la ventana del estudio y el 20% en octubre de 2026.
+- **El score Equifax las ve mejores que al resto**, no peores: mediana de 76 frente a 71, y el 3,4% bajo el corte frente al 5,9%. En el tramo más alto está el 14,0% de su demanda frente al 9,4% de la no CESP (`b3_tienda_cesp_score.csv`). El score interno de hoy las trata igual que a las demás (misma aprobación, mismo rechazo por score).
+- **Su riesgo relativo ha empeorado.** Hasta mediados de 2025 tenían en torno a la mitad del riesgo de las no CESP (H6 de 2024: 1,5-3,3% frente a 3,6-5,5%). Desde entonces la diferencia se ha estrechado y se cruza dos veces: 5,47% frente a 5,06% en 2025 T3 y 2,64% frente a 2,47% en abril de 2026 (en 2025 T4 y 2026 T1 siguen por debajo: 2,98% frente a 3,69% y 2,35% frente a 3,28%); a tres meses, 1,99% frente a 1,22% en 2026 T2 y 2,92% frente a 2,42% en julio. En la ventana completa siguen por debajo (3,18% frente a 4,15%), así que el nivel medio todavía no lo refleja. Como su peso cae a la vez, los trimestres no comparan la misma población.
 - **Los ingresos declarados no ordenan el riesgo en CESP**, y sí en el resto:
 
 | riesgo H6 de tienda por ingresos declarados (mar-25 → feb-26) | CESP | no CESP |
 |---|---:|---:|
-| < 1.000 € | 2,17% | 5,28% |
-| 1.000-1.499 € | 2,50% | 5,15% |
-| 1.500-1.999 € | 2,47% | 4,07% |
-| 2.000-2.999 € | 5,31% | 2,54% |
-| ≥ 3.000 € | 3,26% | 1,15% |
+| < 1.000 € | 2,17% | 5,07% |
+| 1.000-1.499 € | 2,19% | 5,11% |
+| 1.500-1.999 € | 2,28% | 4,04% |
+| 2.000-2.999 € | 5,67% | 2,40% |
+| ≥ 3.000 € | 3,47% | 1,11% |
 
-  En no CESP el riesgo baja con el ingreso, como cabe esperar. En las tiendas con CESP los ingresos altos son los peores: como allí el ingreso no se verifica, es la huella de una situación laboral declarada que no es cierta.
+  En no CESP el riesgo baja con el ingreso, como cabe esperar. Con CESP los ingresos altos son los peores: como el ingreso no se verifica, es la huella de una situación laboral declarada que no es cierta. Encaja con lo que dices, y con que el score no lo vea: puntúan mejor y aun así su riesgo reciente es parecido al del resto.
 
-- **Efecto sobre el estudio: la parrilla dejaría entrar más CESP.** El score interno rechaza hoy a los CESP bastante más que a los demás, y como Equifax no los distingue, la parrilla los recuperaría: el swap-in es el 20,6% de la demanda CESP frente al 14,1% de la no CESP. Los CESP son el 33% de lo que se mantiene aprobado y el 51% del swap-in; en total pasarían del 33% al 38% de lo aceptado. Y a ese swap-in le imputo un 3,9% de riesgo con la curva de Online, donde este fraude no existe, así que para ellos el riesgo imputado seguramente se queda corto.
+- **Efecto sobre el estudio: la parrilla no cambia el peso de CESP.** El swap-in es el 17,3% de la demanda CESP y el 16,7% de la no CESP, y las operaciones con CESP son el 26% de lo que se mantiene aprobado, el 26% del swap-in y el 26% de lo aceptado con la parrilla. Lo que sí queda corto es su riesgo: a ese swap-in le imputo un 3,9% con la curva de Online por score, y para una población que el score ve mejor de lo que luego se comporta esa cifra es optimista.
 
 **Cómo integrarlo.** Dos opciones, que puedo simular:
 
-1. Aplicar la parrilla Equifax solo a no CESP y mantener para CESP la regla actual (score interno más el check de Seguridad Social). Es la más limpia mientras el fraude no esté controlado.
-2. Aplicarla a todos con un nivel de riesgo propio para CESP, calibrado con su morosidad reciente en vez de con la de la ventana.
+1. Aplicar la parrilla a todas las operaciones con un nivel de riesgo propio para CESP, calibrado con su morosidad reciente en vez de con la de la ventana. Es la que prefiero, porque la parrilla no altera la mezcla.
+2. Aplicarla solo a no CESP y mantener para CESP la regla actual (score interno más el check de Seguridad Social) hasta tener su comportamiento con score.
 
 ## 4. Ingresos altos con score Equifax bajo
 
@@ -133,7 +134,7 @@ Tienda, agosto-octubre de 2026, por ingresos declarados del primer titular (sin 
 | ≥ 3.000 € | 3,2 M€ | 80 | 2,3% | 2,2% | 1,4% (26) |
 
 - **El score ya premia el ingreso**: mediana de 80-81 por encima de 2.000 € frente a 70-72 por debajo, y la mitad de rechazo por score (2-3% frente a 6%).
-- **El caso que temes existe pero es pequeño.** Con ingresos de 2.000 € o más, la parrilla rechazaría por score el 2-3% de la demanda; y los que hoy se aprueban y pasarían a rechazarse son 94 solicitudes en tres meses, unas 30 al mes (el 0,3% de la demanda de tienda). Separando por CESP el porcentaje es parecido: por encima de 3.000 €, 2,6% bajo el corte en CESP y 2,0% en no CESP (`b4_ingresos_score.csv`).
+- **El caso que temes existe pero es pequeño.** Con ingresos de 2.000 € o más, la parrilla rechazaría por score el 2-3% de la demanda; y los que hoy se aprueban y pasarían a rechazarse son 94 solicitudes en tres meses, unas 30 al mes (el 0,3% de la demanda de tienda). Separando por CESP el porcentaje es parecido: por encima de 3.000 €, 2,0% bajo el corte en CESP y 2,3% en no CESP (`b4_ingresos_score.csv`).
 - **Qué riesgo tienen.** Solo se puede medir en Online, que tiene score, ingresos y comportamiento:
 
 | riesgo H6 Online (mar-25 → feb-26) | score 1-27 | 28-50 | 51-75 | 76-99 | total del tramo |
@@ -146,12 +147,12 @@ Tienda, agosto-octubre de 2026, por ingresos declarados del primer titular (sin 
 
   El ingreso alto atenúa el riesgo, pero el score sigue ordenando dentro de cada tramo de ingresos. Un cliente de 2.000-2.999 € con score por debajo de 27 tiene un 8,1% de riesgo: la mitad que un ingreso medio con ese score, pero cuatro veces la media de su tramo y el doble del objetivo. Por encima de 3.000 € no hay muestra (38 contratos).
 
-**Mi lectura.** Una excepción por ingreso alto costaría poco volumen de riesgo (unas 30 solicitudes al mes), así que es defendible por la razón comercial que das: un corte algo más bajo a partir de 2.000 o 3.000 €, no una exención. Pero con una condición que sale del punto 3: en CESP el ingreso declarado no es fiable (los CESP de 2.000 € o más tienen un 5,3% y un 3,3% de riesgo), así que la excepción debería limitarse a las tiendas sin CESP, que es donde el ingreso se verifica.
+**Mi lectura.** Una excepción por ingreso alto costaría poco volumen de riesgo (unas 30 solicitudes al mes), así que es defendible por la razón comercial que das: un corte algo más bajo a partir de 2.000 o 3.000 €, no una exención. Pero con una condición que sale del punto 3: en CESP el ingreso declarado no es fiable (los CESP de 2.000 € o más tienen un 5,7% y un 3,5% de riesgo), así que la excepción debería limitarse a las operaciones sin CESP, es decir, a quien aporta la nómina.
 
 ## Qué propongo
 
 1. Presentar los escenarios con el factor de deriva de Online ya incorporado (+15% central, +30% como estrés): dime si el 15% te parece el nivel adecuado.
-2. Simular la parrilla solo para no CESP, con CESP en la regla actual, y compararla con la versión para todos.
+2. Simular la parrilla para todos con un nivel de riesgo propio para CESP, y compararla con dejar CESP en la regla actual.
 3. Simular un corte reducido para ingresos altos no CESP y ver cuánta demanda recupera y a qué riesgo.
 
 Dime si te encaja y lo preparo.
@@ -163,7 +164,9 @@ Iñigo
 
 ## Notas para Iñigo (no enviar)
 
-* `cespa = s` = **punto de venta con CESP** (confirmado por Iñigo el 18-11). La marca es del PDV, no del cliente: todo lo del punto 3 compara tiendas con CESP frente a tiendas sin CESP (62% de las filas históricas de tienda son `s`; baja al 39% de la demanda en octubre de 2026, que puede ser cambio de parque de tiendas y no de clientes). Las diferencias pueden venir en parte del tipo de tienda. La CESP se concede a la tienda: no se pide verificación de ingresos y se aplican requisitos más livianos (Iñigo, 18-11), lo que explica que el ingreso declarado no ordene el riesgo allí. Pese a los requisitos más livianos, su aprobación del sistema es más baja (42% frente a 62%) y el score interno las rechaza más: no sé por qué, conviene entenderlo antes de enviar.
+* `cespa = s` = **la CESP (condición especial) se aplicó a la operación**: sin verificación de ingresos. El comercio puede tener CESP y el cliente optar por aportar nómina, y entonces es `n` (Iñigo, 19-11). El extracto del 17-11 traía la marca por punto de venta (192.903 filas `s`); el del 19-11 trae 165.032 y cambia el punto 3 entero: antes "Equifax no los distingue" y "la parrilla deja entrar más CESP" (51% del swap-in), ahora puntúan mejor y la parrilla es neutra (26%). También desaparece la duda de la aprobación más baja en CESP (54% en los dos grupos en ago-oct). El resto del correo no cambia: el extracto nuevo solo quita 21 filas duplicadas.
+* Quien va por CESP se autoselecciona (no aporta nómina) y su peso cae del 61% al 20% de la demanda: la convergencia del riesgo puede ser en parte cambio de composición. No se puede medir a igual score porque tienda no tiene score histórico.
+* Hay 31 filas de Online con `cespa = s` en el extracto nuevo; el análisis solo usa tienda.
 * Bernard dice que el riesgo de tienda sube; en el extracto (H6 hasta abril-2026, H3 hasta julio-2026) las cohortes de 2026 de tienda van por debajo de la ventana. Puede estar viendo indicadores más tempranos o cohortes posteriores a julio. Conviene preguntarle qué serie mira antes de discutir el factor de tienda.
 * El índice de deriva de 2024 sale en 0,6 en Online (no está en el correo ni en el CSV, que empieza en 2025): el score v3 entra en producción en junio de 2025 y `risk_score_rf` anterior es retro-puntuado, así que no lo compararía.
 * Desde el 18-11 (tarde) el factor 1,15 de Online y su volumen actual SON el caso central: `p3_escenarios_objetivo.csv`, el deck y el correo de Jenny ya los llevan (`--online-risk-factor`, `--online-window-volume` para volver atrás). La tabla de sensibilidad (`drift_sensitivity`) da factores absolutos frente a la curva, descontando el 1,15 ya aplicado.

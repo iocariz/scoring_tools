@@ -31,7 +31,9 @@ from src.studies.apple.study import (
     stores_swap_breakdown,
 )
 
-CESP_COL = "cespa"  # 's' = punto de venta con CESP (marca del PDV, no del cliente: sin verificación de ingresos); solo en tienda
+# 's' = la CESP (condición especial) se aplicó a la operación: sin verificación de ingresos. El comercio puede
+# tenerla y el cliente optar por aportar nómina (entonces 'n'). Solo se analiza en tienda.
+CESP_COL = "cespa"
 
 INCOME_COL = "income_t1_m"  # ingresos mensuales declarados del primer titular
 
