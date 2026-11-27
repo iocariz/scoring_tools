@@ -551,6 +551,40 @@ def _enforce_multiplier_monotonicity(
     return result
 
 
+# Certificate tolerance, relative to 1 + ||gradient|| in the scaled problem (targets in [0, 1],
+# weights of mean 1). Runs SLSQP reports as converged leave residuals of the same order.
+_KKT_REL_TOL = 1e-6
+_KKT_ACTIVE_TOL = 1e-7
+
+
+def _kkt_residual(x: np.ndarray, gradient: np.ndarray, A: np.ndarray) -> float:
+    """Distance from stationarity at a feasible *x* of ``min f(x) s.t. A x >= 0, 0 <= x <= 1``.
+
+    Stationarity requires ``gradient = A_active' λ + μ_lower − ν_upper`` with non-negative
+    multipliers on the active constraints only. The best such combination is a non-negative
+    least-squares problem; its residual norm is zero exactly at a KKT point, and for a convex
+    objective a feasible KKT point is the global minimizer. Returns ``inf`` when the
+    multipliers cannot be computed, so the caller treats the point as not certified.
+    """
+    from scipy.optimize import nnls
+
+    columns = [A[A @ x <= _KKT_ACTIVE_TOL].T]
+    at_lower, at_upper = x <= _KKT_ACTIVE_TOL, x >= 1.0 - _KKT_ACTIVE_TOL
+    identity = np.eye(len(x))
+    if at_lower.any():
+        columns.append(identity[:, at_lower])
+    if at_upper.any():
+        columns.append(-identity[:, at_upper])
+    basis = np.hstack(columns)
+    if basis.shape[1] == 0:
+        return float(np.linalg.norm(gradient))
+    try:
+        _, residual = nnls(basis, gradient, maxiter=20 * basis.shape[1])
+    except RuntimeError:
+        return float("inf")
+    return float(residual)
+
+
 def _fix_partial_order_violations(
     result: pd.DataFrame,
     variables: list[str],
@@ -624,10 +658,27 @@ def _fix_partial_order_violations(
         options={"ftol": 1e-12, "maxiter": max_iterations},
     )
     fitted = low + scale * solved.x
-    violation = np.max(np.where(dominates, fitted[None, :] - fitted[:, None], 0.0))
-    if not solved.success or not np.isfinite(fitted).all() or violation > tol:
+    finite = bool(np.isfinite(fitted).all())
+    violation = np.max(np.where(dominates, fitted[None, :] - fitted[:, None], 0.0)) if finite else np.inf
+    optimal = bool(solved.success)
+    detail = ""
+    if not optimal and finite and violation <= tol:
+        # SLSQP routinely stops AT the optimum with status 8 ("positive directional derivative
+        # for linesearch") when ftol=1e-12 cannot be met numerically. The problem is convex, so
+        # a feasible point that satisfies the KKT conditions is the global minimizer whatever
+        # the reported status; certify that instead of trusting or distrusting the status.
+        gradient = 2.0 * w * (solved.x - y)
+        residual = _kkt_residual(solved.x, gradient, A)
+        optimal = residual <= _KKT_REL_TOL * (1.0 + float(np.linalg.norm(gradient)))
+        detail = f"; KKT residual={residual:.3g}"
+        if optimal:
+            logger.debug(
+                f"Isotonic projection: SLSQP status {solved.status} ({solved.message}) at a certified "
+                f"optimum (KKT residual {residual:.3g}); accepted."
+            )
+    if not optimal or not finite or violation > tol:
         raise RuntimeError(
-            f"Isotonic least-squares projection failed: {solved.message}; max order violation={violation:.3g}"
+            f"Isotonic least-squares projection failed: {solved.message}; max order violation={violation:.3g}{detail}"
         )
     # Exact-feasibility snap: SLSQP satisfies the order constraints only to within its
     # own tolerance, and the residual's SIGN is platform-dependent (macOS vs Linux BLAS

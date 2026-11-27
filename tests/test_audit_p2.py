@@ -169,6 +169,19 @@ def test_weighted_isotonic_matches_exhaustive_level_set_reference(seed):
 
 
 def test_isotonic_solver_failure_does_not_silently_return_an_approximation():
-    cells = pd.DataFrame({"a": [0, 1, 2], "b": [0, 2, 1], "reject_risk_multiplier": [2.98, 2.5, 1.02]})
+    """One iteration is not enough here (evidence weights make the first step fall short of the
+    optimum [1.51, 2.5, 1.51]): the iteration-limit point is feasible but not optimal, so it raises."""
+    cells = pd.DataFrame(
+        {"a": [0, 1, 2], "b": [0, 2, 1], "reject_risk_multiplier": [2.98, 2.5, 1.02], "weight": [1, 50, 3]}
+    )
     with pytest.raises(RuntimeError, match="projection failed"):
-        _enforce_multiplier_monotonicity(cells, ["a", "b"], max_iterations=1, quiet=True)
+        _enforce_multiplier_monotonicity(cells, ["a", "b"], weight_col="weight", max_iterations=1, quiet=True)
+
+
+def test_isotonic_solver_status_is_not_what_decides_acceptance():
+    """Audit 2026-11-27 A19: unweighted, the same cells reach the exact optimum in the single
+    iteration allowed — cell (0,0) pools with (2,1) at 2.0, (1,2) keeps 2.5. SLSQP still reports
+    "iteration limit reached"; the answer is correct and is returned, not raised on."""
+    cells = pd.DataFrame({"a": [0, 1, 2], "b": [0, 2, 1], "reject_risk_multiplier": [2.98, 2.5, 1.02]})
+    result = _enforce_multiplier_monotonicity(cells, ["a", "b"], max_iterations=1, quiet=True)
+    np.testing.assert_allclose(result.reject_risk_multiplier, [2.0, 2.5, 2.0], atol=1e-9)

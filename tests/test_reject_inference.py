@@ -1346,6 +1346,80 @@ class TestPartialOrderVerification:
                     )
 
 
+class TestIsotonicSolverStatus:
+    """Audit 2026-11-27 A19: SLSQP often stops AT the optimum with status 8 ("positive directional
+    derivative for linesearch") because ``ftol=1e-12`` cannot be met numerically. Raising on any
+    non-success status aborted the segment on a correct answer. A non-success return is accepted
+    only when the point is order-feasible and satisfies the KKT conditions of the convex problem,
+    which certifies the global optimum; anything else still raises."""
+
+    VARIABLES = ["a", "b", "c"]
+
+    @staticmethod
+    def _grid(seed: int, shape: tuple[int, int, int] = (6, 5, 2)) -> pd.DataFrame:
+        import itertools
+
+        rng = np.random.RandomState(seed)
+        cells = list(itertools.product(*[range(1, size + 1) for size in shape]))
+        grid = pd.DataFrame(cells, columns=["a", "b", "c"]).astype(float)
+        grid["reject_risk_multiplier"] = rng.uniform(1.0, 4.5, len(grid))
+        grid["_ev"] = rng.lognormal(4, 2, len(grid)).clip(1, 3e4)
+        return grid
+
+    @staticmethod
+    def _report_status(monkeypatch, status: int, transform=lambda x: x) -> None:
+        """Make SLSQP report *status* (not success) at ``transform(its real solution)``."""
+        import scipy.optimize
+
+        real_minimize = scipy.optimize.minimize
+
+        def fake(*args, **kwargs):
+            solved = real_minimize(*args, **kwargs)
+            assert solved.success, "fixture needs a grid the real solver converges on"
+            solved.x = transform(solved.x)
+            solved.success, solved.status = False, status
+            solved.message = "Positive directional derivative for linesearch"
+            return solved
+
+        monkeypatch.setattr(scipy.optimize, "minimize", fake)
+
+    def test_status_8_at_the_optimum_is_accepted(self, monkeypatch):
+        expected = self._grid(0)
+        _fix_partial_order_violations(expected, self.VARIABLES, {"a"}, weight_col="_ev")
+
+        grid = self._grid(0)
+        self._report_status(monkeypatch, status=8)
+        n_violations = _fix_partial_order_violations(grid, self.VARIABLES, {"a"}, weight_col="_ev")
+
+        assert n_violations > 0
+        np.testing.assert_allclose(grid["reject_risk_multiplier"], expected["reject_risk_multiplier"])
+        assert _count_partial_order_violations(grid, self.VARIABLES, {"a"}) == 0
+
+    def test_non_optimal_feasible_point_still_raises(self, monkeypatch):
+        """A flat surface satisfies every order constraint but is not the least-squares fit."""
+        self._report_status(monkeypatch, status=8, transform=lambda x: np.full_like(x, x.mean()))
+
+        with pytest.raises(RuntimeError, match="projection failed"):
+            _fix_partial_order_violations(self._grid(0), self.VARIABLES, {"a"}, weight_col="_ev")
+
+    def test_infeasible_point_still_raises(self, monkeypatch):
+        self._report_status(monkeypatch, status=8, transform=lambda x: x[::-1].copy())
+
+        with pytest.raises(RuntimeError, match="projection failed"):
+            _fix_partial_order_violations(self._grid(0), self.VARIABLES, {"a"}, weight_col="_ev")
+
+    @pytest.mark.parametrize("seed", [1, 2, 5])
+    def test_grids_that_stop_with_status_8_do_not_raise(self, seed):
+        """Unmocked: on the machine the audit ran on these 12 x 10 x 2 grids with heavy-tailed
+        evidence stop with status 8 (as did 9 of 12 grids of the live 20 x 10 x 2 shape). Whatever
+        status the platform's BLAS produces, the projection must return an order-feasible surface."""
+        grid = self._grid(seed, shape=(12, 10, 2))
+
+        _fix_partial_order_violations(grid, self.VARIABLES, {"a"}, weight_col="_ev")
+
+        assert _count_partial_order_violations(grid, self.VARIABLES, {"a"}) == 0
+
+
 class TestPosetIsotonicProjection:
     """Audit #17: block-pooling generalized PAVA — a valid, terminating poset isotonic projection."""
 
