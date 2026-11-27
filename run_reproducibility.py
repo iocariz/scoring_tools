@@ -39,7 +39,6 @@ from src.governance.reproducibility import (
     render_report,
     write_reference,
 )
-from src.pipeline.batch_config import validate_segment_name
 
 
 def _build_standalone_config(base_config_path: str, segment_filter: str, dest: Path) -> Path:
@@ -108,10 +107,17 @@ def main(argv: list[str] | None = None) -> int:
     suffix = f"_{args.scenario}" if args.scenario else ""
     segment = args.segment
     ref_path = Path(args.reference) if args.reference else REFERENCE_DIR / f"{segment}_headline.json"
-    # The name becomes a directory that is deleted just below: `-s ..` would remove the whole
-    # output tree. Same rule as batch segment names.
-    validate_segment_name(segment)
     run_dir = Path(args.output) / segment
+    # run_dir is deleted just below, so it must be a directory strictly INSIDE the output dir:
+    # `-s ..` resolved to the output dir's parent and removed the whole output tree. A filter
+    # passed literally (`-s direct/pl/new`) stays allowed — it nests under the output dir.
+    out_root = Path(args.output).resolve()
+    if out_root not in run_dir.resolve().parents:
+        logger.error(
+            f"Invalid --segment {segment!r}: its run directory {run_dir} is not inside the output directory "
+            f"{out_root}. Refusing to clean it."
+        )
+        return 1
     # Clean the run dir first (#47): otherwise a re-run that fails partway leaves the PRIOR run's
     # artifacts in place, and extract_headline below would read those → a spurious PASS (or freeze
     # stale numbers via --update-reference). Rebuilt by _build_standalone_config.

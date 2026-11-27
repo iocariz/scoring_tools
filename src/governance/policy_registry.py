@@ -236,8 +236,11 @@ def _legacy_registry_path(segment: str, registry_dir: Path = REGISTRY_DIR) -> Pa
     return Path(registry_dir) / f"{segment}.json"
 
 
-def load_registry(segment: str, registry_dir: Path = REGISTRY_DIR) -> dict:
+def load_registry(segment: str, registry_dir: Path = REGISTRY_DIR, *, by_file_stem: bool = False) -> dict:
     """Load a segment's registry, or an empty skeleton if it does not exist yet.
+
+    *segment* is the segment filter. ``by_file_stem=True`` is for listing: the caller holds a
+    registry FILE stem (already flattened), not a filter, so the stored filter is not compared.
 
     A registry file that EXISTS but cannot be parsed raises (fail-closed): treating it
     as empty would let the next ``--register`` overwrite the committed history and
@@ -259,9 +262,9 @@ def load_registry(segment: str, registry_dir: Path = REGISTRY_DIR) -> dict:
             "Restore the file (e.g. `git checkout`) or delete it deliberately, then retry."
         ) from e
     reg.setdefault("segment", segment)
-    # Two different filters can flatten to the same file name ("a/b_c" and "a_b/c"). A flat name
-    # itself (what --list passes) is not a different segment.
-    if reg["segment"] != segment and _safe_segment_name(reg["segment"]) != segment:
+    # Two different filters can flatten to the same file name ("a/b_c" and "a_b/c", or "direct/pl"
+    # and a literal "direct_pl"). The file belongs to exactly the filter stored in it.
+    if not by_file_stem and reg["segment"] != segment:
         raise ValueError(
             f"Policy registry {path} belongs to segment {reg['segment']!r}, not {segment!r}: the two "
             "segment filters map to the same file name. Rename one of the filters."

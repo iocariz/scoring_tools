@@ -585,6 +585,16 @@ def test_two_filters_that_flatten_to_the_same_file_do_not_share_a_registry(tmp_p
         load_registry("a_b/c", tmp_path)
 
 
+@pytest.mark.parametrize("first, second", [("direct/pl", "direct_pl"), ("direct_pl", "direct/pl")])
+def test_collision_is_refused_whatever_the_registration_order(tmp_path, first, second):
+    """A literal filter equal to another filter's flattened name must not join its registry."""
+    register_policy(_entry(segment=first, policy_id="x-1111"), registry_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="belongs to segment"):
+        register_policy(_entry(segment=second, policy_id="y-2222"), registry_dir=tmp_path)
+    assert len(load_registry(first, tmp_path)["policies"]) == 1
+
+
 def test_comparison_report_is_written_for_a_filter_with_slashes(tmp_path):
     """policy_compare_direct/pl/new_base.csv raised OSError and aborted the whole --compare run."""
     cmp = _comparison()

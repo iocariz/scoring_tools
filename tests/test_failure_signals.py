@@ -282,7 +282,8 @@ def test_run_backtest_exits_nonzero_when_a_segment_fails(monkeypatch, tmp_path):
     assert run_backtest.main(["--data-dir", str(tmp_path), "--output", str(tmp_path / "bt")]) == 1
 
 
-def test_reproducibility_refuses_a_segment_name_that_escapes_the_output_dir(tmp_path):
+@pytest.mark.parametrize("segment", ["..", ".", "a/../..", "../elsewhere"])
+def test_reproducibility_refuses_a_segment_whose_run_dir_escapes_the_output_dir(tmp_path, segment):
     """`-s ..` reached shutil.rmtree(output/..) — the whole output tree — before anything else."""
     import run_reproducibility
 
@@ -290,10 +291,30 @@ def test_reproducibility_refuses_a_segment_name_that_escapes_the_output_dir(tmp_
     victim.parent.mkdir(parents=True)
     victim.write_text("x", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="Invalid segment name"):
-        run_reproducibility.main(["-s", "..", "--output", str(tmp_path / "output" / "_repro")])
-
+    assert run_reproducibility.main(["-s", segment, "--output", str(tmp_path / "output" / "_repro")]) == 1
     assert victim.exists()
+
+
+def test_reproducibility_still_accepts_a_literal_filter(monkeypatch, tmp_path):
+    """`-s direct/pl/new` is the documented fallback when the value is not a segments.toml name;
+    its run directory nests under the output dir, so it is cleaned and used as before."""
+    import run_reproducibility
+
+    stale = tmp_path / "_repro" / "direct" / "pl" / "new" / "old_artifact.txt"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("x", encoding="utf-8")
+
+    class Stop(Exception):
+        pass
+
+    def stop(*args, **kwargs):
+        raise Stop
+
+    monkeypatch.setattr(run_reproducibility, "_resolve_segment_filter", stop)
+
+    with pytest.raises(Stop):
+        run_reproducibility.main(["-s", "direct/pl/new", "--output", str(tmp_path / "_repro")])
+    assert not stale.exists() and stale.parent.is_dir()  # cleaned, recreated, and the run went on
 
 
 def test_baseline_flag_refuses_a_segment_with_fixed_cutoffs(monkeypatch, tmp_path):

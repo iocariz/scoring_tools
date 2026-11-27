@@ -51,6 +51,7 @@ from src.governance.policy_registry import (
     load_registry,
     policy_id_for_settings,
     register_policy,
+    registry_path,
     settings_bin_edges,
     settings_bin_sources,
     unfrozen_bin_vars,
@@ -88,7 +89,9 @@ def register_all(
             continue
         reg = register_policy(entry, make_champion=make_champion, registry_dir=registry_dir)
         role = "champion" if reg["champion_policy_id"] == entry.policy_id else "challenger"
-        logger.info(f"[{entry.segment}] registered {entry.policy_id} ({role}) → {registry_dir}/{entry.segment}.json")
+        logger.info(
+            f"[{entry.segment}] registered {entry.policy_id} ({role}) → {registry_path(entry.segment, registry_dir)}"
+        )
         n += 1
     return n
 
@@ -131,7 +134,7 @@ def list_all(
         logger.warning(f"No registries under {registry_dir}" + (f" for {segments}" if segments else ""))
         return 0
     for name in names:
-        reg = load_registry(name, registry_dir)
+        reg = load_registry(name, registry_dir, by_file_stem=True)
         champ = reg.get("champion_policy_id")
         logger.info(f"=== {name} === champion: {champ or '(none)'} | {len(reg['policies'])} policy(ies)")
         for p in reg["policies"]:
