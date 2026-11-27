@@ -29,6 +29,7 @@ matplotlib.use("Agg")  # headless, deterministic
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib import patheffects as path_effects
 
 # --- palette (validated; see docstring) ------------------------------------- #
 INK = "#2C3E50"  # primary text
@@ -112,9 +113,17 @@ def chart_risk_curve(curve: pd.DataFrame, edges: list[float]) -> plt.Figure:
     much does the score discriminate", the bottom one "how much can I trust each
     point". The bins with residual production are shaded in both panels — that is
     where the estimate is weakest and exactly what the loosest scenarios open.
+
+    The study overwrites ``b2_pct`` with the reject-inference curve and keeps the
+    booked one in ``b2_pct_contratados``. The solid line and its labels are the
+    booked (realized) curve; the corrected curve, the one the scenarios use, is
+    drawn dashed so it is never read as a measurement.
     """
     df = curve.dropna(subset=["b2_pct"]).sort_values("bin")
     bins = df["bin"].to_numpy()
+    realized = df["b2_pct_contratados"] if "b2_pct_contratados" in df.columns else df["b2_pct"]
+    has_correction = not np.allclose(realized, df["b2_pct"], equal_nan=True)
+    y_top = float(np.nanmax([realized.max(), df["b2_pct"].max()]))
     thin = df[df["booked_eur"] < 0.005 * df["booked_eur"].sum()]
     fig, (ax1, ax2) = plt.subplots(
         2, 1, figsize=(12.5, 5.6), sharex=True, gridspec_kw={"height_ratios": [2.3, 1], "hspace": 0.1}
@@ -125,29 +134,51 @@ def chart_risk_curve(curve: pd.DataFrame, edges: list[float]) -> plt.Figure:
         for ax in (ax1, ax2):
             ax.axvspan(lo, hi, color=GRID, alpha=0.55, zorder=0)
 
-    ax1.plot(bins, df["b2_pct"], color=RISK, linewidth=2, solid_capstyle="round", zorder=3)
-    ax1.scatter(bins, df["b2_pct"], s=34, color=RISK, edgecolor=SURFACE, linewidth=2, zorder=4)
-    _style(ax1, ylabel="Realized b2 risk (%)")
-    ax1.set_ylim(0, df["b2_pct"].max() * 1.18)
+    ax1.plot(
+        bins,
+        realized,
+        color=RISK,
+        linewidth=2,
+        solid_capstyle="round",
+        zorder=3,
+        label="Realized (booked contracts)",
+    )
+    if has_correction:
+        ax1.plot(
+            bins,
+            df["b2_pct"],
+            color=MUTED,
+            linewidth=1.5,
+            linestyle=(0, (4, 3)),
+            zorder=2,
+            label="With selection correction (used in the scenarios)",
+        )
+        ax1.legend(loc="upper right", fontsize=9, frameon=False)
+    ax1.scatter(bins, realized, s=34, color=RISK, edgecolor=SURFACE, linewidth=2, zorder=4)
+    _style(ax1, ylabel="b2 risk (%)" if has_correction else "Realized b2 risk (%)")
+    ax1.set_ylim(0, y_top * 1.18)
     # labels where the cutoff is decided, not on every point
     for b in (bins[0], 8.0, 12.0, 16.0, bins[-1]):
-        row = df[df["bin"] == b]
-        if row.empty:
+        value = realized[df["bin"] == b]
+        if value.empty:
             continue
         ax1.annotate(
-            num(float(row["b2_pct"].iloc[0]), 1, "%"),
-            (b, float(row["b2_pct"].iloc[0])),
+            num(float(value.iloc[0]), 1, "%"),
+            (b, float(value.iloc[0])),
             textcoords="offset points",
             xytext=(0, 11),
             ha="center",
             fontsize=10.5,
             fontweight="bold",
             color=INK,
+            # a halo keeps the figure legible where the dashed curve runs behind it
+            path_effects=[path_effects.withStroke(linewidth=3, foreground=SURFACE)],
+            zorder=5,
         )
     if not thin.empty:
         ax1.annotate(
             f"bins {int(thin['bin'].min())}-{int(thin['bin'].max())}\nresidual production:\nunreliable risk",
-            (thin["bin"].max() + 0.25, df["b2_pct"].max() * 0.60),
+            (thin["bin"].max() + 0.25, y_top * 0.60),
             ha="left",
             fontsize=8.5,
             color=MUTED,

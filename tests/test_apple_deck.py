@@ -283,6 +283,68 @@ def test_charts_render_without_labels_overflowing_axes(study_outputs):
     matplotlib.pyplot.close(fig)
 
 
+def _slide_texts(prs) -> list[str]:
+    return ["\n".join(sh.text_frame.text for sh in slide.shapes if sh.has_text_frame) for slide in prs.slides]
+
+
+def _build_with_meta(study_outputs, tmp_path, **meta_overrides):
+    from pptx import Presentation
+
+    meta_path = study_outputs / "periodos.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta_path.write_text(json.dumps({**meta, **meta_overrides}), encoding="utf-8")
+    return Presentation(str(build(study_outputs, tmp_path / "deck" / "Estudio.pptx")))
+
+
+def test_store_demand_slide_quotes_the_measured_online_risk(study_outputs, tmp_path):
+    """Audit 2026-11-27 A9: 'realized' was the blended figure minus the RI margin. With the drift
+    factor inside the blend (4.26 here), that is neither realized nor measured — the realized
+    figure is p1's TOTAL (4.20 in the fixture)."""
+    prs = _build_with_meta(study_outputs, tmp_path, online_factor_riesgo=1.15)
+    sentence = next(t for t in _slide_texts(prs) if "from applications to risk" in t)
+    assert "(realized 4.20%)" in sentence
+    assert "realized 4.18%" not in sentence
+    assert "drift at equal score (×1.15)" in sentence
+
+
+def test_store_demand_slide_omits_the_drift_when_there_is_none(study_outputs, tmp_path):
+    prs = _build_with_meta(study_outputs, tmp_path, online_factor_riesgo=1.0)
+    sentence = next(t for t in _slide_texts(prs) if "from applications to risk" in t)
+    assert "(realized 4.20%)" in sentence
+    assert "drift at equal score" not in sentence
+
+
+def test_risk_curve_chart_plots_the_realized_curve_as_realized(study_outputs):
+    """Audit 2026-11-27 A10: the study overwrites ``b2_pct`` with the reject-inference curve, so
+    plotting it under 'Realized b2 risk' showed the corrected curve as measured. The solid line and
+    its labels are the booked (realized) curve; the corrected one is a separate dashed line."""
+    curve = pd.read_csv(study_outputs / "curva_riesgo_online.csv")
+    fig = ac.chart_risk_curve(curve, BIN_EDGES)
+    ax = fig.axes[0]
+    realized, corrected = ax.lines[0], ax.lines[1]
+    np.testing.assert_allclose(realized.get_ydata(), curve["b2_pct_contratados"])
+    np.testing.assert_allclose(corrected.get_ydata(), curve["b2_pct"])
+    assert realized.get_linestyle() == "-" and corrected.get_linestyle() != "-"
+    assert ax.get_ylabel() == "b2 risk (%)"
+    labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert labels == ["Realized (booked contracts)", "With selection correction (used in the scenarios)"]
+    # the point labels belong to the realized curve: bin 1 is 30%, not the corrected 40%
+    assert "30.0%" in [t.get_text() for t in ax.texts]
+    matplotlib.pyplot.close(fig)
+
+
+def test_risk_curve_chart_without_reject_inference_has_one_line(study_outputs):
+    curve = pd.read_csv(study_outputs / "curva_riesgo_online.csv")
+    same = curve.assign(b2_pct_contratados=curve["b2_pct"])
+    for frame in (same, curve.drop(columns=["b2_pct_contratados"])):
+        fig = ac.chart_risk_curve(frame, BIN_EDGES)
+        ax = fig.axes[0]
+        assert len(ax.lines) == 1
+        np.testing.assert_allclose(ax.lines[0].get_ydata(), frame["b2_pct"])
+        assert ax.get_ylabel() == "Realized b2 risk (%)"
+        matplotlib.pyplot.close(fig)
+
+
 def test_segment_breakdown_excludes_always_rejected(study_outputs):
     """known_g no puede dibujarse: no tiene ni aceptación ni riesgo que comparar."""
     p2 = pd.read_csv(study_outputs / "p2_tienda_parrilla_online.csv")
