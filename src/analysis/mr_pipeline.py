@@ -1658,6 +1658,29 @@ def _compute_mr_stability_metrics(
 # -----------------------------------------------------------------------------
 
 
+_MR_CAL_FACTOR_MIN, _MR_CAL_FACTOR_MAX = 0.1, 10.0
+
+
+def _mr_recalibration_factor(mr_rate: pd.Series, main_rate: pd.Series) -> pd.Series:
+    """Per-bin repesca recalibration factor ``MR rate / main rate``, clipped to [0.1, 10].
+
+    The ratio only exists where the main-period rate is positive. Where it is zero:
+
+    * MR rate zero or undefined — no evidence of any change (typical of a ``main_imputed`` bin,
+      whose MR rate is the main rate copied over): factor 1. ``mr / max(main, 1e-9)`` evaluated
+      this as 0 and the clip turned it into 0.1, cutting that bin's swap-in risk by 90% on no
+      evidence (audit 2026-11-27 A18).
+    * MR rate positive — risk appeared where the main period had none; the ratio is unbounded,
+      so the factor is the upper cap (unchanged, conservative).
+
+    An undefined MR or main rate gives factor 1.
+    """
+    has_main = main_rate > 0
+    ratio = (mr_rate / main_rate.where(has_main)).clip(lower=_MR_CAL_FACTOR_MIN, upper=_MR_CAL_FACTOR_MAX)
+    risk_appeared = ~has_main & main_rate.notna() & (mr_rate > 0)
+    return ratio.mask(risk_appeared, _MR_CAL_FACTOR_MAX).fillna(1.0)
+
+
 def _recalibrate_mr_repesca(
     data_summary_desagregado_mr: pd.DataFrame,
     data_booked: pd.DataFrame,
@@ -1707,10 +1730,15 @@ def _recalibrate_mr_repesca(
             mr_bin_b2 = mr_bin_b2.groupby(merge_keys, as_index=False)["_mr_b2"].mean()
 
         cal_factor_by_bin = main_bin_agg[merge_keys + ["_main_b2"]].merge(mr_bin_b2, on=merge_keys, how="left")
-        safe_main_b2 = cal_factor_by_bin["_main_b2"].clip(lower=1e-9)
-        cal_factor_by_bin["_mr_cal_factor"] = (
-            (cal_factor_by_bin["_mr_b2"] / safe_main_b2).clip(lower=0.1, upper=10.0).fillna(1.0)
+        cal_factor_by_bin["_mr_cal_factor"] = _mr_recalibration_factor(
+            cal_factor_by_bin["_mr_b2"], cal_factor_by_bin["_main_b2"]
         )
+        n_no_change = int(((cal_factor_by_bin["_main_b2"] <= 0) & ~(cal_factor_by_bin["_mr_b2"] > 0)).sum())
+        if n_no_change:
+            logger.info(
+                f"MR repesca recalibration: {n_no_change} bin(s) with zero main-period risk and no MR risk "
+                "keep factor 1 (no evidence of change)."
+            )
 
         n_before_recal_merge = len(data_summary_desagregado_mr)
         data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
@@ -1769,10 +1797,7 @@ def _recalibrate_mr_repesca(
             )
             if has_h3_cal:
                 h3_cal = comparison_df[merge_keys + ["b2_mr_h3", "b2_main_h3"]].drop_duplicates(subset=merge_keys)
-                safe_main_h3 = h3_cal["b2_main_h3"].clip(lower=1e-9)
-                h3_cal["_mr_cal_factor_h3"] = (
-                    (h3_cal["b2_mr_h3"] / safe_main_h3).clip(lower=0.1, upper=10.0).fillna(1.0)
-                )
+                h3_cal["_mr_cal_factor_h3"] = _mr_recalibration_factor(h3_cal["b2_mr_h3"], h3_cal["b2_main_h3"])
                 data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
                     h3_cal[merge_keys + ["_mr_cal_factor_h3"]],
                     on=merge_keys,

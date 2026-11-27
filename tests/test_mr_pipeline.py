@@ -3151,3 +3151,73 @@ class TestMrStabilityDemandBasis:
         # Identical demand distributions → PSI ~ 0 (STABLE). Booked-only would be UNSTABLE (PSI>=0.25).
         assert float(row.iloc[0]["psi"]) < 0.1
         assert row.iloc[0]["status"] == "stable"
+
+
+class TestMrRecalibrationFactor:
+    """Audit 2026-11-27 A18: the repesca recalibration factor is ``MR rate / main rate`` per bin.
+    With zero main-period defaults the ratio is undefined; ``mr / max(main, 1e-9)`` clipped to
+    [0.1, 10] turned "0 in both periods" (no change in evidence at all — typical of a
+    ``main_imputed`` bin, whose MR rate is the main rate copied over) into a factor of 0.1, cutting
+    that bin's swap-in risk by 90%."""
+
+    KEYS = ["a", "b"]
+    MULTIPLIER = 7
+
+    def _recalibrate(self, main_defaults: float, mr_rate: float, h3: tuple[float, float] | None = None):
+        """One bin with 1,400 of main exposure; returns the recalibrated summary row."""
+        from types import SimpleNamespace
+
+        from src.analysis.mr_pipeline import _recalibrate_mr_repesca
+
+        data_booked = pd.DataFrame(
+            {"a": [1, 1], "b": [1, 1], "todu_30ever_h6": [main_defaults, 0.0], "todu_amt_pile_h6": [700.0, 700.0]}
+        )
+        comparison = pd.DataFrame({"a": [1], "b": [1], "b2_ever_h6_tmp": [mr_rate]})
+        summary = pd.DataFrame(
+            {
+                "a": [1],
+                "b": [1],
+                "todu_30ever_h6_boo": [2.0],
+                "todu_30ever_h6_rep": [5.0],
+                "todu_amt_pile_h6_rep": [500.0],
+                "todu_30ever_h6": [7.0],
+            }
+        )
+        if h3 is not None:
+            comparison["b2_mr_h3"], comparison["b2_main_h3"] = h3
+            summary["todu_30ever_h3_boo"], summary["todu_30ever_h3_rep"] = 1.0, 4.0
+        out, applied = _recalibrate_mr_repesca(
+            summary, data_booked, self.KEYS, comparison, SimpleNamespace(multiplier=self.MULTIPLIER)
+        )
+        assert applied
+        return out.iloc[0]
+
+    def test_zero_defaults_in_both_periods_leaves_repesca_unchanged(self):
+        row = self._recalibrate(main_defaults=0.0, mr_rate=0.0)
+        assert row["todu_30ever_h6_rep"] == 5.0
+        assert row["todu_30ever_h6"] == 7.0  # boo + rep recomputed
+
+    def test_undefined_mr_rate_leaves_repesca_unchanged(self):
+        assert self._recalibrate(main_defaults=10.0, mr_rate=np.nan)["todu_30ever_h6_rep"] == 5.0
+        assert self._recalibrate(main_defaults=0.0, mr_rate=np.nan)["todu_30ever_h6_rep"] == 5.0
+
+    def test_ratio_applies_where_main_risk_is_positive(self):
+        main_rate = self.MULTIPLIER * 10.0 / 1400.0  # 0.05
+        assert self._recalibrate(10.0, main_rate)["todu_30ever_h6_rep"] == pytest.approx(5.0)
+        assert self._recalibrate(10.0, 2 * main_rate)["todu_30ever_h6_rep"] == pytest.approx(10.0)
+        assert self._recalibrate(10.0, main_rate / 2)["todu_30ever_h6_rep"] == pytest.approx(2.5)
+
+    def test_ratio_stays_clipped(self):
+        main_rate = self.MULTIPLIER * 10.0 / 1400.0
+        assert self._recalibrate(10.0, 100 * main_rate)["todu_30ever_h6_rep"] == pytest.approx(50.0)  # x10 cap
+        assert self._recalibrate(10.0, 0.0)["todu_30ever_h6_rep"] == pytest.approx(0.5)  # x0.1 floor
+
+    def test_zero_main_with_positive_mr_keeps_the_conservative_cap(self):
+        """Risk appeared where the main period had none: the ratio is unbounded, so the factor is
+        the upper cap, as before. Only the no-evidence case changes."""
+        assert self._recalibrate(main_defaults=0.0, mr_rate=0.03)["todu_30ever_h6_rep"] == pytest.approx(50.0)
+
+    def test_h3_factor_follows_the_same_rule(self):
+        assert self._recalibrate(10.0, 0.05, h3=(0.0, 0.0))["todu_30ever_h3_rep"] == 4.0
+        assert self._recalibrate(10.0, 0.05, h3=(0.04, 0.02))["todu_30ever_h3_rep"] == pytest.approx(8.0)
+        assert self._recalibrate(10.0, 0.05, h3=(0.02, 0.0))["todu_30ever_h3_rep"] == pytest.approx(40.0)
