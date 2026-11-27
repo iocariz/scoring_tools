@@ -33,6 +33,23 @@ def _discover_segments(data_dir: Path, suffix: str, wanted: list[str] | None) ->
     return found
 
 
+def invalidate_consolidated_backtest(out_dir: str | Path, scenario: str = "base") -> list[Path]:
+    """Remove a previous run's consolidated backtest outputs for *scenario*; return what was removed.
+
+    The consolidated workbook reads ``backtest_consolidated<suffix>.csv`` whenever it exists, with no
+    way to tell which run wrote it. Left in place after the cutoffs change (a skipped or failed
+    backtest), it shows the previous run's DRIFT/OK flags as current evidence.
+    """
+    suffix = _scenario_suffix(scenario)
+    out_dir = Path(out_dir)
+    stale = [out_dir / f"backtest_consolidated{suffix}.csv", out_dir / f"backtest_summary{suffix}.md"]
+    removed = [path for path in stale if path.exists()]
+    for path in removed:
+        path.unlink()
+        logger.warning(f"Removed out-of-time evidence from a previous run: {path}")
+    return removed
+
+
 def backtest_all(
     full_data,
     data_dir: str | Path = "output",
@@ -51,6 +68,9 @@ def backtest_all(
     """
     suffix = _scenario_suffix(scenario)
     data_dir, out_dir = Path(data_dir), Path(out_dir)
+    # Whatever this call produces replaces the consolidated evidence; if it produces nothing
+    # (no frozen segments, every segment failing) the previous run's file must not survive.
+    invalidate_consolidated_backtest(out_dir, scenario)
     seg_dirs = _discover_segments(data_dir, suffix, segments)
     if not seg_dirs:
         logger.warning(f"No frozen segments with accepted_cells{suffix}.csv under {data_dir} — skipping backtest.")

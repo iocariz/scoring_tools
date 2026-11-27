@@ -147,8 +147,10 @@ def run_segment_pipeline(
             run_ts_iso=run_ts_iso,
         )
 
-        if result is None:
-            raise SegmentPipelineError(f"Pipeline returned no result for segment: {segment_name}")
+        # run_pipeline signals failure with the False sentinel (#61) and a full run never
+        # legitimately returns None, so both mean "this segment did not complete".
+        if result is None or result is False:
+            raise SegmentPipelineError(f"Pipeline failed for segment: {segment_name}")
 
         logger.info(f"Pipeline completed successfully for segment: {segment_name}")
         return True
@@ -242,6 +244,8 @@ def run_supersegment_training(
         temp_config = write_segment_config(merged_config, dirs["root"]).resolve()
         # Explicit OutputPaths instead of os.chdir (todo #67).
         supersegment_output = OutputPaths(base_dir=dirs["root"].resolve())
+        models_dir = dirs["models"]
+        models_before = set(models_dir.glob("model_*"))
         result = run_pipeline(
             config_path=str(temp_config),
             training_only=True,
@@ -253,15 +257,17 @@ def run_supersegment_training(
             run_ts_iso=run_ts_iso,
         )
 
-        if result is None:
-            raise SupersegmentTrainingError(f"Supersegment training returned no result: {supersegment_name}")
+        if result is None or result is False:
+            raise SupersegmentTrainingError(f"Supersegment training failed: {supersegment_name}")
 
-        # Find the most recent model directory
-        models_dir = dirs["models"]
-        model_dirs = sorted(models_dir.glob("model_*"), reverse=True)
+        # Only a model directory written by THIS run counts. Taking the newest directory on disk
+        # would hand a previous run's model to every member segment when training wrote nothing.
+        model_dirs = sorted(set(models_dir.glob("model_*")) - models_before, reverse=True)
 
         if not model_dirs:
-            raise SupersegmentTrainingError(f"No model directory found after training: {supersegment_name}")
+            raise SupersegmentTrainingError(
+                f"Training wrote no new model directory for supersegment: {supersegment_name}"
+            )
 
         model_path = str(model_dirs[0].resolve())
         logger.info(f"Supersegment model trained successfully: {model_path}")
