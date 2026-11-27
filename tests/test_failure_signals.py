@@ -197,21 +197,44 @@ class TestBacktestStaleEvidence:
 
         assert csv_path.exists()
 
-    def test_every_segment_failing_drops_previous_evidence(self, monkeypatch, tmp_path):
-        csv_path, md_path = _stale_backtest(tmp_path / "backtest")
+    def test_failed_backtest_replaces_previous_evidence_with_a_failed_row(self, monkeypatch, tmp_path):
+        """A3 (rest): a segment whose backtest fails used to vanish from the consolidated file. It
+        now has a row that says so, and the previous run's verdict for it is gone."""
+        import pandas as pd
+
+        csv_path, _ = _stale_backtest(tmp_path / "backtest")
         _frozen_segment(tmp_path / "output", "seg_a")
         monkeypatch.setattr(
             backtest_runner.PreprocessingSettings,
             "from_toml",
-            classmethod(lambda cls, path: SimpleNamespace(mr_maturity_months=6)),
+            classmethod(lambda cls, path: SimpleNamespace(mr_maturity_months=6, segment_filter="direct/seg/a")),
         )
 
         def fail(*args, **kwargs):
-            raise BacktestError("no mature holdout")
+            raise BacktestError("no mature\n  holdout")  # multi-line reasons are flattened
 
         monkeypatch.setattr(backtest_runner, "backtest_segment", fail)
 
         results = backtest_runner.backtest_all(None, data_dir=tmp_path / "output", out_dir=tmp_path / "backtest")
 
         assert results == []
-        assert not csv_path.exists() and not md_path.exists()
+        rows = pd.read_csv(csv_path)
+        assert rows["segment"].tolist() == ["direct/seg/a"]
+        assert rows["drift_flag"].tolist() == ["FAILED"]
+        assert "no mature holdout" in rows["message"].iloc[0]
+        assert "FAILED" in (tmp_path / "backtest" / "backtest_summary_base.md").read_text(encoding="utf-8")
+
+    def test_unreadable_segment_config_is_reported_under_the_directory_name(self, monkeypatch, tmp_path):
+        import pandas as pd
+
+        _frozen_segment(tmp_path / "output", "seg_a")
+
+        def broken(cls, path):
+            raise ValueError("bad toml")
+
+        monkeypatch.setattr(backtest_runner.PreprocessingSettings, "from_toml", classmethod(broken))
+
+        backtest_runner.backtest_all(None, data_dir=tmp_path / "output", out_dir=tmp_path / "backtest")
+
+        rows = pd.read_csv(tmp_path / "backtest" / "backtest_consolidated_base.csv")
+        assert rows["segment"].tolist() == ["seg_a"] and rows["drift_flag"].tolist() == ["FAILED"]

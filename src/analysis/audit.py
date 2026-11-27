@@ -49,7 +49,7 @@ def audit_production_kpis(audit_df: pd.DataFrame | None) -> dict[str, float | No
         "total_demand": 0.0,
         "actual_rejections": 0.0,
         "optimum_rejections": None,
-        "actual_system_rejections": 0.0,
+        "actual_system_rejections": None,
         "optimum_system_rejections": None,
     }
     if audit_df is None or audit_df.empty or "classification" not in audit_df.columns:
@@ -370,7 +370,9 @@ def _rejection_amounts_from_audit(audit_df: pd.DataFrame, amount_col: str) -> tu
     return total_demand, actual_rejections, optimum_rejections
 
 
-def _system_rejection_amounts_from_audit(audit_df: pd.DataFrame, amount_col: str) -> tuple[float, float, float | None]:
+def _system_rejection_amounts_from_audit(
+    audit_df: pd.DataFrame, amount_col: str
+) -> tuple[float, float | None, float | None]:
     """``(total_demand, actual_system_ko, optimum_system_ko)`` in € for system-rejection-rate math.
 
     The "system rejection rate" tracks the **upstream scoring-system** decision
@@ -382,10 +384,13 @@ def _system_rejection_amounts_from_audit(audit_df: pd.DataFrame, amount_col: str
     policy accepts flips to ``ok``). This is the ``se_decision_id`` analogue of
     ``_rejection_amounts_from_audit`` and shares its ``oa_amt_demand`` denominator,
     so the two rates sit on the same €-weighted, scenario-invariant basis.
-    ``optimum_system_ko`` is None when ``passes_cut`` is unavailable.
+    ``optimum_system_ko`` is None when ``passes_cut`` is unavailable. Without
+    ``se_decision_id`` both amounts are None: the rate is unknown, not zero (a 0.0
+    here was patched onto the consolidated row and pooled into the TOTAL as a
+    measured 0% — audit 2026-11-27 A11).
     """
     if "se_decision_id" not in audit_df.columns:
-        return 0.0, 0.0, None
+        return 0.0, None, None
     col = "oa_amt_demand" if "oa_amt_demand" in audit_df.columns else amount_col
     amounts = audit_df[col]
     sd = audit_df["se_decision_id"].astype(str).str.strip().str.lower()
@@ -493,7 +498,7 @@ def reconcile_risk_production_summary_with_audit(
         _, actual_system, optimum_system = _system_rejection_amounts_from_audit(audit_df, amount_col)
         act_mask = m.str.lower() == "actual"
         opt_mask = m.str.lower() == "optimum selected"
-        if act_mask.any():
+        if act_mask.any() and actual_system is not None:
             st.loc[act_mask, "System Rejection Rate (%)"] = actual_system / total_demand * 100.0
         if opt_mask.any() and optimum_system is not None:
             st.loc[opt_mask, "System Rejection Rate (%)"] = optimum_system / total_demand * 100.0

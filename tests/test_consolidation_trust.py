@@ -10,10 +10,13 @@ import pandas as pd
 from openpyxl import Workbook
 
 from src.report.consolidation import (
+    _backtest_flags_by_segment,
     _ci_eur,
     _ci_pct,
+    _fmt_pct_or_na,
     _read_backtest_consolidated,
     _segment_status,
+    _write_exec_recommendation,
     _write_sheet_oot_validation,
     _write_sheet_validation_governance,
 )
@@ -129,3 +132,139 @@ def test_oot_sheet_graceful_when_missing(tmp_path):
     _write_sheet_oot_validation(wb, tmp_path / "empty", "_base")
     text = "\n".join(str(c.value) for rowcells in wb["Out-of-time Validation"].iter_rows() for c in rowcells if c.value)
     assert "not available" in text and "run_backtest" in text
+
+
+# ----------------- audit 2026-11-27 A11 / A12: no evidence is not "OK" -----------------
+
+
+def test_segment_status_does_not_call_missing_evidence_ok():
+    """No backtest row, an insufficient backtest ("—") or a failed one is not a pass."""
+    stable = {"worst_status": "stable", "info": 3}
+    for flag in (None, "—", "FAILED", float("nan")):
+        assert _segment_status(flag, {})[0] == "UNVERIFIED"
+        assert _segment_status(flag, stable)[0] == "UNVERIFIED"
+    assert _segment_status("BELOW", stable)[0] == "OK"  # realized risk clearly lower: a pass
+
+
+def test_segment_status_unstable_psi_is_review_even_without_alert_counts():
+    """worst_status comes from stability_psi; the alert counts from drift_alerts, which may be absent."""
+    assert _segment_status("OK", {"worst_status": "unstable"})[0] == "REVIEW"
+    assert _segment_status(None, {"worst_status": "unstable"})[0] == "REVIEW"
+    assert _segment_status(None, {"warning": 1})[0] == "WATCH"  # PSI evidence still counts without a backtest
+
+
+def test_backtest_flags_are_matched_by_segment_filter():
+    """The backtest writes ``settings.segment_filter`` ("direct/pl/new") in its ``segment`` column,
+    while the report iterates segment NAMES ("direct-pl-new"). Looking the flag up by name found
+    nothing on the live naming, so a DRIFT never reached the status column."""
+    bt = pd.DataFrame({"segment": ["direct/pl/new", "legacy_name"], "drift_flag": ["DRIFT", "OK"]})
+    segments = {"direct-pl-new": {"segment_filter": "direct/pl/new"}, "legacy_name": {}, "not-backtested": {}}
+
+    flags = _backtest_flags_by_segment(bt, segments)
+
+    assert flags == {"direct-pl-new": "DRIFT", "legacy_name": "OK"}
+    assert _backtest_flags_by_segment(None, segments) == {}
+
+
+def _recommendation_text(tmp_path, backtest_rows: list[dict] | None, segments: dict) -> str:
+    if backtest_rows is not None:
+        (tmp_path / "backtest").mkdir(exist_ok=True)
+        pd.DataFrame(backtest_rows).to_csv(tmp_path / "backtest" / "backtest_consolidated_base.csv", index=False)
+    wb = Workbook()
+    no_rows = pd.DataFrame(columns=["group", "period", "scenario"])
+    _write_exec_recommendation(wb.active, 1, no_rows, tmp_path, segments, "_base")
+    return "\n".join(str(c.value) for rowcells in wb.active.iter_rows() for c in rowcells if c.value)
+
+
+def test_recommendation_does_not_claim_noise_when_a_segment_drifts(tmp_path):
+    rows = [
+        {"segment": "a", "drift_flag": "DRIFT"},
+        {"segment": "b", "drift_flag": "BELOW"},
+        {"segment": "c", "drift_flag": "—"},
+        {"segment": "d", "drift_flag": "FAILED"},
+    ]
+    text = _recommendation_text(tmp_path, rows, {name: {} for name in "abcd"})
+
+    assert "within sampling noise" not in text
+    assert "OUT-OF-TIME DRIFT flagged for 1 segment(s): a —" in text
+    # every flag is counted: nothing disappears from "of 4"
+    assert "0 OK, 1 below, 0 inconclusive, 1 drift, 1 insufficient, 1 failed (of 4 segments in the backtest)" in text
+    assert "1 OK · 0 watch · 1 review · 2 unverified" in text  # a review, b OK, c and d unverified
+
+
+def test_recommendation_counts_statuses_per_segment(tmp_path):
+    rows = [{"segment": "a", "drift_flag": "OK"}, {"segment": "b", "drift_flag": "INCONCLUSIVE"}]
+    text = _recommendation_text(tmp_path, rows, {"a": {}, "b": {}, "c": {}})
+
+    assert "1 OK · 1 watch · 0 review · 1 unverified" in text
+    # no drift among the checked segments says nothing about the unchecked one
+    assert "within sampling noise" not in text
+    assert "1 of 3 segment(s) have no out-of-time verdict" in text
+
+
+def test_recommendation_keeps_the_noise_sentence_only_when_every_segment_has_a_verdict(tmp_path):
+    rows = [{"segment": "a", "drift_flag": "OK"}, {"segment": "b", "drift_flag": "INCONCLUSIVE"}]
+    text = _recommendation_text(tmp_path, rows, {"a": {}, "b": {}})
+
+    assert "within sampling noise" in text
+
+
+def test_drift_warning_names_segments_not_filters(tmp_path):
+    rows = [{"segment": "direct/pl/new", "drift_flag": "DRIFT"}]
+    text = _recommendation_text(tmp_path, rows, {"direct-pl-new": {"segment_filter": "direct/pl/new"}})
+
+    assert "OUT-OF-TIME DRIFT flagged for 1 segment(s): direct-pl-new —" in text
+
+
+def test_unmatched_backtest_rows_are_reported(caplog):
+    from src.report import consolidation
+
+    bt = pd.DataFrame({"segment": ["direct/pl/new", "direct/other"], "drift_flag": ["OK", "DRIFT"]})
+    handler_id = consolidation.logger.add(caplog.handler, format="{message}", level="WARNING")
+    try:
+        flags = _backtest_flags_by_segment(bt, {"direct-pl-new": {"segment_filter": "direct/pl/new"}})
+    finally:
+        consolidation.logger.remove(handler_id)
+
+    assert flags == {"direct-pl-new": "OK"}
+    assert "direct/other" in caplog.text and "match no segment" in caplog.text
+
+
+def test_unverified_status_has_a_visible_fill():
+    """The near-white stripe colour looks like an unfilled cell next to teal / amber / pink."""
+    fills = {_segment_status(flag, {})[1] for flag in ("OK", "INCONCLUSIVE", "DRIFT", None)}
+    assert len(fills) == 4
+    assert _segment_status(None, {})[1] not in ("FFFFFF", "F8F9FA")
+
+
+def test_recommendation_without_backtest_makes_no_out_of_time_claim(tmp_path):
+    text = _recommendation_text(tmp_path, None, {"a": {}})
+
+    assert "Out-of-time validation: not available" in text
+    assert "within sampling noise" not in text
+    assert "0 OK · 0 watch · 0 review · 1 unverified" in text
+
+
+def test_oot_sheet_shows_failed_and_below_rows(tmp_path):
+    (tmp_path / "backtest").mkdir()
+    pd.DataFrame(
+        [
+            {"segment": "a", "drift_flag": "FAILED", "message": "backtest failed: no mature holdout"},
+            {"segment": "b", "drift_flag": "BELOW"},
+        ]
+    ).to_csv(tmp_path / "backtest" / "backtest_consolidated_base.csv", index=False)
+    wb = Workbook()
+    _write_sheet_oot_validation(wb, tmp_path, "_base")
+    ws = wb["Out-of-time Validation"]
+    fills = {str(c.value): c.fill.start_color.rgb for rowcells in ws.iter_rows() for c in rowcells if c.value}
+    assert fills["FAILED"] not in (None, "00000000") and fills["BELOW"] not in (None, "00000000")
+    assert "backtest failed: no mature holdout" in fills  # the reason is on the sheet
+
+
+def test_kpi_rate_formatter_treats_nan_as_missing():
+    """A None rate becomes NaN once another row of the column holds a float; ``is not None`` let it
+    through and the KPI card read "nan%"."""
+    assert _fmt_pct_or_na(12.345) == "12.3%"
+    assert _fmt_pct_or_na(0.0) == "0.0%"
+    assert _fmt_pct_or_na(None) == "n/a"
+    assert _fmt_pct_or_na(float("nan")) == "n/a"
