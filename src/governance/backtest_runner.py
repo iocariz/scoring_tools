@@ -87,7 +87,9 @@ def backtest_all(
         segment_label = seg_dir.name
         try:
             settings = PreprocessingSettings.from_toml(str(seg_dir / "config_segment.toml"))
-            segment_label = getattr(settings, "segment_filter", None) or seg_dir.name
+            configured = getattr(settings, "segment_filter", None)
+            # "unknown" is the model default: a config that never set its filter
+            segment_label = configured if configured and configured != "unknown" else seg_dir.name
             # #64: default to each segment's own mr_maturity_months (its H6
             # maturity definition) rather than a hard-coded 6; an explicit
             # --maturity-months override still applies to every segment.

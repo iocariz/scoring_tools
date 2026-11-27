@@ -211,7 +211,7 @@ class TestBacktestStaleEvidence:
         )
 
         def fail(*args, **kwargs):
-            raise BacktestError("no mature holdout")
+            raise BacktestError("no mature\n  holdout")  # multi-line reasons are flattened
 
         monkeypatch.setattr(backtest_runner, "backtest_segment", fail)
 

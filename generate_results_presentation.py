@@ -348,7 +348,7 @@ def _recommendation_bullets(total, bt):
     if bt is not None and not bt.empty and "drift_flag" in bt.columns:
         out.append(
             (
-                f"Out-of-time validation: {_oot_counts_text(bt)} across {len(bt)} backtested segments (noise-aware).",
+                f"Out-of-time validation: {_oot_counts_text(bt)} across {len(bt)} segments in the backtest (noise-aware).",
                 GREY,
             )
         )

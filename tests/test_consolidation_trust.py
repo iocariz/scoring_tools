@@ -186,9 +186,9 @@ def test_recommendation_does_not_claim_noise_when_a_segment_drifts(tmp_path):
     text = _recommendation_text(tmp_path, rows, {name: {} for name in "abcd"})
 
     assert "within sampling noise" not in text
-    assert "OUT-OF-TIME DRIFT" in text and " a" in text
+    assert "OUT-OF-TIME DRIFT flagged for 1 segment(s): a —" in text
     # every flag is counted: nothing disappears from "of 4"
-    assert "0 OK, 1 below, 0 inconclusive, 1 drift, 1 insufficient, 1 failed (of 4 segments backtested)" in text
+    assert "0 OK, 1 below, 0 inconclusive, 1 drift, 1 insufficient, 1 failed (of 4 segments in the backtest)" in text
     assert "1 OK · 0 watch · 1 review · 2 unverified" in text  # a review, b OK, c and d unverified
 
 
@@ -197,7 +197,44 @@ def test_recommendation_counts_statuses_per_segment(tmp_path):
     text = _recommendation_text(tmp_path, rows, {"a": {}, "b": {}, "c": {}})
 
     assert "1 OK · 1 watch · 0 review · 1 unverified" in text
-    assert "within sampling noise" in text  # no drift: the residual sentence stands
+    # no drift among the checked segments says nothing about the unchecked one
+    assert "within sampling noise" not in text
+    assert "1 of 3 segment(s) have no out-of-time verdict" in text
+
+
+def test_recommendation_keeps_the_noise_sentence_only_when_every_segment_has_a_verdict(tmp_path):
+    rows = [{"segment": "a", "drift_flag": "OK"}, {"segment": "b", "drift_flag": "INCONCLUSIVE"}]
+    text = _recommendation_text(tmp_path, rows, {"a": {}, "b": {}})
+
+    assert "within sampling noise" in text
+
+
+def test_drift_warning_names_segments_not_filters(tmp_path):
+    rows = [{"segment": "direct/pl/new", "drift_flag": "DRIFT"}]
+    text = _recommendation_text(tmp_path, rows, {"direct-pl-new": {"segment_filter": "direct/pl/new"}})
+
+    assert "OUT-OF-TIME DRIFT flagged for 1 segment(s): direct-pl-new —" in text
+
+
+def test_unmatched_backtest_rows_are_reported(caplog):
+    from src.report import consolidation
+
+    bt = pd.DataFrame({"segment": ["direct/pl/new", "direct/other"], "drift_flag": ["OK", "DRIFT"]})
+    handler_id = consolidation.logger.add(caplog.handler, format="{message}", level="WARNING")
+    try:
+        flags = _backtest_flags_by_segment(bt, {"direct-pl-new": {"segment_filter": "direct/pl/new"}})
+    finally:
+        consolidation.logger.remove(handler_id)
+
+    assert flags == {"direct-pl-new": "OK"}
+    assert "direct/other" in caplog.text and "match no segment" in caplog.text
+
+
+def test_unverified_status_has_a_visible_fill():
+    """The near-white stripe colour looks like an unfilled cell next to teal / amber / pink."""
+    fills = {_segment_status(flag, {})[1] for flag in ("OK", "INCONCLUSIVE", "DRIFT", None)}
+    assert len(fills) == 4
+    assert _segment_status(None, {})[1] not in ("FFFFFF", "F8F9FA")
 
 
 def test_recommendation_without_backtest_makes_no_out_of_time_claim(tmp_path):

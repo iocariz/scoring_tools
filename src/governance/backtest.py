@@ -553,6 +553,8 @@ def write_consolidated_report(
     out_dir.mkdir(parents=True, exist_ok=True)
     failed = failed or []
     rows = [r.aggregate_row() for r in results]
+    # One line per reason: a multi-line exception text would break the CSV cell and the markdown bullet.
+    failed = [(segment, " ".join(str(reason).split())) for segment, reason in failed]
     rows += [
         {"segment": segment, "sufficient": False, "drift_flag": FAILED_FLAG, "message": f"backtest failed: {reason}"}
         for segment, reason in failed

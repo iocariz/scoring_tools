@@ -4396,6 +4396,9 @@ def _read_reproducibility_reference(seg: str) -> dict | None:
         return None
 
 
+# A visible grey: the near-white stripe colour reads as an unfilled cell on a white sheet.
+_CLR_UNVERIFIED = "D5D8DC"
+
 # Backtest flags that are an out-of-time verdict. Anything else — no row, "—" (insufficient
 # window), FAILED — is missing evidence, never a pass.
 _OOT_PASS_FLAGS = ("OK", "BELOW")
@@ -4425,7 +4428,7 @@ def _segment_status(backtest_flag: str | None, stability: dict) -> tuple[str, st
         return "WATCH", "FCF3CF"  # pale amber
     if backtest_flag in _OOT_PASS_FLAGS:
         return "OK", _CLR_GOOD_LIGHT
-    return "UNVERIFIED", _CLR_NEUTRAL_LIGHT
+    return "UNVERIFIED", _CLR_UNVERIFIED
 
 
 def _backtest_flags_by_segment(bt: pd.DataFrame | None, segments: dict) -> dict[str, str]:
@@ -4439,11 +4442,19 @@ def _backtest_flags_by_segment(bt: pd.DataFrame | None, segments: dict) -> dict[
         return {}
     by_label = dict(zip(bt["segment"].astype(str), bt["drift_flag"], strict=False))
     flags: dict[str, str] = {}
+    matched: set[str] = set()
     for name, cfg in segments.items():
         for label in (name, (cfg or {}).get("segment_filter")):
             if label is not None and str(label) in by_label:
                 flags[name] = by_label[str(label)]
+                matched.add(str(label))
                 break
+    unmatched = sorted(set(by_label) - matched)
+    if unmatched:
+        logger.warning(
+            f"Out-of-time backtest rows match no segment of this report and are ignored in the per-segment "
+            f"status: {unmatched}. Rows are matched on the segment name or its segment_filter."
+        )
     return flags
 
 
@@ -4795,7 +4806,7 @@ def _write_exec_recommendation(ws, start_row: int, consolidated_df, output_base,
     has_backtest = bt is not None and not bt.empty and "drift_flag" in bt.columns
     if has_backtest:
         lines.append(
-            f"Out-of-time validation: {_oot_counts_text(bt)} (of {len(bt)} segments backtested). "
+            f"Out-of-time validation: {_oot_counts_text(bt)} (of {len(bt)} segments in the backtest). "
             "See 'Out-of-time Validation' sheet."
         )
     else:
@@ -4810,20 +4821,27 @@ def _write_exec_recommendation(ws, start_row: int, consolidated_df, output_base,
         f"{statuses.count('REVIEW')} review · {statuses.count('UNVERIFIED')} unverified "
         "(population stability + OOT flag; unverified = no out-of-time verdict)."
     )
-    drifting = sorted(str(s) for s in bt.loc[bt["drift_flag"] == "DRIFT", "segment"]) if has_backtest else []
+    drifting = sorted(name for name, flag in bt_flags.items() if flag == "DRIFT")
+    n_unverified = statuses.count("UNVERIFIED")
     pointer = "Provenance, assumptions & sign-off on the 'Validation & Governance' sheet."
     if drifting:
         lines.append(
             f"⚠ OUT-OF-TIME DRIFT flagged for {len(drifting)} segment(s): {', '.join(drifting)} — realized risk on "
             f"the held-out cohort sits above the in-sample band. Review before relying on those cutoffs. {pointer}"
         )
-    elif has_backtest:
+    elif not has_backtest:
+        lines.append(f"Residual: out-of-time behaviour of these cutoffs has not been checked in this run. {pointer}")
+    elif n_unverified:
+        # No drift among the segments that were checked says nothing about the ones that were not.
+        lines.append(
+            f"Residual: {n_unverified} of {len(statuses)} segment(s) have no out-of-time verdict (backtest missing, "
+            f"insufficient or failed); no drift is flagged among the rest. {pointer}"
+        )
+    else:
         lines.append(
             "Residual: any out-of-time risk drift is currently within sampling noise on a thin mature window — "
             f"monitor as cohorts mature. {pointer}"
         )
-    else:
-        lines.append(f"Residual: out-of-time behaviour of these cutoffs has not been checked in this run. {pointer}")
     lines.append(
         "Note on the optimum risk figure: it is the in-sample estimate of an OPTIMIZED cutoff and is therefore "
         "optimistic at the binding risk boundary (winner's curse) — the out-of-time backtest above is the "
@@ -5015,7 +5033,7 @@ def _write_sheet_oot_validation(wb, output_base, suffix: str):
         "INCONCLUSIVE": "FCF3CF",
         "DRIFT": _CLR_BAD_LIGHT,
         "FAILED": _CLR_BAD_LIGHT,
-        "—": _CLR_NEUTRAL_LIGHT,
+        "—": _CLR_UNVERIFIED,
     }
     for i, (_, r) in enumerate(bt.iterrows()):
         rr = hdr_row + 1 + i
