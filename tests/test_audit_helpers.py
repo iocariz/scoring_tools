@@ -45,9 +45,25 @@ class TestAuditProductionKpis:
             "total_demand": 0.0,
             "actual_rejections": 0.0,
             "optimum_rejections": None,
-            "actual_system_rejections": 0.0,
+            "actual_system_rejections": None,
             "optimum_system_rejections": None,
         }
+
+    def test_system_rejections_are_missing_without_the_system_decision(self):
+        """Audit 2026-11-27 A11: no ``se_decision_id`` means the rate is UNKNOWN. Returning 0.0
+        patched a fabricated 0.0% onto the consolidated row, which then pooled into the TOTAL as if
+        measured (a segment at 50% plus one without the column read 25%)."""
+        audit_df = pd.DataFrame(
+            {
+                "status_name": ["booked", "rejected"],
+                "classification": ["keep", "swap_in"],
+                "oa_amt": [100.0, 30.0],
+            }
+        )
+        kpis = audit.audit_production_kpis(audit_df)
+        assert kpis["actual"] == 100.0
+        assert kpis["actual_system_rejections"] is None
+        assert kpis["optimum_system_rejections"] is None
 
     def test_returns_zero_dict_for_empty(self):
         kpis = audit.audit_production_kpis(pd.DataFrame())
@@ -168,7 +184,8 @@ class TestSystemRejectionAmounts:
 
     def test_none_when_se_decision_id_missing(self):
         df = self._df().drop(columns=["se_decision_id"])
-        assert audit._system_rejection_amounts_from_audit(df, "oa_amt_demand") == (0.0, 0.0, None)
+        # unknown, not zero (audit 2026-11-27 A11)
+        assert audit._system_rejection_amounts_from_audit(df, "oa_amt_demand") == (0.0, None, None)
 
     def test_optimum_none_without_passes_cut(self):
         df = self._df().drop(columns=["passes_cut"])

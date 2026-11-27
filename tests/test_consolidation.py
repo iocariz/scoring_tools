@@ -1487,6 +1487,50 @@ class TestPatchFromSegmentAudits:
             "production_delta_pct": 0.0,
         }
 
+    def test_segment_without_system_decision_does_not_pool_as_zero(self, temp_output_dir):
+        """Audit 2026-11-27 A11: seg_a rejects 50% at system level; seg_b's audit has no
+        ``se_decision_id``, so its rate is unknown. The audit patch used to write 0.0% on seg_b and
+        the TOTAL pooled to 25% as if both were measured. Unknown must poison the pooled rate."""
+        for seg, with_decision in (("seg_a", True), ("seg_b", False)):
+            d = temp_output_dir / seg / "data"
+            d.mkdir(parents=True)
+            audit = pd.DataFrame(
+                {
+                    "status_name": ["booked", "rejected"],
+                    "classification": ["keep", "rejected"],
+                    "oa_amt": [100.0, 100.0],
+                    "oa_amt_demand": [100.0, 100.0],
+                }
+            )
+            if with_decision:
+                audit["se_decision_id"] = ["ok", "ko"]
+            audit.to_csv(d / "audit_base.csv", index=False)
+
+        def row(group: str, segments: str, system_rate) -> dict:
+            return {
+                **self._row(group, segments),
+                "total_demand": 200.0,
+                "actual_rejection_rate_pct": 50.0,
+                "optimum_rejection_rate_pct": 50.0,
+                "actual_system_rejection_rate_pct": system_rate,
+                "optimum_system_rejection_rate_pct": system_rate,
+            }
+
+        df = pd.DataFrame(
+            [
+                row("segment_seg_a", "seg_a", 50.0),
+                row("segment_seg_b", "seg_b", None),
+                row("TOTAL", "seg_a, seg_b", None),
+            ]
+        )
+
+        out = patch_consolidated_production_from_segment_audits(df, temp_output_dir, {"seg_a": {}, "seg_b": {}})
+
+        by_group = out.set_index("group")["actual_system_rejection_rate_pct"]
+        assert by_group["segment_seg_a"] == 50.0
+        assert pd.isna(by_group["segment_seg_b"])  # not a fabricated 0.0
+        assert pd.isna(by_group["TOTAL"])  # not 25.0
+
     def test_single_member_supersegment_patch_lands_on_member_row(self, temp_output_dir):
         """Audit #25: a one-member supersegment row carries the member's name in
         `segments` and (listed first) used to swallow the audit patch, which the

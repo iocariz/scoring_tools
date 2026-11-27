@@ -80,9 +80,14 @@ def backtest_all(
 
     logger.info(f"Backtesting {len(seg_dirs)} segment(s) on scenario '{scenario}' → {out_dir}")
     results = []
+    failed: list[tuple[str, str]] = []
     for seg_dir in seg_dirs:
+        # Rows are keyed by segment_filter (what backtest_segment records); fall back to the
+        # directory name when the config itself cannot be read.
+        segment_label = seg_dir.name
         try:
             settings = PreprocessingSettings.from_toml(str(seg_dir / "config_segment.toml"))
+            segment_label = getattr(settings, "segment_filter", None) or seg_dir.name
             # #64: default to each segment's own mr_maturity_months (its H6
             # maturity definition) rather than a hard-coded 6; an explicit
             # --maturity-months override still applies to every segment.
@@ -98,9 +103,11 @@ def backtest_all(
             )
         except BacktestError as e:
             logger.error(f"[{seg_dir.name}] backtest failed: {e}")
+            failed.append((segment_label, str(e)))
             continue
-        except Exception:
+        except Exception as e:
             logger.exception(f"[{seg_dir.name}] unexpected backtest error")
+            failed.append((segment_label, f"{type(e).__name__}: {e}"))
             continue
 
         write_backtest_report(result, out_dir, suffix)
@@ -115,7 +122,9 @@ def backtest_all(
         else:
             logger.warning(f"[{result.segment}] {result.message}")
 
-    if results:
-        paths = write_consolidated_report(results, out_dir, suffix)
+    if results or failed:
+        paths = write_consolidated_report(results, out_dir, suffix, failed=failed)
         logger.info(f"Consolidated backtest: {paths['consolidated']}")
+    if failed:
+        logger.warning(f"Backtest failed for {len(failed)} segment(s): {[name for name, _ in failed]}")
     return results

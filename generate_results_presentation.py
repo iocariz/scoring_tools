@@ -28,6 +28,7 @@ from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
 
 from src.report import presentation_charts as pc
+from src.report.consolidation import _oot_counts_text
 from src.report.risk_surface import aggregate_to_cells, build_risk_surface_figure, classify_cells
 from src.report.risk_surface_batch import _discover_segments, _load_unit, _reporting_supersegments
 
@@ -345,11 +346,9 @@ def _recommendation_bullets(total, bt):
             )
         )
     if bt is not None and not bt.empty and "drift_flag" in bt.columns:
-        vc = bt["drift_flag"].value_counts().to_dict()
         out.append(
             (
-                f"Out-of-time validation: {vc.get('OK', 0)} OK, {vc.get('INCONCLUSIVE', 0)} inconclusive, "
-                f"{vc.get('DRIFT', 0)} drift across {len(bt)} backtested segments (noise-aware).",
+                f"Out-of-time validation: {_oot_counts_text(bt)} across {len(bt)} backtested segments (noise-aware).",
                 GREY,
             )
         )

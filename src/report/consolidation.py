@@ -4396,15 +4396,70 @@ def _read_reproducibility_reference(seg: str) -> dict | None:
         return None
 
 
+# Backtest flags that are an out-of-time verdict. Anything else — no row, "—" (insufficient
+# window), FAILED — is missing evidence, never a pass.
+_OOT_PASS_FLAGS = ("OK", "BELOW")
+_OOT_FLAG_LABELS = (
+    ("OK", "OK"),
+    ("BELOW", "below"),
+    ("INCONCLUSIVE", "inconclusive"),
+    ("DRIFT", "drift"),
+    ("—", "insufficient"),
+    ("FAILED", "failed"),
+)
+
+
 def _segment_status(backtest_flag: str | None, stability: dict) -> tuple[str, str]:
-    """Combine the OOT backtest flag + PSI severity into a traffic-light (text, fill color)."""
+    """Combine the OOT backtest flag + PSI severity into a traffic-light (text, fill color).
+
+    ``OK`` needs an out-of-time verdict that passed. Without one the segment is ``UNVERIFIED``
+    (audit 2026-11-27 A12: a missing, insufficient or failed backtest used to read as green OK).
+    PSI evidence can still raise WATCH / REVIEW on its own.
+    """
     crit = stability.get("critical", 0) or 0
     warn = stability.get("warning", 0) or 0
-    if backtest_flag == "DRIFT" or crit > 0:
+    worst = stability.get("worst_status")
+    if backtest_flag == "DRIFT" or crit > 0 or worst == "unstable":
         return "REVIEW", _CLR_BAD_LIGHT
-    if backtest_flag == "INCONCLUSIVE" or warn > 0 or stability.get("worst_status") == "moderate":
+    if backtest_flag == "INCONCLUSIVE" or warn > 0 or worst == "moderate":
         return "WATCH", "FCF3CF"  # pale amber
-    return "OK", _CLR_GOOD_LIGHT
+    if backtest_flag in _OOT_PASS_FLAGS:
+        return "OK", _CLR_GOOD_LIGHT
+    return "UNVERIFIED", _CLR_NEUTRAL_LIGHT
+
+
+def _backtest_flags_by_segment(bt: pd.DataFrame | None, segments: dict) -> dict[str, str]:
+    """Out-of-time flag per segment NAME.
+
+    The backtest records ``settings.segment_filter`` (``direct/pl/new``) in its ``segment`` column,
+    while the report iterates segment names (``direct-pl-new``). Matching on the name alone found
+    nothing on the live naming, so the flag never reached the status column.
+    """
+    if bt is None or bt.empty or "segment" not in bt.columns or "drift_flag" not in bt.columns:
+        return {}
+    by_label = dict(zip(bt["segment"].astype(str), bt["drift_flag"], strict=False))
+    flags: dict[str, str] = {}
+    for name, cfg in segments.items():
+        for label in (name, (cfg or {}).get("segment_filter")):
+            if label is not None and str(label) in by_label:
+                flags[name] = by_label[str(label)]
+                break
+    return flags
+
+
+def _oot_counts_text(bt: pd.DataFrame) -> str:
+    """Every flag counted, so the parts add up to the number of segments backtested."""
+    counts = bt["drift_flag"].astype(str).value_counts()
+    known = [f"{int(counts.get(flag, 0))} {label}" for flag, label in _OOT_FLAG_LABELS]
+    other = int(counts.sum() - sum(int(counts.get(flag, 0)) for flag, _ in _OOT_FLAG_LABELS))
+    if other:
+        known.append(f"{other} other")
+    return ", ".join(known)
+
+
+def _fmt_pct_or_na(value: float | None) -> str:
+    """A None rate turns into NaN once any other row of the column holds a float."""
+    return f"{value:.1f}%" if value is not None and pd.notna(value) else "n/a"
 
 
 def _sheet_banner(ws, title: str, subtitle: str, ncols: int = 8) -> None:
@@ -4737,29 +4792,38 @@ def _write_exec_recommendation(ws, start_row: int, consolidated_df, output_base,
         )
 
     bt = _read_backtest_consolidated(output_base, suffix)
-    if bt is not None and not bt.empty and "drift_flag" in bt.columns:
-        vc = bt["drift_flag"].value_counts()
+    has_backtest = bt is not None and not bt.empty and "drift_flag" in bt.columns
+    if has_backtest:
         lines.append(
-            f"Out-of-time validation: {int(vc.get('OK', 0))} OK, {int(vc.get('INCONCLUSIVE', 0))} inconclusive, "
-            f"{int(vc.get('DRIFT', 0))} drift (of {len(bt)} segments backtested). See 'Out-of-time Validation' sheet."
+            f"Out-of-time validation: {_oot_counts_text(bt)} (of {len(bt)} segments backtested). "
+            "See 'Out-of-time Validation' sheet."
         )
     else:
         lines.append("Out-of-time validation: not available — run the backtest (see 'Out-of-time Validation' sheet).")
 
-    n_ok = n_watch = n_review = 0
-    bt_flags = dict(zip(bt.get("segment", []), bt.get("drift_flag", []), strict=False)) if bt is not None else {}
-    for seg in segments:
-        status, _ = _segment_status(bt_flags.get(seg), _read_segment_stability(output_base, seg, suffix))
-        n_ok += status == "OK"
-        n_watch += status == "WATCH"
-        n_review += status == "REVIEW"
+    bt_flags = _backtest_flags_by_segment(bt, segments)
+    statuses = [
+        _segment_status(bt_flags.get(seg), _read_segment_stability(output_base, seg, suffix))[0] for seg in segments
+    ]
     lines.append(
-        f"Per-segment status: {n_ok} OK · {n_watch} watch · {n_review} review (population stability + OOT flag)."
+        f"Per-segment status: {statuses.count('OK')} OK · {statuses.count('WATCH')} watch · "
+        f"{statuses.count('REVIEW')} review · {statuses.count('UNVERIFIED')} unverified "
+        "(population stability + OOT flag; unverified = no out-of-time verdict)."
     )
-    lines.append(
-        "Residual: any out-of-time risk drift is currently within sampling noise on a thin mature window — "
-        "monitor as cohorts mature. Provenance, assumptions & sign-off on the 'Validation & Governance' sheet."
-    )
+    drifting = sorted(str(s) for s in bt.loc[bt["drift_flag"] == "DRIFT", "segment"]) if has_backtest else []
+    pointer = "Provenance, assumptions & sign-off on the 'Validation & Governance' sheet."
+    if drifting:
+        lines.append(
+            f"⚠ OUT-OF-TIME DRIFT flagged for {len(drifting)} segment(s): {', '.join(drifting)} — realized risk on "
+            f"the held-out cohort sits above the in-sample band. Review before relying on those cutoffs. {pointer}"
+        )
+    elif has_backtest:
+        lines.append(
+            "Residual: any out-of-time risk drift is currently within sampling noise on a thin mature window — "
+            f"monitor as cohorts mature. {pointer}"
+        )
+    else:
+        lines.append(f"Residual: out-of-time behaviour of these cutoffs has not been checked in this run. {pointer}")
     lines.append(
         "Note on the optimum risk figure: it is the in-sample estimate of an OPTIMIZED cutoff and is therefore "
         "optimistic at the binding risk boundary (winner's curse) — the out-of-time backtest above is the "
@@ -4839,7 +4903,7 @@ def _write_sheet_validation_governance(wb, output_base, segments: dict, consolid
         cell.fill = _FILL_HEADER
     row += 1
     bt = _read_backtest_consolidated(output_base, suffix)
-    bt_flags = dict(zip(bt.get("segment", []), bt.get("drift_flag", []), strict=False)) if bt is not None else {}
+    bt_flags = _backtest_flags_by_segment(bt, segments)
     for seg in segments:
         ref = _read_reproducibility_reference(seg)
         stab = _read_segment_stability(output_base, seg, suffix)
@@ -4937,6 +5001,7 @@ def _write_sheet_oot_validation(wb, output_base, suffix: str):
         ("holdout_start", "Window start"),
         ("holdout_end", "Window end"),
         ("pct_mature", "% mature"),
+        ("message", "Note"),
     ]
     hdr_row = 6
     for j, (_, label) in enumerate(cols, start=1):
@@ -4946,15 +5011,18 @@ def _write_sheet_oot_validation(wb, output_base, suffix: str):
         cell.fill = _FILL_HEADER
     flag_fill = {
         "OK": _CLR_GOOD_LIGHT,
+        "BELOW": _CLR_GOOD_LIGHT,
         "INCONCLUSIVE": "FCF3CF",
         "DRIFT": _CLR_BAD_LIGHT,
+        "FAILED": _CLR_BAD_LIGHT,
+        "—": _CLR_NEUTRAL_LIGHT,
     }
     for i, (_, r) in enumerate(bt.iterrows()):
         rr = hdr_row + 1 + i
         for j, (key, _) in enumerate(cols, start=1):
             val = r.get(key)
             if isinstance(val, float):
-                val = round(val, 4)
+                val = None if pd.isna(val) else round(val, 4)
             ws.cell(row=rr, column=j).value = val
         fcell = ws.cell(row=rr, column=2)
         fill = flag_fill.get(str(r.get("drift_flag")))
@@ -5102,7 +5170,7 @@ def export_consolidated_excel(
                 kpi_row,
                 7,
                 "System Rejection Rate",
-                f"{_sys_main:.1f}%" if _sys_main is not None else "n/a",
+                _fmt_pct_or_na(_sys_main),
             )
             pd_val = tr_main.get("production_delta", 0)
             _write_kpi_card(
@@ -5157,7 +5225,7 @@ def export_consolidated_excel(
                 mr_row,
                 7,
                 "MR System Rejection Rate",
-                f"{_sys_mr:.1f}%" if _sys_mr is not None else "n/a",
+                _fmt_pct_or_na(_sys_mr),
             )
             mr_pd = tr_mr.get("production_delta", 0)
             _write_kpi_card(

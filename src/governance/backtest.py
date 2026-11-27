@@ -534,11 +534,29 @@ def write_backtest_report(result: BacktestResult, out_dir: Path, suffix: str = "
     return paths
 
 
-def write_consolidated_report(results: list[BacktestResult], out_dir: Path, suffix: str = "_base") -> dict[str, Path]:
-    """Write the cross-segment consolidated CSV + markdown narrative."""
+FAILED_FLAG = "FAILED"
+
+
+def write_consolidated_report(
+    results: list[BacktestResult],
+    out_dir: Path,
+    suffix: str = "_base",
+    failed: list[tuple[str, str]] | None = None,
+) -> dict[str, Path]:
+    """Write the cross-segment consolidated CSV + markdown narrative.
+
+    *failed* lists ``(segment, reason)`` for segments whose backtest raised. They get a row
+    flagged ``FAILED`` so the consolidated report shows that the evidence is missing instead of
+    silently having one segment fewer.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    failed = failed or []
     rows = [r.aggregate_row() for r in results]
+    rows += [
+        {"segment": segment, "sufficient": False, "drift_flag": FAILED_FLAG, "message": f"backtest failed: {reason}"}
+        for segment, reason in failed
+    ]
     csv_path = out_dir / f"backtest_consolidated{suffix}.csv"
     pd.DataFrame(rows).to_csv(csv_path, index=False)
 
@@ -574,6 +592,8 @@ def write_consolidated_report(results: list[BacktestResult], out_dir: Path, suff
             f"acceptance {_fmt_pct(r.in_sample.get('acceptance_rate'))} → "
             f"{_fmt_pct(r.out_of_time.get('acceptance_rate'))}"
         )
+    for segment, reason in failed:
+        lines.append(f"- **{segment}** [{FAILED_FLAG}]: backtest failed — {reason}")
     md_path = out_dir / f"backtest_summary{suffix}.md"
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"consolidated": csv_path, "summary": md_path}
