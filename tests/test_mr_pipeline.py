@@ -3151,3 +3151,244 @@ class TestMrStabilityDemandBasis:
         # Identical demand distributions → PSI ~ 0 (STABLE). Booked-only would be UNSTABLE (PSI>=0.25).
         assert float(row.iloc[0]["psi"]) < 0.1
         assert row.iloc[0]["status"] == "stable"
+
+
+class TestMrRecalibrationFactor:
+    """Audit 2026-11-27 A18: the repesca recalibration factor is ``MR rate / main rate`` per bin.
+    With zero main-period defaults the ratio is undefined; ``mr / max(main, 1e-9)`` clipped to
+    [0.1, 10] turned "0 in both periods" (no change in evidence at all — typical of a
+    ``main_imputed`` bin, whose MR rate is the main rate copied over) into a factor of 0.1, cutting
+    that bin's swap-in risk by 90%."""
+
+    KEYS = ["a", "b"]
+    MULTIPLIER = 7
+
+    def _recalibrate(self, main_defaults: float, mr_rate: float, h3: tuple[float, float] | None = None):
+        """One bin with 1,400 of main exposure; returns the recalibrated summary row."""
+        from types import SimpleNamespace
+
+        from src.analysis.mr_pipeline import _recalibrate_mr_repesca
+
+        data_booked = pd.DataFrame(
+            {"a": [1, 1], "b": [1, 1], "todu_30ever_h6": [main_defaults, 0.0], "todu_amt_pile_h6": [700.0, 700.0]}
+        )
+        comparison = pd.DataFrame({"a": [1], "b": [1], "b2_ever_h6_tmp": [mr_rate]})
+        summary = pd.DataFrame(
+            {
+                "a": [1],
+                "b": [1],
+                "todu_30ever_h6_boo": [2.0],
+                "todu_30ever_h6_rep": [5.0],
+                "todu_amt_pile_h6_rep": [500.0],
+                "todu_30ever_h6": [7.0],
+            }
+        )
+        if h3 is not None:
+            comparison["b2_mr_h3"], comparison["b2_main_h3"] = h3
+            summary["todu_30ever_h3_boo"], summary["todu_30ever_h3_rep"] = 1.0, 4.0
+        out, applied = _recalibrate_mr_repesca(
+            summary, data_booked, self.KEYS, comparison, SimpleNamespace(multiplier=self.MULTIPLIER)
+        )
+        assert applied
+        return out.iloc[0]
+
+    def test_zero_defaults_in_both_periods_leaves_repesca_unchanged(self):
+        row = self._recalibrate(main_defaults=0.0, mr_rate=0.0)
+        assert row["todu_30ever_h6_rep"] == 5.0
+        assert row["todu_30ever_h6"] == 7.0  # boo + rep recomputed
+
+    def test_undefined_mr_rate_leaves_repesca_unchanged(self):
+        assert self._recalibrate(main_defaults=10.0, mr_rate=np.nan)["todu_30ever_h6_rep"] == 5.0
+        assert self._recalibrate(main_defaults=0.0, mr_rate=np.nan)["todu_30ever_h6_rep"] == 5.0
+
+    def test_ratio_applies_where_main_risk_is_positive(self):
+        main_rate = self.MULTIPLIER * 10.0 / 1400.0  # 0.05
+        assert self._recalibrate(10.0, main_rate)["todu_30ever_h6_rep"] == pytest.approx(5.0)
+        assert self._recalibrate(10.0, 2 * main_rate)["todu_30ever_h6_rep"] == pytest.approx(10.0)
+        assert self._recalibrate(10.0, main_rate / 2)["todu_30ever_h6_rep"] == pytest.approx(2.5)
+
+    def test_ratio_stays_clipped(self):
+        main_rate = self.MULTIPLIER * 10.0 / 1400.0
+        assert self._recalibrate(10.0, 100 * main_rate)["todu_30ever_h6_rep"] == pytest.approx(50.0)  # x10 cap
+        assert self._recalibrate(10.0, 0.0)["todu_30ever_h6_rep"] == pytest.approx(0.5)  # x0.1 floor
+
+    def test_zero_main_with_positive_mr_and_no_pooled_evidence_keeps_the_cap(self):
+        """The only bin of the segment: there is no main risk anywhere to pool a ratio from, so the
+        factor stays at the upper cap."""
+        assert self._recalibrate(main_defaults=0.0, mr_rate=0.03)["todu_30ever_h6_rep"] == pytest.approx(50.0)
+
+    def test_h3_factor_follows_the_same_rule(self):
+        assert self._recalibrate(10.0, 0.05, h3=(0.0, 0.0))["todu_30ever_h3_rep"] == 4.0
+        assert self._recalibrate(10.0, 0.05, h3=(0.04, 0.02))["todu_30ever_h3_rep"] == pytest.approx(8.0)
+        assert self._recalibrate(10.0, 0.05, h3=(0.02, 0.0))["todu_30ever_h3_rep"] == pytest.approx(40.0)
+
+    @pytest.mark.parametrize("dtype", ["float64", "Float64"])
+    def test_factor_on_mixed_bins(self, dtype):
+        """Every branch in one Series, also with a nullable dtype (where ``NA > 0`` is NA)."""
+        from src.analysis.mr_pipeline import _mr_recalibration_factor
+
+        main = pd.Series([0.05, 0.05, 0.05, 0.0, 0.0, 0.0, None, None], dtype=dtype)
+        mr = pd.Series([0.10, 0.0, None, 0.0, None, 0.03, 0.02, None], dtype=dtype)
+
+        factor = _mr_recalibration_factor(mr, main)
+
+        assert factor.tolist() == [2.0, 0.1, 1.0, 1.0, 1.0, 10.0, 1.0, 1.0]
+        assert _mr_recalibration_factor(mr, main, risk_appeared_factor=2.6).tolist() == [
+            2.0,
+            0.1,
+            1.0,
+            1.0,
+            1.0,
+            2.6,
+            1.0,
+            1.0,
+        ]
+
+    def test_bin_missing_from_the_comparison_keeps_factor_one(self):
+        """A booked bin with no row in the MR comparison has no MR rate: left merge -> NaN -> 1."""
+        from types import SimpleNamespace
+
+        from src.analysis.mr_pipeline import _recalibrate_mr_repesca
+
+        data_booked = pd.DataFrame(
+            {"a": [1, 2], "b": [1, 1], "todu_30ever_h6": [10.0, 10.0], "todu_amt_pile_h6": [1400.0, 1400.0]}
+        )
+        comparison = pd.DataFrame({"a": [1], "b": [1], "b2_ever_h6_tmp": [0.10]})  # bin (2, 1) absent
+        summary = pd.DataFrame(
+            {
+                "a": [1, 2],
+                "b": [1, 1],
+                "todu_30ever_h6_boo": [2.0, 2.0],
+                "todu_30ever_h6_rep": [5.0, 5.0],
+                "todu_amt_pile_h6_rep": [500.0, 500.0],
+            }
+        )
+        out, _ = _recalibrate_mr_repesca(
+            summary, data_booked, self.KEYS, comparison, SimpleNamespace(multiplier=self.MULTIPLIER)
+        )
+        assert out["todu_30ever_h6_rep"].tolist() == pytest.approx([10.0, 5.0])
+
+
+class TestMrPooledRecalibrationRatio:
+    """A bin with zero main-period defaults and positive MR risk has no ratio of its own. A fixed
+    x10 multiplies the model's prediction by ten on the strength of a sampling zero; instead the
+    bin takes the segment's pooled MR/main ratio — the exposure-weighted MR rate over the
+    exposure-weighted main rate across the bins that carry MR evidence — never below 1, because
+    the bin's own evidence is that risk went up."""
+
+    KEYS = ["a", "b"]
+    MULTIPLIER = 7
+
+    def _run(self, bins: list[dict], with_source: bool = True) -> pd.DataFrame:
+        """bins: a, main_defaults, exposure, mr_rate, source[, mr_h3, main_h3]."""
+        from types import SimpleNamespace
+
+        from src.analysis.mr_pipeline import _recalibrate_mr_repesca
+
+        frame = pd.DataFrame(bins)
+        data_booked = pd.DataFrame(
+            {"a": frame["a"], "b": 1, "todu_30ever_h6": frame["main_defaults"], "todu_amt_pile_h6": frame["exposure"]}
+        )
+        comparison = pd.DataFrame({"a": frame["a"], "b": 1, "b2_ever_h6_tmp": frame["mr_rate"]})
+        if with_source:
+            comparison["risk_source"] = frame["source"]
+        summary = pd.DataFrame(
+            {
+                "a": frame["a"],
+                "b": 1,
+                "todu_30ever_h6_boo": 2.0,
+                "todu_30ever_h6_rep": 5.0,
+                "todu_amt_pile_h6_rep": 500.0,
+            }
+        )
+        if "mr_h3" in frame.columns:
+            comparison["b2_mr_h3"], comparison["b2_main_h3"] = frame["mr_h3"], frame["main_h3"]
+            summary["todu_30ever_h3_boo"], summary["todu_30ever_h3_rep"] = 1.0, 4.0
+        out, _ = _recalibrate_mr_repesca(
+            summary, data_booked, self.KEYS, comparison, SimpleNamespace(multiplier=self.MULTIPLIER)
+        )
+        return out.set_index("a")
+
+    # main rate of a bin with 10 defaults on 1,400 of exposure: 7 * 10 / 1400 = 0.05
+    OBSERVED_UP = {"a": 1, "main_defaults": 10.0, "exposure": 1400.0, "mr_rate": 0.10, "source": "mr_observed"}
+    RISK_APPEARED = {"a": 2, "main_defaults": 0.0, "exposure": 1400.0, "mr_rate": 0.03, "source": "mr_observed"}
+    IMPUTED = {"a": 3, "main_defaults": 10.0, "exposure": 1400.0, "mr_rate": 0.05, "source": "main_imputed"}
+
+    def test_risk_appeared_bin_takes_the_pooled_ratio_of_the_evidence_bins(self):
+        out = self._run([self.OBSERVED_UP, self.RISK_APPEARED, self.IMPUTED])
+
+        # evidence bins 1 and 2, equal exposure: (0.10 + 0.03) / (0.05 + 0) = 2.6
+        assert out.loc[2, "todu_30ever_h6_rep"] == pytest.approx(5.0 * 2.6)
+        assert out.loc[1, "todu_30ever_h6_rep"] == pytest.approx(10.0)  # own ratio, unchanged
+        assert out.loc[3, "todu_30ever_h6_rep"] == pytest.approx(5.0)  # imputed: MR = main
+
+    def test_pooled_ratio_is_exposure_weighted(self):
+        heavy = {**self.OBSERVED_UP, "main_defaults": 30.0, "exposure": 4200.0}  # same 0.05 rate, 3x weight
+
+        out = self._run([heavy, self.RISK_APPEARED])
+
+        # (4200 * 0.10 + 1400 * 0.03) / (4200 * 0.05 + 1400 * 0) = 2.2
+        assert out.loc[2, "todu_30ever_h6_rep"] == pytest.approx(5.0 * 2.2)
+
+    def test_imputed_bins_do_not_dilute_the_pooled_ratio(self):
+        """A main_imputed bin has MR = main by construction: it says nothing about the shift."""
+        with_imputed = self._run([self.OBSERVED_UP, self.RISK_APPEARED, self.IMPUTED])
+        without = self._run([self.OBSERVED_UP, self.RISK_APPEARED])
+
+        assert with_imputed.loc[2, "todu_30ever_h6_rep"] == pytest.approx(without.loc[2, "todu_30ever_h6_rep"])
+
+    def test_without_risk_source_every_bin_with_a_rate_is_pooled(self):
+        out = self._run([self.OBSERVED_UP, self.RISK_APPEARED, self.IMPUTED], with_source=False)
+
+        # (0.10 + 0.03 + 0.05) / (0.05 + 0 + 0.05) = 1.8
+        assert out.loc[2, "todu_30ever_h6_rep"] == pytest.approx(5.0 * 1.8)
+
+    def test_pooled_ratio_below_one_does_not_reduce_a_bin_where_risk_appeared(self):
+        improved = {**self.OBSERVED_UP, "mr_rate": 0.02}
+        appeared = {**self.RISK_APPEARED, "mr_rate": 0.001}
+
+        out = self._run([improved, appeared])
+
+        assert out.loc[2, "todu_30ever_h6_rep"] == pytest.approx(5.0)  # pooled 0.42 floored at 1
+        assert out.loc[1, "todu_30ever_h6_rep"] == pytest.approx(2.0)  # own ratio 0.4 still applies
+
+    def test_pooled_ratio_is_capped(self):
+        exploded = {**self.OBSERVED_UP, "mr_rate": 5.0}
+
+        out = self._run([exploded, self.RISK_APPEARED])
+
+        assert out.loc[2, "todu_30ever_h6_rep"] == pytest.approx(50.0)
+
+    def test_h3_uses_its_own_pooled_ratio(self):
+        first = {**self.OBSERVED_UP, "mr_h3": 0.06, "main_h3": 0.02}
+        appeared = {**self.RISK_APPEARED, "mr_h3": 0.01, "main_h3": 0.0}
+
+        out = self._run([first, appeared])
+
+        # H3: (0.06 + 0.01) / (0.02 + 0) = 3.5, weighted by the same (equal) exposure
+        assert out.loc[2, "todu_30ever_h3_rep"] == pytest.approx(4.0 * 3.5)
+        assert out.loc[1, "todu_30ever_h3_rep"] == pytest.approx(4.0 * 3.0)
+
+    def test_only_bins_with_mr_evidence_enter_the_pool(self):
+        """model_fallback and main_imputed bins are out, whatever rate they carry."""
+        fallback = {"a": 4, "main_defaults": 10.0, "exposure": 1400.0, "mr_rate": 0.40, "source": "model_fallback"}
+
+        out = self._run([self.OBSERVED_UP, self.RISK_APPEARED, self.IMPUTED, fallback])
+
+        assert out.loc[2, "todu_30ever_h6_rep"] == pytest.approx(5.0 * 2.6)
+
+    def test_no_evidence_bin_with_main_risk_falls_back_to_the_cap(self):
+        """Sources are known but the only evidence bin is the zero-main one: nothing to pool."""
+        out = self._run([self.RISK_APPEARED, self.IMPUTED])
+
+        assert out.loc[2, "todu_30ever_h6_rep"] == pytest.approx(50.0)
+
+    def test_h3_pool_is_gated_like_h6_and_independent_of_it(self):
+        observed = {**self.OBSERVED_UP, "mr_h3": 0.06, "main_h3": 0.02}
+        appeared = {**self.RISK_APPEARED, "mr_h3": 0.01, "main_h3": 0.0}
+        thin_imputed = {**self.IMPUTED, "mr_h3": 0.90, "main_h3": 0.02}  # a thin H3 rate, not evidence
+
+        out = self._run([observed, appeared, thin_imputed])
+
+        assert out.loc[2, "todu_30ever_h3_rep"] == pytest.approx(4.0 * 3.5)  # (0.06 + 0.01) / 0.02
+        assert out.loc[2, "todu_30ever_h6_rep"] == pytest.approx(5.0 * 2.6)  # H6 pool untouched by H3

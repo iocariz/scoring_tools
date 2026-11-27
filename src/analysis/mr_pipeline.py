@@ -1658,6 +1658,89 @@ def _compute_mr_stability_metrics(
 # -----------------------------------------------------------------------------
 
 
+_MR_CAL_FACTOR_MIN, _MR_CAL_FACTOR_MAX = 0.1, 10.0
+
+
+# Sources whose MR rate is evidence about the MR period. A ``main_imputed`` bin's MR rate is the
+# main rate copied over and a ``model_fallback`` bin has none, so neither says anything about how
+# the risk level moved between the two periods.
+_MR_EVIDENCE_SOURCES = ("mr_observed", "h3_extrapolated")
+
+
+def _pooled_recalibration_ratio(
+    mr_rate: pd.Series, main_rate: pd.Series, exposure: pd.Series, evidence: pd.Series | None = None
+) -> float | None:
+    """Segment-level ``MR rate / main rate`` at the main-period exposure mix.
+
+    ``sum(exposure * mr) / sum(exposure * main)`` over the bins that have both rates (and, when
+    *evidence* is given, carry MR evidence). The bins with zero main risk stay in the pool —
+    dropping them would overstate the main rate and understate the ratio. That includes the bins
+    the ratio is then applied to: their MR risk raises the numerator against a zero in the
+    denominator, which leans the ratio upward (conservative; bounded by the cap). Returns ``None``
+    when there is nothing to pool or the pooled main rate is zero.
+    """
+    mr = pd.to_numeric(mr_rate, errors="coerce").astype(float)
+    main = pd.to_numeric(main_rate, errors="coerce").astype(float)
+    weight = pd.to_numeric(exposure, errors="coerce").astype(float)
+    usable = mr.notna() & main.notna() & (weight > 0)
+    if evidence is not None:
+        usable &= evidence.fillna(False).astype(bool)
+    pooled_main = float((weight[usable] * main[usable]).sum())
+    if not usable.any() or pooled_main <= 0:
+        return None
+    return float((weight[usable] * mr[usable]).sum()) / pooled_main
+
+
+def _risk_appeared_factor(pooled_ratio: float | None) -> float:
+    """Factor for a bin with zero main-period risk and positive MR risk.
+
+    The bin has no ratio of its own. It takes the segment's pooled ratio, floored at 1 (the bin's
+    own evidence is that risk went up, so a pooled improvement must not reduce it) and capped like
+    every other factor. Without a pooled ratio it falls back to the upper cap.
+    """
+    if pooled_ratio is None or not np.isfinite(pooled_ratio):
+        return _MR_CAL_FACTOR_MAX
+    return float(min(max(pooled_ratio, 1.0), _MR_CAL_FACTOR_MAX))
+
+
+def _mr_recalibration_factor(
+    mr_rate: pd.Series, main_rate: pd.Series, risk_appeared_factor: float = _MR_CAL_FACTOR_MAX
+) -> pd.Series:
+    """Per-bin repesca recalibration factor ``MR rate / main rate``, clipped to [0.1, 10].
+
+    The ratio only exists where the main-period rate is positive. Where it is zero:
+
+    * MR rate zero or undefined — no evidence of any change (typical of a ``main_imputed`` bin,
+      whose MR rate is the main rate copied over): factor 1. ``mr / max(main, 1e-9)`` evaluated
+      this as 0 and the clip turned it into 0.1, cutting that bin's swap-in risk by 90% on no
+      evidence (audit 2026-11-27 A18).
+    * MR rate positive — risk appeared where the main period had none; the bin's own ratio is
+      unbounded, so it takes *risk_appeared_factor* (see ``_risk_appeared_factor``; the upper cap
+      by default). A fixed x10 multiplied the model's prediction tenfold on a sampling zero.
+
+    An undefined MR or main rate gives factor 1.
+    """
+    # Plain floats: with a nullable dtype `NA > 0` is NA and `mask` would read it as True.
+    mr_rate = pd.to_numeric(mr_rate, errors="coerce").astype(float)
+    main_rate = pd.to_numeric(main_rate, errors="coerce").astype(float)
+    has_main = main_rate > 0
+    ratio = (mr_rate / main_rate.where(has_main)).clip(lower=_MR_CAL_FACTOR_MIN, upper=_MR_CAL_FACTOR_MAX)
+    risk_appeared = ~has_main & main_rate.notna() & (mr_rate > 0)
+    return ratio.mask(risk_appeared, risk_appeared_factor).fillna(1.0)
+
+
+def _log_risk_appeared(label: str, mr_rate: pd.Series, main_rate: pd.Series, pooled: float | None) -> None:
+    n_appeared = int(((main_rate <= 0) & (mr_rate > 0)).sum())
+    if not n_appeared:
+        return
+    factor = _risk_appeared_factor(pooled)
+    basis = f"pooled MR/main ratio {pooled:.3f}" if pooled is not None else "no pooled ratio available"
+    logger.info(
+        f"MR {label} repesca recalibration: {n_appeared} bin(s) with zero main-period risk and positive MR "
+        f"risk take factor {factor:.3f} ({basis}; floored at 1, capped at {_MR_CAL_FACTOR_MAX:g})."
+    )
+
+
 def _recalibrate_mr_repesca(
     data_summary_desagregado_mr: pd.DataFrame,
     data_booked: pd.DataFrame,
@@ -1706,11 +1789,29 @@ def _recalibrate_mr_repesca(
             )
             mr_bin_b2 = mr_bin_b2.groupby(merge_keys, as_index=False)["_mr_b2"].mean()
 
-        cal_factor_by_bin = main_bin_agg[merge_keys + ["_main_b2"]].merge(mr_bin_b2, on=merge_keys, how="left")
-        safe_main_b2 = cal_factor_by_bin["_main_b2"].clip(lower=1e-9)
-        cal_factor_by_bin["_mr_cal_factor"] = (
-            (cal_factor_by_bin["_mr_b2"] / safe_main_b2).clip(lower=0.1, upper=10.0).fillna(1.0)
+        main_exposure = main_bin_agg[merge_keys + ["todu_amt_pile_h6"]].rename(
+            columns={"todu_amt_pile_h6": "_main_exposure"}
         )
+        cal_factor_by_bin = main_bin_agg[merge_keys + ["_main_b2"]].merge(mr_bin_b2, on=merge_keys, how="left")
+        cal_factor_by_bin = cal_factor_by_bin.merge(main_exposure, on=merge_keys, how="left")
+        evidence = sources = None
+        if "risk_source" in comparison_df.columns:
+            sources = comparison_df[merge_keys + ["risk_source"]].drop_duplicates(subset=merge_keys)
+            cal_factor_by_bin = cal_factor_by_bin.merge(sources, on=merge_keys, how="left")
+            evidence = cal_factor_by_bin["risk_source"].isin(_MR_EVIDENCE_SOURCES)
+        pooled_ratio = _pooled_recalibration_ratio(
+            cal_factor_by_bin["_mr_b2"], cal_factor_by_bin["_main_b2"], cal_factor_by_bin["_main_exposure"], evidence
+        )
+        cal_factor_by_bin["_mr_cal_factor"] = _mr_recalibration_factor(
+            cal_factor_by_bin["_mr_b2"], cal_factor_by_bin["_main_b2"], _risk_appeared_factor(pooled_ratio)
+        )
+        _log_risk_appeared("H6", cal_factor_by_bin["_mr_b2"], cal_factor_by_bin["_main_b2"], pooled_ratio)
+        n_no_change = int(((cal_factor_by_bin["_main_b2"] <= 0) & ~(cal_factor_by_bin["_mr_b2"] > 0)).sum())
+        if n_no_change:
+            logger.info(
+                f"MR repesca recalibration: {n_no_change} bin(s) with zero main-period risk and no MR risk "
+                "keep factor 1 (no evidence of change)."
+            )
 
         n_before_recal_merge = len(data_summary_desagregado_mr)
         data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
@@ -1769,10 +1870,21 @@ def _recalibrate_mr_repesca(
             )
             if has_h3_cal:
                 h3_cal = comparison_df[merge_keys + ["b2_mr_h3", "b2_main_h3"]].drop_duplicates(subset=merge_keys)
-                safe_main_h3 = h3_cal["b2_main_h3"].clip(lower=1e-9)
-                h3_cal["_mr_cal_factor_h3"] = (
-                    (h3_cal["b2_mr_h3"] / safe_main_h3).clip(lower=0.1, upper=10.0).fillna(1.0)
+                # Same pool as H6: b2_mr_h3 exists for any bin with H3 data, however thin, and only
+                # the evidence sources passed the minimum-observation gates. The weight is the
+                # main-period H6 exposure — a mix proxy shared with the H6 ratio, not H3 exposure.
+                h3_cal = h3_cal.merge(main_exposure, on=merge_keys, how="left")
+                h3_evidence = None
+                if sources is not None:
+                    h3_cal = h3_cal.merge(sources, on=merge_keys, how="left")
+                    h3_evidence = h3_cal["risk_source"].isin(_MR_EVIDENCE_SOURCES)
+                pooled_h3 = _pooled_recalibration_ratio(
+                    h3_cal["b2_mr_h3"], h3_cal["b2_main_h3"], h3_cal["_main_exposure"], h3_evidence
                 )
+                h3_cal["_mr_cal_factor_h3"] = _mr_recalibration_factor(
+                    h3_cal["b2_mr_h3"], h3_cal["b2_main_h3"], _risk_appeared_factor(pooled_h3)
+                )
+                _log_risk_appeared("H3", h3_cal["b2_mr_h3"], h3_cal["b2_main_h3"], pooled_h3)
                 data_summary_desagregado_mr = data_summary_desagregado_mr.merge(
                     h3_cal[merge_keys + ["_mr_cal_factor_h3"]],
                     on=merge_keys,
