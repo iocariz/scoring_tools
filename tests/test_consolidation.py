@@ -854,6 +854,192 @@ class TestConsolidateSegments:
         assert scenarios_found == {"pessimistic", "base", "optimistic"}
 
 
+class TestBaseOnlySegmentsAcrossScenarios:
+    """Audit 2026-11-27 A8: baseline / fixed-cutoff / base_scenario_only segments write only the
+    base table, so the pessimistic and optimistic TOTAL silently covered fewer segments — even
+    Actual production differed by scenario. Their policy does not depend on the scenario, so they
+    are carried into every scenario with their base figures."""
+
+    @staticmethod
+    def _table(actual: float, optimum: float) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "Metric": ["Actual", "Swap-in", "Swap-out", "Optimum selected"],
+                "Risk (%)": [1.5, 1.2, 2.0, 1.4],
+                "Production (€)": [actual, optimum - actual, 0.0, optimum],
+                "Production (%)": [1.0, 0.1, 0.0, 1.1],
+                "todu_30ever_h6": [1000, 200, 300, 900],
+                "todu_amt_pile_h6": [50000, 10000, 10000, 45000],
+            }
+        )
+
+    def _write(self, base: Path, seg: str, scenario: str, actual: float, optimum: float) -> None:
+        data_dir = base / seg / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        table = self._table(actual, optimum)
+        table.to_csv(data_dir / f"risk_production_summary_table_{scenario}.csv", index=False)
+        table.to_csv(data_dir / f"risk_production_summary_table_mr_{scenario}.csv", index=False)
+
+    def _portfolio(self, base: Path) -> dict:
+        """seg_a runs the three scenarios; seg_b is base-only."""
+        for scenario, optimum in (("pessimistic", 90.0), ("base", 110.0), ("optimistic", 130.0)):
+            self._write(base, "seg_a", scenario, 100.0, optimum)
+        self._write(base, "seg_b", "base", 1000.0, 1000.0)
+        self._config(base, "seg_b", "base_scenario_only = true")
+        return {"seg_a": {}, "seg_b": {}}
+
+    @staticmethod
+    def _config(base: Path, seg: str, body: str) -> None:
+        """The saved per-segment config is what says a segment is base-only by design."""
+        (base / seg).mkdir(parents=True, exist_ok=True)
+        (base / seg / "config_segment.toml").write_text(f"[preprocessing]\n{body}\n", encoding="utf-8")
+
+    @staticmethod
+    def _row(df: pd.DataFrame, group: str, scenario: str, period: str = "main") -> pd.Series:
+        hit = df[(df["group"] == group) & (df["scenario"] == scenario) & (df["period"] == period)]
+        assert len(hit) == 1, f"{group}/{scenario}/{period}: {len(hit)} rows"
+        return hit.iloc[0]
+
+    @pytest.mark.parametrize("period", ["main", "mr"])
+    def test_total_covers_the_same_segments_in_every_scenario(self, temp_output_dir, period):
+        result = consolidate_segments(temp_output_dir, self._portfolio(temp_output_dir), {})
+
+        for scenario, optimum_a in (("pessimistic", 90.0), ("base", 110.0), ("optimistic", 130.0)):
+            total = self._row(result, "TOTAL", scenario, period)
+            assert total["n_segments"] == 2
+            assert total["actual_production"] == 1100.0  # the current portfolio does not vary by scenario
+            assert total["optimum_production"] == optimum_a + 1000.0
+
+    def test_carried_rows_are_marked(self, temp_output_dir):
+        result = consolidate_segments(temp_output_dir, self._portfolio(temp_output_dir), {})
+
+        assert self._row(result, "TOTAL", "pessimistic")["carried_from_base"] == "seg_b"
+        assert self._row(result, "segment_seg_b", "optimistic")["carried_from_base"] == "seg_b"
+        assert self._row(result, "segment_seg_a", "pessimistic")["carried_from_base"] == ""
+        assert (result.loc[result["scenario"] == "base", "carried_from_base"] == "").all()
+
+    def test_carried_segment_reaches_its_supersegment(self, temp_output_dir):
+        segments = self._portfolio(temp_output_dir)
+        segments = {name: {"supersegment": "ss"} for name in segments}
+
+        result = consolidate_segments(temp_output_dir, segments, {"ss": {}})
+
+        ss = self._row(result, "supersegment_ss", "pessimistic")
+        assert ss["n_segments"] == 2
+        assert ss["actual_production"] == 1100.0
+        assert ss["carried_from_base"] == "seg_b"
+
+    def test_segment_missing_one_scenario_is_not_carried(self, temp_output_dir):
+        """A segment that ran scenarios but lacks one did not finish it: substituting its base
+        figures would hide the failure."""
+        segments = self._portfolio(temp_output_dir)
+        self._write(temp_output_dir, "seg_c", "base", 10.0, 10.0)
+        self._write(temp_output_dir, "seg_c", "pessimistic", 10.0, 9.0)
+        segments["seg_c"] = {}
+
+        result = consolidate_segments(temp_output_dir, segments, {})
+
+        optimistic = self._row(result, "TOTAL", "optimistic")
+        assert optimistic["n_segments"] == 2
+        assert optimistic["segments"] == "seg_a, seg_b"
+        assert result[(result["group"] == "segment_seg_c") & (result["scenario"] == "optimistic")].empty
+        assert self._row(result, "TOTAL", "pessimistic")["n_segments"] == 3
+
+    def test_legacy_unsuffixed_base_table_is_carried(self, temp_output_dir):
+        for scenario, optimum in (("pessimistic", 90.0), ("base", 110.0), ("optimistic", 130.0)):
+            self._write(temp_output_dir, "seg_a", scenario, 100.0, optimum)
+        data_dir = temp_output_dir / "seg_b" / "data"
+        data_dir.mkdir(parents=True)
+        self._table(1000.0, 1000.0).to_csv(data_dir / "risk_production_summary_table.csv", index=False)
+        self._config(temp_output_dir, "seg_b", "baseline_mode = true")
+
+        result = consolidate_segments(temp_output_dir, {"seg_a": {}, "seg_b": {}}, {})
+
+        assert self._row(result, "TOTAL", "optimistic")["actual_production"] == 1100.0
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "baseline_mode = true",
+            "base_scenario_only = true",
+            "[preprocessing.fixed_cutoffs]\nsc_octroi_new_clus = [1, 2]",
+        ],
+    )
+    def test_each_single_scenario_mode_is_carried(self, temp_output_dir, body):
+        segments = self._portfolio(temp_output_dir)
+        self._config(temp_output_dir, "seg_b", body)
+
+        result = consolidate_segments(temp_output_dir, segments, {})
+
+        assert self._row(result, "TOTAL", "pessimistic")["n_segments"] == 2
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "",  # ran scenarios by config: its missing tables are a failure
+            "[preprocessing.fixed_cutoffs]\nsc_octroi_new_clus = [1, 2]\nrun_all_scenarios = true",
+        ],
+    )
+    def test_segment_whose_other_scenarios_failed_is_not_carried(self, temp_output_dir, body):
+        """Only a base table on disk, but the config says the other scenarios should exist."""
+        segments = self._portfolio(temp_output_dir)
+        self._config(temp_output_dir, "seg_b", body)
+
+        result = consolidate_segments(temp_output_dir, segments, {})
+
+        pessimistic = self._row(result, "TOTAL", "pessimistic")
+        assert pessimistic["n_segments"] == 1
+        assert pessimistic["carried_from_base"] == ""
+
+    def test_segment_without_saved_config_is_not_carried(self, temp_output_dir):
+        segments = self._portfolio(temp_output_dir)
+        (temp_output_dir / "seg_b" / "config_segment.toml").unlink()
+
+        result = consolidate_segments(temp_output_dir, segments, {})
+
+        assert self._row(result, "TOTAL", "optimistic")["n_segments"] == 1
+
+    def test_resimulated_targets_do_not_resurrect_a_stale_base_table(self, temp_output_dir):
+        """`--resimulate` with N targets writes target_X.XX tables and leaves the previous _base
+        table on disk. Those tables cannot be loaded back through the scenario-name mapping, so the
+        mapped 'pessimistic'/'optimistic' slots are empty — and must stay empty, not be filled with
+        copies of the stale base figures."""
+        data_dir = temp_output_dir / "seg_b" / "data"
+        data_dir.mkdir(parents=True)
+        self._table(1000.0, 1100.0).to_csv(data_dir / "risk_production_summary_table_base.csv", index=False)
+        for target, optimum in (("1.10", 1200.0), ("1.20", 1500.0), ("1.30", 2000.0), ("1.40", 2500.0)):
+            self._table(1000.0, optimum).to_csv(
+                data_dir / f"risk_production_summary_table_target_{target}.csv", index=False
+            )
+        self._config(temp_output_dir, "seg_b", "base_scenario_only = true")
+
+        result = consolidate_segments(temp_output_dir, {"seg_b": {}}, {})
+
+        assert (result["carried_from_base"] == "").all()
+        assert not result["scenario"].isin(["pessimistic", "optimistic"]).any()
+
+    def test_carried_segment_is_patched_from_its_base_audit(self, temp_output_dir):
+        """The audit patch looks for audit_<scenario>.csv; a carried segment only has audit_base.csv.
+        Without the fallback its carried rows stay on the grid basis while its base row moves to the
+        audit basis, so Actual differs by scenario again."""
+        segments = self._portfolio(temp_output_dir)
+        pd.DataFrame(
+            {
+                "status_name": ["booked", "booked", "rejected"],
+                "classification": ["keep", "swap_out", "swap_in"],
+                "oa_amt": [100.0, 20.0, 30.0],
+            }
+        ).to_csv(temp_output_dir / "seg_b" / "data" / "audit_base.csv", index=False)
+
+        result = consolidate_segments(temp_output_dir, segments, {})
+
+        for scenario in ("pessimistic", "base", "optimistic"):
+            seg_b = self._row(result, "segment_seg_b", scenario)
+            assert seg_b["actual_production"] == 120.0
+            assert seg_b["optimum_production"] == 130.0
+            assert self._row(result, "TOTAL", scenario)["actual_production"] == 220.0
+
+
 # =============================================================================
 # Scenario Order Tests
 # =============================================================================
