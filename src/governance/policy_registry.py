@@ -18,8 +18,9 @@ Locked design decisions:
 
 The accepted set is a set of binned coordinate tuples — robust to the positional
 ``acceptance_mask`` reordering across runs. The risk verdict is **noise-aware** (reuses the
-backtest's CI-overlap + ``MIN_DEFAULTS_FOR_DRIFT`` rule): a challenger is only called BETTER
-/ WORSE when its realized-risk CI is fully separated from the champion's; otherwise
+backtest's ``MIN_DEFAULTS_FOR_DRIFT`` floor): a challenger is only called BETTER / WORSE when
+the PAIRED-bootstrap CI of (challenger − champion) risk excludes 0 — the two policies share most
+of their loans, so comparing their marginal CIs could never separate (audit #31); otherwise
 INCONCLUSIVE. Production is reported alongside (a human weighs both) — it does not drive the
 verdict. This module is pure/IO-light; ``run_policy_registry.py`` drives data loading.
 """
@@ -32,11 +33,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 
 from src.governance.backtest import (
     MIN_DEFAULTS_FOR_DRIFT,
     _fmt,
     _realized_metrics,
+    _safe_segment_name,
     apply_policy,
     load_frozen_policy,
 )
@@ -218,6 +221,18 @@ def build_policy_entry(
 
 
 def registry_path(segment: str, registry_dir: Path = REGISTRY_DIR) -> Path:
+    """Registry file of a segment, named after its filesystem-safe filter.
+
+    The registry is keyed by ``settings.segment_filter``, and live filters contain ``/``
+    (``direct/pl/new``). Used verbatim that nested the file two directories deep, where
+    ``--list`` (a top-level glob) never found it (audit 2026-11-27 A5). The real filter is
+    kept inside the file under ``segment``.
+    """
+    return Path(registry_dir) / f"{_safe_segment_name(segment)}.json"
+
+
+def _legacy_registry_path(segment: str, registry_dir: Path = REGISTRY_DIR) -> Path:
+    """Where a filter with path separators was written before the name was flattened."""
     return Path(registry_dir) / f"{segment}.json"
 
 
@@ -230,7 +245,11 @@ def load_registry(segment: str, registry_dir: Path = REGISTRY_DIR) -> dict:
     """
     path = registry_path(segment, registry_dir)
     if not path.exists():
-        return {"segment": segment, "champion_policy_id": None, "policies": []}
+        legacy = _legacy_registry_path(segment, registry_dir)
+        if legacy == path or not legacy.exists():
+            return {"segment": segment, "champion_policy_id": None, "policies": []}
+        logger.warning(f"Reading policy registry from its pre-flattening path {legacy}; the next save writes {path}.")
+        path = legacy
     try:
         reg = json.loads(path.read_text())
     except Exception as e:
@@ -240,6 +259,13 @@ def load_registry(segment: str, registry_dir: Path = REGISTRY_DIR) -> dict:
             "Restore the file (e.g. `git checkout`) or delete it deliberately, then retry."
         ) from e
     reg.setdefault("segment", segment)
+    # Two different filters can flatten to the same file name ("a/b_c" and "a_b/c"). A flat name
+    # itself (what --list passes) is not a different segment.
+    if reg["segment"] != segment and _safe_segment_name(reg["segment"]) != segment:
+        raise ValueError(
+            f"Policy registry {path} belongs to segment {reg['segment']!r}, not {segment!r}: the two "
+            "segment filters map to the same file name. Rename one of the filters."
+        )
     reg.setdefault("champion_policy_id", None)
     reg.setdefault("policies", [])
     return reg
@@ -618,7 +644,7 @@ def write_comparison_report(comparison: PolicyComparison, out_dir: Path, suffix:
     """Write the per-segment comparison CSV (+ a cell-diff CSV when cells changed)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    seg = comparison.segment
+    seg = _safe_segment_name(comparison.segment)  # filters contain "/" (audit 2026-11-27 A5)
     paths: dict[str, Path] = {}
 
     agg_path = out_dir / f"policy_compare_{seg}{suffix}.csv"
@@ -648,7 +674,8 @@ def write_comparison_consolidated(
         "Each segment's *challenger* (the latest run's base policy) scored against the registered "
         "*champion* on the same auto-derived matured out-of-time cohort. The verdict is risk-only and "
         f"noise-aware: **BETTER/WORSE** only with ≥{MIN_DEFAULTS_FOR_DRIFT} realized defaults in both "
-        "policies AND fully separated risk CIs; otherwise **INCONCLUSIVE**. Production delta is reported "
+        "policies AND a paired-bootstrap CI of (challenger − champion) risk that excludes 0 — the two "
+        "policies share most of their loans; otherwise **INCONCLUSIVE**. Production delta is reported "
         "for the human trade-off (a lower-risk challenger that also sheds production is not automatically "
         "better).\n",
     ]

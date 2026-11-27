@@ -25,10 +25,14 @@ _VALID_SEGMENT_NAME = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 
 
 def validate_segment_name(name: str) -> None:
-    """Validate segment/supersegment name to prevent path traversal."""
-    if not _VALID_SEGMENT_NAME.match(name):
+    """Validate segment/supersegment name to prevent path traversal.
+
+    The character class allows dots, so "." and ".." matched: as a directory name they are the
+    output dir itself and its parent (audit 2026-11-27 A7).
+    """
+    if not _VALID_SEGMENT_NAME.match(name) or not name.strip("."):
         raise ValueError(
-            f"Invalid segment name {name!r}: must match [a-zA-Z0-9_.-]. "
+            f"Invalid segment name {name!r}: must match [a-zA-Z0-9_.-] and not be only dots. "
             f"Path separators and special characters are not allowed."
         )
 

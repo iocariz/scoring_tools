@@ -116,3 +116,16 @@ efx_bins = [-inf, 1.0, inf]
         finally:
             logger.remove(hid)
         assert "ri_optimizer_methods" not in buf.getvalue()  # mapped before the model sees it
+
+
+class TestDirectionsKeysMatchVariables:
+    """Audit 2026-11-27 A7: a typo'd key in ``directions`` was silently ignored and that variable's
+    direction auto-inferred from the data. The #63 guard only covers top-level keys."""
+
+    def test_direction_for_an_unknown_variable_warns(self):
+        out = _construct_and_capture(directions={"sc_octroi_new_clus": 1, "new_efx_cluss": -1})
+        assert "new_efx_cluss" in out and "directions" in out
+
+    def test_directions_for_the_configured_variables_are_silent(self):
+        out = _construct_and_capture(directions={"sc_octroi_new_clus": 1, "new_efx_clus": -1})
+        assert "directions" not in out

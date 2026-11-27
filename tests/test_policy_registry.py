@@ -542,3 +542,93 @@ def test_legacy_registry_entries_without_bin_sources_still_load():
         }
     )
     assert entry.bin_sources == {}
+
+
+# --------------------------------------------------------------------------- #
+# Audit 2026-11-27 A5: live segment_filter values contain "/" (direct/pl/new)
+# --------------------------------------------------------------------------- #
+
+LIVE_FILTER = "direct/pl/new"
+
+
+def test_registry_file_is_flat_for_a_filter_with_slashes(tmp_path):
+    """Used verbatim, the filter created reports/policy_registry/direct/pl/new.json: --list globbed
+    only the top level and found nothing."""
+    register_policy(_entry(segment=LIVE_FILTER, policy_id="x-1111"), registry_dir=tmp_path)
+
+    assert [p.name for p in tmp_path.iterdir()] == ["direct_pl_new.json"]
+    assert registry_path(LIVE_FILTER, tmp_path) == tmp_path / "direct_pl_new.json"
+    reg = load_registry(LIVE_FILTER, tmp_path)
+    assert reg["segment"] == LIVE_FILTER  # the real filter is kept inside the file
+    assert get_champion(LIVE_FILTER, tmp_path).policy_id == "x-1111"
+
+
+def test_registry_written_under_the_old_nested_path_is_still_read(tmp_path):
+    legacy = tmp_path / "direct" / "pl" / "new.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        json.dumps(
+            {"segment": LIVE_FILTER, "champion_policy_id": "x-1111", "policies": [_entry(LIVE_FILTER).to_dict()]}
+        )
+    )
+
+    assert load_registry(LIVE_FILTER, tmp_path)["champion_policy_id"] == "x-1111"
+    register_policy(_entry(segment=LIVE_FILTER, policy_id="x-2222"), registry_dir=tmp_path)
+    assert (tmp_path / "direct_pl_new.json").exists()  # history carried into the flat file
+    assert len(load_registry(LIVE_FILTER, tmp_path)["policies"]) == 2
+
+
+def test_two_filters_that_flatten_to_the_same_file_do_not_share_a_registry(tmp_path):
+    register_policy(_entry(segment="a/b_c", policy_id="x-1111"), registry_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="belongs to segment"):
+        load_registry("a_b/c", tmp_path)
+
+
+def test_comparison_report_is_written_for_a_filter_with_slashes(tmp_path):
+    """policy_compare_direct/pl/new_base.csv raised OSError and aborted the whole --compare run."""
+    cmp = _comparison()
+    cmp.segment = LIVE_FILTER
+
+    paths = write_comparison_report(cmp, tmp_path)
+
+    assert paths["aggregate"] == tmp_path / "policy_compare_direct_pl_new_base.csv"
+    assert pd.read_csv(paths["aggregate"]).loc[0, "segment"] == LIVE_FILTER
+    assert paths["celldiff"].exists()
+
+
+def test_list_resolves_a_segment_name_to_its_registry(tmp_path, monkeypatch):
+    """-s takes segment NAMES (output dir names); the registry is keyed by the segment filter."""
+    import run_policy_registry as runner
+
+    registry_dir, data_dir = tmp_path / "registry", tmp_path / "output"
+    register_policy(_entry(segment=LIVE_FILTER, policy_id="x-1111"), registry_dir=registry_dir)
+    register_policy(_entry(segment="other/seg", policy_id="y-1111"), registry_dir=registry_dir)
+    (data_dir / "direct-pl-new").mkdir(parents=True)
+    (data_dir / "direct-pl-new" / "config_segment.toml").write_text(
+        f'[preprocessing]\nsegment_filter = "{LIVE_FILTER}"\n', encoding="utf-8"
+    )
+
+    assert runner.list_all(data_dir, None, registry_dir) == 2
+    assert runner.list_all(data_dir, ["direct-pl-new"], registry_dir) == 1
+    assert runner.list_all(data_dir, ["no-such-segment"], registry_dir) == 0
+
+
+def test_compare_defaults_to_each_segments_own_maturity():
+    """A7: the backtest uses settings.mr_maturity_months (#64); the policy comparison hard-coded 6,
+    so the two governance tools could evaluate different windows for the same segment."""
+    import inspect
+
+    import run_policy_registry as runner
+
+    assert inspect.signature(runner.compare_all).parameters["maturity_months"].default is None
+    assert runner._segment_maturity(None, SimpleNamespace(mr_maturity_months=9)) == 9
+    assert runner._segment_maturity(4, SimpleNamespace(mr_maturity_months=9)) == 4
+
+
+def test_summary_states_the_paired_bootstrap_rule(tmp_path):
+    """A7: the narrative still described the superseded 'fully separated CIs' rule."""
+    text = write_comparison_consolidated([_comparison()], tmp_path)["summary"].read_text(encoding="utf-8")
+
+    assert "paired" in text.lower()
+    assert "fully separated" not in text

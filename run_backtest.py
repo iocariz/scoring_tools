@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.error(f"Could not load/standardize data from {base_cfg.get('data_path')}")
         return 1
 
+    failures: list[tuple[str, str]] = []
     results = backtest_all(
         full_data,
         data_dir=args.data_dir,
@@ -75,9 +76,13 @@ def main(argv: list[str] | None = None) -> int:
         segments=args.segments,
         holdout_start=args.holdout_start,
         holdout_end=args.holdout_end,
+        failures=failures,
     )
     if not results:
         logger.error("No segments produced a backtest result.")
+        return 1
+    if failures:
+        logger.error(f"Backtest failed for {len(failures)} segment(s): {[name for name, _ in failures]}")
         return 1
     return 0
 

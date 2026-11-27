@@ -340,8 +340,11 @@ def _per_cell_calibration(
         pred["predicted_risk_pct"] = pd.NA
     pred_keep = pred[[*variables, "predicted_risk_pct"]]
 
-    # Realized per-cell risk from the held-out accepted booked loans.
-    acc = booked_oot[accepted_oot].copy()
+    # Realized per-cell risk from the held-out accepted booked loans — only those with a complete
+    # H6 outcome, the same rule as the aggregate realized risk (#41). Summing each column
+    # NaN-skipping let a loan with exposure but no realized numerator dilute its cell.
+    acc = booked_oot[accepted_oot]
+    acc = acc[acc["todu_30ever_h6"].notna() & acc["todu_amt_pile_h6"].notna()].copy()
     if acc.empty:
         realized = pd.DataFrame(columns=[*variables, "oot_realized_risk_pct", "n_booked_oot"])
     else:

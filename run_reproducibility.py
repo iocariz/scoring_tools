@@ -39,6 +39,7 @@ from src.governance.reproducibility import (
     render_report,
     write_reference,
 )
+from src.pipeline.batch_config import validate_segment_name
 
 
 def _build_standalone_config(base_config_path: str, segment_filter: str, dest: Path) -> Path:
@@ -107,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
     suffix = f"_{args.scenario}" if args.scenario else ""
     segment = args.segment
     ref_path = Path(args.reference) if args.reference else REFERENCE_DIR / f"{segment}_headline.json"
+    # The name becomes a directory that is deleted just below: `-s ..` would remove the whole
+    # output tree. Same rule as batch segment names.
+    validate_segment_name(segment)
     run_dir = Path(args.output) / segment
     # Clean the run dir first (#47): otherwise a re-run that fails partway leaves the PRIOR run's
     # artifacts in place, and extract_headline below would read those → a spurious PASS (or freeze
