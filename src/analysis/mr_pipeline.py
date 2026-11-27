@@ -1675,6 +1675,9 @@ def _mr_recalibration_factor(mr_rate: pd.Series, main_rate: pd.Series) -> pd.Ser
 
     An undefined MR or main rate gives factor 1.
     """
+    # Plain floats: with a nullable dtype `NA > 0` is NA and `mask` would read it as True.
+    mr_rate = pd.to_numeric(mr_rate, errors="coerce").astype(float)
+    main_rate = pd.to_numeric(main_rate, errors="coerce").astype(float)
     has_main = main_rate > 0
     ratio = (mr_rate / main_rate.where(has_main)).clip(lower=_MR_CAL_FACTOR_MIN, upper=_MR_CAL_FACTOR_MAX)
     risk_appeared = ~has_main & main_rate.notna() & (mr_rate > 0)

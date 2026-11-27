@@ -3221,3 +3221,39 @@ class TestMrRecalibrationFactor:
         assert self._recalibrate(10.0, 0.05, h3=(0.0, 0.0))["todu_30ever_h3_rep"] == 4.0
         assert self._recalibrate(10.0, 0.05, h3=(0.04, 0.02))["todu_30ever_h3_rep"] == pytest.approx(8.0)
         assert self._recalibrate(10.0, 0.05, h3=(0.02, 0.0))["todu_30ever_h3_rep"] == pytest.approx(40.0)
+
+    @pytest.mark.parametrize("dtype", ["float64", "Float64"])
+    def test_factor_on_mixed_bins(self, dtype):
+        """Every branch in one Series, also with a nullable dtype (where ``NA > 0`` is NA)."""
+        from src.analysis.mr_pipeline import _mr_recalibration_factor
+
+        main = pd.Series([0.05, 0.05, 0.05, 0.0, 0.0, 0.0, None, None], dtype=dtype)
+        mr = pd.Series([0.10, 0.0, None, 0.0, None, 0.03, 0.02, None], dtype=dtype)
+
+        factor = _mr_recalibration_factor(mr, main)
+
+        assert factor.tolist() == [2.0, 0.1, 1.0, 1.0, 1.0, 10.0, 1.0, 1.0]
+
+    def test_bin_missing_from_the_comparison_keeps_factor_one(self):
+        """A booked bin with no row in the MR comparison has no MR rate: left merge -> NaN -> 1."""
+        from types import SimpleNamespace
+
+        from src.analysis.mr_pipeline import _recalibrate_mr_repesca
+
+        data_booked = pd.DataFrame(
+            {"a": [1, 2], "b": [1, 1], "todu_30ever_h6": [10.0, 10.0], "todu_amt_pile_h6": [1400.0, 1400.0]}
+        )
+        comparison = pd.DataFrame({"a": [1], "b": [1], "b2_ever_h6_tmp": [0.10]})  # bin (2, 1) absent
+        summary = pd.DataFrame(
+            {
+                "a": [1, 2],
+                "b": [1, 1],
+                "todu_30ever_h6_boo": [2.0, 2.0],
+                "todu_30ever_h6_rep": [5.0, 5.0],
+                "todu_amt_pile_h6_rep": [500.0, 500.0],
+            }
+        )
+        out, _ = _recalibrate_mr_repesca(
+            summary, data_booked, self.KEYS, comparison, SimpleNamespace(multiplier=self.MULTIPLIER)
+        )
+        assert out["todu_30ever_h6_rep"].tolist() == pytest.approx([10.0, 5.0])
