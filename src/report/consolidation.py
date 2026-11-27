@@ -847,6 +847,65 @@ def _segment_audit_csv_path(output_base: Path, seg_name: str, period: str, scena
     return data_dir / f"audit_{scenario}.csv"
 
 
+# A base table is written as ``_base`` by current runs and unsuffixed by legacy ones.
+_BASE_TABLE_SUFFIXES = ("_base", "")
+CARRIED_FROM_BASE = "carried_from_base"
+
+
+def _collect_segment_metrics(
+    output_base: Path,
+    segments: dict[str, dict[str, Any]],
+    period: str,
+    scenario_suffix: str,
+    scenario_name: str,
+    non_base_suffixes: list[str],
+) -> tuple[dict[str, dict], list[str]]:
+    """Per-segment metrics for one scenario/period, plus the segments carried over from base.
+
+    Baseline, fixed-cutoff and ``base_scenario_only`` segments write only the base table. Their
+    policy does not depend on the scenario, so in a non-base scenario they enter with their base
+    figures; leaving them out made that scenario's TOTAL and supersegment rows cover a smaller
+    portfolio than the base ones (audit 2026-11-27 A8). A segment that DID run scenarios but lacks
+    this one is not carried: its missing table is a failure, not a policy that does not vary.
+    """
+    metrics: dict[str, dict] = {}
+    carried: list[str] = []
+    incomplete: list[str] = []
+    for seg_name in segments:
+        seg_dir = output_base / seg_name
+        df = load_risk_production_table(seg_dir, period, scenario_suffix)
+        if df is None and scenario_name != "base":
+            ran_scenarios = any(load_risk_production_table(seg_dir, "main", s) is not None for s in non_base_suffixes)
+            if ran_scenarios:
+                if period == "main":
+                    incomplete.append(seg_name)
+            else:
+                for base_suffix in _BASE_TABLE_SUFFIXES:
+                    df = load_risk_production_table(seg_dir, period, base_suffix)
+                    if df is not None:
+                        carried.append(seg_name)
+                        break
+        if df is not None:
+            metrics[seg_name] = extract_metrics_from_table(df)
+    if carried:
+        logger.info(
+            f"Scenario '{scenario_name}' ({period}): base-only segment(s) carried over with their base "
+            f"figures so the totals cover the same portfolio: {carried}"
+        )
+    if incomplete:
+        logger.warning(
+            f"Scenario '{scenario_name}': segment(s) {incomplete} ran other scenarios but have no table for "
+            "this one — excluded, so this scenario's TOTAL is not comparable with the others."
+        )
+    return metrics, carried
+
+
+def _consolidated_row(consolidated: "ConsolidatedMetrics", carried: list[str]) -> dict[str, Any]:
+    """``to_dict`` plus the members of this row whose figures were carried over from base."""
+    members = [seg for seg in consolidated.segments if seg in carried]
+    return {**consolidated.to_dict(), CARRIED_FROM_BASE: ", ".join(members)}
+
+
 def patch_consolidated_production_from_segment_audits(
     df: pd.DataFrame,
     output_base: Path,
@@ -924,6 +983,18 @@ def patch_consolidated_production_from_segment_audits(
         g = s.astype(str)
         return (g != "TOTAL") & ~g.str.startswith("supersegment_")
 
+    def _is_carried_from_base(seg_name_local: str, period: str, scenario: str) -> bool:
+        if CARRIED_FROM_BASE not in work.columns:
+            return False
+        rows = work.loc[
+            (work["segments"].astype(str).str.strip() == seg_name_local)
+            & (work["period"] == period)
+            & (work["scenario"] == scenario)
+            & _detail_segment_mask(work["group"]),
+            CARRIED_FROM_BASE,
+        ]
+        return bool((rows.astype(str).str.strip() == seg_name_local).any())
+
     for seg_name in segments:
         if _is_baseline_segment(seg_name):
             continue
@@ -931,6 +1002,10 @@ def patch_consolidated_production_from_segment_audits(
             sc = str(scenario)
             for period in ("main", "mr"):
                 path = _segment_audit_csv_path(output_base, seg_name, period, sc)
+                if not path.exists() and _is_carried_from_base(seg_name, period, sc):
+                    # A carried row holds the segment's base figures: patch it from the base
+                    # audit, or it stays on the grid basis while the base row moves to the audit one.
+                    path = _segment_audit_csv_path(output_base, seg_name, period, "base")
                 if not path.exists():
                     continue
                 try:
@@ -1260,6 +1335,8 @@ def consolidate_segments(
         if ss:
             segment_to_supersegment[seg_name] = ss
 
+    non_base_suffixes = [suffix for suffix, name in scenario_name_map.items() if name != "base"]
+
     # Process each scenario
     for scenario_suffix in scenarios:
         scenario_name = scenario_name_map.get(scenario_suffix, "base")
@@ -1267,13 +1344,9 @@ def consolidate_segments(
         # Process each period (main and MR)
         for period in ["main", "mr"]:
             # Collect metrics by segment
-            segment_metrics = {}
-            for seg_name in segments:
-                seg_dir = output_base / seg_name
-                df = load_risk_production_table(seg_dir, period, scenario_suffix)
-                if df is not None:
-                    metrics = extract_metrics_from_table(df)
-                    segment_metrics[seg_name] = metrics
+            segment_metrics, carried = _collect_segment_metrics(
+                output_base, segments, period, scenario_suffix, scenario_name, non_base_suffixes
+            )
 
             if not segment_metrics:
                 logger.warning(f"No data found for scenario={scenario_name}, period={period}")
@@ -1333,7 +1406,7 @@ def consolidate_segments(
                         optimum_risk_ci_lower=agg["optimum"].get("risk_ci_lower", 0),
                         optimum_risk_ci_upper=agg["optimum"].get("risk_ci_upper", 0),
                     )
-                    results.append(consolidated.to_dict())
+                    results.append(_consolidated_row(consolidated, carried))
                     supersegment_data[ss_name] = agg
 
             # Add all individual segments (including those in supersegments)
@@ -1388,7 +1461,7 @@ def consolidate_segments(
                     optimum_risk_ci_lower=metrics["optimum"].get("risk_ci_lower", 0),
                     optimum_risk_ci_upper=metrics["optimum"].get("risk_ci_upper", 0),
                 )
-                results.append(consolidated.to_dict())
+                results.append(_consolidated_row(consolidated, carried))
 
             # Aggregate total across all segments
             all_metrics_list = list(segment_metrics.values())
@@ -1436,7 +1509,7 @@ def consolidate_segments(
                     optimum_risk_ci_lower=total_agg["optimum"].get("risk_ci_lower", 0),
                     optimum_risk_ci_upper=total_agg["optimum"].get("risk_ci_upper", 0),
                 )
-                results.append(total_consolidated.to_dict())
+                results.append(_consolidated_row(total_consolidated, carried))
 
     df = pd.DataFrame(results)
     df = patch_consolidated_production_from_segment_audits(df, output_base, segments)
@@ -1448,6 +1521,7 @@ def consolidate_segments(
         "scenario",
         "n_segments",
         "segments",
+        CARRIED_FROM_BASE,
         "actual_production",
         "actual_risk_pct",
         "actual_todu_30ever_h6",
@@ -2298,6 +2372,7 @@ _COLUMN_LABELS = {
     "scenario": "Scenario",
     "n_segments": "# Segments",
     "segments": "Segments",
+    CARRIED_FROM_BASE: "Carried from base",
     "actual_production": "Actual Production (€)",
     "actual_risk_pct": "Actual Risk (%)",
     "optimum_production": "Optimum Production (€)",
