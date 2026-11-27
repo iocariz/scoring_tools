@@ -551,20 +551,26 @@ def _enforce_multiplier_monotonicity(
     return result
 
 
-# Certificate tolerance, relative to 1 + ||gradient|| in the scaled problem (targets in [0, 1],
-# weights of mean 1). Runs SLSQP reports as converged leave residuals of the same order.
-_KKT_REL_TOL = 1e-6
+# Largest distance from the true optimum accepted for ANY cell when SLSQP does not report
+# success, in the scaled problem (multipliers mapped to [0, 1]): 0.5% of the multiplier range,
+# i.e. under 0.02 for multipliers in [1, 4.5]. The bound is a worst case (it charges the whole
+# residual to the lowest-evidence cell). Measured on synthetic 20x10x2 grids with heavy-tailed
+# evidence, status-8 stops gave 2e-5 to 7e-4 and runs SLSQP reports as converged up to 2e-4, so
+# this leaves ~7x headroom against a spurious refusal on another BLAS (audit 2026-11-27 A19).
+_KKT_CELL_TOL = 5e-3
 _KKT_ACTIVE_TOL = 1e-7
 
 
-def _kkt_residual(x: np.ndarray, gradient: np.ndarray, A: np.ndarray) -> float:
-    """Distance from stationarity at a feasible *x* of ``min f(x) s.t. A x >= 0, 0 <= x <= 1``.
+def _optimality_error_bound(x: np.ndarray, gradient: np.ndarray, A: np.ndarray, w: np.ndarray) -> float:
+    """Upper bound on ``max_i |x_i - x*_i|`` for ``min sum(w (x - y)**2) s.t. A x >= 0, 0 <= x <= 1``.
 
-    Stationarity requires ``gradient = A_active' λ + μ_lower − ν_upper`` with non-negative
-    multipliers on the active constraints only. The best such combination is a non-negative
-    least-squares problem; its residual norm is zero exactly at a KKT point, and for a convex
-    objective a feasible KKT point is the global minimizer. Returns ``inf`` when the
-    multipliers cannot be computed, so the caller treats the point as not certified.
+    At the minimizer ``x*`` the gradient is a non-negative combination of the active constraint
+    normals (KKT). The best such combination at a feasible *x* is a non-negative least-squares
+    problem; what it cannot explain is the stationarity residual ``r``. The objective is strongly
+    convex with Hessian ``2 diag(w)``, so ``sum(w (x - x*)**2) <= sum(r**2 / (4 w))`` and every
+    cell is within ``sqrt(sum(r**2 / (4 w)) / min(w))`` of the optimum. The bound is weight-aware
+    on purpose: a plain residual norm lets a low-evidence cell sit far from its optimum, because
+    its gradient is tiny. Returns ``inf`` when the multipliers cannot be computed.
     """
     from scipy.optimize import nnls
 
@@ -576,13 +582,14 @@ def _kkt_residual(x: np.ndarray, gradient: np.ndarray, A: np.ndarray) -> float:
     if at_upper.any():
         columns.append(-identity[:, at_upper])
     basis = np.hstack(columns)
-    if basis.shape[1] == 0:
-        return float(np.linalg.norm(gradient))
-    try:
-        _, residual = nnls(basis, gradient, maxiter=20 * basis.shape[1])
-    except RuntimeError:
-        return float("inf")
-    return float(residual)
+    residual = gradient
+    if basis.shape[1] > 0:
+        try:
+            multipliers, _ = nnls(basis, gradient, maxiter=20 * basis.shape[1])
+        except RuntimeError:
+            return float("inf")
+        residual = gradient - basis @ multipliers
+    return float(np.sqrt(np.sum(residual**2 / (4.0 * w)) / w.min()))
 
 
 def _fix_partial_order_violations(
@@ -665,16 +672,15 @@ def _fix_partial_order_violations(
     if not optimal and finite and violation <= tol:
         # SLSQP routinely stops AT the optimum with status 8 ("positive directional derivative
         # for linesearch") when ftol=1e-12 cannot be met numerically. The problem is convex, so
-        # a feasible point that satisfies the KKT conditions is the global minimizer whatever
-        # the reported status; certify that instead of trusting or distrusting the status.
-        gradient = 2.0 * w * (solved.x - y)
-        residual = _kkt_residual(solved.x, gradient, A)
-        optimal = residual <= _KKT_REL_TOL * (1.0 + float(np.linalg.norm(gradient)))
-        detail = f"; KKT residual={residual:.3g}"
+        # what matters is how far the point can be from the minimizer, not the reported status:
+        # accept it when every cell is provably within _KKT_CELL_TOL of the optimum.
+        error_bound = _optimality_error_bound(solved.x, 2.0 * w * (solved.x - y), A, w)
+        optimal = error_bound <= _KKT_CELL_TOL
+        detail = f"; distance to the optimum not certified (per-cell bound {error_bound:.3g} of the range)"
         if optimal:
             logger.debug(
-                f"Isotonic projection: SLSQP status {solved.status} ({solved.message}) at a certified "
-                f"optimum (KKT residual {residual:.3g}); accepted."
+                f"Isotonic projection: SLSQP status {solved.status} ({solved.message}); every cell is "
+                f"within {error_bound:.3g} of the multiplier range of the optimum; accepted."
             )
     if not optimal or not finite or violation > tol:
         raise RuntimeError(
