@@ -41,6 +41,10 @@ class DataLoadError(PipelineExecutionError):
     """Raised when data load/validation fails."""
 
 
+class DataQualityHaltError(PipelineExecutionError):
+    """Raised when the fail-closed data-quality gate halts the run."""
+
+
 class InferencePhaseError(PipelineExecutionError):
     """Raised when inference phase fails."""
 
@@ -510,9 +514,10 @@ def run_pipeline(
         On success: a result tuple from ``run_optimization_phase`` /
         ``run_scenario_analysis`` (full and ``training_only`` runs), or ``None``
         in ``resimulate_risk`` mode (no downstream result to return).
-        On failure: ``False`` — a ``PipelineExecutionError`` is caught, logged,
-        and converted to this sentinel so the CLI can exit non-zero (``None``
-        alone cannot distinguish resimulation success from failure).
+        On failure: ``False`` — a ``PipelineExecutionError`` (a data-quality
+        halt included) is caught, logged, and converted to this sentinel so the
+        CLI can exit non-zero (``None`` alone cannot distinguish resimulation
+        success from failure).
     """
     if output is None:
         output = OutputPaths()
@@ -578,7 +583,9 @@ def run_pipeline(
         # Step 3: Preprocessing (DQ checks, binning, stress factor, transformation rate)
         prep = run_preprocessing_phase(data, settings, skip_dq_checks, output=output)
         if prep is None:
-            return None
+            # A DQ halt is a failure. Returning None here read as success to the CLI, because
+            # None is also the resimulation-success value (exit code 0 on a halted run).
+            raise DataQualityHaltError(f"[{segment}] Data quality gate halted the run")
         data_clean = prep.data_clean
         data_booked = prep.data_booked
         data_demand = prep.data_demand

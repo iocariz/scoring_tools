@@ -134,9 +134,10 @@ def main(argv: list[str] | None = None) -> int:
         # accepted benign outlier warnings (M2 is fail-closed by default).
         allow_dq_warnings=True,
     )
-    # Fail closed (#47): the pipeline returns None on failure. Refuse to read whatever is in run_dir
-    # (partial/absent) — that is how the gate used to pass spuriously or freeze stale references.
-    if result_pipeline is None:
+    # Fail closed (#47): the pipeline returns the False sentinel on failure (and a full run never
+    # legitimately returns None). Refuse to read whatever is in run_dir (partial/absent) — that is
+    # how the gate used to pass spuriously or freeze stale references.
+    if result_pipeline is None or result_pipeline is False:
         logger.error(
             f"[{segment}] pipeline returned no result — reproduction FAILED (refusing to read stale/"
             "partial artifacts). Fix the run before checking or re-pinning the reference."
