@@ -1038,7 +1038,15 @@ def slide_definitions(prs, breakdown: pd.DataFrame, columns: dict[str, str], met
 
 
 def slide_store_demand(
-    prs, swap: pd.DataFrame, blend: pd.DataFrame, breakdown: pd.DataFrame, stores, meta: dict, facts: dict, period: str
+    prs,
+    swap: pd.DataFrame,
+    blend: pd.DataFrame,
+    breakdown: pd.DataFrame,
+    online,
+    stores,
+    meta: dict,
+    facts: dict,
+    period: str,
 ) -> None:
     """The stores demand, step by step: what the grid does with each € and how the
     channel blends into the total.
@@ -1118,6 +1126,8 @@ def slide_store_demand(
     _table(slide, bx, y, Inches(4.25), brows, col_w=[2.1, 0.75, 0.75, 0.75], row_h=0.34)
 
     swap_out, swap_in = sw.iloc[2], sw.iloc[1]
+    drift = float(meta.get("online_factor_riesgo", 1.0) or 1.0)
+    drift_txt = f"the drift at equal score (×{ac.num(drift, 2)}) and " if abs(drift - 1) > 1e-9 else ""
     _text(
         slide,
         bx,
@@ -1131,8 +1141,10 @@ def slide_store_demand(
         f"{ac.num(bl.loc['tienda', 'demanda_mensual_eur'] / bl.loc['total', 'demanda_mensual_eur'] * 100, 0)}% of "
         f"demand but {ac.num(bl.loc['tienda', 'peso_exposicion_pct'], 0)}% of exposure, because stores book "
         f"{ac.num(take_up_stores, 0)}% of what the engine approves and Online {ac.num(take_up_online, 0)}%. Online's "
-        f"{ac.num(bl.loc['online', 'riesgo_pct'], 2, '%')} carries the reject-inference uplift on its own book "
-        f"(realized {ac.num(bl.loc['online', 'riesgo_pct'] - meta.get('ri_margen_online_pp', 0.0), 2, '%')}).",
+        f"{ac.num(bl.loc['online', 'riesgo_pct'], 2, '%')} carries {drift_txt}the reject-inference uplift on its own "
+        # Realized = measured on the booked book (p1 TOTAL). Backing it out of the blended figure
+        # (minus the RI margin) left the drift factor inside and called the result realized.
+        f"book (realized {ac.num(online['riesgo_real_pct'], 2, '%')}).",
         size=10.5,
         color=MUTED,
         spacing=1.2,
@@ -1331,15 +1343,15 @@ def build(data_dir: Path, out_path: Path) -> Path:
     slide_scenarios_by_channel(prs, picks, meta, p_mixed)
     slide_grids(prs, grids, "Policy — no period")
     slide_method_risk(prs, meta, facts, f"Online {p_online}  ·  stores {p_stores}")
-    slide_store_demand(prs, swap, blend, breakdown, stores, meta, facts, p_mixed)
+    slide_store_demand(prs, swap, blend, breakdown, online, stores, meta, facts, p_mixed)
     slide_method_seasonal(prs, meta, facts, f"Full years {p_seasonal}")
     slide_chart(
         prs,
         "The EFX score ranks risk in e-commerce",
         "Appendix · The engine of the study",
         paths["curve"],
-        "The risk curve by bin is the only measured piece of the study. Everything else —store risk, the "
-        "scenarios— derives from it.",
+        "The realized risk curve by bin (solid) is the only measured piece of the study. Everything else —the "
+        "selection correction (dashed), store risk, the scenarios— derives from it.",
         period=f"Originations {p_online}",
     )
     slide_chart(
