@@ -233,7 +233,9 @@ def _post_run_outputs(args, base_config, segments, all_supersegments, preloaded_
     backtest_dir = Path(args.output) / "backtest"
     if not args.training_only and successful_segments and (args.no_backtest or preloaded_data is None):
         # Cutoffs were just re-derived but the backtest is not re-run: the consolidated evidence on
-        # disk describes the PREVIOUS cutoffs and the workbook would show it as current.
+        # disk describes the PREVIOUS cutoffs and the workbook would show it as current. The whole
+        # file goes, also on a partial (-s) run: the workbook built below covers only this run's
+        # segments, and a backtest that does run rewrites the file with just those segments too.
         from src.governance.backtest_runner import invalidate_consolidated_backtest
 
         invalidate_consolidated_backtest(backtest_dir, "base")

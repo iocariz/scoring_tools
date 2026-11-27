@@ -70,6 +70,8 @@ def backtest_all(
     data_dir, out_dir = Path(data_dir), Path(out_dir)
     # Whatever this call produces replaces the consolidated evidence; if it produces nothing
     # (no frozen segments, every segment failing) the previous run's file must not survive.
+    # Removed up front rather than after the loop on purpose: run_batch treats an exception from
+    # this function as non-fatal and consolidates anyway, so no exit path may leave the old file.
     invalidate_consolidated_backtest(out_dir, scenario)
     seg_dirs = _discover_segments(data_dir, suffix, segments)
     if not seg_dirs:
