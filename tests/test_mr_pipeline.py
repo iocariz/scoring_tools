@@ -3368,3 +3368,27 @@ class TestMrPooledRecalibrationRatio:
         # H3: (0.06 + 0.01) / (0.02 + 0) = 3.5, weighted by the same (equal) exposure
         assert out.loc[2, "todu_30ever_h3_rep"] == pytest.approx(4.0 * 3.5)
         assert out.loc[1, "todu_30ever_h3_rep"] == pytest.approx(4.0 * 3.0)
+
+    def test_only_bins_with_mr_evidence_enter_the_pool(self):
+        """model_fallback and main_imputed bins are out, whatever rate they carry."""
+        fallback = {"a": 4, "main_defaults": 10.0, "exposure": 1400.0, "mr_rate": 0.40, "source": "model_fallback"}
+
+        out = self._run([self.OBSERVED_UP, self.RISK_APPEARED, self.IMPUTED, fallback])
+
+        assert out.loc[2, "todu_30ever_h6_rep"] == pytest.approx(5.0 * 2.6)
+
+    def test_no_evidence_bin_with_main_risk_falls_back_to_the_cap(self):
+        """Sources are known but the only evidence bin is the zero-main one: nothing to pool."""
+        out = self._run([self.RISK_APPEARED, self.IMPUTED])
+
+        assert out.loc[2, "todu_30ever_h6_rep"] == pytest.approx(50.0)
+
+    def test_h3_pool_is_gated_like_h6_and_independent_of_it(self):
+        observed = {**self.OBSERVED_UP, "mr_h3": 0.06, "main_h3": 0.02}
+        appeared = {**self.RISK_APPEARED, "mr_h3": 0.01, "main_h3": 0.0}
+        thin_imputed = {**self.IMPUTED, "mr_h3": 0.90, "main_h3": 0.02}  # a thin H3 rate, not evidence
+
+        out = self._run([observed, appeared, thin_imputed])
+
+        assert out.loc[2, "todu_30ever_h3_rep"] == pytest.approx(4.0 * 3.5)  # (0.06 + 0.01) / 0.02
+        assert out.loc[2, "todu_30ever_h6_rep"] == pytest.approx(5.0 * 2.6)  # H6 pool untouched by H3

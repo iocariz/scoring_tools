@@ -1674,8 +1674,10 @@ def _pooled_recalibration_ratio(
 
     ``sum(exposure * mr) / sum(exposure * main)`` over the bins that have both rates (and, when
     *evidence* is given, carry MR evidence). The bins with zero main risk stay in the pool —
-    dropping them would overstate the main rate and understate the ratio. Returns ``None`` when
-    there is nothing to pool or the pooled main rate is zero.
+    dropping them would overstate the main rate and understate the ratio. That includes the bins
+    the ratio is then applied to: their MR risk raises the numerator against a zero in the
+    denominator, which leans the ratio upward (conservative; bounded by the cap). Returns ``None``
+    when there is nothing to pool or the pooled main rate is zero.
     """
     mr = pd.to_numeric(mr_rate, errors="coerce").astype(float)
     main = pd.to_numeric(main_rate, errors="coerce").astype(float)
@@ -1792,7 +1794,7 @@ def _recalibrate_mr_repesca(
         )
         cal_factor_by_bin = main_bin_agg[merge_keys + ["_main_b2"]].merge(mr_bin_b2, on=merge_keys, how="left")
         cal_factor_by_bin = cal_factor_by_bin.merge(main_exposure, on=merge_keys, how="left")
-        evidence = None
+        evidence = sources = None
         if "risk_source" in comparison_df.columns:
             sources = comparison_df[merge_keys + ["risk_source"]].drop_duplicates(subset=merge_keys)
             cal_factor_by_bin = cal_factor_by_bin.merge(sources, on=merge_keys, how="left")
@@ -1868,10 +1870,16 @@ def _recalibrate_mr_repesca(
             )
             if has_h3_cal:
                 h3_cal = comparison_df[merge_keys + ["b2_mr_h3", "b2_main_h3"]].drop_duplicates(subset=merge_keys)
-                # b2_mr_h3 is observed (NaN without data), so every bin with a rate is evidence.
+                # Same pool as H6: b2_mr_h3 exists for any bin with H3 data, however thin, and only
+                # the evidence sources passed the minimum-observation gates. The weight is the
+                # main-period H6 exposure — a mix proxy shared with the H6 ratio, not H3 exposure.
                 h3_cal = h3_cal.merge(main_exposure, on=merge_keys, how="left")
+                h3_evidence = None
+                if sources is not None:
+                    h3_cal = h3_cal.merge(sources, on=merge_keys, how="left")
+                    h3_evidence = h3_cal["risk_source"].isin(_MR_EVIDENCE_SOURCES)
                 pooled_h3 = _pooled_recalibration_ratio(
-                    h3_cal["b2_mr_h3"], h3_cal["b2_main_h3"], h3_cal["_main_exposure"]
+                    h3_cal["b2_mr_h3"], h3_cal["b2_main_h3"], h3_cal["_main_exposure"], h3_evidence
                 )
                 h3_cal["_mr_cal_factor_h3"] = _mr_recalibration_factor(
                     h3_cal["b2_mr_h3"], h3_cal["b2_main_h3"], _risk_appeared_factor(pooled_h3)
