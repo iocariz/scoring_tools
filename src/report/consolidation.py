@@ -4762,7 +4762,9 @@ def _write_sheet_how_we_got_here(wb, output_base, segments: dict, consolidated_d
         cap.value = (
             "Each curve is the segment's efficient frontier: every point is a complete cutoff policy, and "
             "nothing above the curve is achievable. The dashed line is the risk budget; the star is the "
-            "chosen policy — the most production available without crossing it."
+            "chosen policy — the most production available without crossing it. The curve and the star are "
+            "on the optimizer's grid basis; the production figures elsewhere in this workbook are reconciled "
+            "to the loan-level audit and can sit a few percent away from the star."
         )
         cap.font = _FONT_SUBTITLE
         ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=12)

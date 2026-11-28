@@ -8,6 +8,7 @@ Targets the post-classification helpers:
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.analysis import audit
 
@@ -287,3 +288,102 @@ class TestSaveAuditTables:
         assert (tmp_path / "audit_base.csv").exists()
         assert (tmp_path / "audit_base_mr.csv").exists()
         assert "main" in out and "mr" in out
+
+
+class TestProductionCiFollowsTheReconciledPoint:
+    """Audit 2026-11-27 A13: the summary's Production (€) is overwritten from the loan-level audit,
+    but the bootstrap CI stayed on the optimizer's grid basis, so the interval could exclude its
+    own point. The interval is shifted by the amount the point moved. (The €19.91M vs
+    [€21.80M, €22.68M] example comes from April artifacts whose audit predates the per-cell
+    financing rate; on current code the two bases agree within ~2%.)"""
+
+    def test_interval_moves_with_the_point(self):
+        lower, upper, basis = audit.recenter_production_ci(21.80e6, 22.68e6, 22.23e6, 19.91e6)
+
+        assert lower < 19.91e6 < upper
+        assert lower == pytest.approx(21.80e6 - 2.32e6)
+        assert upper == pytest.approx(22.68e6 - 2.32e6)
+        assert basis == "grid_shifted_to_audit"
+
+    def test_width_is_preserved(self):
+        """The gap is a level difference in the swap-in conversion, not extra sampling noise."""
+        lower, upper, _ = audit.recenter_production_ci(90.0, 120.0, 100.0, 80.0)
+        assert upper - lower == pytest.approx(30.0)
+        assert (lower, upper) == pytest.approx((70.0, 100.0))
+
+    @pytest.mark.parametrize("reconciled", [100.0, 100.0 + 1e-9, 100.00005])
+    def test_same_point_up_to_float_noise_keeps_the_grid_interval(self, reconciled):
+        assert audit.recenter_production_ci(90.0, 120.0, 100.0, reconciled) == (90.0, 120.0, "grid")
+
+    @pytest.mark.parametrize(
+        ("grid", "reconciled"),
+        [(0.0, 80.0), (100.0, 0.0), (float("nan"), 80.0), (100.0, float("nan")), (None, 80.0), (-5.0, 80.0)],
+    )
+    def test_no_usable_point_leaves_the_interval_and_says_so(self, grid, reconciled):
+        assert audit.recenter_production_ci(90.0, 120.0, grid, reconciled) == (90.0, 120.0, "grid")
+
+    def test_missing_interval_stays_missing(self):
+        lower, upper, basis = audit.recenter_production_ci(float("nan"), float("nan"), 100.0, 80.0)
+        assert np.isnan(lower) and np.isnan(upper) and basis == "grid"
+
+    def test_bootstrap_placeholder_is_not_labelled_as_shifted(self):
+        assert audit.recenter_production_ci(0.0, 0.0, 100.0, 80.0) == (0.0, 0.0, "grid")
+
+    @pytest.mark.parametrize("reconciled", [20.0, 400.0])
+    def test_a_gap_too_large_to_be_a_basis_difference_is_not_applied(self, reconciled):
+        """E.g. an audit without status_name gives actual production 0 and a tiny optimum."""
+        assert audit.recenter_production_ci(90.0, 120.0, 100.0, reconciled) == (90.0, 120.0, "grid")
+
+
+def test_optimum_production_reads_the_optimum_row():
+    from src.pipeline.scenarios import _optimum_production
+
+    table = pd.DataFrame({"Metric": ["Actual", "Optimum selected"], "Production (€)": [100.0, 130.0]})
+    assert _optimum_production(table) == 130.0
+    assert _optimum_production(table.iloc[:1]) is None
+    assert _optimum_production(table.drop(columns=["Production (€)"])) is None
+    assert _optimum_production(table.assign(**{"Production (€)": [100.0, np.nan]})) is None
+
+
+def test_reconciled_summary_gets_an_interval_around_its_own_point():
+    """The two steps together, as run_scenario_analysis applies them."""
+    from src.pipeline.scenarios import _optimum_production
+
+    summary = pd.DataFrame(
+        {
+            "Metric": ["Actual", "Swap-in", "Swap-out", "Optimum selected"],
+            "Production (€)": [1000.0, 300.0, 100.0, 1200.0],  # grid basis
+            "Production (%)": [100.0, 30.0, 10.0, 120.0],
+        }
+    )
+    audit_df = pd.DataFrame(
+        {
+            "status_name": ["booked", "booked", "rejected"],
+            "classification": ["keep", "swap_out", "swap_in"],
+            "oa_amt": [900.0, 100.0, 150.0],  # audit basis: optimum 1,050
+        }
+    )
+    grid_optimum = _optimum_production(summary)
+
+    reconciled = audit.reconcile_risk_production_summary_with_audit(summary, audit_df, silent=True)
+    lower, upper, basis = audit.recenter_production_ci(1150.0, 1260.0, grid_optimum, _optimum_production(reconciled))
+
+    point = _optimum_production(reconciled)
+    assert point == 1050.0
+    assert (lower, upper) == pytest.approx((1000.0, 1110.0))
+    assert lower < point < upper
+    assert not (1150.0 < point < 1260.0)  # the grid-basis interval excluded it
+    assert basis == "grid_shifted_to_audit"
+
+
+def test_cutoff_summary_receives_the_moved_interval():
+    """The cutoff summary pairs the reconciled production with the CI too: it must get the same
+    moved interval as the summary table (the segment report's scenario KPI table reads it)."""
+    import inspect
+
+    from src.pipeline import scenarios
+
+    source = inspect.getsource(scenarios.run_scenario_analysis)
+    moved = source.index('ci_data = {**ci_data, "production_ci_lower": prod_lower')
+    assert moved < source.index("generate_cutoff_summary(")
+    assert "ci_data=ci_data" in source[source.index("generate_cutoff_summary(") :]
