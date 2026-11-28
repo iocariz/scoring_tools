@@ -41,6 +41,30 @@ class TestCutoffOverrides:
         with pytest.raises(ValueError, match="known_cd.*New.*A-C"):
             parse_cutoff_overrides(["known_cd=11"], PARRILLA_ECOMMERCE)
 
+    @pytest.mark.parametrize("value, expected", [("30", 30.0), ("none", None)])
+    def test_the_group_whose_name_contains_an_equals_sign(self, value, expected):
+        """`>=G=30` split at the first "=" gave the group ">" — the documented group always failed."""
+        assert parse_cutoff_overrides([f">=G={value}"], PARRILLA_ECOMMERCE)[">=G"] == expected
+        assert parse_cutoff_overrides([f">=g={value}"], PARRILLA_ECOMMERCE)[">=G"] == expected
+
+    def test_nan_is_not_a_score(self):
+        """`score > nan` is False for every row: the whole group would be rejected in silence."""
+        with pytest.raises(ValueError, match="nan"):
+            parse_cutoff_overrides(["New=nan"], PARRILLA_ECOMMERCE)
+
+    def test_the_same_group_twice_is_an_error(self):
+        with pytest.raises(ValueError, match="more than once"):
+            parse_cutoff_overrides(["New=30", "new=35"], PARRILLA_ECOMMERCE)
+
+    def test_cli_exits_with_an_error_before_loading_data(self, monkeypatch):
+        import run_apple_study
+
+        def must_not_load(*args, **kwargs):
+            raise AssertionError("data must not be loaded for an invalid --cutoff")
+
+        monkeypatch.setattr(run_apple_study, "load_study_data", must_not_load)
+        assert run_apple_study.main(["--cutoff", "known_cd=11"]) == 2
+
     @pytest.mark.parametrize("override", ["New", "New=abc", "=27"])
     def test_malformed_override_is_an_error(self, override):
         with pytest.raises(ValueError):
@@ -88,6 +112,14 @@ class TestEmailFiguresMatchAsWholeNumbers:
             ("riesgo 3,85% (antes 3,95%)", "3,85%"),
             ("tienda. 4,2%", "4,2%"),  # a sentence full stop is not a decimal separator
             ("18,4 M€/mes", "18,4 M€/mes"),
+            ("18,4 M€/mes", "18,4M€/mes"),  # whitespace inside the figure is free
+            # a neighbouring number is not more digits of the same one
+            ("4,2, 5,1", "4,2"),
+            ("2,5 3,0 3,5", "3,0"),
+            ("pasa a 2,3.\n5 más", "2,3"),
+            ("en 2023. 4,2%", "4,2%"),
+            ("1. 4,2%", "4,2%"),
+            ("factor 0,956 para tienda", "0,956"),
         ],
     )
     def test_the_expected_figure_is_found(self, cell, expected):
@@ -160,3 +192,56 @@ class TestSensitivityFactors:
 
     def test_float_noise_does_not_duplicate_the_central_factor(self):
         assert sensitivity_factors(1.15 + 1e-12) == DRIFT_FACTORS
+
+
+# --------------------------------------------------------------------------- #
+# deck labels and the follow-up deck's central case
+# --------------------------------------------------------------------------- #
+
+
+class TestSeasonalYearsLabel:
+    def test_one_list_when_the_channels_agree_or_the_run_is_older(self):
+        from generate_apple_deck import seasonal_years_label
+
+        assert seasonal_years_label({"estacionalidad_anios": [2024, 2025]}) == "2024 and 2025"
+        same = {
+            "estacionalidad_anios": [2024, 2025],
+            "estacionalidad_anios_online": [2024, 2025],
+            "estacionalidad_anios_tienda": [2024, 2025],
+        }
+        assert seasonal_years_label(same) == "2024 and 2025"
+
+    def test_both_lists_when_the_channels_differ(self):
+        from generate_apple_deck import seasonal_years_label
+
+        meta = {
+            "estacionalidad_anios": [2024, 2025],
+            "estacionalidad_anios_online": [2024, 2025],
+            "estacionalidad_anios_tienda": [2025],
+        }
+        assert seasonal_years_label(meta) == "Online 2024 and 2025; stores 2025"
+
+    def test_no_years_says_so(self):
+        from generate_apple_deck import seasonal_years_label
+
+        assert seasonal_years_label({"estacionalidad_anios": []}) == "no seasonal adjustment"
+
+
+class TestCentralSensitivityRow:
+    @staticmethod
+    def _table(factors) -> pd.DataFrame:
+        index = pd.MultiIndex.from_tuples(factors, names=["factor_online", "factor_tienda"])
+        return pd.DataFrame({"desplazamiento": range(len(factors))}, index=index)
+
+    def test_finds_the_central_row_despite_rounding(self):
+        """periodos.json stores the factor rounded to 4 decimals; the CSV has it in full."""
+        from src.studies.apple.followup_deck import _central_sensitivity_row
+
+        table = self._table([(1.0, 1.0), (1.23456, 1.0), (1.23456, 1.23456)])
+        assert _central_sensitivity_row(table, 1.2346)["desplazamiento"] == 1
+
+    def test_never_substitutes_another_row(self):
+        from src.studies.apple.followup_deck import _central_sensitivity_row
+
+        with pytest.raises(ValueError, match="central case"):
+            _central_sensitivity_row(self._table([(1.0, 1.0), (1.15, 1.0)]), 1.2)

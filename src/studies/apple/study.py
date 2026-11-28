@@ -983,27 +983,37 @@ def parse_cutoff_overrides(overrides: list[str], base: dict[str, float | None]) 
     The grid is keyed on the letter groups (``New``, ``Inactive``, ``A-C``, ``D-F``, ``>=G``).
     A name that matched none of them used to be ADDED as a new key, so ``--cutoff new=47`` left
     ``New`` at its default and the run came back on the base grid without a word (audit
-    2026-11-27 A17). Names match case-insensitively; anything else raises. ``GROUP=none``
-    removes that group's cutoff.
+    2026-11-27 A17). Names match case-insensitively; an unknown group, a value that is not a
+    number, ``nan`` (every comparison with it is False: the whole group would be rejected in
+    silence) or the same group twice raises. ``GROUP=none`` removes that group's cutoff, i.e.
+    accepts every score — the opposite of ``>=G``'s default, which always rejects.
     """
     by_lower = {name.lower(): name for name in base}
     cutoffs = dict(base)
+    seen: set[str] = set()
     for override in overrides:
-        name, separator, value = override.partition("=")
+        # Split at the LAST "=": the group ">=G" has one in its name.
+        name, separator, value = override.rpartition("=")
         group = by_lower.get(name.strip().lower())
         if not separator or group is None:
             raise ValueError(
                 f"Invalid --cutoff {override!r}: expected GROUP=SCORE with GROUP one of {', '.join(base)} "
                 "(case-insensitive)."
             )
+        if group in seen:
+            raise ValueError(f"Invalid --cutoff {override!r}: group {group} is given more than once.")
+        seen.add(group)
         value = value.strip()
         if value.lower() in {"", "none"}:
             cutoffs[group] = None
             continue
         try:
-            cutoffs[group] = float(value)
+            score = float(value)
         except ValueError:
             raise ValueError(f"Invalid --cutoff {override!r}: {value!r} is not a score or 'none'.") from None
+        if np.isnan(score):
+            raise ValueError(f"Invalid --cutoff {override!r}: nan is not a score.")
+        cutoffs[group] = score
     return cutoffs
 
 

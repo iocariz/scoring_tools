@@ -1257,6 +1257,8 @@ def deck_facts(curve, p2, stores_actuals, grids, index, meta) -> dict:
 # --------------------------------------------------------------------------- #
 def seasonal_years_label(meta: dict) -> str:
     """The years each channel's seasonal index averages; one list when both channels agree."""
+    if not meta["estacionalidad_anios"]:
+        return "no seasonal adjustment"  # the study ran without it, or no channel has a complete year
     both = " and ".join(str(year) for year in meta["estacionalidad_anios"])
     online, stores = meta.get("estacionalidad_anios_online"), meta.get("estacionalidad_anios_tienda")
     if not online or not stores or online == stores:

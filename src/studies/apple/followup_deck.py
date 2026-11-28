@@ -380,8 +380,9 @@ def _central_sensitivity_row(sens: pd.DataFrame, drift: float) -> pd.Series:
     Matched with a tolerance (the factors come back from a CSV), and never substituted: quoting
     another row's shift as the central case would put a wrong number in the title slide.
     """
+    # periodos.json keeps the factor rounded to 4 decimals; the CSV has it in full.
     for (online, stores), row in sens.iterrows():
-        if np.isclose(online, drift) and np.isclose(stores, 1.0):
+        if np.isclose(online, drift, atol=5e-5) and np.isclose(stores, 1.0):
             return row
     raise ValueError(
         f"The drift sensitivity table has no row for the central case (Online x{drift:g}, stores x1). "
@@ -593,7 +594,7 @@ def slide_scenarios(prs, picks: pd.DataFrame, sens: pd.DataFrame, f: dict, perio
             name = f"Online +{es(100 * (ko - 1), 0)}%"
         else:
             name = f"Online y tienda +{es(100 * (ko - 1), 0)}%"
-        if np.isclose(ko, f["drift"]) and np.isclose(kt, 1.0):
+        if np.isclose(ko, f["drift"], atol=5e-5) and np.isclose(kt, 1.0):
             central_row, name = i, name + " (central)"
         shift = (
             "no alcanzable"

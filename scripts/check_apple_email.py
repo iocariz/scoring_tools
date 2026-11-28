@@ -92,20 +92,22 @@ def contains_figure(text: str, figure: str) -> bool:
     """True when *figure* appears in *text* as a whole number, not as part of a longer one.
 
     A plain substring test let ``14,2%`` pass for an expected ``4,2%`` and ``4,25%`` for ``4,2``
-    (audit 2026-11-27 A17). A match is rejected when the figure starts with a digit and is
-    preceded by a digit (or a digit plus a decimal/thousands separator), or ends with a digit and
-    is followed by one (or by a separator plus a digit). Whitespace is ignored on both sides.
+    (audit 2026-11-27 A17). A figure that starts with a digit must not follow a digit, nor a
+    digit plus a decimal/thousands separator; one that ends with a digit must not be followed by
+    a digit, nor by a separator plus a digit. Whitespace INSIDE the figure is free (``18,4 M€`` vs
+    ``18,4M€``) but the text is matched as written, so a neighbouring number after a space, a
+    comma or a sentence full stop (``4,2, 5,1`` / ``en 2023. 4,2%``) is not mistaken for more
+    digits of the same number.
     """
-    haystack, needle = re.sub(r"\s", "", text), re.sub(r"\s", "", figure)
+    needle = re.sub(r"\s", "", figure)
     if not needle:
         return False
-    for match in re.finditer(re.escape(needle), haystack):
-        before, after = haystack[: match.start()], haystack[match.end() :]
-        glued_left = needle[0].isdigit() and bool(re.search(r"\d[.,]?$", before))
-        glued_right = needle[-1].isdigit() and bool(re.match(r"[.,]?\d", after))
-        if not glued_left and not glued_right:
-            return True
-    return False
+    pattern = r"\s*".join(re.escape(char) for char in needle)
+    if needle[0].isdigit():
+        pattern = r"(?<!\d)(?<!\d[.,])" + pattern
+    if needle[-1].isdigit():
+        pattern += r"(?!\d)(?![.,]\d)"
+    return re.search(pattern, text) is not None
 
 
 class EmailChecker:
