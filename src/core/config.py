@@ -586,6 +586,13 @@ class PreprocessingSettings(BaseModel):
     # double-counting selection bias with the RI multiplier.
     stress_mode: Literal["global", "disabled", "per_bin"] = "global"
 
+    # stress_mode="per_bin" only (Expert). A bin's own tail ratio rests on a handful of loans, so
+    # it is shrunk toward the global factor: weight n / (n + prior_strength) on the bin's ratio,
+    # n = loans in its worst-score slice (audit 2026-11-27 A32). 0 = the bin's own ratio. The cap
+    # bounds the bin's own ratio before blending; the global factor is not capped.
+    stress_per_bin_prior_strength: float = Field(default=50.0, ge=0)
+    stress_per_bin_max_factor: float = Field(default=5.0, ge=1.0)
+
     # Per-bin transformation rate: when True, compute tasa_fin per bin combination
     # instead of a single global scalar.  Bins with insufficient data fall back to
     # the global rate.

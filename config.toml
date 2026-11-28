@@ -76,6 +76,11 @@ reject_include_all_rejections = true
 # Stress factor mode: "global" (default), "per_bin", or "disabled"
 # With parceling active, "disabled" avoids double-counting selection bias.
 stress_mode = "disabled"
+# stress_mode = "per_bin" only: weight n / (n + prior_strength) on a bin's own tail ratio
+# (n = loans in its worst-score slice), the rest on the global factor; the cap bounds the bin's
+# own ratio before blending.
+# stress_per_bin_prior_strength = 50.0
+# stress_per_bin_max_factor = 5.0
 
 # Per-bin transformation rate: compute tasa_fin per grid cell instead of global scalar
 per_bin_tasa_fin = true

@@ -129,3 +129,19 @@ class TestDirectionsKeysMatchVariables:
     def test_directions_for_the_configured_variables_are_silent(self):
         out = _construct_and_capture(directions={"sc_octroi_new_clus": 1, "new_efx_clus": -1})
         assert "directions" not in out
+
+
+class TestPerBinStressSettings:
+    def test_defaults(self):
+        settings = PreprocessingSettings(**_BASE_KWARGS)
+        assert settings.stress_per_bin_prior_strength == 50.0
+        assert settings.stress_per_bin_max_factor == 5.0
+
+    def test_bounds(self):
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            PreprocessingSettings(**_BASE_KWARGS, stress_per_bin_prior_strength=-1.0)
+        with pytest.raises(ValidationError):
+            PreprocessingSettings(**_BASE_KWARGS, stress_per_bin_max_factor=0.5)
