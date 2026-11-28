@@ -112,7 +112,12 @@ def run_preprocessing_phase(
         logger.info(f"[{segment}] stress_mode=disabled — stress factor set to 1.0")
     elif stress_mode == "per_bin":
         stress_factor = 1.0  # scalar is neutral; per-bin DF carries the adjustment
-        per_bin_stress = calculate_per_bin_stress_factors(data_booked, settings.variables)
+        per_bin_stress = calculate_per_bin_stress_factors(
+            data_booked,
+            settings.variables,
+            prior_strength=settings.stress_per_bin_prior_strength,
+            max_factor=settings.stress_per_bin_max_factor,
+        )
         logger.info(
             f"[{segment}] stress_mode=per_bin — "
             f"{len(per_bin_stress)} bins, mean={per_bin_stress['stress_factor'].mean():.3f}"

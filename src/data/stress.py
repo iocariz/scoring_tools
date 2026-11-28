@@ -82,6 +82,11 @@ def calculate_stress_factor(
     return float(stress_factor)
 
 
+# Defaults of the per-bin shrinkage (config: stress_per_bin_prior_strength / stress_per_bin_max_factor).
+DEFAULT_PER_BIN_PRIOR_STRENGTH = 50.0
+DEFAULT_PER_BIN_MAX_FACTOR = 5.0
+
+
 def calculate_per_bin_stress_factors(
     df: pd.DataFrame,
     variables: list[str],
@@ -93,15 +98,25 @@ def calculate_per_bin_stress_factors(
     target_status: str = "booked",
     higher_is_worse: bool = False,
     min_obs_per_bin: int = 20,
+    prior_strength: float = DEFAULT_PER_BIN_PRIOR_STRENGTH,
+    max_factor: float = DEFAULT_PER_BIN_MAX_FACTOR,
 ) -> pd.DataFrame:
-    """Compute per-bin stress factors.
+    """Compute per-bin stress factors, shrunk toward the global factor.
 
-    For each bin combination, the stress factor is the ratio of the risk rate
-    in the worst ``frac`` fraction (by score) to the overall risk rate within
-    that bin.  Bins with fewer than ``min_obs_per_bin`` records, without exposure
-    or without defaults in their worst slice use the global stress factor as a
-    fallback. No factor is below 1.0 (neutral): the global one is floored there
-    and so is each bin's own.
+    A bin's OWN ratio is the risk rate of its worst ``frac`` fraction (by score) over the bin's
+    overall rate. That slice is a handful of loans, so the ratio is mostly noise: most bins have
+    no default in it (ratio 0) and one default in a one-loan slice gives ~30x (audit 2026-11-27
+    A32). The factor is therefore a weighted mean of the bin's ratio and the global factor::
+
+        factor = w * min(own_ratio, max_factor) + (1 - w) * global,   w = n / (n + prior_strength)
+
+    with ``n`` the number of loans in the bin's worst slice — the same shape as the acceptance-rate
+    smoothing in reject inference. ``max_factor`` caps the noisy component only (the global factor
+    passes through, and the cap is never below it), and no factor goes below neutral (1.0). ``prior_strength = 0`` uses the
+    bin's own ratio.
+
+    Bins with no usable ratio — fewer than ``min_obs_per_bin`` records, no exposure in the bin or
+    in its worst slice, or no default in the whole bin — take the global factor.
 
     Returns
     -------
@@ -124,55 +139,48 @@ def calculate_per_bin_stress_factors(
     )
 
     rows: list[dict] = []
+    weights: list[float] = []
     for bin_vals, group in df_target.groupby(variables, observed=True):
         if not isinstance(bin_vals, tuple):
             bin_vals = (bin_vals,)
         row = dict(zip(variables, bin_vals))
-
-        if len(group) < min_obs_per_bin:
-            row["stress_factor"] = global_stress
-            rows.append(row)
-            continue
-
-        total_den = group[den_col].sum()
-        if total_den == 0:
-            row["stress_factor"] = global_stress
-            rows.append(row)
-            continue
-
-        overall_rate = DEFAULT_RISK_MULTIPLIER * group[num_col].sum() / total_den
-
-        if higher_is_worse:
-            cutoff = group[score_col].quantile(1.0 - frac)
-            worst = group[group[score_col] >= cutoff]
-        else:
-            cutoff = group[score_col].quantile(frac)
-            worst = group[group[score_col] <= cutoff]
-
-        worst_den = worst[den_col].sum()
-        if worst_den <= 0:
-            # #54: undefined worst-slice rate → neutral global fallback, not a
-            # 0 stress factor that would zero out this bin's predicted risk.
-            row["stress_factor"] = global_stress
-            rows.append(row)
-            continue
-        worst_num = worst[num_col].sum()
-        if worst_num <= 0 or overall_rate <= 0:
-            # No defaults in the bin's worst slice (typically 1-12 loans): unmeasured, not zero.
-            row["stress_factor"] = global_stress
-            rows.append(row)
-            continue
-        worst_rate = DEFAULT_RISK_MULTIPLIER * worst_num / worst_den
-
-        # A bin's own factor never goes below neutral; see NEUTRAL_STRESS_FACTOR.
-        row["stress_factor"] = max(worst_rate / overall_rate, NEUTRAL_STRESS_FACTOR)
+        row["stress_factor"] = global_stress
         rows.append(row)
 
+        total_den = group[den_col].sum()
+        if len(group) < min_obs_per_bin or total_den <= 0:
+            continue
+        overall_rate = DEFAULT_RISK_MULTIPLIER * group[num_col].sum() / total_den
+        if overall_rate <= 0:
+            continue  # no default anywhere in the bin: a tail ratio does not exist
+
+        if higher_is_worse:
+            worst = group[group[score_col] >= group[score_col].quantile(1.0 - frac)]
+        else:
+            worst = group[group[score_col] <= group[score_col].quantile(frac)]
+        worst_den = worst[den_col].sum()
+        if worst_den <= 0:
+            continue  # #54: an undefined worst-slice rate, not a zero one
+
+        # A slice with exposure and no defaults has own ratio 0 here. Unlike the unshrunk
+        # version (where 0 zeroed the bin's swap-in risk, A20), that is information: it pulls
+        # the bin a little below the global factor, by the weight its few loans deserve.
+        # The cap never sits below the global factor: a bin whose own evidence is "worse than
+        # global" must not be pulled under it by the cap.
+        own_ratio = min(
+            DEFAULT_RISK_MULTIPLIER * worst[num_col].sum() / worst_den / overall_rate, max(max_factor, global_stress)
+        )
+        n_tail = int(worst[den_col].notna().sum())  # loans that actually carry exposure
+        weight = n_tail / (n_tail + prior_strength) if (n_tail + prior_strength) > 0 else 0.0
+        row["stress_factor"] = max(weight * own_ratio + (1.0 - weight) * global_stress, NEUTRAL_STRESS_FACTOR)
+        weights.append(weight)
+
     result = pd.DataFrame(rows)
-    logger.debug(
-        f"Per-bin stress factors: {len(result)} bins | "
-        f"mean={result['stress_factor'].mean():.3f} | "
-        f"min={result['stress_factor'].min():.3f} | "
-        f"max={result['stress_factor'].max():.3f}"
+    mean_weight = sum(weights) / len(weights) if weights else 0.0
+    logger.info(
+        f"Per-bin stress factors: {len(result)} bins, {len(weights)} with their own ratio "
+        f"(mean weight {mean_weight:.2f} vs the global factor {global_stress:.3f}; prior strength "
+        f"{prior_strength:g}, own-ratio cap {max_factor:g}) | mean={result['stress_factor'].mean():.3f} | "
+        f"min={result['stress_factor'].min():.3f} | max={result['stress_factor'].max():.3f}"
     )
     return result

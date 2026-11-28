@@ -344,3 +344,26 @@ def test_consolidated_lists_segments_with_unmet_ci_margin(tmp_path):
         data.mkdir(parents=True)
         _summary_csv(data, "ci_upper", "point" if not feasible else "ci_upper", feasible)
     assert _ci_margin_unmet_segments(tmp_path, {"seg_unmet": {}, "seg_ok": {}}, "_base") == ["seg_unmet"]
+
+
+def test_settings_added_since_the_run_at_their_default_do_not_block_resimulation():
+    """Audit 2026-11-27 A32 review: adding a config field changes the fingerprint of every saved
+    run. A field that did not exist when the run was saved and now sits at its default is not a
+    config change; away from its default, or any other difference, still is."""
+    from src.pipeline.segment_runner import _unexplained_config_changes
+
+    settings = _settings()
+    current = _config_snapshot(settings)
+    saved = {k: v for k, v in current.items() if not k.startswith("stress_per_bin_")}
+    assert _config_fingerprint(saved) != _config_fingerprint(current)
+
+    assert _unexplained_config_changes(saved, current, settings) == []
+
+    tuned = _settings(stress_per_bin_prior_strength=10.0)
+    assert _unexplained_config_changes(saved, _config_snapshot(tuned), tuned) == ["stress_per_bin_prior_strength"]
+
+    other = _settings(reject_uplift_factor=4.0)
+    assert _unexplained_config_changes(saved, _config_snapshot(other), other) == ["reject_uplift_factor"]
+
+    removed = {**current, "a_field_that_no_longer_exists": 1}
+    assert _unexplained_config_changes(removed, current, settings) == ["a_field_that_no_longer_exists"]

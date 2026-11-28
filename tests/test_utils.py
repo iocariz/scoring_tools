@@ -1053,19 +1053,21 @@ class TestStressFactorIsNeverBelowNeutral:
         assert len(result) == 16
         assert (result["stress_factor"] >= 1.0).all()  # 12 of these 16 bins used to come out at 0.0
 
-    def test_per_bin_bin_with_a_real_tail_keeps_its_own_factor(self):
+    def test_per_bin_bin_without_tail_defaults_is_not_zeroed(self):
+        """A20: bin 2 has defaults but none in its worst slice. It used to come out at 0.0; with
+        the shrinkage (A32) its own ratio of 0 only pulls it a little below the global factor."""
         from src.data.stress import calculate_per_bin_stress_factors
 
         risky_tail = self._booked(200, default_rows=[*range(0, 6), 100]).assign(a=1)
         flat = self._booked(200, default_rows=[50, 150]).assign(a=2)
         df = pd.concat([risky_tail, flat], ignore_index=True)
+        global_factor = calculate_stress_factor(df)
 
         result = calculate_per_bin_stress_factors(df, variables=["a"]).set_index("a")["stress_factor"]
 
         assert result[1] > 5.0  # 6 of 7 defaults sit in the worst 5% of bin 1
-        # no defaults in bin 2's worst slice: it takes the GLOBAL factor, not 0 and not its own
-        assert result[2] == pytest.approx(calculate_stress_factor(df))
-        assert result[2] > 1.0
+        assert result[2] == pytest.approx((1 - 10 / 60) * global_factor)  # 10 tail loans, prior 50
+        assert 1.0 < result[2] < global_factor
 
     def test_bin_without_any_default_takes_the_global_factor(self):
         from src.data.stress import calculate_per_bin_stress_factors
@@ -1077,3 +1079,156 @@ class TestStressFactorIsNeverBelowNeutral:
         result = calculate_per_bin_stress_factors(df, variables=["a"]).set_index("a")["stress_factor"]
 
         assert result[2] == pytest.approx(calculate_stress_factor(df))
+
+
+class TestPerBinStressShrinkage:
+    """Audit 2026-11-27 A32: a bin's worst-score slice is a handful of loans, so its own ratio is
+    mostly noise (one default in a one-loan slice ≈ 30x). The per-bin factor is the bin's ratio
+    shrunk toward the global factor by the size of that slice — w = n / (n + k) — the same
+    pattern as the acceptance-rate smoothing in reject inference."""
+
+    @staticmethod
+    def _bin(a: int, n: int, default_rows: list[int]) -> pd.DataFrame:
+        defaults = np.zeros(n)
+        defaults[default_rows] = 50.0
+        return pd.DataFrame(
+            {
+                "status_name": ["booked"] * n,
+                "a": a,
+                "risk_score_rf": np.linspace(0.0, 1.0, n),
+                "todu_30ever_h6": defaults,
+                "todu_amt_pile_h6": np.full(n, 700.0),
+            }
+        )
+
+    def _factors(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        from src.data.stress import calculate_per_bin_stress_factors
+
+        return calculate_per_bin_stress_factors(df, variables=["a"], **kwargs).set_index("a")["stress_factor"]
+
+    def _portfolio(self) -> pd.DataFrame:
+        # bin 1: 200 loans, worst slice = 10 loans holding 6 of its 7 defaults  -> own ratio 17.1
+        # bin 2: 200 loans, 2 defaults, none in its worst slice                 -> own ratio 0
+        # bin 3: 2,000 loans with defaults spread evenly (own ratio 1): keeps the GLOBAL factor
+        #        at a realistic ~2, below max_factor, so the cap on a bin's own ratio is 5
+        return pd.concat(
+            [
+                self._bin(1, 200, [*range(0, 6), 100]),
+                self._bin(2, 200, [50, 150]),
+                self._bin(3, 2000, list(range(0, 2000, 20))),
+            ],
+            ignore_index=True,
+        )
+
+    def test_factor_is_the_weighted_mean_of_own_ratio_and_global(self):
+        df = self._portfolio()
+        global_factor = calculate_stress_factor(df)
+        assert 1.0 < global_factor < 5.0
+        own_ratio_bin1 = (6 / 10) / (7 / 200)  # 17.14, capped at max_factor below
+
+        result = self._factors(df, prior_strength=50.0, max_factor=5.0)
+
+        weight = 10 / (10 + 50.0)
+        assert own_ratio_bin1 > 5.0
+        assert result[1] == pytest.approx(weight * 5.0 + (1 - weight) * global_factor)
+        # no tail defaults: own ratio 0 pulls the bin BELOW the global factor, it no longer jumps to it
+        assert result[2] == pytest.approx(max((1 - weight) * global_factor, 1.0))
+        assert result[2] < global_factor
+
+    def test_a_single_default_in_a_tiny_slice_no_longer_explodes(self):
+        thin = self._bin(1, 20, [0])  # slice of ~1 loan with the bin's only default: own ratio ~20x
+        rest = self._bin(2, 980, [*range(0, 6), 500, 700])
+        df = pd.concat([thin, rest], ignore_index=True)
+        global_factor = calculate_stress_factor(df)
+
+        unshrunk = self._factors(df, prior_strength=0.0, max_factor=1000.0)
+        shrunk = self._factors(df, prior_strength=50.0, max_factor=5.0)
+
+        assert unshrunk[1] > 10.0
+        assert shrunk[1] < global_factor + 0.5  # a one-loan slice weighs 2%
+
+    def test_more_tail_loans_means_more_weight_on_the_bins_own_ratio(self):
+        def own_weight(n_loans: int) -> float:
+            n_tail = n_loans // 20
+            df = self._bin(1, n_loans, [*range(0, n_tail // 2), n_loans // 2])
+            ref = self._bin(2, 4000, [*range(0, 30), *range(1000, 1100)])
+            both = pd.concat([df, ref], ignore_index=True)
+            raw = self._factors(both, prior_strength=0.0, max_factor=1000.0)[1]
+            shrunk = self._factors(both, prior_strength=50.0, max_factor=1000.0)[1]
+            g = calculate_stress_factor(both)
+            return (shrunk - g) / (raw - g)
+
+        assert own_weight(200) == pytest.approx(10 / 60, rel=1e-6)
+        assert own_weight(2000) == pytest.approx(100 / 150, rel=1e-6)
+
+    def test_zero_prior_strength_uses_the_bins_own_ratio(self):
+        df = self._portfolio()
+
+        result = self._factors(df, prior_strength=0.0, max_factor=5.0)
+
+        assert result[1] == pytest.approx(5.0)  # own ratio 17.1, capped
+        assert result[2] == pytest.approx(1.0)  # own ratio 0, floored at neutral
+
+    def test_bins_without_a_usable_ratio_take_the_global_factor(self):
+        tiny = self._bin(1, 5, [0])  # under min_obs_per_bin
+        clean = self._bin(2, 200, [])  # no defaults at all: the bin's rate is 0, no ratio exists
+        rest = self._bin(3, 800, [*range(0, 6), 400])
+        df = pd.concat([tiny, clean, rest], ignore_index=True)
+
+        result = self._factors(df, prior_strength=50.0, max_factor=5.0)
+
+        assert result[1] == pytest.approx(calculate_stress_factor(df))
+        assert result[2] == pytest.approx(calculate_stress_factor(df))
+
+    def test_factors_stay_between_neutral_and_the_larger_of_cap_and_global(self):
+        rng = np.random.RandomState(7)
+        n = 6000
+        df = pd.DataFrame(
+            {
+                "status_name": ["booked"] * n,
+                "a": rng.randint(1, 13, n),
+                "risk_score_rf": rng.uniform(0, 1, n),
+                "todu_30ever_h6": np.where(rng.uniform(0, 1, n) < 0.03, 50.0, 0.0),
+                "todu_amt_pile_h6": np.full(n, 700.0),
+            }
+        )
+        result = self._factors(df, prior_strength=50.0, max_factor=5.0)
+
+        assert (result >= 1.0).all()
+        assert (result <= max(5.0, calculate_stress_factor(df))).all()
+        # shrunk factors cluster near the global one instead of spreading from 1 to ~30
+        assert result.std() < self._factors(df, prior_strength=0.0, max_factor=1000.0).std()
+
+    def test_cap_never_pulls_a_bin_below_the_global_factor(self):
+        """Global factor above max_factor: a bin whose own ratio is far worse still must not come
+        out under the global factor just because its ratio was capped lower."""
+        worse = self._bin(1, 200, [*range(0, 6)])  # every default in its worst slice: own ratio 20
+        rest = self._bin(2, 1800, [*range(0, 60), 900])
+        df = pd.concat([worse, rest], ignore_index=True)
+        global_factor = calculate_stress_factor(df)
+        assert global_factor > 5.0
+
+        result = self._factors(df, prior_strength=50.0, max_factor=5.0)
+
+        assert result[1] >= global_factor - 1e-9
+
+    def test_higher_is_worse_uses_the_top_of_the_score(self):
+        from src.data.stress import calculate_per_bin_stress_factors
+
+        df = self._portfolio()
+        df["risk_score_rf"] = 1.0 - df["risk_score_rf"]
+
+        flipped = calculate_per_bin_stress_factors(df, variables=["a"], higher_is_worse=True)
+        expected = self._factors(self._portfolio())
+
+        np.testing.assert_allclose(flipped.set_index("a")["stress_factor"], expected)
+
+    def test_several_grid_variables(self):
+        from src.data.stress import calculate_per_bin_stress_factors
+
+        df = pd.concat([self._portfolio().assign(b=1), self._portfolio().assign(b=2)], ignore_index=True)
+
+        result = calculate_per_bin_stress_factors(df, variables=["a", "b"])
+
+        assert len(result) == 6 and list(result.columns) == ["a", "b", "stress_factor"]
+        assert result.groupby("a")["stress_factor"].nunique().eq(1).all()  # same data in both b slices
