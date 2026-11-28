@@ -331,6 +331,7 @@ def _build_monotonicity_constraints(
     uncertainty_min_exposure: float = 0.0,
     uncertainty_z_threshold: float = 0.0,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
+    participating: np.ndarray | None = None,
 ) -> sparse.csc_matrix:
     """Build sparse A matrix for monotonicity: A @ x <= 0.
 
@@ -347,6 +348,13 @@ def _build_monotonicity_constraints(
     a phantom near the safe corner could force-reject the entire grid.
     Bridging links each observed cell directly to the next observed cell
     along the dimension, preserving monotonicity over the observed sub-grid.
+
+    ``participating`` (optional boolean per cell) excludes further cells the
+    same way. The solver passes the cells with usable risk evidence: an
+    observed cell WITHOUT it is also pinned to x=0 by the bounds (audit F8), and
+    left in the chains it force-rejected everything riskier than it — the #22
+    problem again, for a rejection that is a lack of evidence, not a risk
+    judgement (audit 2026-11-27 A23).
 
     Direction convention:
       - Default (variable NOT in inv_vars): higher bin index = riskier.
@@ -407,6 +415,8 @@ def _build_monotonicity_constraints(
     # participate in adjacency pairs (see docstring). When the observed flag is
     # absent/mismatched (manually built grids), treat all cells as observed.
     observed = grid.observed if len(grid.observed) == grid.n_cells else np.ones(grid.n_cells, dtype=bool)
+    if participating is not None:
+        observed = observed & np.asarray(participating, dtype=bool)
 
     n_bridged = 0
     for d, var in enumerate(grid.variables):
@@ -475,6 +485,29 @@ def _build_monotonicity_constraints(
 # =============================================================================
 # MILP solver
 # =============================================================================
+
+
+def remap_fixed_cells(
+    fixed_cells: dict[int, int] | None, source_grid: CellGrid, target_grid: CellGrid
+) -> tuple[dict[int, int], int]:
+    """Carry cell pins from one grid to another by cell coordinates.
+
+    Pins are keyed by flat index, which is only meaningful on the grid they were built for; a
+    grid built from another cohort (the MR period) orders and contains different cells. Returns
+    the pins re-keyed on *target_grid* and the number of pinned cells that do not exist there.
+    """
+    if not fixed_cells:
+        return {}, 0
+    coordinates = {flat_idx: combo for combo, flat_idx in source_grid.cell_index.items()}
+    remapped: dict[int, int] = {}
+    missing = 0
+    for flat_idx, value in fixed_cells.items():
+        target_idx = target_grid.cell_index.get(coordinates.get(flat_idx))
+        if target_idx is None:
+            missing += 1
+        else:
+            remapped[target_idx] = value
+    return remapped, missing
 
 
 def milp_solve_cutoffs(
@@ -555,6 +588,7 @@ def milp_solve_cutoffs(
         uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
         uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
         multiplier=multiplier,
+        participating=usable,
     )
 
     # Stack risk constraint row on top of monotonicity

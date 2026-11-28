@@ -152,6 +152,7 @@ def run_scenario_analysis(
     total_demand: float = 0.0,
     per_bin_stress: pd.DataFrame | None = None,
     per_bin_tasa_fin: pd.DataFrame | None = None,
+    fixed_cells: dict[int, int] | None = None,
 ) -> pd.DataFrame:
     """Run scenario analysis for a single risk threshold: visualization, MR processing, audit.
 
@@ -591,6 +592,7 @@ def run_scenario_analysis(
         per_bin_stress=per_bin_stress,
         per_bin_tasa_fin=per_bin_tasa_fin,
         audit_mr_df=audit_mr if len(audit_mr) else None,
+        fixed_cells=fixed_cells,
     )
     if scenario_name == "base":
         # Mirror the "_base" MR artifacts to the default ("") names so both are byte-identical

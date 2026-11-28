@@ -713,6 +713,7 @@ def run_pipeline(
                     values_per_var=opt.values_per_var,
                     grid=opt.grid,
                     pareto_masks=opt.pareto_masks,
+                    fixed_cells=opt.floor_fixed_cells,
                     output=output,
                     total_demand=total_demand,
                     per_bin_stress=per_bin_stress,
