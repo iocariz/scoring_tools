@@ -410,40 +410,56 @@ def _system_rejection_amounts_from_audit(
 
 
 PRODUCTION_CI_BASIS_GRID = "grid"
-PRODUCTION_CI_BASIS_RESCALED = "grid_rescaled_to_audit"
+PRODUCTION_CI_BASIS_SHIFTED = "grid_shifted_to_audit"
+# Below this relative gap the two bases are the same number up to float noise.
+_PRODUCTION_BASIS_TOLERANCE = 1e-6
+# A reconciled point this far from the grid one is not a basis difference but a broken input
+# (e.g. an audit without status_name): leave the interval alone and say so.
+_PRODUCTION_BASIS_MAX_GAP = 0.5
 
 
-def rescale_production_ci(
+def recenter_production_ci(
     ci_lower: float, ci_upper: float, grid_production: float | None, reconciled_production: float | None
 ) -> tuple[float, float, str]:
     """Move the bootstrap production CI onto the basis of the reconciled production point.
 
     The bootstrap resamples the optimizer's grid KPIs; ``reconcile_risk_production_summary_with_audit``
-    then overwrites ``Production (€)`` from the loan-level audit, which can sit several percent
-    away. Left alone, the interval describes a different number than the one it decorates and can
-    exclude it (audit 2026-11-27 A13). The interval is scaled by the ratio the point moved by,
-    which keeps its relative width — an approximation: the audit basis is not bootstrapped itself.
+    then overwrites ``Production (€)`` from the loan-level audit. The two agree on the booked part;
+    they differ, deterministically, in how the swap-in part is converted (per-cell financing rate
+    on the grid vs loan by loan in the audit). Left alone, the interval describes a different
+    number than the one it decorates and can exclude it (audit 2026-11-27 A13). The interval is
+    SHIFTED by the amount the point moved: the gap is a level difference, not extra sampling
+    noise, so the width — which comes from resampling the loans — is kept as is.
 
-    Returns ``(lower, upper, basis)``. Without a usable ratio the interval is returned unchanged
-    with basis ``"grid"``.
+    Returns ``(lower, upper, basis)``. The interval comes back unchanged with basis ``"grid"`` when
+    there is nothing to shift (same point), no usable point or interval, or a gap too large to be
+    a basis difference.
     """
     try:
         grid = float(grid_production)
         reconciled = float(reconciled_production)
+        lower, upper = float(ci_lower), float(ci_upper)
     except (TypeError, ValueError):
         return ci_lower, ci_upper, PRODUCTION_CI_BASIS_GRID
     usable = (
-        np.isfinite(grid)
-        and np.isfinite(reconciled)
+        np.isfinite([grid, reconciled, lower, upper]).all()
         and grid > 0
         and reconciled > 0
-        and pd.notna(ci_lower)
-        and pd.notna(ci_upper)
+        and upper > 0  # (0, 0) is the bootstrap's "no interval" placeholder
     )
-    if not usable or np.isclose(grid, reconciled, rtol=1e-12, atol=0.0):
+    if not usable:
         return ci_lower, ci_upper, PRODUCTION_CI_BASIS_GRID
-    ratio = reconciled / grid
-    return float(ci_lower) * ratio, float(ci_upper) * ratio, PRODUCTION_CI_BASIS_RESCALED
+    gap = (reconciled - grid) / grid
+    if abs(gap) <= _PRODUCTION_BASIS_TOLERANCE:
+        return ci_lower, ci_upper, PRODUCTION_CI_BASIS_GRID
+    if abs(gap) > _PRODUCTION_BASIS_MAX_GAP:
+        logger.warning(
+            f"Production CI not moved: the reconciled point ({reconciled:,.0f}) is {gap:+.0%} away from the "
+            f"grid one ({grid:,.0f}), too far to be a basis difference. The interval stays on the grid basis."
+        )
+        return ci_lower, ci_upper, PRODUCTION_CI_BASIS_GRID
+    shift = reconciled - grid
+    return lower + shift, upper + shift, PRODUCTION_CI_BASIS_SHIFTED
 
 
 def reconcile_risk_production_summary_with_audit(

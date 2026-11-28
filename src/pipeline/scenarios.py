@@ -14,8 +14,8 @@ from loguru import logger
 
 from src.analysis.audit import (
     generate_audit_table,
+    recenter_production_ci,
     reconcile_risk_production_summary_with_audit,
-    rescale_production_ci,
     save_audit_tables,
     set_baseline_system_rejection_rate,
     validate_audit_against_summary,
@@ -443,16 +443,18 @@ def run_scenario_analysis(
     summary_table["risk_booked_ci_upper"] = np.nan
 
     if ci_data:
+        # The bootstrap is on the grid basis; the production point above was just reconciled to
+        # the audit. Move the interval with it so it brackets the number it decorates — once,
+        # for every consumer of ci_data (this table AND the cutoff summary written below).
+        prod_lower, prod_upper, prod_basis = recenter_production_ci(
+            ci_data.get("production_ci_lower", 0.0),
+            ci_data.get("production_ci_upper", 0.0),
+            grid_optimum_production,
+            _optimum_production(summary_table),
+        )
+        ci_data = {**ci_data, "production_ci_lower": prod_lower, "production_ci_upper": prod_upper}
         mask_opt = summary_table["Metric"] == "Optimum selected"
         if mask_opt.any():
-            # The bootstrap is on the grid basis; the production point above was just reconciled
-            # to the audit. Move the interval with it so it brackets the number it decorates.
-            prod_lower, prod_upper, prod_basis = rescale_production_ci(
-                ci_data.get("production_ci_lower", 0.0),
-                ci_data.get("production_ci_upper", 0.0),
-                grid_optimum_production,
-                _optimum_production(summary_table),
-            )
             summary_table.loc[mask_opt, "production_ci_lower"] = prod_lower
             summary_table.loc[mask_opt, "production_ci_upper"] = prod_upper
             summary_table.loc[mask_opt, "production_ci_basis"] = prod_basis
