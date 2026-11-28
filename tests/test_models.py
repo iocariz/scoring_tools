@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.tree import DecisionTreeClassifier
 
@@ -283,3 +284,119 @@ class TestTransformVariablesEdgeCases:
         ]
         for col in expected_new_columns:
             assert col in result.columns, f"Missing expected column: {col}"
+
+
+# =============================================================================
+# Audit 2026-11-27 A21: HRI repesca rate — cap and stress
+# =============================================================================
+
+
+class _ConstantRateModel:
+    """Predicts the same rate for every row; no feature names, so inputs pass through."""
+
+    def __init__(self, rate: float):
+        self.rate = rate
+
+    def predict(self, X):
+        return np.full(len(X), self.rate)
+
+
+class TestHriRepescaRate:
+    VARIABLES = ["var0", "var1"]
+
+    def _score(self, predicted_rate: float, stressor: float, rate_cap: float | None) -> float:
+        from src.model.models import calculate_hri_values
+        from src.model.models import transform_variables as tv
+
+        df = pd.DataFrame({"var0": [1.0], "var1": [1.0], "oa_amt": [1000.0]})
+        var_reg = [c for c in tv(df.copy(), self.VARIABLES).columns if c not in df.columns]
+        out = calculate_hri_values(
+            df,
+            _ConstantRateModel(predicted_rate),
+            _ConstantRateModel(600.0),
+            self.VARIABLES,
+            stressor,
+            var_reg,
+            rate_cap=rate_cap,
+        )
+        return float(out["hri_h6"].iloc[0])
+
+    def test_stress_applies_on_top_of_the_capped_rate(self):
+        """The cap bounds the MODEL ("as bad as the worst observed bin"); stress then applies to
+        it. Stressing first and clipping after wiped the stress out for exactly the capped cells."""
+        assert self._score(0.50, stressor=2.0, rate_cap=0.20) == pytest.approx(0.40)
+
+    def test_uncapped_rate_is_stressed_as_before(self):
+        assert self._score(0.10, stressor=2.0, rate_cap=0.20) == pytest.approx(0.20)
+        assert self._score(0.10, stressor=2.0, rate_cap=None) == pytest.approx(0.20)
+
+    def test_cap_alone_without_stress(self):
+        assert self._score(0.50, stressor=1.0, rate_cap=0.20) == pytest.approx(0.20)
+
+    def test_observed_cap_ignores_winsorization(self):
+        """The fit's target column is winsorized (#56); the cap must be the worst bin as OBSERVED,
+        from the raw sums. Nine bins near 1% and one at 28.8% gave a cap of 1.24%."""
+        from src.model.inference_optimized import _observed_hri_cap
+
+        train = pd.DataFrame(
+            {
+                "h_num_h6": [1.0] * 9 + [28.8],
+                "h_den_h6": [100.0] * 10,
+                "hri_h6": [0.01] * 9 + [0.0124],  # clipped target the model was fitted on
+            }
+        )
+        assert _observed_hri_cap(train) == pytest.approx(0.288)
+
+    def test_observed_cap_skips_bins_without_exposure_and_missing_columns(self):
+        from src.model.inference_optimized import _observed_hri_cap
+
+        train = pd.DataFrame({"h_num_h6": [1.0, 5.0, np.nan], "h_den_h6": [100.0, 0.0, 100.0]})
+        assert _observed_hri_cap(train) == pytest.approx(0.01)
+        assert _observed_hri_cap(pd.DataFrame({"hri_h6": [0.3]})) is None
+        assert _observed_hri_cap(None) is None
+
+    def test_no_signal_guard_only_fires_on_a_measured_r2(self):
+        """A tree winner records CV R² = NaN ("not computed"). `float(nan or 0.0) <= 0` is False,
+        so it has taken the model branch since #175 — by accident. That is the right branch (a
+        tree cannot extrapolate beyond its training targets); the rule is now explicit."""
+        from src.model.inference_optimized import _hri_fit_has_no_signal
+
+        assert _hri_fit_has_no_signal(0.0) is True
+        assert _hri_fit_has_no_signal(-0.3, tree_model=True) is True
+        assert _hri_fit_has_no_signal(0.2) is False
+        assert _hri_fit_has_no_signal(float("nan"), tree_model=True) is False
+        # a LINEAR winner with an undefined R² (tiny folds) can extrapolate and has shown no signal
+        assert _hri_fit_has_no_signal(float("nan"), tree_model=False) is True
+        assert _hri_fit_has_no_signal(None) is True  # legacy metadata without the field
+
+    def test_tree_models_are_recognised_by_their_importances(self):
+        from sklearn.ensemble import RandomForestRegressor
+
+        from src.model.inference_optimized import _is_tree_model
+
+        assert _is_tree_model(RandomForestRegressor()) is False  # unfitted: no importances yet
+        fitted = RandomForestRegressor(n_estimators=2, random_state=0).fit([[0.0], [1.0]], [0.0, 1.0])
+        assert _is_tree_model(fitted) is True
+        assert _is_tree_model(Ridge().fit([[0.0], [1.0]], [0.0, 1.0])) is False
+        assert _is_tree_model(None) is False
+
+    def test_observed_cap_ignores_bins_too_thin_to_measure_a_rate(self):
+        """One loan with one default is a 100% bin. Left in, it is the cap, and the cap then
+        guards nothing; the winsorized cap this replaces was at least bounded."""
+        from src.model.inference_optimized import _observed_hri_cap
+
+        train = pd.DataFrame(
+            {
+                "h_num_h6": [1.0, 28.8, 5.0],
+                "h_den_h6": [100.0, 100.0, 5.0],
+                "n_observations": [400, 60, 1],
+            }
+        )
+        assert _observed_hri_cap(train) == pytest.approx(0.288)
+        assert _observed_hri_cap(train, min_observations=1) == pytest.approx(1.0)
+
+    def test_observed_cap_falls_back_to_every_bin_when_all_are_thin(self):
+        from src.model.inference_optimized import _observed_hri_cap
+
+        train = pd.DataFrame({"h_num_h6": [1.0, 3.0], "h_den_h6": [100.0, 100.0], "n_observations": [5, 7]})
+        assert _observed_hri_cap(train) == pytest.approx(0.03)

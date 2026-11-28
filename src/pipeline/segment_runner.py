@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from src.core.config import OutputPaths
 from src.data.data_manager import DataValidationError, load_and_prepare_data
+from src.data.stress import NEUTRAL_STRESS_FACTOR
 from src.governance.lineage import build_lineage, log_run_banner, write_lineage
 from src.pipeline.config_loader import load_and_validate_config
 from src.pipeline.inference import run_inference_phase
@@ -311,7 +312,15 @@ def run_resimulation(
 
     # 3. Load saved scalars
     meta = json.loads(Path(output.resimulation_meta_json).read_text())
+    # Artifacts saved before the stress floor (audit 2026-11-27 A20) can hold a factor below
+    # neutral — 0 included; a resimulation must not re-apply it.
     stress_factor = meta["stress_factor"]
+    if stress_factor < NEUTRAL_STRESS_FACTOR:
+        logger.warning(
+            f"[{segment}] Saved stress factor {stress_factor:.4f} is below neutral (run predates the stress "
+            f"floor); using {NEUTRAL_STRESS_FACTOR}. Re-run the full pipeline to refresh the frontier."
+        )
+        stress_factor = NEUTRAL_STRESS_FACTOR
     tasa_fin = meta["tasa_fin"]
     annual_coef = meta.get("annual_coef", annual_coef)
 
@@ -348,6 +357,13 @@ def run_resimulation(
     per_bin_stress = None
     if Path(output.per_bin_stress_csv).exists():
         per_bin_stress = pd.read_csv(output.per_bin_stress_csv)
+        below_neutral = per_bin_stress["stress_factor"] < NEUTRAL_STRESS_FACTOR
+        if below_neutral.any():
+            logger.warning(
+                f"[{segment}] {int(below_neutral.sum())} saved per-bin stress factor(s) below neutral (run "
+                f"predates the stress floor); raised to {NEUTRAL_STRESS_FACTOR}."
+            )
+            per_bin_stress["stress_factor"] = per_bin_stress["stress_factor"].clip(lower=NEUTRAL_STRESS_FACTOR)
     per_bin_tasa_fin = None
     if Path(output.per_bin_tasa_fin_csv).exists():
         per_bin_tasa_fin = pd.read_csv(output.per_bin_tasa_fin_csv)

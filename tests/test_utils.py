@@ -996,3 +996,84 @@ class TestResolveReportingSuperSegment:
         cfg = {"modelling_supersegment": "model_group", "reporting_supersegment": "report_group"}
         assert resolve_modelling_supersegment(cfg) == "model_group"
         assert resolve_reporting_supersegment(cfg) == "report_group"
+
+
+class TestStressFactorIsNeverBelowNeutral:
+    """Audit 2026-11-27 A20: #54 guarded a worst-score slice with zero EXPOSURE, but a slice with
+    exposure and zero DEFAULTS gave worst rate 0 and a stress factor of exactly 0 — which
+    multiplies the swap-in risk it is applied to down to nothing. A stress factor makes risk
+    worse or leaves it alone: a worst-score slice that happens to show less risk than the average
+    (sampling noise on a handful of loans) is no evidence that rejected applicants are safer."""
+
+    @staticmethod
+    def _booked(n: int, default_rows: list[int], score=None) -> pd.DataFrame:
+        defaults = np.zeros(n)
+        defaults[default_rows] = 50.0
+        return pd.DataFrame(
+            {
+                "status_name": ["booked"] * n,
+                "risk_score_rf": np.linspace(0.0, 1.0, n) if score is None else score,
+                "todu_30ever_h6": defaults,
+                "todu_amt_pile_h6": np.full(n, 700.0),
+            }
+        )
+
+    def test_worst_slice_without_defaults_is_neutral_not_zero(self):
+        # 1,000 loans, two defaults, neither in the lowest-scoring 5%
+        df = self._booked(1000, default_rows=[400, 800])
+        assert calculate_stress_factor(df) == 1.0
+
+    def test_worst_slice_safer_than_average_is_neutral(self):
+        # one default in the worst 5% (50 loans), 99 elsewhere: the slice rate is below the average
+        df = self._booked(1000, default_rows=[10, *range(100, 199)])
+        assert calculate_stress_factor(df) == 1.0
+
+    def test_worst_slice_riskier_than_average_still_stresses(self):
+        df = self._booked(1000, default_rows=[*range(0, 20), 500])
+        assert calculate_stress_factor(df) > 1.0
+
+    def test_per_bin_factors_are_never_below_neutral(self):
+        from src.data.stress import calculate_per_bin_stress_factors
+
+        rng = np.random.RandomState(42)
+        n = 4000
+        df = pd.DataFrame(
+            {
+                "status_name": ["booked"] * n,
+                "a": rng.randint(1, 5, n),
+                "b": rng.randint(1, 5, n),
+                "risk_score_rf": rng.uniform(0, 1, n),
+                "todu_30ever_h6": np.where(rng.uniform(0, 1, n) < 0.03, 50.0, 0.0),
+                "todu_amt_pile_h6": np.full(n, 700.0),
+            }
+        )
+
+        result = calculate_per_bin_stress_factors(df, variables=["a", "b"])
+
+        assert len(result) == 16
+        assert (result["stress_factor"] >= 1.0).all()  # 12 of these 16 bins used to come out at 0.0
+
+    def test_per_bin_bin_with_a_real_tail_keeps_its_own_factor(self):
+        from src.data.stress import calculate_per_bin_stress_factors
+
+        risky_tail = self._booked(200, default_rows=[*range(0, 6), 100]).assign(a=1)
+        flat = self._booked(200, default_rows=[50, 150]).assign(a=2)
+        df = pd.concat([risky_tail, flat], ignore_index=True)
+
+        result = calculate_per_bin_stress_factors(df, variables=["a"]).set_index("a")["stress_factor"]
+
+        assert result[1] > 5.0  # 6 of 7 defaults sit in the worst 5% of bin 1
+        # no defaults in bin 2's worst slice: it takes the GLOBAL factor, not 0 and not its own
+        assert result[2] == pytest.approx(calculate_stress_factor(df))
+        assert result[2] > 1.0
+
+    def test_bin_without_any_default_takes_the_global_factor(self):
+        from src.data.stress import calculate_per_bin_stress_factors
+
+        risky_tail = self._booked(200, default_rows=[*range(0, 6), 100]).assign(a=1)
+        clean = self._booked(200, default_rows=[]).assign(a=2)  # overall rate 0
+        df = pd.concat([risky_tail, clean], ignore_index=True)
+
+        result = calculate_per_bin_stress_factors(df, variables=["a"]).set_index("a")["stress_factor"]
+
+        assert result[2] == pytest.approx(calculate_stress_factor(df))
