@@ -1925,6 +1925,37 @@ def _recalibrate_mr_repesca(
     return data_summary_desagregado_mr, recalibration_applied
 
 
+def _mr_fixed_cells(main_fixed_cells, main_grid, mr_grid, remap) -> dict[int, int]:
+    """The main solve's pins on the MR grid, minus must-accept pins the MR data cannot support.
+
+    The MILP refuses a must-accept cell without usable risk evidence (it returns no solution and
+    the MR period would silently fall back to the main mask). A cell the MR cohort cannot measure
+    is dropped from the pins with a warning; forced rejects always carry over.
+    """
+    if not main_fixed_cells or main_grid is None:
+        return {}
+    remapped, n_missing = remap(main_fixed_cells, main_grid, mr_grid)
+    usable = mr_grid.usable_risk_mask("todu_30ever_h6", "todu_amt_pile_h6")
+    unsupported = [idx for idx, value in remapped.items() if value == 1 and not usable[idx]]
+    for idx in unsupported:
+        del remapped[idx]
+    logger.info(
+        f"MR re-optimisation: {len(remapped)} of {len(main_fixed_cells)} cell pin(s) from the main solve "
+        f"carried over ({n_missing} not on the MR grid, {len(unsupported)} must-accept without MR risk evidence)."
+    )
+    if not remapped:
+        logger.warning(
+            f"MR re-optimisation: none of the {len(main_fixed_cells)} cell pin(s) of the main solve could be "
+            "applied on the MR grid — the MR solve runs without them."
+        )
+    if unsupported:
+        logger.warning(
+            f"MR re-optimisation: {len(unsupported)} must-accept cell(s) have no usable risk in the MR cohort and "
+            "are not forced — the MR mask may not contain the full floor of the main policy."
+        )
+    return remapped
+
+
 def _reoptimize_mr_mask_after_recalibration(
     data_summary_desagregado_mr: pd.DataFrame,
     settings: "PreprocessingSettings",
@@ -1932,8 +1963,13 @@ def _reoptimize_mr_mask_after_recalibration(
     mask: np.ndarray | None,
     grid: object | None,
     recalibration_applied: bool,
+    main_fixed_cells: dict[int, int] | None = None,
 ) -> tuple[np.ndarray | None, object | None, pd.DataFrame | None]:
     """Re-optimize the MR acceptance mask after repesca recalibration.
+
+    ``main_fixed_cells`` are the cells the MAIN solve pinned (nested-segment floor / ceiling,
+    minimum accepted bin), keyed by flat index on the main *grid*. They are carried onto the MR
+    grid by coordinate so the MR policy obeys the same constraints (audit 2026-11-27 A22).
 
     Decisions/mask were optimized on the pre-recalibrated MR risk
     surface but metrics are reported after scaling repesca risk to MR
@@ -1984,7 +2020,7 @@ def _reoptimize_mr_mask_after_recalibration(
     # ------------------------------------------------------------------
     if recalibration_applied and not settings.baseline_mode:
         try:
-            from src.optimize.optimization_utils import CellGrid, milp_solve_cutoffs
+            from src.optimize.optimization_utils import CellGrid, milp_solve_cutoffs, remap_fixed_cells
 
             target_risk = settings.optimum_risk
             if (
@@ -1995,8 +2031,8 @@ def _reoptimize_mr_mask_after_recalibration(
                 target_risk = float(optimal_solution_df["b2_ever_h6"].iloc[0])
 
             mr_grid = CellGrid.from_summary(data_summary_desagregado_mr, settings.variables)
-            new_mask = milp_solve_cutoffs(
-                mr_grid,
+            mr_fixed_cells = _mr_fixed_cells(main_fixed_cells, grid, mr_grid, remap_fixed_cells)
+            solve_kwargs = dict(
                 target_risk=target_risk,
                 inv_vars=settings.inv_vars,
                 multiplier=settings.multiplier,
@@ -2007,6 +2043,19 @@ def _reoptimize_mr_mask_after_recalibration(
                 monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
                 monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
             )
+            new_mask = milp_solve_cutoffs(mr_grid, fixed_cells=mr_fixed_cells or None, **solve_kwargs)
+            n_must_accept = sum(1 for value in mr_fixed_cells.values() if value == 1)
+            if new_mask is None and n_must_accept:
+                # The floor of the main policy alone can exceed the target on the MR surface.
+                # Keeping the main mask for that reason would hide it: solve with the forced
+                # rejects only and say the floor is not met.
+                logger.warning(
+                    f"MR re-optimisation is infeasible with the main policy's {n_must_accept} must-accept cell(s) "
+                    f"at target {target_risk:.3f}%; retrying without them — the MR mask will NOT contain the full "
+                    "floor of the main policy."
+                )
+                rejects_only = {idx: value for idx, value in mr_fixed_cells.items() if value == 0}
+                new_mask = milp_solve_cutoffs(mr_grid, fixed_cells=rejects_only or None, **solve_kwargs)
 
             if new_mask is not None:
                 logger.info(
@@ -2554,9 +2603,13 @@ def process_mr_period(
     per_bin_stress: pd.DataFrame | None = None,
     per_bin_tasa_fin: pd.DataFrame | None = None,
     audit_mr_df: pd.DataFrame | None = None,
+    fixed_cells: dict[int, int] | None = None,
 ) -> None:
     """
     Process the MR period data: filtering, inference, aggregation, visualization, and summary table.
+
+    ``fixed_cells`` are the main solve's cell pins (flat indices on *grid*); an MR
+    re-optimisation applies them too.
     """
     if output is None:
         output = OutputPaths()
@@ -2743,6 +2796,7 @@ def process_mr_period(
             mask,
             grid,
             recalibration_applied,
+            main_fixed_cells=fixed_cells,
         )
         # Cutoff-drift overlay: only when the MR mask actually re-optimized
         # (in freeze mode the same mask object is returned → masks identical).

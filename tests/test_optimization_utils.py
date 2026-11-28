@@ -2113,3 +2113,117 @@ class TestMilpTimeoutLogging:
         mask, recs = self._run(monkeypatch, status=2)
         assert mask is None
         assert not any("time limit" in m for m in recs)
+
+
+class TestUnusableCellDoesNotAnchorMonotonicity:
+    """Audit 2026-11-27 A23: a cell with no usable risk evidence is pinned to reject by the solver
+    bounds, but it still sat in the monotonicity chains as a "safer" neighbour — so every cell
+    riskier than it was forced to reject too. Its rejection is a lack of evidence, not a risk
+    judgement; the chain must bridge over it, as it does over unobserved (phantom) cells (#22)."""
+
+    @staticmethod
+    def _grid(den: list[float]) -> CellGrid:
+        df = pd.DataFrame(
+            {
+                "a": [1, 2, 3, 4],
+                "oa_amt_h0": [100.0, 100.0, 100.0, 100.0],
+                "todu_30ever_h6": [1.0, 0.0, 1.0, 1.0],
+                "todu_amt_pile_h6": den,
+            }
+        )
+        return CellGrid.from_summary(df, ["a"])
+
+    def test_cells_riskier_than_an_unusable_one_can_still_be_accepted(self):
+        mask = milp_solve_cutoffs(self._grid([700.0, 0.0, 700.0, 700.0]), 2.0, [], 7.0)
+        assert mask.tolist() == [1, 0, 1, 1]  # was [1, 0, 0, 0], at any target
+
+    def test_unusable_cell_at_the_safe_end_does_not_reject_the_whole_grid(self):
+        mask = milp_solve_cutoffs(self._grid([0.0, 700.0, 700.0, 700.0]), 2.0, [], 7.0)
+        assert mask.tolist() == [0, 1, 1, 1]
+
+    def test_monotonicity_still_binds_across_the_gap(self):
+        """Bridging links the usable neighbours: 3 cannot be accepted without 1."""
+        grid = self._grid([700.0, 0.0, 700.0, 700.0])
+        grid.cell_data.loc[0, "todu_30ever_h6"] = 50.0  # cell 1 alone is at 50% risk
+        mask = milp_solve_cutoffs(grid, 2.0, [], 7.0)
+        # cells 3 and 4 alone would meet the target; they are rejected because 1 must be
+        assert mask is None or mask.tolist() == [0, 0, 0, 0]
+        without_link = milp_solve_cutoffs(self._grid([0.0, 0.0, 700.0, 700.0]), 2.0, [], 7.0)
+        assert without_link.tolist() == [0, 0, 1, 1]  # same cells, nothing safer left to bind them
+
+    def test_inverted_direction(self):
+        mask = milp_solve_cutoffs(self._grid([700.0, 700.0, 0.0, 700.0]), 2.0, ["a"], 7.0)
+        assert mask.tolist() == [1, 1, 0, 1]
+
+
+class TestRemapFixedCells:
+    """Audit 2026-11-27 A22: pins are stored as flat indices of the MAIN grid; the MR grid is
+    built from another cohort and orders/contains different cells."""
+
+    def test_pins_follow_their_coordinates_onto_another_grid(self):
+        from src.optimize.optimization_utils import remap_fixed_cells
+
+        base = {"oa_amt_h0": 1.0, "todu_30ever_h6": 0.0, "todu_amt_pile_h6": 700.0}
+        main = CellGrid.from_summary(
+            pd.DataFrame([{"a": 1, "b": 1, **base}, {"a": 1, "b": 2, **base}, {"a": 2, "b": 1, **base}]), ["a", "b"]
+        )
+        other = CellGrid.from_summary(
+            pd.DataFrame([{"a": 2, "b": 1, **base}, {"a": 1, "b": 1, **base}, {"a": 3, "b": 1, **base}]), ["a", "b"]
+        )
+        pins = {main.cell_index[(1, 1)]: 0, main.cell_index[(1, 2)]: 1, main.cell_index[(2, 1)]: 1}
+
+        remapped, missing = remap_fixed_cells(pins, main, other)
+
+        assert remapped == {other.cell_index[(1, 1)]: 0, other.cell_index[(2, 1)]: 1}
+        assert missing == 1  # (1, 2) does not exist on the other grid
+
+    def test_no_pins(self):
+        from src.optimize.optimization_utils import remap_fixed_cells
+
+        grid = CellGrid.from_summary(
+            pd.DataFrame({"a": [1], "oa_amt_h0": [1.0], "todu_30ever_h6": [0.0], "todu_amt_pile_h6": [1.0]}), ["a"]
+        )
+        assert remap_fixed_cells(None, grid, grid) == ({}, 0)
+        assert remap_fixed_cells({}, grid, grid) == ({}, 0)
+
+
+class TestMonotonicityViolationCount:
+    """A wall of cells without risk evidence can leave two usable cells unlinked in 2-D; the
+    solver does not force-reject for it, it reports it."""
+
+    @staticmethod
+    def _grid() -> CellGrid:
+        # (a, b) on a 3x2 grid; (1,2) and (2,1) have no risk evidence — the wall between (1,1) and (2,2)
+        rows = [
+            {"a": 1, "b": 1, "todu_30ever_h6": 50.0, "todu_amt_pile_h6": 700.0},
+            {"a": 1, "b": 2, "todu_30ever_h6": 0.0, "todu_amt_pile_h6": 0.0},
+            {"a": 2, "b": 1, "todu_30ever_h6": 0.0, "todu_amt_pile_h6": 0.0},
+            {"a": 2, "b": 2, "todu_30ever_h6": 1.0, "todu_amt_pile_h6": 700.0},
+        ]
+        return CellGrid.from_summary(pd.DataFrame(rows).assign(oa_amt_h0=100.0), ["a", "b"])
+
+    def test_counts_riskier_accepted_safer_rejected_pairs(self):
+        from src.optimize.optimization_utils import count_monotonicity_violations
+
+        grid = self._grid()
+        mask = np.zeros(grid.n_cells, dtype=int)
+        mask[grid.cell_index[(2, 2)]] = 1  # the riskier corner accepted, the safer (1,1) rejected
+
+        assert count_monotonicity_violations(mask, grid, []) == 3  # vs (1,1), (1,2) and (2,1)
+        usable = grid.usable_risk_mask("todu_30ever_h6", "todu_amt_pile_h6")
+        assert count_monotonicity_violations(mask, grid, [], among=usable) == 1
+        assert count_monotonicity_violations(mask, grid, ["a", "b"], among=usable) == 0  # inverted axes
+        assert count_monotonicity_violations(np.ones(grid.n_cells, dtype=int), grid, []) == 0
+
+    def test_solver_reports_a_policy_split_by_a_wall(self, caplog):
+        import src.optimize.optimization_utils as ou
+
+        handler_id = ou.logger.add(caplog.handler, format="{message}", level="WARNING")
+        try:
+            mask = milp_solve_cutoffs(self._grid(), 2.0, [], 7.0)
+        finally:
+            ou.logger.remove(handler_id)
+
+        grid = self._grid()
+        assert mask[grid.cell_index[(2, 2)]] == 1 and mask[grid.cell_index[(1, 1)]] == 0
+        assert "not coordinatewise monotone" in caplog.text

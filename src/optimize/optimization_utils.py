@@ -331,6 +331,7 @@ def _build_monotonicity_constraints(
     uncertainty_min_exposure: float = 0.0,
     uncertainty_z_threshold: float = 0.0,
     multiplier: float = DEFAULT_RISK_MULTIPLIER,
+    participating: np.ndarray | None = None,
 ) -> sparse.csc_matrix:
     """Build sparse A matrix for monotonicity: A @ x <= 0.
 
@@ -347,6 +348,13 @@ def _build_monotonicity_constraints(
     a phantom near the safe corner could force-reject the entire grid.
     Bridging links each observed cell directly to the next observed cell
     along the dimension, preserving monotonicity over the observed sub-grid.
+
+    ``participating`` (optional boolean per cell) excludes further cells the
+    same way. The solver passes the cells with usable risk evidence: an
+    observed cell WITHOUT it is also pinned to x=0 by the bounds (audit F8), and
+    left in the chains it force-rejected everything riskier than it — the #22
+    problem again, for a rejection that is a lack of evidence, not a risk
+    judgement (audit 2026-11-27 A23).
 
     Direction convention:
       - Default (variable NOT in inv_vars): higher bin index = riskier.
@@ -407,6 +415,8 @@ def _build_monotonicity_constraints(
     # participate in adjacency pairs (see docstring). When the observed flag is
     # absent/mismatched (manually built grids), treat all cells as observed.
     observed = grid.observed if len(grid.observed) == grid.n_cells else np.ones(grid.n_cells, dtype=bool)
+    if participating is not None:
+        observed = observed & np.asarray(participating, dtype=bool)
 
     n_bridged = 0
     for d, var in enumerate(grid.variables):
@@ -475,6 +485,52 @@ def _build_monotonicity_constraints(
 # =============================================================================
 # MILP solver
 # =============================================================================
+
+
+def _observed_flags(grid: CellGrid) -> np.ndarray:
+    return grid.observed if len(grid.observed) == grid.n_cells else np.ones(grid.n_cells, dtype=bool)
+
+
+def count_monotonicity_violations(
+    mask: np.ndarray, grid: CellGrid, inv_vars: list[str], among: np.ndarray | None = None
+) -> int:
+    """Pairs of cells where the coordinatewise riskier one is accepted and the safer one rejected.
+
+    Only cells flagged in *among* are compared (default: all). A higher bin is riskier unless the
+    variable is in *inv_vars*.
+    """
+    positions = {var: {v: i for i, v in enumerate(grid.values_per_var[var])} for var in grid.variables}
+    coords = np.zeros((grid.n_cells, len(grid.variables)))
+    for combo, flat_idx in grid.cell_index.items():
+        coords[flat_idx] = [positions[var][combo[d]] for d, var in enumerate(grid.variables)]
+    coords = coords * np.array([-1.0 if var in inv_vars else 1.0 for var in grid.variables])
+    keep = np.flatnonzero(np.ones(grid.n_cells, dtype=bool) if among is None else np.asarray(among, dtype=bool))
+    c, accepted = coords[keep], np.asarray(mask)[keep] == 1
+    riskier = np.all(c[:, None, :] >= c[None, :, :], axis=2) & np.any(c[:, None, :] > c[None, :, :], axis=2)
+    return int(np.count_nonzero(riskier & accepted[:, None] & ~accepted[None, :]))
+
+
+def remap_fixed_cells(
+    fixed_cells: dict[int, int] | None, source_grid: CellGrid, target_grid: CellGrid
+) -> tuple[dict[int, int], int]:
+    """Carry cell pins from one grid to another by cell coordinates.
+
+    Pins are keyed by flat index, which is only meaningful on the grid they were built for; a
+    grid built from another cohort (the MR period) orders and contains different cells. Returns
+    the pins re-keyed on *target_grid* and the number of pinned cells that do not exist there.
+    """
+    if not fixed_cells:
+        return {}, 0
+    coordinates = {flat_idx: combo for combo, flat_idx in source_grid.cell_index.items()}
+    remapped: dict[int, int] = {}
+    missing = 0
+    for flat_idx, value in fixed_cells.items():
+        target_idx = target_grid.cell_index.get(coordinates.get(flat_idx))
+        if target_idx is None:
+            missing += 1
+        else:
+            remapped[target_idx] = value
+    return remapped, missing
 
 
 def milp_solve_cutoffs(
@@ -555,6 +611,7 @@ def milp_solve_cutoffs(
         uncertainty_min_exposure=monotonicity_uncertainty_min_exposure,
         uncertainty_z_threshold=monotonicity_uncertainty_z_threshold,
         multiplier=multiplier,
+        participating=usable,
     )
 
     # Stack risk constraint row on top of monotonicity
@@ -647,7 +704,19 @@ def milp_solve_cutoffs(
             )
         return None
 
-    return np.round(result.x).astype(int)
+    solution = np.round(result.x).astype(int)
+    # Chains bridge over unusable cells one dimension at a time. A WALL of them can leave two
+    # usable cells that are only comparable through it unlinked (the phantom "diagonal wall" of
+    # #22, but these cells are observed and can cluster). Never force-reject for it; say so.
+    if not monotonicity_relaxation_enabled and not bool(np.all(usable | ~_observed_flags(grid))):
+        n_violations = count_monotonicity_violations(solution, grid, inv_vars, among=usable)
+        if n_violations:
+            logger.warning(
+                f"MILP: the accepted set is not coordinatewise monotone among cells with risk evidence "
+                f"({n_violations} riskier-accepted / safer-rejected pair(s)): cells without usable risk separate "
+                "them on every axis, so no monotonicity constraint links them."
+            )
+    return solution
 
 
 def solve_with_fixed_cells(

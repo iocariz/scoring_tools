@@ -3392,3 +3392,78 @@ class TestMrPooledRecalibrationRatio:
 
         assert out.loc[2, "todu_30ever_h3_rep"] == pytest.approx(4.0 * 3.5)  # (0.06 + 0.01) / 0.02
         assert out.loc[2, "todu_30ever_h6_rep"] == pytest.approx(5.0 * 2.6)  # H6 pool untouched by H3
+
+
+class TestMRReoptimizationKeepsTheMainRunsPins:
+    """Audit 2026-11-27 A22: the main solve pins cells (nested-segment floor / ceiling, minimum
+    accepted bin). The MR re-optimisation called the MILP without them, so the MR policy could
+    accept a cell the main run is not allowed to accept — the #36 gap, on the MR path."""
+
+    def _reoptimize(self, monkeypatch, inputs, main_fixed_cells, mr_frame=None):
+        df, grid, mask, opt = inputs
+        captured = {}
+
+        def fake_milp(mr_grid, *args, **kwargs):
+            captured["grid"], captured["fixed_cells"] = mr_grid, kwargs.get("fixed_cells")
+            return np.zeros(len(mr_grid.cell_data), dtype=int)
+
+        monkeypatch.setattr("src.optimize.optimization_utils.milp_solve_cutoffs", fake_milp)
+        _reoptimize_mr_mask_after_recalibration(
+            df if mr_frame is None else mr_frame,
+            _mr_gate_settings(),
+            opt,
+            mask,
+            grid,
+            True,
+            main_fixed_cells=main_fixed_cells,
+        )
+        return grid, captured
+
+    def test_pins_reach_the_mr_solve_by_coordinate(self, monkeypatch, _mr_gate_inputs):
+        df = _mr_gate_inputs[0]
+        reordered = df.iloc[::-1].reset_index(drop=True)  # the MR grid orders its cells differently
+        main_grid = _mr_gate_inputs[1]
+        pins = {main_grid.cell_index[(1, 1)]: 1, main_grid.cell_index[(2, 2)]: 0}
+
+        _, captured = self._reoptimize(monkeypatch, _mr_gate_inputs, pins, mr_frame=reordered)
+
+        mr_grid = captured["grid"]
+        assert captured["fixed_cells"] == {mr_grid.cell_index[(1, 1)]: 1, mr_grid.cell_index[(2, 2)]: 0}
+
+    def test_must_accept_pin_without_mr_risk_evidence_is_dropped_not_fatal(self, monkeypatch, _mr_gate_inputs):
+        """The MILP refuses a must-accept cell with no usable risk (returns None → no MR
+        re-optimisation at all). The other pins must still apply."""
+        df = _mr_gate_inputs[0].copy()
+        df.loc[(df["sc_octroi_new_clus"] == 1) & (df["new_efx_clus"] == 1), "todu_amt_pile_h6"] = 0.0
+        main_grid = _mr_gate_inputs[1]
+        pins = {main_grid.cell_index[(1, 1)]: 1, main_grid.cell_index[(2, 2)]: 0}
+
+        _, captured = self._reoptimize(monkeypatch, _mr_gate_inputs, pins, mr_frame=df)
+
+        mr_grid = captured["grid"]
+        assert captured["fixed_cells"] == {mr_grid.cell_index[(2, 2)]: 0}
+
+    def test_no_pins_passes_none(self, monkeypatch, _mr_gate_inputs):
+        _, captured = self._reoptimize(monkeypatch, _mr_gate_inputs, None)
+        assert not captured["fixed_cells"]
+
+    def test_infeasible_floor_is_reported_and_solved_without_the_must_accepts(self, monkeypatch, _mr_gate_inputs):
+        """The main policy's floor alone can exceed the target on the MR surface. Keeping the main
+        mask for that reason would hide it."""
+        df, grid, mask, opt = _mr_gate_inputs
+        pins = {grid.cell_index[(1, 1)]: 1, grid.cell_index[(2, 2)]: 0}
+        calls = []
+        solved = np.zeros(len(grid.cell_data), dtype=int)
+
+        def fake_milp(mr_grid, *args, **kwargs):
+            calls.append(kwargs.get("fixed_cells"))
+            return None if len(calls) == 1 else solved
+
+        monkeypatch.setattr("src.optimize.optimization_utils.milp_solve_cutoffs", fake_milp)
+        out_mask, _, _ = _reoptimize_mr_mask_after_recalibration(
+            df, _mr_gate_settings(), opt, mask, grid, True, main_fixed_cells=pins
+        )
+
+        assert len(calls) == 2
+        assert set(calls[0].values()) == {0, 1} and set(calls[1].values()) == {0}  # forced rejects kept
+        assert out_mask is solved
