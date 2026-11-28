@@ -112,7 +112,7 @@ def calculate_per_bin_stress_factors(
 
     with ``n`` the number of loans in the bin's worst slice — the same shape as the acceptance-rate
     smoothing in reject inference. ``max_factor`` caps the noisy component only (the global factor
-    passes through), and no factor goes below neutral (1.0). ``prior_strength = 0`` uses the
+    passes through, and the cap is never below it), and no factor goes below neutral (1.0). ``prior_strength = 0`` uses the
     bin's own ratio.
 
     Bins with no usable ratio — fewer than ``min_obs_per_bin`` records, no exposure in the bin or
@@ -165,8 +165,12 @@ def calculate_per_bin_stress_factors(
         # A slice with exposure and no defaults has own ratio 0 here. Unlike the unshrunk
         # version (where 0 zeroed the bin's swap-in risk, A20), that is information: it pulls
         # the bin a little below the global factor, by the weight its few loans deserve.
-        own_ratio = min(DEFAULT_RISK_MULTIPLIER * worst[num_col].sum() / worst_den / overall_rate, max_factor)
-        n_tail = len(worst)
+        # The cap never sits below the global factor: a bin whose own evidence is "worse than
+        # global" must not be pulled under it by the cap.
+        own_ratio = min(
+            DEFAULT_RISK_MULTIPLIER * worst[num_col].sum() / worst_den / overall_rate, max(max_factor, global_stress)
+        )
+        n_tail = int(worst[den_col].notna().sum())  # loans that actually carry exposure
         weight = n_tail / (n_tail + prior_strength) if (n_tail + prior_strength) > 0 else 0.0
         row["stress_factor"] = max(weight * own_ratio + (1.0 - weight) * global_stress, NEUTRAL_STRESS_FACTOR)
         weights.append(weight)

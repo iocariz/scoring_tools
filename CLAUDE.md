@@ -39,7 +39,7 @@ uv run python run_batch.py --cutoff-ordering-mode bottom_up  # sequential cutoff
 
 # Resimulation (re-run scenarios with different risk targets, no re-training/optimization).
 # Refused (ResimulationError) if anything but optimum_risk/optimum_hri/risk_step/log_level/base_scenario_only/dq_allow_warnings
-# changed since the full run: resimulation_meta.json stores the EFFECTIVE config fingerprint + snapshot (CLI overrides
+# changed since the full run (a setting ADDED since the run and left at its default does not count): resimulation_meta.json stores the EFFECTIVE config fingerprint + snapshot (CLI overrides
 # such as --baseline included, so a baseline run cannot be resimulated as an ordinary one; audit 2026-10-31 F5).
 uv run python main.py --config output/segment/config_segment.toml --resimulate 0.8 1.2 1.6
 uv run python run_batch.py --resimulate 0.8 1.2 1.6           # all segments, same targets

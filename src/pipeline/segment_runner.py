@@ -86,6 +86,28 @@ def _config_fingerprint(snapshot: dict) -> str:
     return hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def _unexplained_config_changes(saved: dict, current: dict, settings) -> list[str]:
+    """Config keys that differ between the saved full run and now, minus settings ADDED since.
+
+    A field that did not exist when the run was saved and now sits at its default changes
+    nothing — new settings are default-neutral by convention — yet it alters the fingerprint,
+    which would make every earlier run un-resimulable the day a setting is introduced. Such keys
+    are not counted. A new field set away from its default, a removed field, or any changed value
+    still is.
+    """
+    fields = type(settings).model_fields
+    changed = []
+    for key in sorted(set(saved) | set(current)):
+        if saved.get(key) == current.get(key):
+            continue
+        if key not in saved and key in fields:
+            default = json.loads(json.dumps(fields[key].get_default(call_default_factory=True), default=str))
+            if current[key] == default:
+                continue
+        changed.append(key)
+    return changed
+
+
 def _save_resimulation_artifacts(
     output: OutputPaths,
     data_clean: pd.DataFrame,
@@ -329,12 +351,17 @@ def run_resimulation(
     if "config_fingerprint" in meta:
         current = _config_snapshot(settings)
         if _config_fingerprint(current) != meta["config_fingerprint"]:
-            saved = meta.get("config_snapshot", {})
-            changed = sorted(k for k in set(saved) | set(current) if saved.get(k) != current.get(k))
-            raise ResimulationError(
-                f"[{segment}] Config changed since the last full run ({', '.join(changed) or 'unknown fields'}). "
-                "Resimulation only re-selects risk targets on the saved frontier; run the full pipeline "
-                "to apply other changes."
+            saved = meta.get("config_snapshot")
+            changed = _unexplained_config_changes(saved, current, settings) if saved else ["unknown fields"]
+            if changed:
+                raise ResimulationError(
+                    f"[{segment}] Config changed since the last full run ({', '.join(changed)}). "
+                    "Resimulation only re-selects risk targets on the saved frontier; run the full pipeline "
+                    "to apply other changes."
+                )
+            logger.info(
+                f"[{segment}] Config fingerprint differs from the saved run only by settings added since, "
+                "all at their defaults; resimulation proceeds."
             )
     elif meta.get("config_hash") and meta["config_hash"] != _config_hash(settings):
         raise ResimulationError(

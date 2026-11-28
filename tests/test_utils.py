@@ -1109,11 +1109,21 @@ class TestPerBinStressShrinkage:
     def _portfolio(self) -> pd.DataFrame:
         # bin 1: 200 loans, worst slice = 10 loans holding 6 of its 7 defaults  -> own ratio 17.1
         # bin 2: 200 loans, 2 defaults, none in its worst slice                 -> own ratio 0
-        return pd.concat([self._bin(1, 200, [*range(0, 6), 100]), self._bin(2, 200, [50, 150])], ignore_index=True)
+        # bin 3: 2,000 loans with defaults spread evenly (own ratio 1): keeps the GLOBAL factor
+        #        at a realistic ~2, below max_factor, so the cap on a bin's own ratio is 5
+        return pd.concat(
+            [
+                self._bin(1, 200, [*range(0, 6), 100]),
+                self._bin(2, 200, [50, 150]),
+                self._bin(3, 2000, list(range(0, 2000, 20))),
+            ],
+            ignore_index=True,
+        )
 
     def test_factor_is_the_weighted_mean_of_own_ratio_and_global(self):
         df = self._portfolio()
         global_factor = calculate_stress_factor(df)
+        assert 1.0 < global_factor < 5.0
         own_ratio_bin1 = (6 / 10) / (7 / 200)  # 17.14, capped at max_factor below
 
         result = self._factors(df, prior_strength=50.0, max_factor=5.0)
@@ -1188,3 +1198,37 @@ class TestPerBinStressShrinkage:
         assert (result <= max(5.0, calculate_stress_factor(df))).all()
         # shrunk factors cluster near the global one instead of spreading from 1 to ~30
         assert result.std() < self._factors(df, prior_strength=0.0, max_factor=1000.0).std()
+
+    def test_cap_never_pulls_a_bin_below_the_global_factor(self):
+        """Global factor above max_factor: a bin whose own ratio is far worse still must not come
+        out under the global factor just because its ratio was capped lower."""
+        worse = self._bin(1, 200, [*range(0, 6)])  # every default in its worst slice: own ratio 20
+        rest = self._bin(2, 1800, [*range(0, 60), 900])
+        df = pd.concat([worse, rest], ignore_index=True)
+        global_factor = calculate_stress_factor(df)
+        assert global_factor > 5.0
+
+        result = self._factors(df, prior_strength=50.0, max_factor=5.0)
+
+        assert result[1] >= global_factor - 1e-9
+
+    def test_higher_is_worse_uses_the_top_of_the_score(self):
+        from src.data.stress import calculate_per_bin_stress_factors
+
+        df = self._portfolio()
+        df["risk_score_rf"] = 1.0 - df["risk_score_rf"]
+
+        flipped = calculate_per_bin_stress_factors(df, variables=["a"], higher_is_worse=True)
+        expected = self._factors(self._portfolio())
+
+        np.testing.assert_allclose(flipped.set_index("a")["stress_factor"], expected)
+
+    def test_several_grid_variables(self):
+        from src.data.stress import calculate_per_bin_stress_factors
+
+        df = pd.concat([self._portfolio().assign(b=1), self._portfolio().assign(b=2)], ignore_index=True)
+
+        result = calculate_per_bin_stress_factors(df, variables=["a", "b"])
+
+        assert len(result) == 6 and list(result.columns) == ["a", "b", "stress_factor"]
+        assert result.groupby("a")["stress_factor"].nunique().eq(1).all()  # same data in both b slices
