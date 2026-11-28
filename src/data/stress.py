@@ -5,6 +5,12 @@ from loguru import logger
 
 from src.core.constants import DEFAULT_RISK_MULTIPLIER
 
+# A stress factor multiplies the risk predicted for rejected applicants by how much worse the
+# worst-score booked tail is than the booked average. It makes risk worse or leaves it alone:
+# a tail that shows LESS risk than the average is sampling noise on a handful of loans, not
+# evidence that rejected applicants are safer (audit 2026-11-27 A20).
+NEUTRAL_STRESS_FACTOR = 1.0
+
 
 def calculate_stress_factor(
     df: pd.DataFrame,
@@ -52,7 +58,12 @@ def calculate_stress_factor(
         # UNDEFINED, not zero. Returning 0 would multiply predicted risk to zero
         # downstream (maximally anti-conservative). Fall back to neutral 1.0.
         logger.warning("Worst-slice denominator is 0; returning neutral stress factor 1.0")
-        return 1.0
+        return NEUTRAL_STRESS_FACTOR
+    if worst_num <= 0:
+        # Exposure but no defaults in the worst-score slice: the tail rate is not measured as
+        # zero risk, it is unmeasured. A factor of 0 here multiplied swap-in risk to nothing.
+        logger.warning("Worst-slice has no defaults; returning neutral stress factor 1.0")
+        return NEUTRAL_STRESS_FACTOR
     worst_bad_rate = worst_num / worst_den * DEFAULT_RISK_MULTIPLIER
 
     # Calculate stress factor
@@ -60,8 +71,14 @@ def calculate_stress_factor(
         stress_factor = worst_bad_rate / overall_bad_rate
     else:
         logger.warning("Overall bad rate is 0; returning neutral stress factor 1.0")
-        stress_factor = 1.0
+        stress_factor = NEUTRAL_STRESS_FACTOR
 
+    if stress_factor < NEUTRAL_STRESS_FACTOR:
+        logger.warning(
+            f"Worst-slice risk is below the overall risk (ratio {stress_factor:.3f}); a stress factor never "
+            "reduces risk — returning neutral 1.0."
+        )
+        return NEUTRAL_STRESS_FACTOR
     return float(stress_factor)
 
 
@@ -81,8 +98,10 @@ def calculate_per_bin_stress_factors(
 
     For each bin combination, the stress factor is the ratio of the risk rate
     in the worst ``frac`` fraction (by score) to the overall risk rate within
-    that bin.  Bins with fewer than ``min_obs_per_bin`` records use the global
-    stress factor as a fallback.
+    that bin.  Bins with fewer than ``min_obs_per_bin`` records, without exposure
+    or without defaults in their worst slice use the global stress factor as a
+    fallback. No factor is below 1.0 (neutral): the global one is floored there
+    and so is each bin's own.
 
     Returns
     -------
@@ -137,9 +156,16 @@ def calculate_per_bin_stress_factors(
             row["stress_factor"] = global_stress
             rows.append(row)
             continue
-        worst_rate = DEFAULT_RISK_MULTIPLIER * worst[num_col].sum() / worst_den
+        worst_num = worst[num_col].sum()
+        if worst_num <= 0 or overall_rate <= 0:
+            # No defaults in the bin's worst slice (typically 1-12 loans): unmeasured, not zero.
+            row["stress_factor"] = global_stress
+            rows.append(row)
+            continue
+        worst_rate = DEFAULT_RISK_MULTIPLIER * worst_num / worst_den
 
-        row["stress_factor"] = worst_rate / overall_rate if overall_rate > 0 else global_stress
+        # A bin's own factor never goes below neutral; see NEUTRAL_STRESS_FACTOR.
+        row["stress_factor"] = max(worst_rate / overall_rate, NEUTRAL_STRESS_FACTOR)
         rows.append(row)
 
     result = pd.DataFrame(rows)

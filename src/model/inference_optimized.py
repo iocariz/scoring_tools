@@ -1798,6 +1798,38 @@ def todu_average_inference(
     return fig, model, r_sq
 
 
+def _hri_fit_has_no_signal(cv_r2: float | None) -> bool:
+    """True when the HRI rate model's cross-validated R² was measured and is not positive.
+
+    A tree winner records NaN ("not computed": trees are tuned on RMSE). That is NOT treated
+    as no signal: the flat prior exists to stop a signal-free LINEAR fit from extrapolating
+    absurd rates onto repesca coordinates outside the booked range, and a tree cannot predict
+    beyond its training targets. Since #175 the NaN took the model branch only because
+    ``float(nan or 0.0) <= 0`` happens to be False; this states the rule (audit 2026-11-27 A21).
+    A missing value (older metadata) keeps the previous default of 0 → no signal.
+    """
+    if cv_r2 is None:
+        return True
+    cv_r2 = float(cv_r2)
+    return bool(np.isfinite(cv_r2) and cv_r2 <= 0.0)
+
+
+def _observed_hri_cap(train_agg: pd.DataFrame | None) -> float | None:
+    """Worst OBSERVED training-bin HRI rate, from the raw per-bin sums.
+
+    The fit's target column (``hri_h6``) is winsorized (#56), so its maximum is the
+    winsorization bound, not the worst bin: capping repesca predictions there pulled every
+    rate above the bound down to it (10.6% predicted → 1.24% with a worst observed bin of
+    28.8%), understating swap-in HRI in exactly the low-score region (audit 2026-11-27 A21).
+    """
+    if train_agg is None or not {"h_num_h6", "h_den_h6"} <= set(getattr(train_agg, "columns", [])):
+        return None
+    den = pd.to_numeric(train_agg["h_den_h6"], errors="coerce")
+    num = pd.to_numeric(train_agg["h_num_h6"], errors="coerce")
+    rates = (num / den.where(den > 0)).dropna()
+    return float(rates.max()) if len(rates) else None
+
+
 def compute_pre_reject_inference_data(
     data_booked: pd.DataFrame,
     data_demand: pd.DataFrame,
@@ -1899,9 +1931,11 @@ def compute_pre_reject_inference_data(
         # repesca prior is the booked EXPOSURE-WEIGHTED MEAN rate (flat prior) — the RI
         # uplift downstream then carries the rejected-are-worse assumption, exactly as
         # it does for b2. With signal, use the model capped at the worst observed bin.
-        hri_cv = float(hri_inference["best_model_info"].get("cv_mean_r2", 0.0) or 0.0)
+        hri_cv = hri_inference["best_model_info"].get("cv_mean_r2", 0.0)
         train_agg = hri_inference.get("all_data")
-        if hri_cv <= 0.0 and train_agg is not None and {"h_num_h6", "h_den_h6"} <= set(train_agg.columns):
+        no_signal = _hri_fit_has_no_signal(hri_cv)
+        if no_signal and train_agg is not None and {"h_num_h6", "h_den_h6"} <= set(train_agg.columns):
+            hri_cv = float(hri_cv or 0.0)
             flat_rate = float(train_agg["h_num_h6"].sum() / max(train_agg["h_den_h6"].sum(), 1e-9))
             logger.warning(
                 f"HRI rate model has no predictive signal (CV R2={hri_cv:.4f}) — using the booked "
@@ -1913,9 +1947,7 @@ def compute_pre_reject_inference_data(
             repesca_summary["hri_h6"] = stressor * flat_rate
             repesca_summary["h_num_h6"] = repesca_summary["hri_h6"] * repesca_summary["h_den_h6"]
         else:
-            hri_cap = None
-            if train_agg is not None and "hri_h6" in getattr(train_agg, "columns", []):
-                hri_cap = float(train_agg["hri_h6"].max())
+            hri_cap = _observed_hri_cap(train_agg)
             repesca_summary = calculate_hri_values(
                 repesca_summary,
                 hri_inference["best_model_info"]["model"],
