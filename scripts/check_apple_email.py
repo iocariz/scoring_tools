@@ -88,6 +88,26 @@ def _meur(x: float) -> str:
     return es(x / 1e6) + " M€"
 
 
+def contains_figure(text: str, figure: str) -> bool:
+    """True when *figure* appears in *text* as a whole number, not as part of a longer one.
+
+    A plain substring test let ``14,2%`` pass for an expected ``4,2%`` and ``4,25%`` for ``4,2``
+    (audit 2026-11-27 A17). A match is rejected when the figure starts with a digit and is
+    preceded by a digit (or a digit plus a decimal/thousands separator), or ends with a digit and
+    is followed by one (or by a separator plus a digit). Whitespace is ignored on both sides.
+    """
+    haystack, needle = re.sub(r"\s", "", text), re.sub(r"\s", "", figure)
+    if not needle:
+        return False
+    for match in re.finditer(re.escape(needle), haystack):
+        before, after = haystack[: match.start()], haystack[match.end() :]
+        glued_left = needle[0].isdigit() and bool(re.search(r"\d[.,]?$", before))
+        glued_right = needle[-1].isdigit() and bool(re.match(r"[.,]?\d", after))
+        if not glued_left and not glued_right:
+            return True
+    return False
+
+
 class EmailChecker:
     """Recompute the e-mail's figures from the study outputs and compare them."""
 
@@ -129,16 +149,15 @@ class EmailChecker:
         raise KeyError(f"no table row labelled {label!r}" + (f" with {width} cells" if width else ""))
 
     def check_row(self, name: str, cells: list[str], expected: list[str | None]) -> None:
-        got = [re.sub(r"\s", "", c) for c in cells]
         for i, e in enumerate(expected):
             if e is None:
                 continue
-            if i >= len(got) or re.sub(r"\s", "", e) not in got[i]:
+            if i >= len(cells) or not contains_figure(cells[i], e):
                 found = cells[i] if i < len(cells) else "<missing>"
                 self.fails.append(f"{name} col{i}: email={found!r} expected≈{e!r}")
 
     def check_prose(self, name: str, snippet: str) -> None:
-        if snippet not in self.body:
+        if not contains_figure(self.body, snippet):
             self.fails.append(f"{name}: prose does not contain {snippet!r}")
 
     # ---- sections -----------------------------------------------------------------------

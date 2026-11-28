@@ -21,7 +21,7 @@ intervalos de confianza, ni auditoría swap-in/swap-out.
 Uso:
     uv run python run_apple_study.py
     uv run python run_apple_study.py --main-from 2024-06-01     # ventana de 21 meses
-    uv run python run_apple_study.py --cutoff new=47 --cutoff known_cd=11
+    uv run python run_apple_study.py --cutoff New=30 --cutoff A-C=18
     uv run python run_apple_study.py --targets 2.5 3 3.5 4 --stores-level-factor 1.5"""
 
 from __future__ import annotations
@@ -975,6 +975,46 @@ def scenario_grids(
             applied = builder(feasible.iloc[0]) if not feasible.empty else dict.fromkeys(groups)
             table[f"{target:g}% · {label}"] = [_fmt(applied[g]) for g in groups]
     return pd.DataFrame(table)
+
+
+def parse_cutoff_overrides(overrides: list[str], base: dict[str, float | None]) -> dict[str, float | None]:
+    """Apply ``GROUP=SCORE`` overrides to a copy of the grid *base*.
+
+    The grid is keyed on the letter groups (``New``, ``Inactive``, ``A-C``, ``D-F``, ``>=G``).
+    A name that matched none of them used to be ADDED as a new key, so ``--cutoff new=47`` left
+    ``New`` at its default and the run came back on the base grid without a word (audit
+    2026-11-27 A17). Names match case-insensitively; anything else raises. ``GROUP=none``
+    removes that group's cutoff.
+    """
+    by_lower = {name.lower(): name for name in base}
+    cutoffs = dict(base)
+    for override in overrides:
+        name, separator, value = override.partition("=")
+        group = by_lower.get(name.strip().lower())
+        if not separator or group is None:
+            raise ValueError(
+                f"Invalid --cutoff {override!r}: expected GROUP=SCORE with GROUP one of {', '.join(base)} "
+                "(case-insensitive)."
+            )
+        value = value.strip()
+        if value.lower() in {"", "none"}:
+            cutoffs[group] = None
+            continue
+        try:
+            cutoffs[group] = float(value)
+        except ValueError:
+            raise ValueError(f"Invalid --cutoff {override!r}: {value!r} is not a score or 'none'.") from None
+    return cutoffs
+
+
+def seasonal_complete_years(channel_data: pd.DataFrame) -> list[int]:
+    """Calendar years with demand in all twelve months — the years ``seasonal_index`` averages."""
+    data = channel_data.dropna(subset=[Columns.MIS_DATE])
+    return sorted(
+        int(year)
+        for year, group in data.groupby(data[Columns.MIS_DATE].dt.year)
+        if group.groupby(group[Columns.MIS_DATE].dt.month)[Columns.OA_AMT].sum().size == 12
+    )
 
 
 def seasonal_index(channel_data: pd.DataFrame, label: str, fallback: pd.Series | None = None) -> pd.Series | None:
