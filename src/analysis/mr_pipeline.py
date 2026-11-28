@@ -1943,6 +1943,11 @@ def _mr_fixed_cells(main_fixed_cells, main_grid, mr_grid, remap) -> dict[int, in
         f"MR re-optimisation: {len(remapped)} of {len(main_fixed_cells)} cell pin(s) from the main solve "
         f"carried over ({n_missing} not on the MR grid, {len(unsupported)} must-accept without MR risk evidence)."
     )
+    if not remapped:
+        logger.warning(
+            f"MR re-optimisation: none of the {len(main_fixed_cells)} cell pin(s) of the main solve could be "
+            "applied on the MR grid — the MR solve runs without them."
+        )
     if unsupported:
         logger.warning(
             f"MR re-optimisation: {len(unsupported)} must-accept cell(s) have no usable risk in the MR cohort and "
@@ -2027,12 +2032,10 @@ def _reoptimize_mr_mask_after_recalibration(
 
             mr_grid = CellGrid.from_summary(data_summary_desagregado_mr, settings.variables)
             mr_fixed_cells = _mr_fixed_cells(main_fixed_cells, grid, mr_grid, remap_fixed_cells)
-            new_mask = milp_solve_cutoffs(
-                mr_grid,
+            solve_kwargs = dict(
                 target_risk=target_risk,
                 inv_vars=settings.inv_vars,
                 multiplier=settings.multiplier,
-                fixed_cells=mr_fixed_cells or None,
                 max_swapin_production_pct=settings.max_swapin_production_pct,
                 max_swapin_risk=settings.max_swapin_risk,
                 time_limit=settings.milp_time_limit,
@@ -2040,6 +2043,19 @@ def _reoptimize_mr_mask_after_recalibration(
                 monotonicity_uncertainty_min_exposure=settings.monotonicity_uncertainty_min_exposure,
                 monotonicity_uncertainty_z_threshold=settings.monotonicity_uncertainty_z_threshold,
             )
+            new_mask = milp_solve_cutoffs(mr_grid, fixed_cells=mr_fixed_cells or None, **solve_kwargs)
+            n_must_accept = sum(1 for value in mr_fixed_cells.values() if value == 1)
+            if new_mask is None and n_must_accept:
+                # The floor of the main policy alone can exceed the target on the MR surface.
+                # Keeping the main mask for that reason would hide it: solve with the forced
+                # rejects only and say the floor is not met.
+                logger.warning(
+                    f"MR re-optimisation is infeasible with the main policy's {n_must_accept} must-accept cell(s) "
+                    f"at target {target_risk:.3f}%; retrying without them — the MR mask will NOT contain the full "
+                    "floor of the main policy."
+                )
+                rejects_only = {idx: value for idx, value in mr_fixed_cells.items() if value == 0}
+                new_mask = milp_solve_cutoffs(mr_grid, fixed_cells=rejects_only or None, **solve_kwargs)
 
             if new_mask is not None:
                 logger.info(

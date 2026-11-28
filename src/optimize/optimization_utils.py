@@ -487,6 +487,29 @@ def _build_monotonicity_constraints(
 # =============================================================================
 
 
+def _observed_flags(grid: CellGrid) -> np.ndarray:
+    return grid.observed if len(grid.observed) == grid.n_cells else np.ones(grid.n_cells, dtype=bool)
+
+
+def count_monotonicity_violations(
+    mask: np.ndarray, grid: CellGrid, inv_vars: list[str], among: np.ndarray | None = None
+) -> int:
+    """Pairs of cells where the coordinatewise riskier one is accepted and the safer one rejected.
+
+    Only cells flagged in *among* are compared (default: all). A higher bin is riskier unless the
+    variable is in *inv_vars*.
+    """
+    positions = {var: {v: i for i, v in enumerate(grid.values_per_var[var])} for var in grid.variables}
+    coords = np.zeros((grid.n_cells, len(grid.variables)))
+    for combo, flat_idx in grid.cell_index.items():
+        coords[flat_idx] = [positions[var][combo[d]] for d, var in enumerate(grid.variables)]
+    coords = coords * np.array([-1.0 if var in inv_vars else 1.0 for var in grid.variables])
+    keep = np.flatnonzero(np.ones(grid.n_cells, dtype=bool) if among is None else np.asarray(among, dtype=bool))
+    c, accepted = coords[keep], np.asarray(mask)[keep] == 1
+    riskier = np.all(c[:, None, :] >= c[None, :, :], axis=2) & np.any(c[:, None, :] > c[None, :, :], axis=2)
+    return int(np.count_nonzero(riskier & accepted[:, None] & ~accepted[None, :]))
+
+
 def remap_fixed_cells(
     fixed_cells: dict[int, int] | None, source_grid: CellGrid, target_grid: CellGrid
 ) -> tuple[dict[int, int], int]:
@@ -681,7 +704,19 @@ def milp_solve_cutoffs(
             )
         return None
 
-    return np.round(result.x).astype(int)
+    solution = np.round(result.x).astype(int)
+    # Chains bridge over unusable cells one dimension at a time. A WALL of them can leave two
+    # usable cells that are only comparable through it unlinked (the phantom "diagonal wall" of
+    # #22, but these cells are observed and can cluster). Never force-reject for it; say so.
+    if not monotonicity_relaxation_enabled and not bool(np.all(usable | ~_observed_flags(grid))):
+        n_violations = count_monotonicity_violations(solution, grid, inv_vars, among=usable)
+        if n_violations:
+            logger.warning(
+                f"MILP: the accepted set is not coordinatewise monotone among cells with risk evidence "
+                f"({n_violations} riskier-accepted / safer-rejected pair(s)): cells without usable risk separate "
+                "them on every axis, so no monotonicity constraint links them."
+            )
+    return solution
 
 
 def solve_with_fixed_cells(
