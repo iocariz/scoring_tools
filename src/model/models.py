@@ -299,8 +299,9 @@ def calculate_hri_values(
     events), so a signal-free linear fit can extrapolate absurd rates (>100%)
     onto repesca bins outside the booked coordinate range; capping at the
     observed extreme mirrors reject_max_risk_multiplier's philosophy ("as bad
-    as the worst observed bin", never worse). The stressor applies on top of
-    the capped rate: stressing first and clipping after cancelled the stress
+    as the worst observed bin", never worse) — for the MODELED rate. The
+    stressor applies on top of the capped rate, so the final rate can reach
+    stressor x cap: stressing first and clipping after cancelled the stress
     for exactly the cells that hit the cap (audit 2026-11-27 A21).
     """
     if stressor <= 0:

@@ -1063,4 +1063,17 @@ class TestStressFactorIsNeverBelowNeutral:
         result = calculate_per_bin_stress_factors(df, variables=["a"]).set_index("a")["stress_factor"]
 
         assert result[1] > 5.0  # 6 of 7 defaults sit in the worst 5% of bin 1
-        assert result[2] >= 1.0  # no defaults in bin 2's worst slice: falls back, never 0
+        # no defaults in bin 2's worst slice: it takes the GLOBAL factor, not 0 and not its own
+        assert result[2] == pytest.approx(calculate_stress_factor(df))
+        assert result[2] > 1.0
+
+    def test_bin_without_any_default_takes_the_global_factor(self):
+        from src.data.stress import calculate_per_bin_stress_factors
+
+        risky_tail = self._booked(200, default_rows=[*range(0, 6), 100]).assign(a=1)
+        clean = self._booked(200, default_rows=[]).assign(a=2)  # overall rate 0
+        df = pd.concat([risky_tail, clean], ignore_index=True)
+
+        result = calculate_per_bin_stress_factors(df, variables=["a"]).set_index("a")["stress_factor"]
+
+        assert result[2] == pytest.approx(calculate_stress_factor(df))

@@ -1798,35 +1798,67 @@ def todu_average_inference(
     return fig, model, r_sq
 
 
-def _hri_fit_has_no_signal(cv_r2: float | None) -> bool:
-    """True when the HRI rate model's cross-validated R² was measured and is not positive.
+# A bin needs this many booked loans for its raw rate to set the cap: a one-loan bin with a single
+# default shows a rate near 100% and would leave the cap guarding nothing.
+_HRI_CAP_MIN_OBSERVATIONS = 20
 
-    A tree winner records NaN ("not computed": trees are tuned on RMSE). That is NOT treated
-    as no signal: the flat prior exists to stop a signal-free LINEAR fit from extrapolating
-    absurd rates onto repesca coordinates outside the booked range, and a tree cannot predict
-    beyond its training targets. Since #175 the NaN took the model branch only because
-    ``float(nan or 0.0) <= 0`` happens to be False; this states the rule (audit 2026-11-27 A21).
-    A missing value (older metadata) keeps the previous default of 0 → no signal.
+
+def _is_tree_model(model: object) -> bool:
+    """Tree ensembles expose ``feature_importances_``; the linear / GLM / hurdle candidates do not."""
+    return hasattr(model, "feature_importances_")
+
+
+def _hri_fit_has_no_signal(cv_r2: float | None, tree_model: bool = False) -> bool:
+    """True when the HRI rate model should be replaced by the flat prior.
+
+    The flat prior exists to stop a signal-free LINEAR fit from extrapolating absurd rates onto
+    repesca coordinates outside the booked range.
+
+    * measured CV R² ≤ 0 — no signal, whatever the model;
+    * CV R² not measured (NaN): a tree winner records NaN by design (trees are tuned on RMSE) and
+      cannot predict beyond its training targets, so it keeps the model. A linear winner with an
+      undefined R² (tiny validation folds on sparse HRI data) has no evidence of signal and CAN
+      extrapolate, so it takes the flat prior. Since #175 every NaN took the model branch only
+      because ``float(nan or 0.0) <= 0`` happens to be False (audit 2026-11-27 A21);
+    * missing value (older metadata) — the previous default of 0, i.e. no signal.
     """
     if cv_r2 is None:
         return True
     cv_r2 = float(cv_r2)
-    return bool(np.isfinite(cv_r2) and cv_r2 <= 0.0)
+    if not np.isfinite(cv_r2):
+        return not tree_model
+    return bool(cv_r2 <= 0.0)
 
 
-def _observed_hri_cap(train_agg: pd.DataFrame | None) -> float | None:
+def _observed_hri_cap(
+    train_agg: pd.DataFrame | None, min_observations: int = _HRI_CAP_MIN_OBSERVATIONS
+) -> float | None:
     """Worst OBSERVED training-bin HRI rate, from the raw per-bin sums.
 
     The fit's target column (``hri_h6``) is winsorized (#56), so its maximum is the
     winsorization bound, not the worst bin: capping repesca predictions there pulled every
     rate above the bound down to it (10.6% predicted → 1.24% with a worst observed bin of
     28.8%), understating swap-in HRI in exactly the low-score region (audit 2026-11-27 A21).
+
+    Only bins with at least *min_observations* booked loans count (when the frame carries
+    ``n_observations``): the raw rate of a thinner bin is one or two loans' worth of noise. If
+    no bin qualifies, every bin with exposure is used.
     """
     if train_agg is None or not {"h_num_h6", "h_den_h6"} <= set(getattr(train_agg, "columns", [])):
         return None
     den = pd.to_numeric(train_agg["h_den_h6"], errors="coerce")
     num = pd.to_numeric(train_agg["h_num_h6"], errors="coerce")
     rates = (num / den.where(den > 0)).dropna()
+    if "n_observations" in train_agg.columns:
+        observed_enough = rates[train_agg.loc[rates.index, "n_observations"] >= min_observations]
+        if len(observed_enough):
+            n_thin = len(rates) - len(observed_enough)
+            if n_thin and rates.max() > observed_enough.max():
+                logger.info(
+                    f"HRI cap: {n_thin} bin(s) with fewer than {min_observations} loans ignored "
+                    f"(their worst raw rate {rates.max():.4f} vs {observed_enough.max():.4f} among the rest)."
+                )
+            rates = observed_enough
     return float(rates.max()) if len(rates) else None
 
 
@@ -1933,7 +1965,7 @@ def compute_pre_reject_inference_data(
         # it does for b2. With signal, use the model capped at the worst observed bin.
         hri_cv = hri_inference["best_model_info"].get("cv_mean_r2", 0.0)
         train_agg = hri_inference.get("all_data")
-        no_signal = _hri_fit_has_no_signal(hri_cv)
+        no_signal = _hri_fit_has_no_signal(hri_cv, _is_tree_model(hri_inference["best_model_info"].get("model")))
         if no_signal and train_agg is not None and {"h_num_h6", "h_den_h6"} <= set(train_agg.columns):
             hri_cv = float(hri_cv or 0.0)
             flat_rate = float(train_agg["h_num_h6"].sum() / max(train_agg["h_den_h6"].sum(), 1e-9))

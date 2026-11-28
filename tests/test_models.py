@@ -362,7 +362,41 @@ class TestHriRepescaRate:
         from src.model.inference_optimized import _hri_fit_has_no_signal
 
         assert _hri_fit_has_no_signal(0.0) is True
-        assert _hri_fit_has_no_signal(-0.3) is True
+        assert _hri_fit_has_no_signal(-0.3, tree_model=True) is True
         assert _hri_fit_has_no_signal(0.2) is False
-        assert _hri_fit_has_no_signal(float("nan")) is False
+        assert _hri_fit_has_no_signal(float("nan"), tree_model=True) is False
+        # a LINEAR winner with an undefined R² (tiny folds) can extrapolate and has shown no signal
+        assert _hri_fit_has_no_signal(float("nan"), tree_model=False) is True
         assert _hri_fit_has_no_signal(None) is True  # legacy metadata without the field
+
+    def test_tree_models_are_recognised_by_their_importances(self):
+        from sklearn.ensemble import RandomForestRegressor
+
+        from src.model.inference_optimized import _is_tree_model
+
+        assert _is_tree_model(RandomForestRegressor()) is False  # unfitted: no importances yet
+        fitted = RandomForestRegressor(n_estimators=2, random_state=0).fit([[0.0], [1.0]], [0.0, 1.0])
+        assert _is_tree_model(fitted) is True
+        assert _is_tree_model(Ridge().fit([[0.0], [1.0]], [0.0, 1.0])) is False
+        assert _is_tree_model(None) is False
+
+    def test_observed_cap_ignores_bins_too_thin_to_measure_a_rate(self):
+        """One loan with one default is a 100% bin. Left in, it is the cap, and the cap then
+        guards nothing; the winsorized cap this replaces was at least bounded."""
+        from src.model.inference_optimized import _observed_hri_cap
+
+        train = pd.DataFrame(
+            {
+                "h_num_h6": [1.0, 28.8, 5.0],
+                "h_den_h6": [100.0, 100.0, 5.0],
+                "n_observations": [400, 60, 1],
+            }
+        )
+        assert _observed_hri_cap(train) == pytest.approx(0.288)
+        assert _observed_hri_cap(train, min_observations=1) == pytest.approx(1.0)
+
+    def test_observed_cap_falls_back_to_every_bin_when_all_are_thin(self):
+        from src.model.inference_optimized import _observed_hri_cap
+
+        train = pd.DataFrame({"h_num_h6": [1.0, 3.0], "h_den_h6": [100.0, 100.0], "n_observations": [5, 7]})
+        assert _observed_hri_cap(train) == pytest.approx(0.03)
