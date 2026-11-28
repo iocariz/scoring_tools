@@ -25,7 +25,7 @@ son descriptivas y no cambian ninguna cifra de los puntos 1-3.
 Uso:
     uv run python run_apple_study.py
     uv run python run_apple_study.py --main-from 2024-06-01     # ventana de 21 meses
-    uv run python run_apple_study.py --cutoff new=47 --cutoff known_cd=11
+    uv run python run_apple_study.py --cutoff New=30 --cutoff A-C=18   # por grupo de letra
     uv run python run_apple_study.py --targets 2.5 3 3.5 4 --stores-level-factor 1.5
 """
 
@@ -51,6 +51,7 @@ from src.studies.apple.followup import (
     income_score_table,
     risk_drift,
     score_distribution,
+    sensitivity_factors,
 )
 from src.studies.apple.study import (
     _BOOKED_COL,
@@ -72,11 +73,13 @@ from src.studies.apple.study import (
     grid_fidelity,
     load_study_data,
     measured_status_quo,
+    parse_cutoff_overrides,
     pick_targets,
     policy_kpis,
     same_base_status_quo,
     scenario_grids,
     scenario_ladders,
+    seasonal_complete_years,
     seasonal_index,
     stores_level_anchor,
     stores_swap_breakdown,
@@ -101,8 +104,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--cutoff",
         action="append",
         default=[],
-        metavar="SEG=SCORE",
-        help="Corte EFX real por segmento, p.ej. --cutoff new=47. Sobrescribe el placeholder.",
+        metavar="GRUPO=SCORE",
+        help=(
+            "Corte EFX por grupo de la parrilla (New, Inactive, A-C, D-F, >=G; sin distinguir mayúsculas), "
+            "p.ej. --cutoff New=30. GRUPO=none quita el corte. Un grupo desconocido es un error."
+        ),
     )
     p.add_argument("--targets", nargs="+", type=float, default=[2.5, 3.0, 3.5, 4.0])
     p.add_argument(
@@ -146,10 +152,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    cutoffs = dict(PARRILLA_ECOMMERCE)
-    for override in args.cutoff:
-        segment, _, value = override.partition("=")
-        cutoffs[segment.strip()] = None if value.strip().lower() in {"", "none"} else float(value)
+    try:
+        cutoffs = parse_cutoff_overrides(args.cutoff, PARRILLA_ECOMMERCE)
+    except ValueError as e:
+        logger.error(str(e))
+        return 2
     logger.info(f"Parrilla aplicada (umbral de rechazo, se acepta por encima): {cutoffs}")
 
     data = load_study_data(args.data_path)
@@ -174,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_seasonal_adjust:
         logger.warning("Ajuste estacional DESACTIVADO: el run-rate de un canal con pocos meses no es comparable")
         idx_ecom = idx_stores = None
+        seasonal_years_by_channel: dict[str, list[int]] = {"online": [], "tienda": []}
     else:
         # El índice se estima sobre TODA la demanda del canal, lleve score o no: es un
         # perfil de volumen y tienda no tiene EFX antes de agosto.
@@ -183,6 +191,13 @@ def main(argv: list[str] | None = None) -> int:
         consistent = data[~data[LIGHT_COL]]
         idx_ecom = seasonal_index(consistent[consistent[CHANNEL_COL] == CHANNEL_ECOM], "Online")
         idx_stores = seasonal_index(consistent[consistent[CHANNEL_COL] == CHANNEL_STORES], "Tienda", fallback=idx_ecom)
+        # Los años que rotula el deck son los que promedia cada índice, sobre su misma población.
+        seasonal_years_by_channel = {
+            "online": seasonal_complete_years(consistent[consistent[CHANNEL_COL] == CHANNEL_ECOM]),
+            "tienda": seasonal_complete_years(consistent[consistent[CHANNEL_COL] == CHANNEL_STORES]),
+        }
+        if not seasonal_years_by_channel["tienda"]:  # tienda usa el índice de Online como respaldo
+            seasonal_years_by_channel["tienda"] = list(seasonal_years_by_channel["online"])
         if idx_stores is not None:
             warn_partial_rollout(all_stores[all_stores[Columns.MIS_DATE] >= args.stores_from], idx_stores)
     light_from = {
@@ -338,13 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     # Los periodos se persisten para que el deck los rotule desde el dato: escritos a mano
     # en las slides se desincronizan del run en cuanto alguien cambia una ventana.
-    seasonal_years = sorted(
-        {
-            int(y)
-            for y, g in data.groupby(data[Columns.MIS_DATE].dt.year)
-            if g.groupby(g[Columns.MIS_DATE].dt.month).ngroups == 12
-        }
-    )
+    seasonal_years = sorted({*seasonal_years_by_channel["online"], *seasonal_years_by_channel["tienda"]})
     json.dump(
         {
             "online_desde": args.main_from,
@@ -352,6 +361,8 @@ def main(argv: list[str] | None = None) -> int:
             "tienda_desde": args.stores_from,
             "tienda_hasta": args.stores_to,
             "estacionalidad_anios": seasonal_years,
+            "estacionalidad_anios_online": seasonal_years_by_channel["online"],
+            "estacionalidad_anios_tienda": seasonal_years_by_channel["tienda"],
             "reject_inference": not args.no_reject_inference,
             "factor_nivel_tienda": round(level_factor, 4),
             "riesgo_tienda_realizado_pct": round(anchor["realizado_pct"], 4),
@@ -428,7 +439,10 @@ def main(argv: list[str] | None = None) -> int:
                 ignore_index=True,
             ),
         ),
-        ("b2_sensibilidad_deriva", drift_sensitivity(ladder_grid, args.targets, online_applied=drift)),
+        (
+            "b2_sensibilidad_deriva",
+            drift_sensitivity(ladder_grid, args.targets, factors=sensitivity_factors(drift), online_applied=drift),
+        ),
         ("b3_tienda_cesp", cesp_summary({"ventana": stores_window, "meses_con_score": stores}, cutoffs)),
         ("b3_tienda_cesp_trimestre", cesp_trend(all_stores)),
         ("b3_tienda_cesp_score", cesp_score_distribution(stores)),

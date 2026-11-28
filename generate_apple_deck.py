@@ -1255,6 +1255,17 @@ def deck_facts(curve, p2, stores_actuals, grids, index, meta) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+def seasonal_years_label(meta: dict) -> str:
+    """The years each channel's seasonal index averages; one list when both channels agree."""
+    if not meta["estacionalidad_anios"]:
+        return "no seasonal adjustment"  # the study ran without it, or no channel has a complete year
+    both = " and ".join(str(year) for year in meta["estacionalidad_anios"])
+    online, stores = meta.get("estacionalidad_anios_online"), meta.get("estacionalidad_anios_tienda")
+    if not online or not stores or online == stores:
+        return both
+    return f"Online {' and '.join(str(y) for y in online)}; stores {' and '.join(str(y) for y in stores)}"
+
+
 def build(data_dir: Path, out_path: Path) -> Path:
     read = lambda name: pd.read_csv(data_dir / f"{name}.csv")  # noqa: E731
     curve, p1, p2 = read("curva_riesgo_online"), read("p1_online_actual"), read("p2_tienda_parrilla_online")
@@ -1263,7 +1274,7 @@ def build(data_dir: Path, out_path: Path) -> Path:
     p_online = span(meta["online_desde"], meta["online_hasta"])
     p_stores = span(meta["tienda_desde"], meta["tienda_hasta"])
     p_mixed = f"Online {p_online}  ·  stores {p_stores}"
-    p_seasonal = " and ".join(str(a) for a in meta["estacionalidad_anios"])
+    p_seasonal = seasonal_years_label(meta)
     ladder, index = read("p3_escalera_corte_unico"), read("indice_estacional")
     breakdown = read("p0_demanda_por_estado")
     swap, blend = read("p2b_tienda_swap"), read("p3b_mezcla_canales")

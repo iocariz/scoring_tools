@@ -28,7 +28,7 @@ from pptx.util import Emu, Inches, Pt
 
 from src.studies.apple.deck_charts import CURRENT, GRID, INK, MUTED, PROPOSED, RISK, _style, save_chart
 from src.studies.apple.followup import INCOME_LABELS, SCORE_RANGE_LABELS
-from src.studies.apple.study import SAME_BASE_LABEL, SWAP_CATEGORIES
+from src.studies.apple.study import PARRILLA_ECOMMERCE, SAME_BASE_LABEL, SWAP_CATEGORIES
 
 W, H = Inches(13.333), Inches(7.5)
 MARGIN = Inches(0.62)
@@ -374,10 +374,26 @@ def _bullets(slide, x, y, w, items: list[tuple[str, str]], size: float = 12.5) -
 # --------------------------------------------------------------------------- #
 # cifras que cita la prosa: todas salen de los CSV
 # --------------------------------------------------------------------------- #
+def _central_sensitivity_row(sens: pd.DataFrame, drift: float) -> pd.Series:
+    """Row of the sensitivity table for the study's central case (Online ×drift, stores ×1).
+
+    Matched with a tolerance (the factors come back from a CSV), and never substituted: quoting
+    another row's shift as the central case would put a wrong number in the title slide.
+    """
+    # periodos.json keeps the factor rounded to 4 decimals; the CSV has it in full.
+    for (online, stores), row in sens.iterrows():
+        if np.isclose(online, drift, atol=5e-5) and np.isclose(stores, 1.0):
+            return row
+    raise ValueError(
+        f"The drift sensitivity table has no row for the central case (Online x{drift:g}, stores x1). "
+        "Re-run run_apple_study.py so b2_sensibilidad_deriva.csv includes it."
+    )
+
+
 def deck_facts(data: dict[str, pd.DataFrame], meta: dict) -> dict:
     b1, drift, sens = data["b1"], data["drift"], data["sens"]
     cesp, swap, inc, risk = data["cesp"], data["swap"], data["income_score"], data["income_risk"]
-    cutoff_score = 27.0
+    cutoff_score = float(PARRILLA_ECOMMERCE["New"])  # the grid's cutoff for new customers
     cutoff_bin = int(b1.loc[b1["score_max"] <= cutoff_score, "tramo"].max())
 
     def idx(channel: str, horizon: str, quarter: str) -> float:
@@ -454,7 +470,7 @@ def slide_title(prs, f: dict, today: str) -> None:
         bold=True,
     )
     sens = f["sens_top"]
-    central = sens.loc[(f["drift"], 1.0)] if (f["drift"], 1.0) in sens.index else sens.iloc[0]
+    central = _central_sensitivity_row(sens, f["drift"])
     _bullets(
         slide,
         MARGIN,
@@ -578,7 +594,7 @@ def slide_scenarios(prs, picks: pd.DataFrame, sens: pd.DataFrame, f: dict, perio
             name = f"Online +{es(100 * (ko - 1), 0)}%"
         else:
             name = f"Online y tienda +{es(100 * (ko - 1), 0)}%"
-        if ko == f["drift"] and kt == 1:
+        if np.isclose(ko, f["drift"], atol=5e-5) and np.isclose(kt, 1.0):
             central_row, name = i, name + " (central)"
         shift = (
             "no alcanzable"

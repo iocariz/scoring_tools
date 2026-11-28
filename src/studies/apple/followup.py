@@ -202,6 +202,18 @@ def demand_profile(
     return pd.DataFrame(rows)
 
 
+def sensitivity_factors(online_applied: float) -> tuple[tuple[float, float], ...]:
+    """``DRIFT_FACTORS`` plus the study's own central case ``(online_applied, 1.0)``.
+
+    The follow-up deck quotes the central row of the sensitivity table. With a drift other than
+    the ones listed (``--online-risk-factor 1.2``) that row did not exist and the deck quoted
+    the no-factor row as "already factored in" (audit 2026-11-27 A17).
+    """
+    if any(np.isclose(online, online_applied) and np.isclose(stores, 1.0) for online, stores in DRIFT_FACTORS):
+        return DRIFT_FACTORS
+    return tuple(sorted({*DRIFT_FACTORS, (float(online_applied), 1.0)}, key=lambda f: (f[1], f[0])))
+
+
 def drift_sensitivity(
     ladder_grid: pd.DataFrame,
     targets: list[float],
@@ -417,6 +429,7 @@ def _income_risk_row(channel: str, population: str, band: str, score: str, g: pd
 __all__ = [
     "CESP_COL",
     "DRIFT_FACTORS",
+    "sensitivity_factors",
     "INCOME_COL",
     "INCOME_LABELS",
     "SCORE_RANGE_LABELS",
