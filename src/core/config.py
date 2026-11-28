@@ -712,6 +712,21 @@ class PreprocessingSettings(BaseModel):
         return pd.to_datetime(val, dayfirst=False)
 
     @model_validator(mode="after")
+    def _warn_directions_for_unknown_variables(self) -> "PreprocessingSettings":
+        """A ``directions`` key that is not one of ``variables`` is never read: that variable's
+        direction is then auto-inferred from the data. Warn loudly (like the unknown-key guard,
+        #63) rather than fail, since a shared base config may list more variables than a segment
+        uses."""
+        unknown = sorted(set(self.directions) - set(self.variables))
+        if unknown:
+            logger.warning(
+                f"directions has key(s) that are not in variables and are IGNORED: {unknown}. "
+                f"Variables: {list(self.variables)}. A misspelled key leaves that variable's direction "
+                "to be auto-inferred from the data."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _auto_populate_bins(self) -> "PreprocessingSettings":
         """Auto-populate ``bins`` dict from legacy octroi_bins/efx_bins if not set.
 

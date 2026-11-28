@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -286,3 +287,25 @@ def test_insufficient_result_reports_gracefully(tmp_path):
     assert "calibration" not in paths  # no calibration when insufficient
     cons = write_consolidated_report([result], tmp_path, suffix="_base")
     assert "skipped" in cons["summary"].read_text()
+
+
+def test_per_cell_calibration_uses_only_loans_with_a_complete_h6_outcome():
+    """Audit 2026-11-27 A7: the aggregate realized risk applies the #41 completeness rule; the
+    per-cell table summed each column NaN-skipping, so a loan with exposure but no realized
+    numerator diluted its cell (here 10/700 would read 10/1400)."""
+    from src.governance.backtest import _per_cell_calibration
+
+    booked = pd.DataFrame(
+        {
+            "a": [1.0, 1.0, 1.0],
+            "b": [10.0, 10.0, 10.0],
+            "todu_30ever_h6": [10.0, np.nan, 0.0],
+            "todu_amt_pile_h6": [700.0, 700.0, np.nan],
+        }
+    )
+    training = pd.DataFrame({"a": [1.0], "b": [10.0], "todu_30ever_h6_boo": [5.0], "todu_amt_pile_h6_boo": [700.0]})
+
+    cal = _per_cell_calibration(booked, pd.Series([True, True, True]), training, ["a", "b"], {(1.0, 10.0)}, 7.0)
+
+    assert cal.loc[0, "oot_realized_risk_pct"] == pytest.approx(7 * 10 / 700 * 100)
+    assert cal.loc[0, "n_booked_oot"] == 1

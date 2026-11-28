@@ -238,3 +238,108 @@ class TestBacktestStaleEvidence:
 
         rows = pd.read_csv(tmp_path / "backtest" / "backtest_consolidated_base.csv")
         assert rows["segment"].tolist() == ["seg_a"] and rows["drift_flag"].tolist() == ["FAILED"]
+
+
+# --------------------------------------------------------------------------- #
+# Audit 2026-11-27 A7: standalone governance CLIs
+# --------------------------------------------------------------------------- #
+
+
+def test_backtest_all_reports_failed_segments_to_the_caller(monkeypatch, tmp_path):
+    _frozen_segment(tmp_path / "output", "seg_a")
+    monkeypatch.setattr(
+        backtest_runner.PreprocessingSettings,
+        "from_toml",
+        classmethod(lambda cls, path: SimpleNamespace(mr_maturity_months=6, segment_filter="seg/a")),
+    )
+
+    def fail(*args, **kwargs):
+        raise BacktestError("no mature holdout")
+
+    monkeypatch.setattr(backtest_runner, "backtest_segment", fail)
+    failures: list[tuple[str, str]] = []
+
+    backtest_runner.backtest_all(None, data_dir=tmp_path / "output", out_dir=tmp_path / "backtest", failures=failures)
+
+    assert failures == [("seg/a", "no mature holdout")]
+
+
+def test_run_backtest_exits_nonzero_when_a_segment_fails(monkeypatch, tmp_path):
+    """Some segments succeeding used to be enough for exit code 0."""
+    import run_backtest
+    import src.data.data_manager as data_manager
+    import src.pipeline.batch_config as batch_config
+
+    monkeypatch.setattr(batch_config, "load_base_config", lambda path: {})
+    monkeypatch.setattr(data_manager, "load_configured_data", lambda cfg: pd.DataFrame({"a": [1]}))
+
+    def partly_failing(*args, failures=None, **kwargs):
+        failures.append(("seg/b", "boom"))
+        return ["a result"]
+
+    monkeypatch.setattr(run_backtest, "backtest_all", partly_failing)
+
+    assert run_backtest.main(["--data-dir", str(tmp_path), "--output", str(tmp_path / "bt")]) == 1
+
+
+@pytest.mark.parametrize("segment", ["..", ".", "a/../..", "../elsewhere"])
+def test_reproducibility_refuses_a_segment_whose_run_dir_escapes_the_output_dir(tmp_path, segment):
+    """`-s ..` reached shutil.rmtree(output/..) — the whole output tree — before anything else."""
+    import run_reproducibility
+
+    victim = tmp_path / "output" / "keep_me.txt"
+    victim.parent.mkdir(parents=True)
+    victim.write_text("x", encoding="utf-8")
+
+    assert run_reproducibility.main(["-s", segment, "--output", str(tmp_path / "output" / "_repro")]) == 1
+    assert victim.exists()
+
+
+def test_reproducibility_still_accepts_a_literal_filter(monkeypatch, tmp_path):
+    """`-s direct/pl/new` is the documented fallback when the value is not a segments.toml name;
+    its run directory nests under the output dir, so it is cleaned and used as before."""
+    import run_reproducibility
+
+    stale = tmp_path / "_repro" / "direct" / "pl" / "new" / "old_artifact.txt"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("x", encoding="utf-8")
+
+    class Stop(Exception):
+        pass
+
+    def stop(*args, **kwargs):
+        raise Stop
+
+    monkeypatch.setattr(run_reproducibility, "_resolve_segment_filter", stop)
+
+    with pytest.raises(Stop):
+        run_reproducibility.main(["-s", "direct/pl/new", "--output", str(tmp_path / "_repro")])
+    assert not stale.exists() and stale.parent.is_dir()  # cleaned, recreated, and the run went on
+
+
+def test_baseline_flag_refuses_a_segment_with_fixed_cutoffs(monkeypatch, tmp_path):
+    """The config validator rejects baseline_mode + fixed_cutoffs; --baseline is applied after
+    validation and silently won."""
+    settings = _settings(fixed_cutoffs={"sc_octroi_new_clus": [1], "new_efx_clus": [1]})
+    monkeypatch.setattr(runner, "load_and_validate_config", lambda p: (settings, None, None, 1.0))
+
+    loaded = []
+    monkeypatch.setattr(runner, "load_and_prepare_data", lambda s, preloaded: loaded.append(1) or (None, s))
+
+    assert runner.run_pipeline("cfg.toml", baseline_mode=True, output=OutputPaths(base_dir=tmp_path)) is False
+    assert not loaded  # refused before any data is loaded
+
+
+@pytest.mark.parametrize("name", [".", "..", "...", "a/b", "", "a b"])
+def test_segment_names_that_are_not_a_plain_directory_are_rejected(name):
+    from src.pipeline.batch_config import validate_segment_name
+
+    with pytest.raises(ValueError, match="Invalid segment name"):
+        validate_segment_name(name)
+
+
+@pytest.mark.parametrize("name", ["direct-pl-new", "seg_a", "v1.2", ".hidden"])
+def test_plain_segment_names_are_accepted(name):
+    from src.pipeline.batch_config import validate_segment_name
+
+    validate_segment_name(name)

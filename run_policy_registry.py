@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -38,7 +39,7 @@ from loguru import logger
 from src.core.config import PreprocessingSettings
 from src.core.constants import StatusName
 from src.data.preprocess_improved import _run_data_transformations
-from src.governance.backtest import BacktestError, build_holdout_window, load_frozen_policy
+from src.governance.backtest import BacktestError, _safe_segment_name, build_holdout_window, load_frozen_policy
 from src.governance.backtest_runner import _discover_segments, _scenario_suffix
 from src.governance.policy_registry import (
     REGISTRY_DIR,
@@ -50,6 +51,7 @@ from src.governance.policy_registry import (
     load_registry,
     policy_id_for_settings,
     register_policy,
+    registry_path,
     settings_bin_edges,
     settings_bin_sources,
     unfrozen_bin_vars,
@@ -87,25 +89,52 @@ def register_all(
             continue
         reg = register_policy(entry, make_champion=make_champion, registry_dir=registry_dir)
         role = "champion" if reg["champion_policy_id"] == entry.policy_id else "challenger"
-        logger.info(f"[{entry.segment}] registered {entry.policy_id} ({role}) → {registry_dir}/{entry.segment}.json")
+        logger.info(
+            f"[{entry.segment}] registered {entry.policy_id} ({role}) → {registry_path(entry.segment, registry_dir)}"
+        )
         n += 1
     return n
+
+
+def _registry_stems_for(segment: str, data_dir: Path) -> set[str]:
+    """Registry file stems a ``--segments`` value may refer to: the value itself (a name or a
+    filter) and the filter recorded in that segment's frozen config, both flattened."""
+    stems = {_safe_segment_name(segment)}
+    config_path = data_dir / segment / "config_segment.toml"
+    if config_path.exists():
+        try:
+            cfg = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            segment_filter = cfg.get("preprocessing", cfg).get("segment_filter")
+        except (tomllib.TOMLDecodeError, OSError):
+            logger.warning(f"Could not read {config_path}; matching '{segment}' by name only.")
+            segment_filter = None
+        if segment_filter:
+            stems.add(_safe_segment_name(str(segment_filter)))
+    return stems
+
+
+def _segment_maturity(maturity_months: int | None, settings) -> int:
+    """An explicit --maturity-months applies to every segment; otherwise each segment uses its own
+    ``mr_maturity_months``, as the backtest does (#64)."""
+    return maturity_months if maturity_months is not None else settings.mr_maturity_months
 
 
 def list_all(
     data_dir: str | Path = "output", segments: list[str] | None = None, registry_dir: Path = REGISTRY_DIR
 ) -> int:
     """Print each requested segment's registry (champion + history). Returns segment count shown."""
-    # Segment names come from the filesystem registry, optionally filtered by --segments.
+    # Registries are files named after the flattened segment filter. --segments takes segment
+    # NAMES (output dir names), so each name is resolved through its frozen config's filter.
     reg_dir = Path(registry_dir)
     names = sorted(p.stem for p in reg_dir.glob("*.json")) if reg_dir.exists() else []
     if segments:
-        names = [n for n in names if n in segments]
+        wanted = {stem for segment in segments for stem in _registry_stems_for(segment, Path(data_dir))}
+        names = [n for n in names if n in wanted]
     if not names:
         logger.warning(f"No registries under {registry_dir}" + (f" for {segments}" if segments else ""))
         return 0
     for name in names:
-        reg = load_registry(name, registry_dir)
+        reg = load_registry(name, registry_dir, by_file_stem=True)
         champ = reg.get("champion_policy_id")
         logger.info(f"=== {name} === champion: {champ or '(none)'} | {len(reg['policies'])} policy(ies)")
         for p in reg["policies"]:
@@ -304,7 +333,7 @@ def compare_all(
     data_dir: str | Path = "output",
     out_dir: str | Path = "output/policy_registry",
     scenario: str = "base",
-    maturity_months: int = 6,
+    maturity_months: int | None = None,
     segments: list[str] | None = None,
     holdout_start: str | None = None,
     holdout_end: str | None = None,
@@ -328,10 +357,12 @@ def compare_all(
                 seg_dir,
                 registry_dir=registry_dir,
                 suffix=suffix,
-                maturity_months=maturity_months,
+                maturity_months=_segment_maturity(maturity_months, settings),
                 holdout_start=holdout_start,
                 holdout_end=holdout_end,
             )
+            # Inside the try: a report that cannot be written must not abort the other segments.
+            write_comparison_report(cmp, out_dir, suffix)
         except BacktestError as e:
             logger.error(f"[{seg_dir.name}] compare failed: {e}")
             continue
@@ -339,7 +370,6 @@ def compare_all(
             logger.exception(f"[{seg_dir.name}] unexpected compare error")
             continue
 
-        write_comparison_report(cmp, out_dir, suffix)
         results.append(cmp)
         if cmp.sufficient:
             logger.info(
@@ -379,7 +409,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scenario", default="base", help="Scenario suffix (default: base).")
     parser.add_argument("--segments", "-s", nargs="+", default=None, help="Subset of segments (default: all).")
     parser.add_argument("--make-champion", action="store_true", help="With --register: promote to champion.")
-    parser.add_argument("--maturity-months", type=int, default=6, help="Months of seasoning for H6 maturity.")
+    parser.add_argument(
+        "--maturity-months",
+        type=int,
+        default=None,
+        help="Months of seasoning for H6 maturity (default: each segment's mr_maturity_months).",
+    )
     parser.add_argument("--holdout-start", default=None, help="Override: held-out window start (YYYY-MM-DD).")
     parser.add_argument("--holdout-end", default=None, help="Override: held-out window end (YYYY-MM-DD).")
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])

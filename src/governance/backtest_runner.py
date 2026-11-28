@@ -59,8 +59,12 @@ def backtest_all(
     segments: list[str] | None = None,
     holdout_start: str | None = None,
     holdout_end: str | None = None,
+    failures: list[tuple[str, str]] | None = None,
 ) -> list:
     """Backtest every frozen segment under *data_dir* against a held-out cohort.
+
+    When *failures* is given, ``(segment, reason)`` of every segment whose backtest raised is
+    appended to it, so a caller can tell a partial run from a complete one.
 
     Writes per-segment + consolidated reports under *out_dir* and returns the list of
     ``BacktestResult``. Shared by the CLI and ``run_batch`` (which passes its already-loaded
@@ -129,4 +133,6 @@ def backtest_all(
         logger.info(f"Consolidated backtest: {paths['consolidated']}")
     if failed:
         logger.warning(f"Backtest failed for {len(failed)} segment(s): {[name for name, _ in failed]}")
+        if failures is not None:
+            failures.extend(failed)
     return results

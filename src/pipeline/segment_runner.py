@@ -536,6 +536,13 @@ def run_pipeline(
 
         segment = settings.segment_filter
         if baseline_mode:
+            if settings.fixed_cutoffs:
+                # The config validator rejects this pair; the CLI override is applied after
+                # validation and used to win silently.
+                raise ConfigLoadError(
+                    f"[{segment}] --baseline cannot be combined with fixed_cutoffs: baseline shows the "
+                    "current portfolio, fixed_cutoffs applies explicit cuts."
+                )
             settings.baseline_mode = True
         if base_scenario_only:
             settings.base_scenario_only = True
