@@ -409,6 +409,43 @@ def _system_rejection_amounts_from_audit(
     return total_demand, actual_system, optimum_system
 
 
+PRODUCTION_CI_BASIS_GRID = "grid"
+PRODUCTION_CI_BASIS_RESCALED = "grid_rescaled_to_audit"
+
+
+def rescale_production_ci(
+    ci_lower: float, ci_upper: float, grid_production: float | None, reconciled_production: float | None
+) -> tuple[float, float, str]:
+    """Move the bootstrap production CI onto the basis of the reconciled production point.
+
+    The bootstrap resamples the optimizer's grid KPIs; ``reconcile_risk_production_summary_with_audit``
+    then overwrites ``Production (€)`` from the loan-level audit, which can sit several percent
+    away. Left alone, the interval describes a different number than the one it decorates and can
+    exclude it (audit 2026-11-27 A13). The interval is scaled by the ratio the point moved by,
+    which keeps its relative width — an approximation: the audit basis is not bootstrapped itself.
+
+    Returns ``(lower, upper, basis)``. Without a usable ratio the interval is returned unchanged
+    with basis ``"grid"``.
+    """
+    try:
+        grid = float(grid_production)
+        reconciled = float(reconciled_production)
+    except (TypeError, ValueError):
+        return ci_lower, ci_upper, PRODUCTION_CI_BASIS_GRID
+    usable = (
+        np.isfinite(grid)
+        and np.isfinite(reconciled)
+        and grid > 0
+        and reconciled > 0
+        and pd.notna(ci_lower)
+        and pd.notna(ci_upper)
+    )
+    if not usable or np.isclose(grid, reconciled, rtol=1e-12, atol=0.0):
+        return ci_lower, ci_upper, PRODUCTION_CI_BASIS_GRID
+    ratio = reconciled / grid
+    return float(ci_lower) * ratio, float(ci_upper) * ratio, PRODUCTION_CI_BASIS_RESCALED
+
+
 def reconcile_risk_production_summary_with_audit(
     summary_table: pd.DataFrame,
     audit_df: pd.DataFrame | None,

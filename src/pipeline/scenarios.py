@@ -15,6 +15,7 @@ from loguru import logger
 from src.analysis.audit import (
     generate_audit_table,
     reconcile_risk_production_summary_with_audit,
+    rescale_production_ci,
     save_audit_tables,
     set_baseline_system_rejection_rate,
     validate_audit_against_summary,
@@ -119,6 +120,14 @@ def _resolve_selection(
         f"ci_upper {sel_boot.candidate_risk_ci_upper[j]:.4f}% <= {current_risk:.2f}%)"
     )
     return j, "ci_upper", True
+
+
+def _optimum_production(summary_table: pd.DataFrame) -> float | None:
+    """``Production (€)`` of the "Optimum selected" row, or None when the table has none."""
+    if "Metric" not in summary_table.columns or "Production (€)" not in summary_table.columns:
+        return None
+    rows = summary_table.loc[summary_table["Metric"] == "Optimum selected", "Production (€)"]
+    return float(rows.iloc[0]) if len(rows) and pd.notna(rows.iloc[0]) else None
 
 
 def run_scenario_analysis(
@@ -410,6 +419,7 @@ def run_scenario_analysis(
     # In baseline mode the accept-all mask makes every rejected applicant look like
     # swap-in, producing misleading audit classifications.  Skip reconciliation so
     # the summary table keeps the correct Optimum = Actual / zero-swap values.
+    grid_optimum_production = _optimum_production(summary_table)
     if not settings.baseline_mode:
         summary_table = reconcile_risk_production_summary_with_audit(summary_table, audit_main)
         validate_audit_against_summary(audit_main, summary_table)
@@ -425,6 +435,7 @@ def run_scenario_analysis(
     # risk_booked_ci_* always carries the booked-only realized CI (audit #28).
     summary_table["production_ci_lower"] = np.nan
     summary_table["production_ci_upper"] = np.nan
+    summary_table["production_ci_basis"] = None
     summary_table["risk_ci_lower"] = np.nan
     summary_table["risk_ci_upper"] = np.nan
     summary_table["risk_ci_basis"] = None
@@ -434,8 +445,17 @@ def run_scenario_analysis(
     if ci_data:
         mask_opt = summary_table["Metric"] == "Optimum selected"
         if mask_opt.any():
-            summary_table.loc[mask_opt, "production_ci_lower"] = ci_data.get("production_ci_lower", 0.0)
-            summary_table.loc[mask_opt, "production_ci_upper"] = ci_data.get("production_ci_upper", 0.0)
+            # The bootstrap is on the grid basis; the production point above was just reconciled
+            # to the audit. Move the interval with it so it brackets the number it decorates.
+            prod_lower, prod_upper, prod_basis = rescale_production_ci(
+                ci_data.get("production_ci_lower", 0.0),
+                ci_data.get("production_ci_upper", 0.0),
+                grid_optimum_production,
+                _optimum_production(summary_table),
+            )
+            summary_table.loc[mask_opt, "production_ci_lower"] = prod_lower
+            summary_table.loc[mask_opt, "production_ci_upper"] = prod_upper
+            summary_table.loc[mask_opt, "production_ci_basis"] = prod_basis
             summary_table.loc[mask_opt, "risk_ci_lower"] = ci_data.get("risk_ci_lower", 0.0)
             summary_table.loc[mask_opt, "risk_ci_upper"] = ci_data.get("risk_ci_upper", 0.0)
             summary_table.loc[mask_opt, "risk_ci_basis"] = ci_data.get("risk_ci_basis", "booked_realized")

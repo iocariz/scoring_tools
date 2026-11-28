@@ -688,7 +688,7 @@ def _build_story_frontier_figure(
                 mode="markers",
                 name="Chosen policy",
                 marker=dict(color=_STORY_AMBER, size=17, symbol="star", line=dict(color="white", width=1.5)),
-                hovertemplate="Chosen policy<br>Risk %{x:.2f}%<br>Production €%{y:,.0f}<extra></extra>",
+                hovertemplate=("Chosen policy<br>Risk %{x:.2f}%<br>Production €%{y:,.0f} (grid basis)<extra></extra>"),
             )
         )
     fig.update_layout(
@@ -785,7 +785,9 @@ def create_story_tab_content(scenario: str, segment: str | None = None) -> html.
     n_cells_str = f"{story['n_cells']:,}" if story.get("n_cells") else "a grid of"
     target_str = f"{target:.2g}%" if target is not None else "the segment's risk budget"
     chosen_str = (
-        f"{_format_currency(chosen[1], compact=True)} of production at {chosen[0]:.2f}% risk"
+        # optimal_solution is on the optimizer's grid basis; the KPI cards are reconciled to the
+        # loan-level audit and can sit a few percent away (audit 2026-11-27 A13).
+        f"{_format_currency(chosen[1], compact=True)} of production at {chosen[0]:.2f}% risk (optimizer's grid basis)"
         if chosen
         else "the starred point on the frontier"
     )
